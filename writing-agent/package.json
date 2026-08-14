@@ -1,0 +1,7 @@
+{
+  "name": "@ismail-elkorchi/writing-agent",
+  "version": "0.0.0",
+  "description": "Writing agent workspace reserved for a future concrete composition.",
+  "private": true,
+  "engines": { "node": ">=24.8.0" }
+}

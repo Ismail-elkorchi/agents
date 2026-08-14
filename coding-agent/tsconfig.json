@@ -1,0 +1,18 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": { "composite": true, "rootDir": "src", "outDir": "dist" },
+  "include": ["src"],
+  "references": [
+    { "path": "../../agent-core/packages/auth" },
+    { "path": "../../agent-core/packages/runtime" },
+    { "path": "../../agent-core/packages/evidence" },
+    { "path": "../../agent-core/packages/json" },
+    { "path": "../../agent-core/packages/model" },
+    { "path": "../../agent-core/packages/providers/ollama" },
+    { "path": "../../agent-core/packages/providers/openai" },
+    { "path": "../../agent-core/packages/providers/openai-codex" },
+    { "path": "../../agent-core/packages/providers/openrouter" },
+    { "path": "../../agent-core/packages/tools" },
+    { "path": "../../agent-core/packages/tools-local" }
+  ]
+}

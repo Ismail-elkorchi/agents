@@ -1,0 +1,39 @@
+{
+  "name": "agents",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.8.0" },
+  "workspaces": ["coding-agent", "writing-agent", "research-agent"],
+  "agentCore": { "path": "../agent-core", "commit": "6169be27dae7fa0a7890a015cd0da0ab0184a670" },
+  "scripts": {
+    "build": "node scripts/verify-agent-core.mjs && tsc -b && node scripts/post-build.mjs",
+    "lint": "eslint \"coding-agent/src/**/*.ts\"",
+    "test": "npm run build && npm run test:unit",
+    "test:unit": "node scripts/run-test-suite.mjs",
+    "package": "node scripts/test-packed-consumer.mjs",
+    "verify": "npm run clean && npm run build && npm run lint && npm run test:unit",
+    "verify:release": "npm run verify && npm run package",
+    "clean": "node scripts/clean.mjs"
+  },
+  "devDependencies": {
+    "@agent-core/auth": "file:../agent-core/packages/auth",
+    "@agent-core/evidence": "file:../agent-core/packages/evidence",
+    "@agent-core/json": "file:../agent-core/packages/json",
+    "@agent-core/model": "file:../agent-core/packages/model",
+    "@agent-core/provider-ollama": "file:../agent-core/packages/providers/ollama",
+    "@agent-core/provider-openai": "file:../agent-core/packages/providers/openai",
+    "@agent-core/provider-openai-codex": "file:../agent-core/packages/providers/openai-codex",
+    "@agent-core/provider-openai-responses": "file:../agent-core/packages/providers/openai-responses",
+    "@agent-core/provider-openrouter": "file:../agent-core/packages/providers/openrouter",
+    "@agent-core/runtime": "file:../agent-core/packages/runtime",
+    "@agent-core/tools": "file:../agent-core/packages/tools",
+    "@agent-core/tools-local": "file:../agent-core/packages/tools-local",
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.13.2",
+    "@types/ws": "^8.18.1",
+    "eslint": "^10.5.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.61.1"
+  }
+}

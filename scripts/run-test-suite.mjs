@@ -1,0 +1,11 @@
+import { spawn } from 'node:child_process';
+import { readdir } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const directory = path.join(root, 'coding-agent', 'test');
+const files = (await readdir(directory)).filter((file) => file.endsWith('.test.js')).sort().map((file) => path.join(directory, file));
+if (files.length === 0) throw new Error('No coding-agent tests were discovered.');
+const child = spawn(process.execPath, ['--test', ...files], { cwd: root, stdio: 'inherit' });
+const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (value, signal) => signal ? reject(new Error(`Test process ended with ${signal}.`)) : resolve(value ?? 1)); });
+if (code !== 0) process.exitCode = code;

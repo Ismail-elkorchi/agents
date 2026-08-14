@@ -1,0 +1,45 @@
+import { execFile } from 'node:child_process';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
+const exec = promisify(execFile);
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const npmCli = process.env.npm_execpath;
+if (!npmCli) throw new Error('npm_execpath is required to verify packed consumers.');
+const core = path.resolve(root, '../agent-core');
+const packageDirs = ['packages/auth', 'packages/json', 'packages/evidence', 'packages/model', 'packages/runtime', 'packages/tools', 'packages/tools-local', 'packages/providers/ollama', 'packages/providers/openai-responses', 'packages/providers/openai', 'packages/providers/openai-codex', 'packages/providers/openrouter'];
+const temporary = await mkdtemp(path.join(tmpdir(), 'coding-agent-packed-consumer-'));
+try {
+  const packs = path.join(temporary, 'packs');
+  const consumer = path.join(temporary, 'consumer');
+  await mkdir(packs, { recursive: true });
+  const dependencies = {};
+  for (const relative of packageDirs) {
+    const directory = path.join(core, relative);
+    const manifest = JSON.parse(await readFile(path.join(directory, 'package.json'), 'utf8'));
+    const { stdout } = await exec(process.execPath, [npmCli, 'pack', '--json', '--pack-destination', packs], { cwd: directory, maxBuffer: 10 * 1024 * 1024 });
+    const packed = JSON.parse(stdout)[0];
+    if (!packed.files.some((file) => file.path.startsWith('dist/'))) throw new Error(`${manifest.name} is missing compiled output.`);
+    dependencies[manifest.name] = `file:${path.join(packs, packed.filename)}`;
+  }
+  const terminalUiDirectory = path.join(root, 'node_modules', '@ismail-elkorchi', 'terminal-ui');
+  const terminalUiManifest = JSON.parse(await readFile(path.join(terminalUiDirectory, 'package.json'), 'utf8'));
+  const { stdout: terminalUiOutput } = await exec(process.execPath, [npmCli, 'pack', '--json', '--ignore-scripts', '--pack-destination', packs], { cwd: terminalUiDirectory, maxBuffer: 10 * 1024 * 1024 });
+  const terminalUiPack = JSON.parse(terminalUiOutput)[0];
+  if (!terminalUiPack.files.some((file) => file.path.startsWith('dist/host/'))) throw new Error('Terminal UI archive is incomplete.');
+  dependencies[terminalUiManifest.name] = `file:${path.join(packs, terminalUiPack.filename)}`;
+  const codingDirectory = path.join(root, 'coding-agent');
+  const codingManifest = JSON.parse(await readFile(path.join(codingDirectory, 'package.json'), 'utf8'));
+  const { stdout } = await exec(process.execPath, [npmCli, 'pack', '--json', '--pack-destination', packs], { cwd: codingDirectory, maxBuffer: 10 * 1024 * 1024 });
+  const codingPack = JSON.parse(stdout)[0];
+  if (!codingPack.files.some((file) => file.path === 'dist/index.js') || !codingPack.files.some((file) => file.path === 'dist/tui/index.js')) throw new Error('Coding agent archive is incomplete.');
+  dependencies[codingManifest.name] = `file:${path.join(packs, codingPack.filename)}`;
+  await mkdir(consumer, { recursive: true });
+  await writeFile(path.join(consumer, 'package.json'), `${JSON.stringify({ name: 'coding-agent-consumer', private: true, type: 'module', dependencies, overrides: { '@ismail-elkorchi/terminal-ui': '$@ismail-elkorchi/terminal-ui' } }, null, 2)}\n`);
+  await exec(process.execPath, [npmCli, 'install', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: consumer, maxBuffer: 20 * 1024 * 1024 });
+  await writeFile(path.join(consumer, 'index.mjs'), ["import * as coding from '@ismail-elkorchi/coding-agent';", "import * as tui from '@ismail-elkorchi/coding-agent/tui';", "if (!coding.createCodingAgentToolPolicy || !coding.loadCodingAgentConfiguration || !tui.createCodingAgentTuiApp) throw new Error('Coding-agent public exports are incomplete');"].join('\n'));
+  await exec(process.execPath, ['index.mjs'], { cwd: consumer });
+  console.log('Packed coding-agent consumer passed.');
+} finally { await rm(temporary, { recursive: true, force: true }); }

@@ -1,0 +1,38 @@
+name: release-gate
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  verify:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: "Ubuntu / minimum Node 24.8.0", os: ubuntu-latest, node: 24.8.0 }
+          - { name: "Ubuntu / current Node 24", os: ubuntu-latest, node: 24 }
+          - { name: "macOS / current Node 24", os: macos-latest, node: 24 }
+          - { name: "Windows / current Node 24", os: windows-latest, node: 24 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: agents }
+      - uses: actions/checkout@v4
+        with:
+          repository: Ismail-elkorchi/agent-core
+          ref: 6169be27dae7fa0a7890a015cd0da0ab0184a670
+          path: agent-core
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: |
+            agents/package-lock.json
+            agent-core/package-lock.json
+      - name: Build Agent Core
+        working-directory: agent-core
+        run: npm ci && npm run build
+      - name: Verify agents
+        working-directory: agents
+        run: npm ci && npm run verify:release
