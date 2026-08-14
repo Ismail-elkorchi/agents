@@ -265,8 +265,10 @@ async function createRuntime(
           ...(options.configuration?.authorization.requireApprovalFor.length ? { toolAuthorizer: request => {
             const approvalAccesses = request.effects.accesses.map((access) => accessRisk(access.mode))
               .filter((risk) => options.configuration?.authorization.requireApprovalFor.includes(risk));
+            const ambient = request.effects.accesses.some((access) => access.mode === 'execute')
+              && request.effects.lockScopes.includes('workspace/files');
             return approvalAccesses.length > 0
-              ? { decision: 'require_approval' as const, reason: `Workspace configuration requires approval for ${[...new Set(approvalAccesses)].join(', ')} access.` }
+              ? { decision: 'require_approval' as const, reason: `Workspace configuration requires approval for ${[...new Set(approvalAccesses)].join(', ')} access.${ambient ? ' This grants ambient process authority that can indirectly read, write, or delete files, access the network, and start child processes.' : ''}` }
               : { decision: 'allow' as const, reason: 'Allowed by workspace policy.' };
           } } : {}),
           ...(instructions.length > 0 ? { instructions } : {}),
@@ -375,7 +377,7 @@ async function loadWorkspaceInstructions(rootDir: string, configuration: CodingA
   return Promise.all(configuration.instructions.map(async (instruction, index) => {
     const absolute = await fs.realpath(path.resolve(realRoot, instruction.path));
     if (absolute !== realRoot && !absolute.startsWith(`${realRoot}${path.sep}`)) throw new Error(`Project instruction escapes the workspace: ${instruction.path}`);
-    return { id: `workspace-${String(index + 1)}-${instruction.path}`, content: await fs.readFile(absolute, 'utf8'), role: 'workspace', sourceUri: `file:${instruction.path}`, priority: 100 };
+    return { id: `workspace-${String(index + 1)}-${instruction.path}`, content: await fs.readFile(absolute, 'utf8'), role: 'environment', sourceUri: `file:${instruction.path}`, priority: 100 };
   }));
 }
 
@@ -1050,7 +1052,6 @@ function cliProgressMessage(progress: ToolProgress): string {
   switch (progress.type) {
     case 'status': return progress.message ?? progress.stage;
     case 'output': return `${progress.stream}: ${progress.text}`;
-    case 'patch': return `patch ${String(progress.changes.length)} change${progress.changes.length === 1 ? '' : 's'}`;
     case 'metric': return `${progress.name}: ${String(progress.value)}${progress.unit ? ` ${progress.unit}` : ''}`;
   }
 }

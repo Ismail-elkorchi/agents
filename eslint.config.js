@@ -9,6 +9,7 @@ export default [
   {
     ignores: [
       'coding-agent/dist/**',
+      'writing-agent/dist/**',
       'node_modules/**'
     ]
   },
@@ -17,7 +18,7 @@ export default [
   ...tseslint.configs.strictTypeChecked,
   ...tseslint.configs.stylisticTypeChecked,
   {
-    files: ['coding-agent/src/**/*.ts'],
+    files: ['coding-agent/src/**/*.ts', 'writing-agent/src/**/*.ts'],
     languageOptions: {
       parserOptions: {
         projectService: true,

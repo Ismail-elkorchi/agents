@@ -5,10 +5,10 @@
   "type": "module",
   "engines": { "node": ">=24.8.0" },
   "workspaces": ["coding-agent", "writing-agent", "research-agent"],
-  "agentCore": { "path": "../agent-core", "commit": "6169be27dae7fa0a7890a015cd0da0ab0184a670" },
+  "agentCore": { "path": "../agent-core", "commit": "72a4b2d6dba8991417a73b4f6e1097dc2f4a0ac1" },
   "scripts": {
     "build": "node scripts/verify-agent-core.mjs && tsc -b && node scripts/post-build.mjs",
-    "lint": "eslint \"coding-agent/src/**/*.ts\"",
+    "lint": "eslint \"coding-agent/src/**/*.ts\" \"writing-agent/src/**/*.ts\"",
     "test": "npm run build && npm run test:unit",
     "test:unit": "node scripts/run-test-suite.mjs",
     "package": "node scripts/test-packed-consumer.mjs",

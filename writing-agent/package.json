@@ -1,7 +1,19 @@
 {
   "name": "@ismail-elkorchi/writing-agent",
-  "version": "0.0.0",
-  "description": "Writing agent workspace reserved for a future concrete composition.",
+  "version": "0.1.0",
+  "description": "Focused writing workflow composed from Agent Core.",
   "private": true,
-  "engines": { "node": ">=24.8.0" }
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": { "writing-agent": "./dist/index.js" },
+  "exports": { ".": "./dist/index.js" },
+  "files": ["dist", "README.md"],
+  "engines": { "node": ">=24.8.0" },
+  "dependencies": {
+    "@agent-core/evidence": "0.2.0",
+    "@agent-core/model": "0.2.0",
+    "@agent-core/provider-openai-codex": "0.2.0",
+    "@agent-core/runtime": "0.2.0"
+  }
 }

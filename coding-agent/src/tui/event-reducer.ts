@@ -136,7 +136,6 @@ function progressLabel(progress: import('@agent-core/tools').ToolProgress): stri
   switch (progress.type) {
     case 'status': return progress.message ?? progress.stage;
     case 'output': return `${progress.stream}: ${progress.text}`;
-    case 'patch': return `Patch: ${String(progress.changes.length)} change${progress.changes.length === 1 ? '' : 's'}`;
     case 'metric': return `${progress.name}: ${String(progress.value)}${progress.unit ? ` ${progress.unit}` : ''}`;
   }
 }

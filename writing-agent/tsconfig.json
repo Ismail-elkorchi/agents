@@ -1,0 +1,11 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": { "composite": true, "rootDir": "src", "outDir": "dist" },
+  "include": ["src"],
+  "references": [
+    { "path": "../../agent-core/packages/evidence" },
+    { "path": "../../agent-core/packages/model" },
+    { "path": "../../agent-core/packages/providers/openai-codex" },
+    { "path": "../../agent-core/packages/runtime" }
+  ]
+}
