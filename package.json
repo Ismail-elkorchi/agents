@@ -5,7 +5,7 @@
   "type": "module",
   "engines": { "node": ">=24.8.0" },
   "workspaces": ["coding-agent", "writing-agent", "research-agent"],
-  "agentCore": { "path": "../agent-core", "commit": "72a4b2d6dba8991417a73b4f6e1097dc2f4a0ac1" },
+  "agentCore": { "path": "../agent-core", "commit": "94a94ce36b11b34d14a2ab807dabbe958933b3a0" },
   "scripts": {
     "build": "node scripts/verify-agent-core.mjs && tsc -b && node scripts/post-build.mjs",
     "lint": "eslint \"coding-agent/src/**/*.ts\" \"writing-agent/src/**/*.ts\"",

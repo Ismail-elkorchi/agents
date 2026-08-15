@@ -9,6 +9,7 @@ import { createToolCall, prepareToolCall } from '@agent-core/tools';
 import { invokeToolCall, jsonToolCall } from './tool-call-helpers.js';
 
 const owner = { runId: 'cli-composition-run', turnId: 'turn-1', requestAttempt: 1, toolBatchId: 'batch-1', callIndex: 0, toolAttempt: 1 };
+const codingTools = ['list_directory', 'find_files', 'read_files', 'search_text', 'apply_patch', 'exec_command', 'write_stdin', 'stop_process', 'view_image', 'read_artifact'];
 
 test('CLI local host composition executes artifact, image, and process tools with production services', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'coding-agent-cli-composition-'));
@@ -18,7 +19,8 @@ test('CLI local host composition executes artifact, image, and process tools wit
     workspaceRoot: workspace.workspaceRoot,
     artifactDirectory: workspace.artifactsDir,
     processLedgerDirectory: path.join(workspace.runtimeDir, 'processes'),
-    patchTransactionDirectory: path.join(workspace.runtimeDir, 'transactions', 'patch')
+    patchTransactionDirectory: path.join(workspace.runtimeDir, 'transactions', 'patch'),
+    enabledTools: codingTools
   });
   await host.ready();
   assert.deepEqual(await host.reconciliation(), { resolved: [], unresolved: [] });
@@ -58,7 +60,8 @@ test('local host exposes dry-run patching without a transaction directory and ga
   const withoutDirectory = createLocalToolHost({
     workspaceRoot: root,
     artifactDirectory: path.join(root, 'artifacts-without-patch'),
-    processLedgerDirectory: path.join(root, 'processes-without-patch')
+    processLedgerDirectory: path.join(root, 'processes-without-patch'),
+    enabledTools: codingTools
   });
   await withoutDirectory.ready();
   assert.equal(withoutDirectory.tools.some(tool => tool.name === 'apply_patch'), true);
@@ -77,7 +80,8 @@ test('local host exposes dry-run patching without a transaction directory and ga
     workspaceRoot: root,
     artifactDirectory: path.join(root, 'artifacts-with-patch'),
     processLedgerDirectory: path.join(root, 'processes-with-patch'),
-    patchTransactionDirectory: path.join(root, 'patch-transactions')
+    patchTransactionDirectory: path.join(root, 'patch-transactions'),
+    enabledTools: codingTools
   });
   await withDirectory.ready();
   assert.equal(withDirectory.tools.some(tool => tool.name === 'apply_patch'), true);

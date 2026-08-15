@@ -210,7 +210,10 @@ async function createRuntime(
     artifactDirectory: workspace.artifactsDir,
     processLedgerDirectory: path.join(workspace.runtimeDir, 'processes'),
     patchTransactionDirectory: path.join(workspace.runtimeDir, 'transactions', 'patch'),
-    ...(options.configuration?.tools.enabled ? { enabledTools: options.configuration.tools.enabled } : {}),
+    enabledTools: options.configuration?.tools.enabled ?? [
+      'list_directory', 'find_files', 'read_files', 'search_text', 'apply_patch',
+      'exec_command', 'write_stdin', 'stop_process', 'view_image', 'read_artifact'
+    ],
     async deliverRecoveredTerminalReport(report) {
       const runId = report.result.owner.runId;
       if (!existingRunIds.has(runId)) return false;
@@ -233,6 +236,7 @@ async function createRuntime(
     const estimator = new SimpleTokenEstimator();
     const localToolConfiguration = localHost.services.localToolConfiguration;
     const processManager = localHost.processManager;
+    if (!processManager) throw new Error('Coding Agent requires the configured local process supervisor.');
     const services = localHost.services;
     const configuredTools = localHost.tools;
     const agent = new AgentSession({

@@ -18,10 +18,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { path: agents }
+      - name: Read Agent Core revision
+        id: agent-core
+        shell: bash
+        working-directory: agents
+        run: node -e "require('node:fs').appendFileSync(process.env.GITHUB_OUTPUT, 'commit=' + require('./package.json').agentCore.commit + '\\n')"
       - uses: actions/checkout@v4
         with:
           repository: Ismail-elkorchi/agent-core
-          ref: 6169be27dae7fa0a7890a015cd0da0ab0184a670
+          ref: ${{ steps.agent-core.outputs.commit }}
           path: agent-core
       - uses: actions/setup-node@v4
         with:
