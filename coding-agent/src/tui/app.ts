@@ -490,7 +490,7 @@ function approvalDialog(state: CodingAgentTuiState, context: TuiContext): Elemen
     title: 'Approval required',
     modal: true,
     focusPolicy: { initialFocus: { kind: 'element', elementId: 'approval-deny' }, returnFocus: 'restore' },
-    dismissal: { escape: true, outsidePress: false },
+    dismissal: { dismissOnEscape: true, dismissOnOutsidePress: false },
     onAction: (): CodingAgentTuiMessage => ({ type: 'approval.decide', decision: 'deny' }),
     slots: {
       content: modalViewport(bodyElement, state, 'approval-content-scroll'),
@@ -721,8 +721,8 @@ function modalOptions(id: string, title: string, focusId: string, width: number,
     modal: true as const,
     focusPolicy: { initialFocus: { kind: 'element' as const, elementId: focusId }, returnFocus: 'restore' as const },
     dismissal: {
-      escape: true as const,
-      outsidePress: false as const
+      dismissOnEscape: true as const,
+      dismissOnOutsidePress: false as const
     },
     onAction: (): CodingAgentTuiMessage => ({ type: 'overlay.close' }),
     width,
