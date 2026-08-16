@@ -1,5 +1,5 @@
 import { createScrollState, createTextAreaState } from '@ismail-elkorchi/terminal-ui/behavior';
-import type { ScrollState, TextAreaState, UnscrolledSearchPickerPresentation } from '@ismail-elkorchi/terminal-ui/behavior';
+import type { ScrollState, TextAreaState, UnscrolledSearchPickerState } from '@ismail-elkorchi/terminal-ui/behavior';
 import type {
   AgentApprovalSuspension,
   AgentDeliveryDiagnostic,
@@ -55,7 +55,7 @@ export type CodingAgentTuiOverlay =
   | { readonly kind: 'help' }
   | { readonly kind: 'debug'; readonly text: string };
 
-export type CodingAgentTuiPickerState = UnscrolledSearchPickerPresentation;
+export type CodingAgentTuiPickerState = UnscrolledSearchPickerState;
 
 export interface CodingAgentTuiConversationState {
   readonly items: readonly CodingAgentTuiConversationEntry[];

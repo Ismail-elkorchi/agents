@@ -1,11 +1,19 @@
-import type { TuiEventSource, TuiSubscriptionContext } from '@ismail-elkorchi/terminal-ui/tui';
+import {
+  reliableSourceMessage,
+  replaceableSourceMessage
+} from '@ismail-elkorchi/terminal-ui/tui';
+import type {
+  TuiEventSource,
+  TuiSourceEmission,
+  TuiSubscriptionContext
+} from '@ismail-elkorchi/terminal-ui/tui';
 import type { CodingAgentTuiMessage } from './messages.js';
 
 export class CodingAgentTuiEventSource implements TuiEventSource<CodingAgentTuiMessage> {
   readonly id = 'coding-agent-events';
   readonly generation = 0;
   readonly source = 'external';
-  readonly delivery = 'sequential';
+  readonly channel = { capacity: 64 };
 
   private readonly queued: CodingAgentTuiMessage[] = [];
   private readonly waiters: ((message: CodingAgentTuiMessage | undefined) => void)[] = [];
@@ -26,11 +34,11 @@ export class CodingAgentTuiEventSource implements TuiEventSource<CodingAgentTuiM
     this.queued.push(message);
   }
 
-  async *messages(context: TuiSubscriptionContext): AsyncIterable<CodingAgentTuiMessage> {
+  async *messages(context: TuiSubscriptionContext): AsyncIterable<TuiSourceEmission<CodingAgentTuiMessage>> {
     while (!this.closed && !context.signal.aborted) {
       const next = await this.next(context.signal);
       if (next === undefined) return;
-      yield next;
+      yield sourceEmission(next);
     }
   }
 
@@ -65,6 +73,29 @@ export class CodingAgentTuiEventSource implements TuiEventSource<CodingAgentTuiM
       signal.addEventListener('abort', abort, { once: true });
       this.waiters.push(waiter);
     });
+  }
+}
+
+function sourceEmission(message: CodingAgentTuiMessage): TuiSourceEmission<CodingAgentTuiMessage> {
+  if (message.type !== 'progress') return reliableSourceMessage(message);
+  const event = message.event;
+  switch (event.type) {
+    case 'assistant.delta':
+      return replaceableSourceMessage(`assistant:${event.turnId}:content`, message);
+    case 'assistant.reasoning':
+      return replaceableSourceMessage(
+        `assistant:${event.turnId}:reasoning:${event.channel ?? 'reasoning'}`,
+        message
+      );
+    case 'assistant.status':
+      return replaceableSourceMessage(`assistant:${event.turnId}:status`, message);
+    case 'tool.updated':
+      return replaceableSourceMessage(
+        `tool:${event.turnId}:${event.toolBatchId}:${String(event.callIndex)}:${String(event.toolAttempt)}`,
+        message
+      );
+    default:
+      return reliableSourceMessage(message);
   }
 }
 

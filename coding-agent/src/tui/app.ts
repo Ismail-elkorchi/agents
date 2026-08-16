@@ -1,11 +1,14 @@
 import type { AgentApprovalRequest, AgentApprovalSuspension } from '@agent-core/runtime';
 import {
   applyScrollEvent,
+  createSearchPickerState,
   measuredWindow,
   normalizeScrollState,
+  prepareMeasuredCollection,
   prepareSearchPickerIndex,
   searchPickerReducer,
   searchPickerEntryById,
+  searchPickerPresentation,
   scrollReducer
 } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { SearchPickerIndex } from '@ismail-elkorchi/terminal-ui/behavior';
@@ -46,7 +49,6 @@ import type { CodingAgentTuiMessage } from './messages.js';
 import { createInitialCodingAgentTuiState } from './state.js';
 import type {
   CodingAgentTuiConversationState,
-  CodingAgentTuiPickerState,
   CodingAgentTuiRuntimeDetails,
   CodingAgentTuiState,
 } from './state.js';
@@ -276,7 +278,12 @@ function openOverlay(
   if (!canOpenOverlay(state)) return { state };
   if (kind === 'help') return { state: { ...state, overlay: { kind: 'help' }, modalOffsetRow: 0 } };
   if (kind === 'debug') return { state: { ...state, overlay: { kind: 'debug', text: debugText(state) }, modalOffsetRow: 0 } };
-  const picker: CodingAgentTuiPickerState = { query: { text: '' } };
+  const picker = kind === 'commands'
+    ? createSearchPickerState({ query: { text: '', mode: 'fuzzy' } }, COMMAND_INDEX)
+    : createSearchPickerState(
+        { query: { text: '', mode: 'fuzzy' } },
+        conversationSearchIndex(state)
+      );
   const overlayState: CodingAgentTuiState = kind === 'commands'
     ? { ...state, overlay: { kind: 'commands', picker }, modalOffsetRow: 0 }
     : { ...state, overlay: { kind: 'search', picker }, modalOffsetRow: 0 };
@@ -352,8 +359,7 @@ function conversationView(state: CodingAgentTuiState, context: TuiContext): Elem
       onScroll: (event): CodingAgentTuiMessage => ({ type: 'conversation.scrolled', event })
     });
   }
-  const window = measuredWindow({
-    items: layout.items,
+  const window = measuredWindow(prepareMeasuredCollection(layout.items), {
     viewportRows: layout.geometry.viewportRows,
     offsetRow: layout.scroll.offsetRow
   });
@@ -408,7 +414,7 @@ function overlayView(state: CodingAgentTuiState, context: TuiContext): Element<C
         content: searchPicker({
           id: 'command-picker',
           title: 'Commands',
-          presentation: state.overlay.picker,
+          presentation: searchPickerPresentation(state.overlay.picker),
           searchPickerIndex: COMMAND_INDEX,
           maxVisible: Math.max(3, height - 5),
           helpText: 'Enter choose · Esc close',
@@ -426,7 +432,7 @@ function overlayView(state: CodingAgentTuiState, context: TuiContext): Element<C
         content: searchPicker({
           id: 'conversation-search',
           title: 'Find in conversation',
-          presentation: state.overlay.picker,
+          presentation: searchPickerPresentation(state.overlay.picker),
           searchPickerIndex: conversationSearchIndex(state),
           maxVisible: Math.max(3, height - 5),
           emptyText: 'No matching messages',

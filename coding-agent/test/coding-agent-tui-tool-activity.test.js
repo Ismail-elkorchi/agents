@@ -19,7 +19,7 @@ test('tool activity collapses success, expands failure, and keeps bounded eviden
   events.enqueue({ type: 'progress', event: toolEnded('call-ok', true, 'Command completed.') });
   events.enqueue({ type: 'progress', event: toolStarted('call-failed', 'false') });
   events.enqueue({ type: 'progress', event: toolEnded('call-failed', false, 'Command failed.') });
-  await waitFor(() => host.frames().length > 4);
+  await waitFor(() => host.frames().length > 1);
   host.input('/exit\r');
   const exit = await running;
   events.close();
