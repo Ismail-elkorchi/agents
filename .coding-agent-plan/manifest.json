@@ -18,8 +18,8 @@
       "owner": "agents",
       "dependencies": [],
       "wave": 0,
-      "status": "current",
-      "currentOwner": "codex/root",
+      "status": "done",
+      "currentOwner": null,
       "ownedPaths": [
         "agents:.coding-agent-implementation-plan.md",
         "agents:.coding-agent-plan/**",
@@ -32,7 +32,7 @@
         ".coding-agent-plan/decisions/adversarial-review.md"
       ],
       "evidence": ".coding-agent-plan/evidence/L0.md",
-      "lastVerifiedCommit": null
+      "lastVerifiedCommit": "6e74b468aaab8637b2050563a2705fb3b6cb9281"
     },
     {
       "id": "R0",
