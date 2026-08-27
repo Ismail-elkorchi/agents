@@ -1,0 +1,618 @@
+{
+  "schemaVersion": 1,
+  "coordinator": "codex/root",
+  "authoritativeRepository": "agents",
+  "authoritativeBranch": "main",
+  "generatedSummary": ".coding-agent-implementation-plan.md",
+  "architecture": ".coding-agent-plan/architecture.md",
+  "reviewedHeads": {
+    "agents": "d0a3e919efc68eb2ba9a2a77bc8e874933f11e29",
+    "agent-core": "94a94ce36b11b34d14a2ab807dabbe958933b3a0",
+    "terminal-ui": "d83d01432056470d17f42793bb83f6d7c93e595d",
+    "sandbox": "d2b79bf82766bb5832ed20bd1c9bc653f90c30c2"
+  },
+  "nodes": [
+    {
+      "id": "L0",
+      "title": "ledger structure and validator",
+      "owner": "agents",
+      "dependencies": [],
+      "wave": 0,
+      "status": "current",
+      "currentOwner": "codex/root",
+      "ownedPaths": [
+        "agents:.coding-agent-implementation-plan.md",
+        "agents:.coding-agent-plan/**",
+        "agents:scripts/check-coding-agent-plan.mjs",
+        "agents:scripts/coding-agent-plan-context.mjs",
+        "agents:package.json"
+      ],
+      "specification": ".coding-agent-plan/nodes/L0.md",
+      "decisions": [
+        ".coding-agent-plan/decisions/adversarial-review.md"
+      ],
+      "evidence": ".coding-agent-plan/evidence/L0.md",
+      "lastVerifiedCommit": null
+    },
+    {
+      "id": "R0",
+      "title": "conditional durable run store",
+      "owner": "agent-core/evidence",
+      "dependencies": [
+        "L0"
+      ],
+      "wave": 1,
+      "status": "not_started",
+      "currentOwner": null,
+      "ownedPaths": [
+        "agent-core:packages/evidence/**"
+      ],
+      "specification": ".coding-agent-plan/nodes/R0.md",
+      "decisions": [
+        ".coding-agent-plan/decisions/adversarial-review.md"
+      ],
+      "evidence": ".coding-agent-plan/evidence/R0.md",
+      "lastVerifiedCommit": null
+    },
+    {
+      "id": "C0",
+      "title": "root-bound file capability",
+      "owner": "agent-core/tools-local",
+      "dependencies": [
+        "L0"
+      ],
+      "wave": 1,
+      "status": "not_started",
+      "currentOwner": null,
+      "ownedPaths": [
+        "agent-core:packages/tools-local/src/**",
+        "agent-core:packages/tools-local/test/**"
+      ],
+      "specification": ".coding-agent-plan/nodes/C0.md",
+      "decisions": [
+        ".coding-agent-plan/decisions/adversarial-review.md"
+      ],
+      "evidence": ".coding-agent-plan/evidence/C0.md",
+      "lastVerifiedCommit": null
+    },
+    {
+      "id": "SEC0",
+      "title": "workspace trust/provenance/egress",
+      "owner": "agents/coding-agent",
+      "dependencies": [
+        "L0"
+      ],
+      "wave": 1,
+      "status": "not_started",
+      "currentOwner": null,
+      "ownedPaths": [
+        "agents:coding-agent/src/security/**",
+        "agents:coding-agent/src/config/**",
+        "agents:coding-agent/src/state/**"
+      ],
+      "specification": ".coding-agent-plan/nodes/SEC0.md",
+      "decisions": [
+        ".coding-agent-plan/decisions/adversarial-review.md"
+      ],
+      "evidence": ".coding-agent-plan/evidence/SEC0.md",
+      "lastVerifiedCommit": null
+    },
+    {
+      "id": "T0",
+      "title": "current Terminal UI baseline",
+      "owner": "terminal-ui, agents",
+      "dependencies": [
+        "L0"
+      ],
+      "wave": 1,
+      "status": "not_started",
+      "currentOwner": null,
+      "ownedPaths": [
+        "agents:coding-agent/package.json",
+        "agents:package-lock.json"
+      ],
+      "specification": ".coding-agent-plan/nodes/T0.md",
+      "decisions": [
+        ".coding-agent-plan/decisions/adversarial-review.md"
+      ],
+      "evidence": ".coding-agent-plan/evidence/T0.md",
+      "lastVerifiedCommit": null
+    },
+    {
+      "id": "E0",
+      "title": "effect ownership and recovery contracts",
+      "owner": "agent-core/model, agent-core/tools, agent-core/runtime",
+      "dependencies": [
+        "R0"
+      ],
+      "wave": 2,
+      "status": "not_started",
+      "currentOwner": null,
+      "ownedPaths": [
+        "agent-core:packages/model/**",
+        "agent-core:packages/tools/**",
+        "agent-core:packages/runtime/src/effects/**"
+      ],
+      "specification": ".coding-agent-plan/nodes/E0.md",
+      "decisions": [
+        ".coding-agent-plan/decisions/adversarial-review.md"
+      ],
+      "evidence": ".coding-agent-plan/evidence/E0.md",
+      "lastVerifiedCommit": null
+    },
+    {
+      "id": "A1",
+      "title": "configuration and private state",
+      "owner": "agents/coding-agent",
+      "dependencies": [
+        "SEC0",
+        "C0"
+      ],
+      "wave": 2,
+      "status": "not_started",
+      "currentOwner": null,
+      "ownedPaths": [
+        "agents:coding-agent/src/config/**",
+        "agents:coding-agent/src/state/**"
+      ],
+      "specification": ".coding-agent-plan/nodes/A1.md",
+      "decisions": [
+        ".coding-agent-plan/decisions/adversarial-review.md"
+      ],
+      "evidence": ".coding-agent-plan/evidence/A1.md",
+      "lastVerifiedCommit": null
+    },
+    {
+      "id": "D0",
+      "title": "total operation transitions and driver",
+      "owner": "agent-core/runtime",
+      "dependencies": [
+        "R0",
+        "E0"
+      ],
+      "wave": 3,
+      "status": "not_started",
+      "currentOwner": null,
+      "ownedPaths": [
+        "agent-core:packages/runtime/src/operation/**",
+        "agent-core:packages/runtime/src/session/**"
+      ],
+      "specification": ".coding-agent-plan/nodes/D0.md",
+      "decisions": [
+        ".coding-agent-plan/decisions/adversarial-review.md"
+      ],
+      "evidence": ".coding-agent-plan/evidence/D0.md",
+      "lastVerifiedCommit": null
+    },
+    {
+      "id": "C1",
+      "title": "prepared tool authority lifetime",
+      "owner": "agent-core/tools",
+      "dependencies": [
+        "E0"
+      ],
+      "wave": 3,
+      "status": "not_started",
+      "currentOwner": null,
+      "ownedPaths": [
+        "agent-core:packages/tools/src/**"
+      ],
+      "specification": ".coding-agent-plan/nodes/C1.md",
+      "decisions": [
+        ".coding-agent-plan/decisions/adversarial-review.md"
+      ],
+      "evidence": ".coding-agent-plan/evidence/C1.md",
+      "lastVerifiedCommit": null
+    },
+    {
+      "id": "A2",
+      "title": "repository orientation and instructions",
+      "owner": "agents/coding-agent",
+      "dependencies": [
+        "SEC0",
+        "A1"
+      ],
+      "wave": 3,
+      "status": "not_started",
+      "currentOwner": null,
+      "ownedPaths": [
+        "agents:coding-agent/src/workspace/**",
+        "agents:coding-agent/src/instructions/**"
+      ],
+      "specification": ".coding-agent-plan/nodes/A2.md",
+      "decisions": [
+        ".coding-agent-plan/decisions/adversarial-review.md"
+      ],
+      "evidence": ".coding-agent-plan/evidence/A2.md",
+      "lastVerifiedCommit": null
+    },
+    {
+      "id": "D1",
+      "title": "minimum durable provider attempts",
+      "owner": "agent-core/model, providers, runtime",
+      "dependencies": [
+        "D0",
+        "E0"
+      ],
+      "wave": 4,
+      "status": "not_started",
+      "currentOwner": null,
+      "ownedPaths": [
+        "agent-core:packages/model/**",
+        "agent-core:packages/providers/**",
+        "agent-core:packages/runtime/src/operation/provider/**"
+      ],
+      "specification": ".coding-agent-plan/nodes/D1.md",
+      "decisions": [
+        ".coding-agent-plan/decisions/adversarial-review.md"
+      ],
+      "evidence": ".coding-agent-plan/evidence/D1.md",
+      "lastVerifiedCommit": null
+    },
+    {
+      "id": "C2",
+      "title": "command execution capability port",
+      "owner": "agent-core/tools, tools-local",
+      "dependencies": [
+        "C1"
+      ],
+      "wave": 4,
+      "status": "not_started",
+      "currentOwner": null,
+      "ownedPaths": [
+        "agent-core:packages/tools-local/src/process/**",
+        "agent-core:packages/tools-local/src/core/process-manager.ts"
+      ],
+      "specification": ".coding-agent-plan/nodes/C2.md",
+      "decisions": [
+        ".coding-agent-plan/decisions/adversarial-review.md"
+      ],
+      "evidence": ".coding-agent-plan/evidence/C2.md",
+      "lastVerifiedCommit": null
+    },
+    {
+      "id": "D2",
+      "title": "per-call durable tool settlement",
+      "owner": "agent-core/runtime",
+      "dependencies": [
+        "D0",
+        "E0",
+        "C1"
+      ],
+      "wave": 4,
+      "status": "not_started",
+      "currentOwner": null,
+      "ownedPaths": [
+        "agent-core:packages/runtime/src/operation/tools/**"
+      ],
+      "specification": ".coding-agent-plan/nodes/D2.md",
+      "decisions": [
+        ".coding-agent-plan/decisions/adversarial-review.md"
+      ],
+      "evidence": ".coding-agent-plan/evidence/D2.md",
+      "lastVerifiedCommit": null
+    },
+    {
+      "id": "S0",
+      "title": "sandbox durable-execution conformance",
+      "owner": "sandbox, agents adapter",
+      "dependencies": [
+        "E0",
+        "C1",
+        "C2"
+      ],
+      "wave": 5,
+      "status": "not_started",
+      "currentOwner": null,
+      "ownedPaths": [
+        "sandbox:**",
+        "agents:coding-agent/src/execution/sandbox/**"
+      ],
+      "specification": ".coding-agent-plan/nodes/S0.md",
+      "decisions": [
+        ".coding-agent-plan/decisions/adversarial-review.md"
+      ],
+      "evidence": ".coding-agent-plan/evidence/S0.md",
+      "lastVerifiedCommit": null
+    },
+    {
+      "id": "A3",
+      "title": "permission modes and sandbox composition",
+      "owner": "agents/coding-agent",
+      "dependencies": [
+        "SEC0",
+        "A1",
+        "A2",
+        "D2",
+        "S0"
+      ],
+      "wave": 6,
+      "status": "not_started",
+      "currentOwner": null,
+      "ownedPaths": [
+        "agents:coding-agent/src/security/**",
+        "agents:coding-agent/src/execution/**"
+      ],
+      "specification": ".coding-agent-plan/nodes/A3.md",
+      "decisions": [
+        ".coding-agent-plan/decisions/adversarial-review.md"
+      ],
+      "evidence": ".coding-agent-plan/evidence/A3.md",
+      "lastVerifiedCommit": null
+    },
+    {
+      "id": "A4",
+      "title": "verification oracle and results",
+      "owner": "agents/coding-agent, neutral check identity in core",
+      "dependencies": [
+        "D0",
+        "A1",
+        "A2",
+        "A3"
+      ],
+      "wave": 7,
+      "status": "not_started",
+      "currentOwner": null,
+      "ownedPaths": [
+        "agents:coding-agent/src/verification/**",
+        "agent-core:packages/runtime/src/verification/**"
+      ],
+      "specification": ".coding-agent-plan/nodes/A4.md",
+      "decisions": [
+        ".coding-agent-plan/decisions/adversarial-review.md"
+      ],
+      "evidence": ".coding-agent-plan/evidence/A4.md",
+      "lastVerifiedCommit": null
+    },
+    {
+      "id": "A5",
+      "title": "change accounting and review data",
+      "owner": "agents/coding-agent",
+      "dependencies": [
+        "C0",
+        "D2",
+        "A3"
+      ],
+      "wave": 7,
+      "status": "not_started",
+      "currentOwner": null,
+      "ownedPaths": [
+        "agents:coding-agent/src/changes/**",
+        "agents:coding-agent/src/review/**"
+      ],
+      "specification": ".coding-agent-plan/nodes/A5.md",
+      "decisions": [
+        ".coding-agent-plan/decisions/adversarial-review.md"
+      ],
+      "evidence": ".coding-agent-plan/evidence/A5.md",
+      "lastVerifiedCommit": null
+    },
+    {
+      "id": "V0",
+      "title": "first resilient CLI slice and stop/go gate",
+      "owner": "integration",
+      "dependencies": [
+        "T0",
+        "D1",
+        "D2",
+        "S0",
+        "A2",
+        "A3",
+        "A4",
+        "A5"
+      ],
+      "wave": 8,
+      "status": "not_started",
+      "currentOwner": null,
+      "ownedPaths": [
+        "agents:coding-agent/test/resilience/**",
+        "agents:coding-agent/src/cli/**"
+      ],
+      "specification": ".coding-agent-plan/nodes/V0.md",
+      "decisions": [
+        ".coding-agent-plan/decisions/adversarial-review.md"
+      ],
+      "evidence": ".coding-agent-plan/evidence/V0.md",
+      "lastVerifiedCommit": null
+    },
+    {
+      "id": "D3",
+      "title": "parallel completion and ordered projection",
+      "owner": "agent-core/runtime",
+      "dependencies": [
+        "D2",
+        "V0"
+      ],
+      "wave": 9,
+      "status": "not_started",
+      "currentOwner": null,
+      "ownedPaths": [
+        "agent-core:packages/runtime/src/operation/tools/**"
+      ],
+      "specification": ".coding-agent-plan/nodes/D3.md",
+      "decisions": [
+        ".coding-agent-plan/decisions/adversarial-review.md"
+      ],
+      "evidence": ".coding-agent-plan/evidence/D3.md",
+      "lastVerifiedCommit": null
+    },
+    {
+      "id": "C3",
+      "title": "deterministic candidate disposition",
+      "owner": "agent-core/runtime",
+      "dependencies": [
+        "D0",
+        "A4",
+        "V0"
+      ],
+      "wave": 9,
+      "status": "not_started",
+      "currentOwner": null,
+      "ownedPaths": [
+        "agent-core:packages/runtime/src/operation/disposition/**"
+      ],
+      "specification": ".coding-agent-plan/nodes/C3.md",
+      "decisions": [
+        ".coding-agent-plan/decisions/adversarial-review.md"
+      ],
+      "evidence": ".coding-agent-plan/evidence/C3.md",
+      "lastVerifiedCommit": null
+    },
+    {
+      "id": "A6",
+      "title": "TUI and session correctness",
+      "owner": "agents/coding-agent, possibly terminal-ui",
+      "dependencies": [
+        "T0",
+        "D0",
+        "D1",
+        "D2",
+        "A1",
+        "V0"
+      ],
+      "wave": 9,
+      "status": "not_started",
+      "currentOwner": null,
+      "ownedPaths": [
+        "agents:coding-agent/src/tui/**"
+      ],
+      "specification": ".coding-agent-plan/nodes/A6.md",
+      "decisions": [
+        ".coding-agent-plan/decisions/adversarial-review.md"
+      ],
+      "evidence": ".coding-agent-plan/evidence/A6.md",
+      "lastVerifiedCommit": null
+    },
+    {
+      "id": "F0",
+      "title": "kill/fault/two-driver conformance",
+      "owner": "agent-core, sandbox tests",
+      "dependencies": [
+        "R0",
+        "D1",
+        "D3",
+        "S0",
+        "V0"
+      ],
+      "wave": 10,
+      "status": "not_started",
+      "currentOwner": null,
+      "ownedPaths": [
+        "agent-core:packages/runtime/test/fault/**",
+        "agent-core:packages/evidence/test/conformance/**",
+        "sandbox:test/**"
+      ],
+      "specification": ".coding-agent-plan/nodes/F0.md",
+      "decisions": [
+        ".coding-agent-plan/decisions/adversarial-review.md"
+      ],
+      "evidence": ".coding-agent-plan/evidence/F0.md",
+      "lastVerifiedCommit": null
+    },
+    {
+      "id": "A7",
+      "title": "complete coding product loop",
+      "owner": "agents/coding-agent",
+      "dependencies": [
+        "C3",
+        "D3",
+        "F0",
+        "A2",
+        "A3",
+        "A4",
+        "A5",
+        "A6",
+        "V0"
+      ],
+      "wave": 11,
+      "status": "not_started",
+      "currentOwner": null,
+      "ownedPaths": [
+        "agents:coding-agent/src/**",
+        "agents:coding-agent/test/**"
+      ],
+      "specification": ".coding-agent-plan/nodes/A7.md",
+      "decisions": [
+        ".coding-agent-plan/decisions/adversarial-review.md"
+      ],
+      "evidence": ".coding-agent-plan/evidence/A7.md",
+      "lastVerifiedCommit": null
+    },
+    {
+      "id": "T1",
+      "title": "close confirmed Terminal UI findings",
+      "owner": "terminal-ui, then agents",
+      "dependencies": [
+        "A7"
+      ],
+      "wave": 12,
+      "status": "not_started",
+      "currentOwner": null,
+      "ownedPaths": [
+        "terminal-ui:src/**",
+        "terminal-ui:tests/**",
+        "agents:coding-agent/package.json",
+        "agents:package-lock.json"
+      ],
+      "specification": ".coding-agent-plan/nodes/T1.md",
+      "decisions": [
+        ".coding-agent-plan/decisions/adversarial-review.md"
+      ],
+      "evidence": ".coding-agent-plan/evidence/T1.md",
+      "lastVerifiedCommit": null
+    },
+    {
+      "id": "Q0",
+      "title": "deterministic conformance/release gate",
+      "owner": "all changed repositories",
+      "dependencies": [
+        "A7",
+        "F0",
+        "T1"
+      ],
+      "wave": 13,
+      "status": "not_started",
+      "currentOwner": null,
+      "ownedPaths": [
+        "agents:scripts/**",
+        "agent-core:scripts/**",
+        "sandbox:scripts/**",
+        "terminal-ui:scripts/**"
+      ],
+      "specification": ".coding-agent-plan/nodes/Q0.md",
+      "decisions": [
+        ".coding-agent-plan/decisions/adversarial-review.md"
+      ],
+      "evidence": ".coding-agent-plan/evidence/Q0.md",
+      "lastVerifiedCommit": null
+    },
+    {
+      "id": "Q1",
+      "title": "repeated real-model evaluation",
+      "owner": "agents/coding-agent",
+      "dependencies": [
+        "Q0"
+      ],
+      "wave": 14,
+      "status": "not_started",
+      "currentOwner": null,
+      "ownedPaths": [
+        "agents:coding-agent/evals/**"
+      ],
+      "specification": ".coding-agent-plan/nodes/Q1.md",
+      "decisions": [
+        ".coding-agent-plan/decisions/adversarial-review.md"
+      ],
+      "evidence": ".coding-agent-plan/evidence/Q1.md",
+      "lastVerifiedCommit": null
+    }
+  ],
+  "deferred": [
+    "D1P",
+    "C4"
+  ],
+  "stopGo": {
+    "node": "V0",
+    "decision": "pending"
+  }
+}

@@ -7,12 +7,14 @@
   "workspaces": ["coding-agent", "writing-agent", "research-agent"],
   "agentCore": { "path": "../agent-core", "commit": "94a94ce36b11b34d14a2ab807dabbe958933b3a0" },
   "scripts": {
+    "check:plan": "node scripts/check-coding-agent-plan.mjs && node scripts/generate-coding-agent-plan-summary.mjs --check && node --test scripts/check-coding-agent-plan.test.mjs",
+    "plan:context": "node scripts/coding-agent-plan-context.mjs",
     "build": "node scripts/verify-agent-core.mjs && tsc -b && node scripts/post-build.mjs",
     "lint": "eslint \"coding-agent/src/**/*.ts\" \"writing-agent/src/**/*.ts\"",
     "test": "npm run build && npm run test:unit",
     "test:unit": "node scripts/run-test-suite.mjs",
     "package": "node scripts/test-packed-consumer.mjs",
-    "verify": "npm run clean && npm run build && npm run lint && npm run test:unit",
+    "verify": "npm run check:plan && npm run clean && npm run build && npm run lint && npm run test:unit",
     "verify:release": "npm run verify && npm run package",
     "clean": "node scripts/clean.mjs"
   },
