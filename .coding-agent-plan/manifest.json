@@ -7,7 +7,7 @@
   "architecture": ".coding-agent-plan/architecture.md",
   "reviewedHeads": {
     "agents": "d0a3e919efc68eb2ba9a2a77bc8e874933f11e29",
-    "agent-core": "94a94ce36b11b34d14a2ab807dabbe958933b3a0",
+    "agent-core": "f3b182c3bb01b4b7f18eeb95229796da1877a21c",
     "terminal-ui": "d83d01432056470d17f42793bb83f6d7c93e595d",
     "sandbox": "d2b79bf82766bb5832ed20bd1c9bc653f90c30c2"
   },
@@ -42,17 +42,20 @@
         "L0"
       ],
       "wave": 1,
-      "status": "not_started",
+      "status": "done",
       "currentOwner": null,
       "ownedPaths": [
-        "agent-core:packages/evidence/**"
+        "agent-core:packages/evidence/**",
+        "agent-core:tests/ledger.test.js",
+        "agent-core:tests/fixtures/conditional-event-writer.mjs",
+        "agent-core:tests/fixtures/event-lock-holder.mjs"
       ],
       "specification": ".coding-agent-plan/nodes/R0.md",
       "decisions": [
         ".coding-agent-plan/decisions/adversarial-review.md"
       ],
       "evidence": ".coding-agent-plan/evidence/R0.md",
-      "lastVerifiedCommit": null
+      "lastVerifiedCommit": "f3b182c3bb01b4b7f18eeb95229796da1877a21c"
     },
     {
       "id": "C0",
