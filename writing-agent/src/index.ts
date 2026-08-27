@@ -16,7 +16,7 @@ import {
 } from '@agent-core/runtime';
 import { JsonlSessionRepository } from '@agent-core/runtime/node';
 import { validateResourceScope } from '@agent-core/tools';
-import { createLocalToolHost, TextPatchJournal } from '@agent-core/tools-local';
+import { createLocalToolHost, TextPatchJournal, WorkspaceFileRoot } from '@agent-core/tools-local';
 
 const WRITING_INSTRUCTION = [
   'Produce a finished draft that directly satisfies the brief.',
@@ -96,9 +96,10 @@ export async function runDocumentRevision(options: DocumentRevisionOptions): Pro
   await fs.mkdir(artifactDirectory, { recursive: true, mode: 0o700 });
   await fs.mkdir(patchJournalPath, { recursive: true, mode: 0o700 });
   const stateEntry = path.relative(rootDirectory, stateDirectory).split(path.sep)[0];
+  const workspaceFileRoot = WorkspaceFileRoot.adopt(rootDirectory,
+    stateEntry && stateEntry !== '..' ? { additionalDeniedEntries: [stateEntry] } : {});
   const localHost = createLocalToolHost({
-    workspacePath: rootDirectory,
-    ...(stateEntry && stateEntry !== '..' ? { additionalDeniedWorkspaceEntries: [stateEntry] } : {}),
+    workspaceFileRoot,
     artifactRepository: new LocalArtifactRepository({ rootDir: artifactDirectory }),
     patchJournal: TextPatchJournal.adopt(patchJournalPath),
     enabledTools: DOCUMENT_TOOLS

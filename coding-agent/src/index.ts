@@ -26,6 +26,7 @@ import {
 import {
   createLocalToolHost,
   TextPatchJournal,
+  WorkspaceFileRoot,
   type LocalToolHost
 } from '@agent-core/tools-local';
 import {
@@ -210,9 +211,10 @@ async function createRuntime(
     const patchJournalPath = path.join(workspace.runtimeDir, 'transactions', 'patch');
     await fs.mkdir(patchJournalPath, { recursive: true, mode: 0o700 });
     const privateEntry = path.relative(workspace.workspaceRoot, workspace.runtimeDir).split(path.sep)[0];
+    const workspaceFileRoot = WorkspaceFileRoot.adopt(workspace.workspaceRoot,
+      privateEntry && privateEntry !== '..' ? { additionalDeniedEntries: [privateEntry] } : {});
     localHost = createLocalToolHost({
-      workspacePath: workspace.workspaceRoot,
-      ...(privateEntry && privateEntry !== '..' ? { additionalDeniedWorkspaceEntries: [privateEntry] } : {}),
+      workspaceFileRoot,
       artifactRepository: new LocalArtifactRepository({ rootDir: workspace.artifactsDir }),
       processLedgerDirectory: path.join(workspace.runtimeDir, 'processes'),
       patchJournal: TextPatchJournal.adopt(patchJournalPath),

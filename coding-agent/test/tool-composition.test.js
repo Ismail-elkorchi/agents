@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describeWorkspace } from '@ismail-elkorchi/coding-agent';
 import { LocalArtifactRepository } from '@agent-core/evidence/node';
-import { createLocalToolHost, TextPatchJournal } from '@agent-core/tools-local';
+import { createLocalToolHost, TextPatchJournal, WorkspaceFileRoot } from '@agent-core/tools-local';
 import { createToolCall, prepareToolCall } from '@agent-core/tools';
 import { invokeToolCall, jsonToolCall } from './tool-call-helpers.js';
 
@@ -19,8 +19,7 @@ test('CLI local host composition executes artifact, image, and process tools wit
   const patchJournalPath = path.join(workspace.runtimeDir, 'transactions', 'patch');
   await mkdir(patchJournalPath, { recursive: true, mode: 0o700 });
   const host = createLocalToolHost({
-    workspacePath: workspace.workspaceRoot,
-    additionalDeniedWorkspaceEntries: ['.coding-agent'],
+    workspaceFileRoot: WorkspaceFileRoot.adopt(workspace.workspaceRoot, { additionalDeniedEntries: ['.coding-agent'] }),
     artifactRepository: new LocalArtifactRepository({ rootDir: workspace.artifactsDir }),
     processLedgerDirectory: path.join(workspace.runtimeDir, 'processes'),
     patchJournal: TextPatchJournal.adopt(patchJournalPath),
@@ -62,7 +61,7 @@ test('local host exposes dry-run patching without a transaction directory and ga
     boundary: { authorizationPolicyId: 'tests/local-host-patch@1', executionTargetId: root }
   });
   const withoutDirectory = createLocalToolHost({
-    workspacePath: root,
+    workspaceFileRoot: WorkspaceFileRoot.adopt(root),
     artifactRepository: new LocalArtifactRepository({ rootDir: path.join(root, 'artifacts-without-patch') }),
     processLedgerDirectory: path.join(root, 'processes-without-patch'),
     enabledTools: codingTools
@@ -83,7 +82,7 @@ test('local host exposes dry-run patching without a transaction directory and ga
   const patchJournalPath = path.join(root, 'patch-transactions');
   await mkdir(patchJournalPath, { recursive: true, mode: 0o700 });
   const withDirectory = createLocalToolHost({
-    workspacePath: root,
+    workspaceFileRoot: WorkspaceFileRoot.adopt(root),
     artifactRepository: new LocalArtifactRepository({ rootDir: path.join(root, 'artifacts-with-patch') }),
     processLedgerDirectory: path.join(root, 'processes-with-patch'),
     patchJournal: TextPatchJournal.adopt(patchJournalPath),
