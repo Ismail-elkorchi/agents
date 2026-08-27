@@ -4,7 +4,8 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describeWorkspace } from '@ismail-elkorchi/coding-agent';
-import { createLocalToolHost } from '@agent-core/tools-local';
+import { LocalArtifactRepository } from '@agent-core/evidence/node';
+import { createLocalToolHost, TextPatchJournal } from '@agent-core/tools-local';
 import { createToolCall, prepareToolCall } from '@agent-core/tools';
 import { invokeToolCall, jsonToolCall } from './tool-call-helpers.js';
 
@@ -15,11 +16,14 @@ test('CLI local host composition executes artifact, image, and process tools wit
   const root = await mkdtemp(path.join(tmpdir(), 'coding-agent-cli-composition-'));
   const workspace = describeWorkspace(root);
   await mkdir(workspace.artifactsDir, { recursive: true });
+  const patchJournalPath = path.join(workspace.runtimeDir, 'transactions', 'patch');
+  await mkdir(patchJournalPath, { recursive: true, mode: 0o700 });
   const host = createLocalToolHost({
-    workspaceRoot: workspace.workspaceRoot,
-    artifactDirectory: workspace.artifactsDir,
+    workspacePath: workspace.workspaceRoot,
+    additionalDeniedWorkspaceEntries: ['.coding-agent'],
+    artifactRepository: new LocalArtifactRepository({ rootDir: workspace.artifactsDir }),
     processLedgerDirectory: path.join(workspace.runtimeDir, 'processes'),
-    patchTransactionDirectory: path.join(workspace.runtimeDir, 'transactions', 'patch'),
+    patchJournal: TextPatchJournal.adopt(patchJournalPath),
     enabledTools: codingTools
   });
   await host.ready();
@@ -58,14 +62,14 @@ test('local host exposes dry-run patching without a transaction directory and ga
     boundary: { authorizationPolicyId: 'tests/local-host-patch@1', executionTargetId: root }
   });
   const withoutDirectory = createLocalToolHost({
-    workspaceRoot: root,
-    artifactDirectory: path.join(root, 'artifacts-without-patch'),
+    workspacePath: root,
+    artifactRepository: new LocalArtifactRepository({ rootDir: path.join(root, 'artifacts-without-patch') }),
     processLedgerDirectory: path.join(root, 'processes-without-patch'),
     enabledTools: codingTools
   });
   await withoutDirectory.ready();
   assert.equal(withoutDirectory.tools.some(tool => tool.name === 'apply_patch'), true);
-  assert.equal('patchTransactionDirectory' in withoutDirectory.services, false);
+  assert.equal('patchJournal' in withoutDirectory.services, false);
   const dryContext = contextFor(withoutDirectory.services);
   const dryPrepared = await prepareToolCall(createToolCall({ name: 'apply_patch', input: { kind: 'json', value: { patch, dryRun: true } } }), withoutDirectory.tools, dryContext);
   assert.equal(dryPrepared.ok, true);
@@ -73,14 +77,16 @@ test('local host exposes dry-run patching without a transaction directory and ga
   assert.equal(dry.output.operationStatus, 'dry_run');
   const writePrepared = await prepareToolCall(createToolCall({ name: 'apply_patch', input: { kind: 'text', value: patch } }), withoutDirectory.tools, dryContext);
   assert.equal(writePrepared.ok, true);
-  await assert.rejects(writePrepared.prepared.invoke(dryContext), /patchTransactionDirectory/u);
+  await assert.rejects(writePrepared.prepared.invoke(dryContext), /patchJournal/u);
   await withoutDirectory.close();
 
+  const patchJournalPath = path.join(root, 'patch-transactions');
+  await mkdir(patchJournalPath, { recursive: true, mode: 0o700 });
   const withDirectory = createLocalToolHost({
-    workspaceRoot: root,
-    artifactDirectory: path.join(root, 'artifacts-with-patch'),
+    workspacePath: root,
+    artifactRepository: new LocalArtifactRepository({ rootDir: path.join(root, 'artifacts-with-patch') }),
     processLedgerDirectory: path.join(root, 'processes-with-patch'),
-    patchTransactionDirectory: path.join(root, 'patch-transactions'),
+    patchJournal: TextPatchJournal.adopt(patchJournalPath),
     enabledTools: codingTools
   });
   await withDirectory.ready();

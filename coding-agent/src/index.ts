@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { FileCredentialStore } from '@agent-core/auth';
 import { AgentRuntime, AgentSession, agentEventCodec, type AgentEvent, type AgentInstruction, type AgentProgressEvent, type AgentRunResult, type SessionConversationItem, type SessionDescriptor } from '@agent-core/runtime';
 import { JsonlSessionRepository } from '@agent-core/runtime/node';
-import { JsonlEventRepository } from '@agent-core/evidence/node';
+import { JsonlEventRepository, LocalArtifactRepository } from '@agent-core/evidence/node';
 import { type ModelProvider, type ModelReasoningEffort, type ModelReasoningRequest, SimpleTokenEstimator } from '@agent-core/model';
 import { isCodingAgentProviderId, loadCodingAgentConfiguration, type CodingAgentCheckConfiguration, type CodingAgentConfiguration, type CodingAgentProviderId } from './configuration.js';
 import { loadWorkspace, type WorkspaceLayout } from './workspace.js';
@@ -25,6 +25,7 @@ import {
 } from '@agent-core/tools';
 import {
   createLocalToolHost,
+  TextPatchJournal,
   type LocalToolHost
 } from '@agent-core/tools-local';
 import {
@@ -205,27 +206,32 @@ async function createRuntime(
   const instructions = await loadWorkspaceInstructions(workspace.workspaceRoot, options.configuration);
   let localHost: LocalToolHost | undefined;
   try {
+    await fs.mkdir(workspace.artifactsDir, { recursive: true, mode: 0o700 });
+    const patchJournalPath = path.join(workspace.runtimeDir, 'transactions', 'patch');
+    await fs.mkdir(patchJournalPath, { recursive: true, mode: 0o700 });
+    const privateEntry = path.relative(workspace.workspaceRoot, workspace.runtimeDir).split(path.sep)[0];
     localHost = createLocalToolHost({
-    workspaceRoot: workspace.workspaceRoot,
-    artifactDirectory: workspace.artifactsDir,
-    processLedgerDirectory: path.join(workspace.runtimeDir, 'processes'),
-    patchTransactionDirectory: path.join(workspace.runtimeDir, 'transactions', 'patch'),
-    enabledTools: options.configuration?.tools.enabled ?? [
-      'list_directory', 'find_files', 'read_files', 'search_text', 'apply_patch',
-      'exec_command', 'write_stdin', 'stop_process', 'view_image', 'read_artifact'
-    ],
-    async deliverRecoveredTerminalReport(report) {
-      const runId = report.result.owner.runId;
-      if (!existingRunIds.has(runId)) return false;
-      await events.append(runId, {
-        type: 'process.ended',
-        runId,
-        processId: report.result.processId,
-        status: report.result.status,
-        result: parseJsonValue(report)
-      }, { idempotencyKey: `${runId}:process:${report.result.processId}:ended` });
-      return true;
-    }
+      workspacePath: workspace.workspaceRoot,
+      ...(privateEntry && privateEntry !== '..' ? { additionalDeniedWorkspaceEntries: [privateEntry] } : {}),
+      artifactRepository: new LocalArtifactRepository({ rootDir: workspace.artifactsDir }),
+      processLedgerDirectory: path.join(workspace.runtimeDir, 'processes'),
+      patchJournal: TextPatchJournal.adopt(patchJournalPath),
+      enabledTools: options.configuration?.tools.enabled ?? [
+        'list_directory', 'find_files', 'read_files', 'search_text', 'apply_patch',
+        'exec_command', 'write_stdin', 'stop_process', 'view_image', 'read_artifact'
+      ],
+      async deliverRecoveredTerminalReport(report) {
+        const runId = report.result.owner.runId;
+        if (!existingRunIds.has(runId)) return false;
+        await events.append(runId, {
+          type: 'process.ended',
+          runId,
+          processId: report.result.processId,
+          status: report.result.status,
+          result: parseJsonValue(report)
+        }, { idempotencyKey: `${runId}:process:${report.result.processId}:ended` });
+        return true;
+      }
     });
     await localHost.ready();
     const reconciliation = await localHost.reconciliation();

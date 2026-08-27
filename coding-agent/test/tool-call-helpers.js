@@ -5,7 +5,6 @@ import {
   policyBlockedObservation,
   prepareToolCall
 } from '@agent-core/tools';
-import path from 'node:path';
 
 export function jsonToolCall(name, value = {}, id) {
   return createToolCall({ ...(id ? { id } : {}), name, input: { kind: 'json', value } });
@@ -18,17 +17,12 @@ export function textToolCall(name, value, id) {
 export async function invokeToolCall(call, tools, context) {
   const ownedCall = createToolCall(call);
   const controller = new AbortController();
-  const workspaceRoot = context.services?.workspaceRoot;
-  const services = typeof workspaceRoot === 'string'
-    ? { ...context.services, patchTransactionDirectory: path.join(workspaceRoot, '.coding-agent', 'transactions', 'patch') }
-    : context.services;
   const preparationContext = {
     ...context,
-    ...(services ? { services } : {}),
     signal: context.signal ?? controller.signal,
     boundary: context.boundary ?? {
       authorizationPolicyId: 'tests/tool-policy@1',
-      executionTargetId: String(context.services?.workspaceRoot ?? 'tests')
+      executionTargetId: String(context.services?.workspaceFileRoot?.displayPath ?? 'tests')
     }
   };
   const preparation = await prepareToolCall(ownedCall, tools, preparationContext);
@@ -59,7 +53,7 @@ export async function presentToolObservation(tool, call, observation, context, m
     signal: context.signal ?? controller.signal,
     boundary: context.boundary ?? {
       authorizationPolicyId: 'tests/tool-policy@1',
-      executionTargetId: String(context.services?.workspaceRoot ?? 'tests')
+      executionTargetId: String(context.services?.workspaceFileRoot?.displayPath ?? 'tests')
     }
   };
   const preparation = await prepareToolCall(ownedCall, [tool], preparationContext);

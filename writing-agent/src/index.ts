@@ -3,7 +3,7 @@ import { promises as fs, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { InMemoryArtifactRepository, InMemoryEventRepository } from '@agent-core/evidence';
-import { JsonlEventRepository as NodeJsonlEventRepository } from '@agent-core/evidence/node';
+import { JsonlEventRepository as NodeJsonlEventRepository, LocalArtifactRepository } from '@agent-core/evidence/node';
 import type { ModelProvider, ModelReasoningRequest } from '@agent-core/model';
 import { OpenAICodexProvider } from '@agent-core/provider-openai-codex';
 import {
@@ -16,7 +16,7 @@ import {
 } from '@agent-core/runtime';
 import { JsonlSessionRepository } from '@agent-core/runtime/node';
 import { validateResourceScope } from '@agent-core/tools';
-import { createLocalToolHost } from '@agent-core/tools-local';
+import { createLocalToolHost, TextPatchJournal } from '@agent-core/tools-local';
 
 const WRITING_INSTRUCTION = [
   'Produce a finished draft that directly satisfies the brief.',
@@ -91,10 +91,16 @@ export async function runDocumentRevision(options: DocumentRevisionOptions): Pro
   if (descriptor.header.provider !== undefined && descriptor.header.provider !== options.provider.id) throw new Error(`Session ${descriptor.id} belongs to provider ${descriptor.header.provider}.`);
   if (descriptor.header.model !== undefined && descriptor.header.model !== options.model) throw new Error(`Session ${descriptor.id} belongs to model ${descriptor.header.model}.`);
   const events = new NodeJsonlEventRepository<AgentEvent>({ rootDir: path.join(stateDirectory, 'runs'), codec: agentEventCodec });
+  const artifactDirectory = path.join(stateDirectory, 'artifacts');
+  const patchJournalPath = path.join(stateDirectory, 'transactions');
+  await fs.mkdir(artifactDirectory, { recursive: true, mode: 0o700 });
+  await fs.mkdir(patchJournalPath, { recursive: true, mode: 0o700 });
+  const stateEntry = path.relative(rootDirectory, stateDirectory).split(path.sep)[0];
   const localHost = createLocalToolHost({
-    workspaceRoot: rootDirectory,
-    artifactDirectory: path.join(stateDirectory, 'artifacts'),
-    patchTransactionDirectory: path.join(stateDirectory, 'transactions'),
+    workspacePath: rootDirectory,
+    ...(stateEntry && stateEntry !== '..' ? { additionalDeniedWorkspaceEntries: [stateEntry] } : {}),
+    artifactRepository: new LocalArtifactRepository({ rootDir: artifactDirectory }),
+    patchJournal: TextPatchJournal.adopt(patchJournalPath),
     enabledTools: DOCUMENT_TOOLS
   });
   await localHost.ready();
