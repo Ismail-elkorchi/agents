@@ -6,7 +6,7 @@
   "generatedSummary": ".coding-agent-implementation-plan.md",
   "architecture": ".coding-agent-plan/architecture.md",
   "reviewedHeads": {
-    "agents": "bfb6ce584d976a6b91a04788272f03f234935240",
+    "agents": "cc0ad35f5f36cd1cb2fbbe6cf6c044123f900d53",
     "agent-core": "0e35d0b8eb7bc029121667e890c2c7103ac74ce3",
     "terminal-ui": "d83d01432056470d17f42793bb83f6d7c93e595d",
     "sandbox": "d2b79bf82766bb5832ed20bd1c9bc653f90c30c2"
@@ -86,8 +86,8 @@
         "L0"
       ],
       "wave": 1,
-      "status": "not_started",
-      "currentOwner": null,
+      "status": "current",
+      "currentOwner": "codex/root",
       "ownedPaths": [
         "agents:coding-agent/src/security/**",
         "agents:coding-agent/src/config/**",
