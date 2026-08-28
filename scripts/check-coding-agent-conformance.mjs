@@ -27,6 +27,9 @@ if (!sandboxAvailable) {
       : 'The Linux namespace Sandbox backend is not implemented on this platform.',
     metrics: 'not_measured'
   }, null, 2)}\n`);
+  if (process.env.CODING_AGENT_REQUIRE_NATIVE_CONFORMANCE === '1') {
+    throw new Error('Native Coding Agent conformance is required on this host.');
+  }
   process.exit(0);
 }
 
