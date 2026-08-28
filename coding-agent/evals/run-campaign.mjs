@@ -439,12 +439,17 @@ function spawnCapturedControllable([executable, ...args], timeoutMs) {
 
 async function createOllamaProxy(upstreamValue) {
   const upstream = new URL(upstreamValue);
+  const upstreamRequests = new Set();
   let blockShow = false;
   let blockedResolve;
   let releaseResolve;
   let blocked = Promise.resolve();
   let release = Promise.resolve();
   const server = createServer(async (request, response) => {
+    const controller = new AbortController();
+    const abortUpstream = () => controller.abort();
+    upstreamRequests.add(controller);
+    response.once('close', abortUpstream);
     try {
       if (request.url === '/api/show' && blockShow) {
         blockShow = false;
@@ -458,13 +463,18 @@ async function createOllamaProxy(upstreamValue) {
       for (const [name, value] of Object.entries(request.headers)) {
         if (value !== undefined && !['host', 'connection', 'content-length'].includes(name)) headers.set(name, Array.isArray(value) ? value.join(', ') : value);
       }
-      const upstreamResponse = await fetch(target, { method: request.method, headers, ...(body.length === 0 ? {} : { body }) });
+      const upstreamResponse = await fetch(target, { method: request.method, headers, signal: controller.signal, ...(body.length === 0 ? {} : { body }) });
       response.writeHead(upstreamResponse.status, Object.fromEntries(upstreamResponse.headers.entries()));
       if (upstreamResponse.body) for await (const chunk of upstreamResponse.body) response.write(chunk);
       response.end();
     } catch (error) {
-      if (!response.headersSent) response.writeHead(502, { 'content-type': 'application/json' });
-      response.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      if (!response.destroyed) {
+        if (!response.headersSent) response.writeHead(502, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      }
+    } finally {
+      response.off('close', abortUpstream);
+      upstreamRequests.delete(controller);
     }
   });
   await new Promise((resolve, reject) => {
@@ -482,7 +492,13 @@ async function createOllamaProxy(upstreamValue) {
     },
     waitForBlockedShow(timeoutMs) { return withTimeout(blocked, timeoutMs, 'Ollama show request was not observed before recovery timeout.'); },
     releaseBlockedShow() { releaseResolve?.(); },
-    close: () => new Promise((resolve) => server.close(resolve))
+    close: () => {
+      for (const controller of upstreamRequests) controller.abort();
+      return new Promise((resolve, reject) => {
+        server.close((error) => error === undefined ? resolve() : reject(error));
+        server.closeAllConnections();
+      });
+    }
   };
 }
 
