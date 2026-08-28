@@ -47,9 +47,13 @@ jobs:
           cache-dependency-path: |
             agents/package-lock.json
             agent-core/package-lock.json
+            sandbox/package-lock.json
       - name: Build Agent Core
         working-directory: agent-core
         run: npm ci && npm run build
+      - name: Build Sandbox package
+        working-directory: sandbox
+        run: npm ci && npm run build:ts
       - name: Verify agents
         working-directory: agents
         run: npm ci && npm run verify:release
