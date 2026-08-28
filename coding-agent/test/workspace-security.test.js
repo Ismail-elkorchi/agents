@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { lstat, mkdir, mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, rename, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { WorkspaceFileRoot } from '@agent-core/tools-local';
@@ -51,6 +51,19 @@ test('workspace trust records are private, checksummed, revocable, and invalid f
   await store.delete(workspace);
   assert.equal(await store.read(workspace), undefined);
   await assert.rejects(state.write('../escape', 'bad'), /Invalid private state path/u);
+});
+
+test('private state adopts only an owned real directory', async () => {
+  const parent = await mkdtemp(path.join(tmpdir(), 'coding-agent-private-root-'));
+  const nonempty = path.join(parent, 'nonempty');
+  await mkdir(nonempty);
+  await writeFile(path.join(nonempty, 'foreign.txt'), 'foreign');
+  await assert.rejects(PrivateStateDirectory.create(nonempty), /non-empty directory/u);
+  const target = path.join(parent, 'target');
+  await mkdir(target);
+  const alias = path.join(parent, 'alias');
+  await symlink(target, alias, 'dir');
+  await assert.rejects(PrivateStateDirectory.create(alias), /real directory|aliased/u);
 });
 
 test('trust action decisions keep authority distinct from workspace content', () => {

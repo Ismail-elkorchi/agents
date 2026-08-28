@@ -2,20 +2,20 @@
 
 Coding Agent is pre-alpha and intentionally uses breaking contracts. Import documented package exports only.
 
-## Persistence
+## Workspace trust and private state
 
-```ts
-import { InMemoryArtifactRepository, InMemoryEventRepository } from '@agent-core/evidence';
-import { JsonlEventRepository, LocalArtifactRepository } from '@agent-core/evidence/node';
-import { AgentRuntime, agentEventCodec } from '@agent-core/runtime';
-import { JsonlSessionRepository } from '@agent-core/runtime/node';
+A new workspace is inspection-only until the user records a trust decision:
 
-const events = new JsonlEventRepository({ rootDir: '.coding-agent/runs', codec: agentEventCodec });
-const sessions = new JsonlSessionRepository({ rootDir: '.coding-agent/sessions' });
-const artifacts = new LocalArtifactRepository({ rootDir: '.coding-agent/artifacts' });
+```bash
+coding-agent trust status --root .
+coding-agent trust restricted --root .
+coding-agent trust trusted --root .
+coding-agent trust revoke --root .
 ```
 
-Repository interfaces do not expose filesystem paths. Applications can substitute the in-memory implementations.
+Restricted workspaces may send bounded, screened context to the configured provider, but every mutation or command requires exact approval and repository execution policy remains inactive. Trusted workspaces may activate project proposals within the user-provided CLI authority. Repository files never grant trust or tool authority.
+
+Runs, sessions, artifacts, journals, and trust records live under the platform user-state directory, keyed by the adopted physical workspace identity. `--state-root` selects another dedicated Coding Agent state root. A state root must be outside the workspace and is adopted only when empty or already marked as Coding Agent state. No `.coding-agent` directory is created or read as private state.
 
 ## CLI
 
@@ -33,7 +33,7 @@ coding-agent --resume
 coding-agent --session SESSION_ID
 ```
 
-Session selection is not part of committed configuration. A resumed session restores its latest provider and model unless explicitly overridden. Resolution order is explicit CLI options, resumed-session settings, committed configuration, environment values, then built-in defaults.
+Session selection is not part of project configuration. A resumed session restores its latest provider and model unless explicitly overridden. Resolution order is explicit CLI options, resumed-session settings, trusted project configuration, then environment values. There is no hidden provider or model fallback.
 
 Configured authorization restricts rather than grants invocation authority. Use `--apply` for structured mutation, `--dry-run` to validate structured writes without mutation, and `--allow-shell` for ambient execution. Configured command checks require `--allow-shell` and project `execute` authorization.
 
@@ -97,7 +97,8 @@ Run `coding-agent [initial task] [options]` for the interactive TUI. Run `coding
 | Option | Parameter and behavior |
 | --- | --- |
 | `--root <dir>` | Workspace root. Defaults to the current directory. |
-| `--config <path>` | Load committed instructions, provider/model settings, tools, authorization, verification checks, and limits. |
+| `--state-root <dir>` | Dedicated private Coding Agent state root. Defaults to the platform user-state location. |
+| `--config <path>` | Load a project configuration proposal. `coding-agent.config.json` is discovered when present. |
 | `--provider <name>` | Select `ollama`, `openrouter`, `openai`, or `openai-codex`. |
 | `--model <name>` | Select the provider model, such as `gpt-5.6-luna`. |
 | `--provider-endpoint <url>` | Override the Ollama host or hosted-provider base URL. |
@@ -113,7 +114,7 @@ Run `coding-agent [initial task] [options]` for the interactive TUI. Run `coding
 | `--session <id>` | Open an existing session by exact ID. |
 | `--branch <entry-id>` | Branch the selected existing session from an entry. Requires `--resume` or `--session`. |
 
-Runtime-setting precedence is explicit CLI option, resumed-session setting, matching committed provider configuration, environment, then provider default. Provider-specific committed settings are meaningful only for their configured provider.
+Runtime-setting precedence is explicit CLI option, resumed-session setting, matching trusted project configuration, then environment. Provider-specific project settings are meaningful only for their configured provider. A provider and model must be selected explicitly through one of those sources.
 
 Provider environment variables are `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `OPENROUTER_APP_URL`, and `OPENROUTER_APP_TITLE`. Runtime defaults can be supplied with `CODING_AGENT_PROVIDER`, `CODING_AGENT_MODEL`, `CODING_AGENT_PROVIDER_ENDPOINT`, and `CODING_AGENT_REASONING_EFFORT`.
 

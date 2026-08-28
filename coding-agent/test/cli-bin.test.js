@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createCodingAgentToolPolicy, resultExitCode } from '@ismail-elkorchi/coding-agent';
@@ -46,6 +46,7 @@ test('CLI binary help works through the published executable', async () => {
 test('CLI discards configured reasoning when provider or model identity changes', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'coding-agent-cli-provider-'));
   const home = path.join(root, 'home');
+  const stateHome = `${root}-state`;
   await mkdir(home);
   await writeFile(path.join(root, 'coding-agent.config.json'), JSON.stringify({
     version: 1,
@@ -57,12 +58,50 @@ test('CLI discards configured reasoning when provider or model identity changes'
     authorization: { allowedRisks: ['read'], requireApprovalFor: [] },
     verification: { required: [], advisory: [] }
   }));
+  const trust = await run(path.resolve('coding-agent/dist/index.js'), ['trust', 'trusted', '--root', root], { env: { ...process.env, HOME: home, USERPROFILE: home, XDG_STATE_HOME: stateHome } });
+  assert.equal(trust.code, 0, trust.stderr);
   const output = await run(path.resolve('coding-agent/dist/index.js'), [
-    'exec', 'test', '--root', root, '--config', 'coding-agent.config.json',
+    'exec', 'test', '--root', root,
     '--provider', 'openai-codex', '--model', 'gpt-5.6-luna'
-  ], { env: { ...process.env, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: home } });
+  ], { env: { ...process.env, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: home, XDG_STATE_HOME: stateHome } });
   assert.equal(output.code, 1);
   assert.doesNotMatch(output.stderr, /reasoning\.mode|reasoning mode/iu);
+});
+
+test('workspace trust and explicit model setup are enforced before provider I/O', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'coding-agent-cli-trust-'));
+  const stateHome = `${root}-state`;
+  const environment = { ...process.env, XDG_STATE_HOME: stateHome };
+  const untrusted = await run(path.resolve('coding-agent/dist/index.js'), ['exec', 'inspect', '--root', root, '--provider', 'ollama', '--model', 'test'], { env: environment });
+  assert.equal(untrusted.code, 1);
+  assert.match(untrusted.stderr, /Workspace is untrusted/u);
+  await assert.rejects(access(path.join(root, '.coding-agent')));
+
+  await writeFile(path.join(root, 'coding-agent.config.json'), JSON.stringify({
+    version: 1,
+    provider: 'openai',
+    model: 'gpt-5.6-sol',
+    instructions: [],
+    tools: { enabled: [] },
+    authorization: { allowedRisks: ['read'], requireApprovalFor: [] },
+    verification: { required: [], advisory: [] }
+  }));
+  const restricted = await run(path.resolve('coding-agent/dist/index.js'), ['trust', 'restricted', '--root', root], { env: environment });
+  assert.equal(restricted.code, 0, restricted.stderr);
+  const noRepositorySelectedProvider = await run(path.resolve('coding-agent/dist/index.js'), ['exec', 'inspect', '--root', root], { env: { ...environment, CODING_AGENT_PROVIDER: '', CODING_AGENT_MODEL: '' } });
+  assert.equal(noRepositorySelectedProvider.code, 1);
+  assert.match(noRepositorySelectedProvider.stderr, /No model provider is configured/u);
+
+  const trusted = await run(path.resolve('coding-agent/dist/index.js'), ['trust', 'trusted', '--root', root], { env: environment });
+  assert.equal(trusted.code, 0, trusted.stderr);
+  const status = await run(path.resolve('coding-agent/dist/index.js'), ['trust', 'status', '--root', root], { env: environment });
+  assert.equal(status.code, 0, status.stderr);
+  assert.match(status.stdout, /Trust: trusted/u);
+  assert.equal(status.stdout.includes(root), true);
+  const revoked = await run(path.resolve('coding-agent/dist/index.js'), ['trust', 'revoke', '--root', root], { env: environment });
+  assert.equal(revoked.code, 0, revoked.stderr);
+  const revokedStatus = await run(path.resolve('coding-agent/dist/index.js'), ['trust', 'status', '--root', root], { env: environment });
+  assert.match(revokedStatus.stdout, /Trust: untrusted/u);
 });
 
 function result(overrides = {}) { return { state: 'ended', terminal: decodeAgentTerminalSnapshot({ ...base(), ...overrides }), deliveryDiagnostics: [] }; }

@@ -9,7 +9,7 @@ import { JsonlSessionRepository } from '@agent-core/runtime/node';
 import { JsonlEventRepository, LocalArtifactRepository } from '@agent-core/evidence/node';
 import { type ModelProvider, type ModelReasoningEffort, type ModelReasoningRequest, SimpleTokenEstimator } from '@agent-core/model';
 import { isCodingAgentProviderId, loadCodingAgentConfiguration, type CodingAgentCheckConfiguration, type CodingAgentConfiguration, type CodingAgentProviderId } from './configuration.js';
-import { loadWorkspace, type WorkspaceLayout } from './workspace.js';
+import { openCodingWorkspace, type OpenCodingWorkspace } from './workspace.js';
 import { OllamaProvider } from '@agent-core/provider-ollama';
 import { OpenAICodexProvider, loginOpenAICodexDeviceCode, type OpenAICodexTransport } from '@agent-core/provider-openai-codex';
 import { OpenAIProvider } from '@agent-core/provider-openai';
@@ -26,7 +26,6 @@ import {
 import {
   createLocalToolHost,
   TextPatchJournal,
-  WorkspaceFileRoot,
   type LocalToolHost
 } from '@agent-core/tools-local';
 import {
@@ -37,6 +36,7 @@ import {
   type CodingAgentTuiRuntimeDetails
 } from './tui/index.js';
 import { parseJsonValue } from '@agent-core/json';
+import { createTrustDecision } from './security/workspace-trust.js';
 
 export {
   loadCodingAgentConfiguration,
@@ -45,7 +45,7 @@ export {
   type CodingAgentConfiguration,
   type CodingAgentProviderId
 } from './configuration.js';
-export { describeWorkspace, loadWorkspace, type WorkspaceLayout } from './workspace.js';
+export { describeWorkspace, loadWorkspace, openCodingWorkspace, type OpenCodingWorkspace, type WorkspaceLayout } from './workspace.js';
 
 type CliProviderId = CodingAgentProviderId;
 type CliAuthProviderId = 'openai' | 'openai-codex';
@@ -71,7 +71,9 @@ interface CliOptions {
   temperature?: number;
   reasoning?: ModelReasoningRequest;
   config?: string;
+  stateRoot?: string;
   configuration?: CodingAgentConfiguration;
+  configurationSource?: { readonly sourceUri: string; readonly sha256: string; readonly trustLevel: 'restricted' | 'trusted' };
 }
 
 export interface CodingAgentToolPolicyOptions {
@@ -130,6 +132,10 @@ export async function main(argv: string[]): Promise<void> {
     await runApprovalCommand(argv.slice(1));
     return;
   }
+  if (argv[0] === 'trust') {
+    await runTrustCommand(argv.slice(1));
+    return;
+  }
 
   const exec = argv[0] === 'exec';
   if (exec && argv.length === 2 && (argv[1] === 'help' || argv[1] === '--help' || argv[1] === '-h')) {
@@ -138,16 +144,25 @@ export async function main(argv: string[]): Promise<void> {
   }
   const parsed = parseOptions(exec ? argv.slice(1) : argv);
   let task = normalizeTaskInput(parsed.positionals.join(' '));
-  const root = path.resolve(parsed.options.root);
-  const workspace = await loadWorkspace(root);
-  const configuration = parsed.options.config
-    ? await loadCodingAgentConfiguration(workspace.workspaceRoot, parsed.options.config)
-    : undefined;
-  const options: CliOptions = { ...parsed.options, ...(configuration ? { configuration } : {}) };
-
   if (exec) {
     if (task === '-' || (task.length === 0 && !process.stdin.isTTY)) task = normalizeTaskInput(await readStandardInput());
     if (task.length === 0) throw new Error('coding-agent exec requires a task string or piped stdin.');
+  } else if (!process.stdin.isTTY) throw new Error('Interactive mode requires a terminal. Use coding-agent exec with piped input.');
+  const root = path.resolve(parsed.options.root);
+  const workspace = await openCodingWorkspace(root, parsed.options.stateRoot ? { stateRoot: parsed.options.stateRoot } : {});
+  if (workspace.security.trustLevel === 'untrusted') {
+    workspace.fileRoot.close();
+    throw new Error(`Workspace is untrusted. Inspect it locally, then run "coding-agent trust restricted --root ${JSON.stringify(root)}" or "coding-agent trust trusted --root ${JSON.stringify(root)}" before provider use.`);
+  }
+  let configuration: CodingAgentConfiguration | undefined;
+  try {
+    const proposal = await loadProjectConfiguration(workspace, parsed.options.config);
+    configuration = proposal?.value;
+    if (proposal) parsed.options.configurationSource = Object.freeze({ sourceUri: proposal.provenance.sourceUri, sha256: proposal.provenance.sha256, trustLevel: workspace.security.trustLevel });
+  } catch (error) { workspace.fileRoot.close(); throw error; }
+  const options: CliOptions = { ...parsed.options, ...(configuration ? { configuration } : {}) };
+
+  if (exec) {
     const progress = new CodingAgentProgressRenderer({ showReasoning: options.showReasoning });
     await withCliRuntime(options, workspace, async (runtime) => {
       const unsubscribe = runtime.agent.subscribe((event) => { if (event.type === 'run.progress') { progress.handle(event.event); } });
@@ -165,7 +180,6 @@ export async function main(argv: string[]): Promise<void> {
     return;
   }
 
-  if (!process.stdin.isTTY) throw new Error('Interactive mode requires a terminal. Use coding-agent exec with piped input.');
   const progress = new CodingAgentTuiProgressRenderer();
   await withCliRuntime(options, workspace, async (runtime) => {
     await runCodingAgentTuiApp(runtime.agent, {
@@ -177,17 +191,20 @@ export async function main(argv: string[]): Promise<void> {
   });
 }
 
-async function withCliRuntime<T>(options: CliOptions, workspace: WorkspaceLayout, run: (runtime: CliRuntime) => Promise<T>, persistedSessionId?: string): Promise<T> {
-  const runtime = await createRuntime(options, workspace, persistedSessionId);
+async function withCliRuntime<T>(options: CliOptions, workspace: OpenCodingWorkspace, run: (runtime: CliRuntime) => Promise<T>, persistedSessionId?: string): Promise<T> {
+  let runtime: CliRuntime;
+  try { runtime = await createRuntime(options, workspace, persistedSessionId); }
+  catch (error) { workspace.fileRoot.close(); throw error; }
   try { return await run(runtime); }
   finally { await runtime.localHost.close(); }
 }
 
 async function createRuntime(
   options: CliOptions,
-  workspace: WorkspaceLayout,
+  openedWorkspace: OpenCodingWorkspace,
   persistedSessionId?: string
 ): Promise<CliRuntime> {
+  const workspace = openedWorkspace.layout;
   const sessions = new JsonlSessionRepository({ rootDir: workspace.sessionsDir });
   let session = await selectSession(options, sessions, persistedSessionId);
   const replay = session ? await sessions.loadReplayState(session.id) : undefined;
@@ -196,25 +213,27 @@ async function createRuntime(
     ...(session.header.provider ? { provider: session.header.provider } : {}),
     ...(session.header.model ? { model: session.header.model } : {})
   } : undefined);
-  const settings = resolveRuntimeSettings(options, persistedSettings);
-  const providerRuntime = createProviderRuntime(settings);
+  const projectExecutionPolicy = openedWorkspace.security.decide('project_execution_policy').kind === 'allowed';
+  const settings = resolveRuntimeSettings(options, persistedSettings, projectExecutionPolicy);
+  const rawProviderRuntime = createProviderRuntime(settings);
+  const providerRuntime: CliProviderRuntime = Object.freeze({
+    ...rawProviderRuntime,
+    provider: openedWorkspace.security.protectProvider(rawProviderRuntime.provider)
+  });
   session ??= await sessions.create({ provider: providerRuntime.providerId, model: providerRuntime.model });
   const sessionBinding = { repository: sessions, session };
   const events = new JsonlEventRepository<AgentEvent>({ rootDir: workspace.runsDir, codec: agentEventCodec });
   const existingRunIds = new Set(await events.listRunIds());
-  const authority = resolveCliAuthority(options);
-  const checks = configuredChecks(options.configuration);
-  const instructions = await loadWorkspaceInstructions(workspace.workspaceRoot, options.configuration);
+  const authority = resolveCliAuthority(options, projectExecutionPolicy);
+  const checks = configuredChecks(projectExecutionPolicy ? options.configuration : undefined);
+  const instructions = await loadWorkspaceInstructions(openedWorkspace, options.configuration);
   let localHost: LocalToolHost | undefined;
   try {
     await fs.mkdir(workspace.artifactsDir, { recursive: true, mode: 0o700 });
     const patchJournalPath = path.join(workspace.runtimeDir, 'transactions', 'patch');
     await fs.mkdir(patchJournalPath, { recursive: true, mode: 0o700 });
-    const privateEntry = path.relative(workspace.workspaceRoot, workspace.runtimeDir).split(path.sep)[0];
-    const workspaceFileRoot = WorkspaceFileRoot.adopt(workspace.workspaceRoot,
-      privateEntry && privateEntry !== '..' ? { additionalDeniedEntries: [privateEntry] } : {});
     localHost = createLocalToolHost({
-      workspaceFileRoot,
+      workspaceFileRoot: openedWorkspace.fileRoot,
       artifactRepository: new LocalArtifactRepository({ rootDir: workspace.artifactsDir }),
       processLedgerDirectory: path.join(workspace.runtimeDir, 'processes'),
       patchJournal: TextPatchJournal.adopt(patchJournalPath),
@@ -261,7 +280,7 @@ async function createRuntime(
         return new AgentRuntime({
           provider: providerRuntime.provider,
           model: configuration.model,
-          toolBoundary: { authorizationPolicyId: 'coding-agent-cli/workspace-policy@1', executionTargetId: workspace.workspaceRoot },
+          toolBoundary: { authorizationPolicyId: 'coding-agent-cli/workspace-policy@1', executionTargetId: workspace.identity.id },
           repositories: {
             events,
             session: { repository: sessionBinding.repository, sessionId: sessionBinding.session.id },
@@ -274,7 +293,9 @@ async function createRuntime(
           services
           },
           toolPolicy: authority.toolPolicy,
-          ...(options.configuration?.authorization.requireApprovalFor.length ? { toolAuthorizer: request => {
+          toolAuthorizer: request => {
+            const trustDecision = openedWorkspace.security.authorizeTool(request);
+            if (trustDecision.decision !== 'allow') return trustDecision;
             const approvalAccesses = request.effects.accesses.map((access) => accessRisk(access.mode))
               .filter((risk) => options.configuration?.authorization.requireApprovalFor.includes(risk));
             const ambient = request.effects.accesses.some((access) => access.mode === 'execute')
@@ -282,10 +303,10 @@ async function createRuntime(
             return approvalAccesses.length > 0
               ? { decision: 'require_approval' as const, reason: `Workspace configuration requires approval for ${[...new Set(approvalAccesses)].join(', ')} access.${ambient ? ' This grants ambient process authority that can indirectly read, write, or delete files, access the network, and start child processes.' : ''}` }
               : { decision: 'allow' as const, reason: 'Allowed by workspace policy.' };
-          } } : {}),
+          },
           ...(instructions.length > 0 ? { instructions } : {}),
           ...(checks.length > 0 ? { checks } : {}),
-          ...(options.configuration?.limits ? { limits: options.configuration.limits } : {}),
+          ...(projectExecutionPolicy && options.configuration?.limits ? { limits: options.configuration.limits } : {}),
           ...(authority.verificationCommands === 'ambient' ? { verification: { evidence: { read: () => Promise.resolve({ items: [], bytes: 0, truncated: false }), readArtifact: ref => artifactStore.readVerified(ref) }, runCommand: async (request, signal) => {
             const startedAt = Date.now();
             const outputTokenBudget = Math.max(64, Math.ceil((request.maxOutputBytes ?? 64_000) / 4));
@@ -311,8 +332,14 @@ async function createRuntime(
             return { exitCode: result.status === 'exited' ? result.exitCode ?? null : null, stdout, stderr, durationMs: Date.now() - startedAt };
           } } } : {}),
           metadata: {
-            workspaceRoot: workspace.workspaceRoot,
-            workspaceName: workspace.workspaceName
+            workspaceId: workspace.identity.id,
+            workspaceName: workspace.workspaceName,
+            workspaceTrust: openedWorkspace.security.trustLevel,
+            ...(options.configurationSource ? {
+              projectConfigurationSource: options.configurationSource.sourceUri,
+              projectConfigurationSha256: options.configurationSource.sha256,
+              projectConfigurationTrust: options.configurationSource.trustLevel
+            } : {})
           },
           ...(configuration.temperature !== undefined ? { temperature: configuration.temperature } : {}),
           ...(configuration.reasoning !== undefined ? { reasoning: configuration.reasoning } : {}),
@@ -383,13 +410,15 @@ function renderConversationItem(item: SessionConversationItem): string {
   }
 }
 
-async function loadWorkspaceInstructions(rootDir: string, configuration: CodingAgentConfiguration | undefined): Promise<AgentInstruction[]> {
+async function loadWorkspaceInstructions(workspace: OpenCodingWorkspace, configuration: CodingAgentConfiguration | undefined): Promise<AgentInstruction[]> {
   if (!configuration) return [];
-  const realRoot = await fs.realpath(rootDir);
   return Promise.all(configuration.instructions.map(async (instruction, index) => {
-    const absolute = await fs.realpath(path.resolve(realRoot, instruction.path));
-    if (absolute !== realRoot && !absolute.startsWith(`${realRoot}${path.sep}`)) throw new Error(`Project instruction escapes the workspace: ${instruction.path}`);
-    return { id: `workspace-${String(index + 1)}-${instruction.path}`, content: await fs.readFile(absolute, 'utf8'), role: 'environment', sourceUri: `file:${instruction.path}`, priority: 100 };
+    const file = await workspace.fileRoot.openFile(instruction.path);
+    try {
+      const content = (await file.readAll(256 * 1024)).toString('utf8');
+      const adopted = workspace.security.adoptContent({ content, kind: 'instruction', sourceUri: `file:${file.path}`, scope: path.posix.dirname(file.path), maxBytes: 256 * 1024 });
+      return { id: `workspace-${String(index + 1)}-${adopted.provenance.sha256}`, content: adopted.content, role: 'environment', sourceUri: adopted.provenance.sourceUri, priority: 100 };
+    } finally { await file.close(); }
   }));
 }
 
@@ -446,6 +475,7 @@ function parseOptions(args: string[]): { options: CliOptions; positionals: strin
 interface CliOptionSpec { readonly takesValue: boolean; apply(options: CliOptions, value: string | undefined, key: string): void }
 const CLI_OPTION_SPECS = {
   '--root': valued((options, value) => { options.root = value; }),
+  '--state-root': valued((options, value) => { options.stateRoot = value; }),
   '--model': valued((options, value) => { options.model = value; }),
   '--provider': valued((options, value) => { options.provider = parseProviderId(value); }),
   '--provider-endpoint': valued((options, value) => { options.providerEndpoint = value; }),
@@ -518,19 +548,6 @@ function createProviderRuntime(options: ResolvedRuntimeSettings): CliProviderRun
   }
 }
 
-function defaultModelForProvider(provider: CliProviderId): string {
-  switch (provider) {
-    case 'ollama':
-      return 'llama3.1';
-    case 'openrouter':
-      return 'openrouter/auto';
-    case 'openai':
-      return 'gpt-5.6-sol';
-    case 'openai-codex':
-      return 'gpt-5.6';
-  }
-}
-
 function parseProviderId(value: string): CliProviderId {
   if (isCodingAgentProviderId(value)) return value;
   throw new Error(`Unsupported provider: ${value}. Supported providers: ollama, openrouter, openai, openai-codex.`);
@@ -548,30 +565,47 @@ async function runApprovalCommand(args: string[]): Promise<void> {
   }
   const parsed = parseOptions(optionArgs);
   if (parsed.positionals.length > 0) throw new Error(`Unexpected approval arguments: ${parsed.positionals.join(' ')}`);
-  const workspace = await loadWorkspace(path.resolve(parsed.options.root));
   if (parsed.options.sessionSelection.kind !== 'new' || parsed.options.branch) throw new Error('Approval resolution uses the session persisted with the run; session selectors are not allowed.');
-  let options: CliOptions = parsed.options.config
-    ? { ...parsed.options, configuration: await loadCodingAgentConfiguration(workspace.workspaceRoot, parsed.options.config) }
-    : parsed.options;
-  const events = new JsonlEventRepository<AgentEvent>({ rootDir: workspace.runsDir, codec: agentEventCodec });
-  const records: AgentEvent[] = [];
-  for await (const envelope of events.read(runId)) records.push(envelope.event);
-  const configured = records.find((event): event is Extract<AgentEvent, { type: 'run.configured' }> => event.type === 'run.configured');
-  const startedTurn = records.find((event): event is Extract<AgentEvent, { type: 'turn.started' }> => event.type === 'turn.started');
-  if (!configured || !startedTurn?.sessionId) throw new Error(`Run ${runId} does not contain enough persisted runtime/session identity to resolve an approval.`);
-  options = { ...options, provider: parseProviderId(configured.configuration.provider.id), model: configured.configuration.model.id };
-  const progress = new CodingAgentProgressRenderer({ showReasoning: options.showReasoning });
-  await withCliRuntime(options, workspace, async (runtime) => {
-    const unsubscribe = runtime.agent.subscribe((event) => { if (event.type === 'run.progress') { progress.handle(event.event); } });
-    try {
-      const result = await runtime.agent.resolveApproval({ runId, approvalId, fingerprint, decision: decisionValue });
-      printResult(result, progress);
-      printPersistenceLocations(runtime, result);
-      process.exitCode = resultExitCode(result);
-    } finally {
-      unsubscribe();
-    }
-  }, startedTurn.sessionId);
+  const workspace = await openCodingWorkspace(path.resolve(parsed.options.root), parsed.options.stateRoot ? { stateRoot: parsed.options.stateRoot } : {});
+  if (workspace.security.trustLevel === 'untrusted') { workspace.fileRoot.close(); throw new Error('Cannot resolve an approval for an untrusted workspace.'); }
+  try {
+    let options: CliOptions;
+    const proposal = await loadProjectConfiguration(workspace, parsed.options.config);
+    if (proposal) {
+      options = {
+        ...parsed.options,
+        configuration: proposal.value,
+        configurationSource: Object.freeze({ sourceUri: proposal.provenance.sourceUri, sha256: proposal.provenance.sha256, trustLevel: workspace.security.trustLevel })
+      };
+    } else options = parsed.options;
+    const events = new JsonlEventRepository<AgentEvent>({ rootDir: workspace.layout.runsDir, codec: agentEventCodec });
+    const records: AgentEvent[] = [];
+    for await (const envelope of events.read(runId)) records.push(envelope.event);
+    const configured = records.find((event): event is Extract<AgentEvent, { type: 'run.configured' }> => event.type === 'run.configured');
+    const startedTurn = records.find((event): event is Extract<AgentEvent, { type: 'turn.started' }> => event.type === 'turn.started');
+    if (!configured || !startedTurn?.sessionId) throw new Error(`Run ${runId} does not contain enough persisted runtime/session identity to resolve an approval.`);
+    options = { ...options, provider: parseProviderId(configured.configuration.provider.id), model: configured.configuration.model.id };
+    const progress = new CodingAgentProgressRenderer({ showReasoning: options.showReasoning });
+    await withCliRuntime(options, workspace, async (runtime) => {
+      const unsubscribe = runtime.agent.subscribe((event) => { if (event.type === 'run.progress') { progress.handle(event.event); } });
+      try {
+        const result = await runtime.agent.resolveApproval({ runId, approvalId, fingerprint, decision: decisionValue });
+        printResult(result, progress);
+        printPersistenceLocations(runtime, result);
+        process.exitCode = resultExitCode(result);
+      } finally { unsubscribe(); }
+    }, startedTurn.sessionId);
+  } finally { workspace.fileRoot.close(); }
+}
+
+async function loadProjectConfiguration(workspace: OpenCodingWorkspace, explicitPath: string | undefined) {
+  const configurationPath = explicitPath ?? 'coding-agent.config.json';
+  if (explicitPath === undefined) {
+    const status = await workspace.fileRoot.inspectPath(configurationPath);
+    if (status.kind === 'absent') return undefined;
+    if (status.kind !== 'file') throw new Error(`Optional project configuration is not a regular file: ${configurationPath}`);
+  }
+  return loadCodingAgentConfiguration(workspace.fileRoot, workspace.security, configurationPath);
 }
 
 async function runAuthCommand(args: string[]): Promise<void> {
@@ -593,6 +627,46 @@ async function runAuthCommand(args: string[]): Promise<void> {
     default:
       throw new Error(`Unknown auth command: ${command}. Supported commands: login, logout, status.`);
   }
+}
+
+async function runTrustCommand(args: string[]): Promise<void> {
+  const [command, ...optionArgs] = args;
+  if (command !== 'status' && command !== 'restricted' && command !== 'trusted' && command !== 'revoke') {
+    throw new Error('Usage: coding-agent trust <status|restricted|trusted|revoke> [--root <dir>] [--state-root <dir>]');
+  }
+  const trustOptions = parseTrustOptions(optionArgs);
+  const workspace = await openCodingWorkspace(trustOptions.root, trustOptions.stateRoot ? { stateRoot: trustOptions.stateRoot } : {});
+  try {
+    if (command === 'status') {
+      console.log(`Workspace: ${workspace.layout.workspaceRoot}`);
+      console.log(`Identity: ${workspace.layout.identity.id}`);
+      console.log(`Trust: ${workspace.security.trustLevel}`);
+      return;
+    }
+    if (command === 'revoke') {
+      await workspace.trustStore.delete(workspace.layout.identity);
+      console.log(`Workspace trust revoked: ${workspace.layout.identity.id}`);
+      return;
+    }
+    const decision = createTrustDecision({ workspace: workspace.layout.identity, level: command, actorKind: 'user', actor: 'local-user' });
+    await workspace.trustStore.write(decision);
+    console.log(`Workspace trust set to ${command}: ${workspace.layout.identity.id}`);
+  } finally { workspace.fileRoot.close(); }
+}
+
+function parseTrustOptions(args: readonly string[]): { readonly root: string; readonly stateRoot?: string } {
+  let root = process.cwd();
+  let stateRoot: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index] ?? '';
+    const [key = '', inlineValue] = argument.split('=', 2);
+    if (key !== '--root' && key !== '--state-root') throw new Error(`Unknown trust option: ${key || argument}`);
+    const value = requireValue(key, inlineValue ?? args[index + 1]);
+    if (inlineValue === undefined) index += 1;
+    if (key === '--root') root = path.resolve(value);
+    else stateRoot = path.resolve(value);
+  }
+  return Object.freeze({ root, ...(stateRoot ? { stateRoot } : {}) });
 }
 
 function parseAuthProviderId(value: string): CliAuthProviderId {
@@ -666,12 +740,12 @@ export function createCodingAgentToolPolicy(options: CodingAgentToolPolicyOption
   };
 }
 
-function resolveCliAuthority(options: CliOptions): EffectiveCliAuthority {
+function resolveCliAuthority(options: CliOptions, projectExecutionPolicy: boolean): EffectiveCliAuthority {
   const invocation = createCodingAgentToolPolicy(options);
   const configured = options.configuration?.authorization.allowedRisks;
   const allowedRisks = configured ? invocation.allowedRisks.filter((risk) => configured.includes(risk)) : invocation.allowedRisks;
   const toolPolicy = Object.freeze({ allowedRisks: Object.freeze([...allowedRisks]), ...(invocation.dryRunWrites ? { dryRunWrites: true } : {}) });
-  const hasChecks = (options.configuration?.verification.required.length ?? 0) + (options.configuration?.verification.advisory.length ?? 0) > 0;
+  const hasChecks = projectExecutionPolicy && (options.configuration?.verification.required.length ?? 0) + (options.configuration?.verification.advisory.length ?? 0) > 0;
   const verificationCommands = hasChecks && options.allowShell && allowedRisks.includes('execute') ? 'ambient' : 'disabled';
   if (hasChecks && verificationCommands === 'disabled') throw new Error('Configured verification commands require --allow-shell and execute authorization.');
   const ambientShell = allowedRisks.includes('execute');
@@ -700,21 +774,21 @@ async function selectSession(options: CliOptions, repository: JsonlSessionReposi
   return session;
 }
 
-function resolveRuntimeSettings(options: CliOptions, persisted: PersistedModelSettings | undefined): ResolvedRuntimeSettings {
+function resolveRuntimeSettings(options: CliOptions, persisted: PersistedModelSettings | undefined, projectExecutionPolicy: boolean): ResolvedRuntimeSettings {
   const persistedProvider = persisted?.provider;
   const provider = options.provider
     ?? (persistedProvider ? parseProviderId(persistedProvider) : undefined)
-    ?? options.configuration?.provider
-    ?? (process.env.CODING_AGENT_PROVIDER ? parseProviderId(process.env.CODING_AGENT_PROVIDER) : undefined)
-    ?? 'ollama';
+    ?? (projectExecutionPolicy ? options.configuration?.provider : undefined)
+    ?? (process.env.CODING_AGENT_PROVIDER ? parseProviderId(process.env.CODING_AGENT_PROVIDER) : undefined);
+  if (provider === undefined) throw new Error('No model provider is configured. Use --provider, resume a configured session, set CODING_AGENT_PROVIDER, or trust a project configuration.');
   const persistedMatches = persistedProvider === provider;
   const model = options.model
     ?? (persistedMatches ? persisted?.model : undefined)
-    ?? (options.configuration?.provider === provider ? options.configuration.model : undefined)
-    ?? process.env.CODING_AGENT_MODEL
-    ?? defaultModelForProvider(provider);
+    ?? (projectExecutionPolicy && options.configuration?.provider === provider ? options.configuration.model : undefined)
+    ?? process.env.CODING_AGENT_MODEL;
+  if (model === undefined || model.trim().length === 0) throw new Error('No model is configured. Use --model, resume a configured session, set CODING_AGENT_MODEL, or trust a project configuration.');
   const persistedSettingsMatch = persistedMatches && persisted?.model === model;
-  const configurationSettingsMatch = options.configuration?.provider === provider && options.configuration.model === model;
+  const configurationSettingsMatch = projectExecutionPolicy && options.configuration?.provider === provider && options.configuration.model === model;
   const persistedReasoning = persistedSettingsMatch && persisted.reasoningEffort
     ? reasoningFromEffort(parseReasoningEffort(persisted.reasoningEffort, 'persisted session reasoning effort'))
     : undefined;
@@ -1076,10 +1150,13 @@ Usage:
   coding-agent exec <task|-> [options]
   coding-agent auth status openai
   coding-agent auth login openai-codex
+  coding-agent trust <status|restricted|trusted|revoke> [--root .]
   coding-agent approval <allow|deny> <run-id> <approval-id> <fingerprint> [--root .] [--config coding-agent.config.json]
   coding-agent
 
 Safety defaults:
+  New and identity-changed workspaces are untrusted and cannot send provider requests or run effects.
+  Private runs, sessions, artifacts, journals, and trust records are stored outside the workspace.
   Structured patch mutation is disabled unless --apply or --dry-run is supplied.
   Ambient shell execution is disabled unless --allow-shell is supplied.
   Ambient shell authority runs with this Coding Agent process's permissions and can indirectly read, write, or delete files, access the network, and start child processes.
@@ -1087,9 +1164,10 @@ Safety defaults:
 
 Common options:
   --root <dir>           Workspace root. Default: current directory.
-  --config <path>        Load committed workspace instructions, provider/model, tools, approvals, checks, and limits.
-  --provider <name>      Model provider. Supported: ollama, openrouter, openai, openai-codex. Default: CODING_AGENT_PROVIDER or ollama.
-  --model <name>         Model name. Default: CODING_AGENT_MODEL or the provider default.
+  --state-root <dir>     Coding Agent private state root. Default: the platform user-state directory.
+  --config <path>        Load a project configuration proposal. coding-agent.config.json is discovered when present.
+  --provider <name>      Model provider. Supported: ollama, openrouter, openai, openai-codex.
+  --model <name>         Model name. No provider or model is selected implicitly.
   --provider-endpoint <url>
                          Provider endpoint override. Ollama host or provider base URL.
   --codex-transport <http_sse|websocket>

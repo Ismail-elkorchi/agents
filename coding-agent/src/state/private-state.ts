@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { chmod, lstat, mkdir, open, rename, unlink } from 'node:fs/promises';
+import { chmod, lstat, mkdir, open, readdir, realpath, rename, unlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -20,8 +20,29 @@ export class PrivateStateDirectory {
     await mkdir(absolute, { recursive: true, mode: 0o700 });
     const info = await lstat(absolute);
     if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(`Private state root is not a real directory: ${absolute}`);
+    if (await realpath(absolute) !== absolute) throw new Error(`Private state root contains an aliased path component: ${absolute}`);
+    const markerPath = path.join(absolute, '.coding-agent-state-root');
+    const entries = await readdir(absolute);
+    if (!entries.includes('.coding-agent-state-root')) {
+      if (entries.length > 0) throw new Error(`Refusing to adopt a non-empty directory without a Coding Agent state marker: ${absolute}`);
+      let marker;
+      try { marker = await open(markerPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600); }
+      catch (error) { if (nodeCode(error) !== 'EEXIST') throw error; }
+      if (marker) {
+        try { await marker.writeFile('coding-agent-state-root-v1\n', 'utf8'); await marker.sync(); }
+        finally { await marker.close(); }
+        const directory = await open(absolute, 'r');
+        try { await directory.sync(); } finally { await directory.close(); }
+      }
+    }
+    const marker = await open(markerPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    try {
+      const markerInfo = await marker.stat();
+      if (!markerInfo.isFile() || markerInfo.nlink !== 1 || (await marker.readFile('utf8')) !== 'coding-agent-state-root-v1\n') throw new Error(`Private state root marker is invalid: ${absolute}`);
+    } finally { await marker.close(); }
     if (process.platform !== 'win32') {
       await chmod(absolute, 0o700);
+      await chmod(markerPath, 0o600);
       const secured = await lstat(absolute);
       if ((secured.mode & 0o077) !== 0) throw new Error(`Private state root permissions are not private: ${absolute}`);
     }

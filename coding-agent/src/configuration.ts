@@ -1,7 +1,9 @@
-import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { type ModelReasoningRequest, parseModelReasoningRequest } from '@agent-core/model';
 import { parseJsonObject } from '@agent-core/json';
+import { workspaceFileIdentitiesEqual, type WorkspaceFileRoot } from '@agent-core/tools-local';
+import type { ProjectConfigurationProposal } from './config/project-proposal.js';
+import type { WorkspaceSecurityBoundary } from './security/workspace-security-boundary.js';
 
 export interface CodingAgentInstructionConfiguration { readonly path: string }
 export interface CodingAgentCheckConfiguration { readonly id: string; readonly command: string; readonly timeoutMs?: number; readonly maxOutputBytes?: number }
@@ -34,14 +36,19 @@ export interface CodingAgentConfiguration {
   readonly limits?: CodingAgentLimitConfiguration;
 }
 
-export async function loadCodingAgentConfiguration(rootDir: string, configPath = 'coding-agent.config.json'): Promise<CodingAgentConfiguration> {
-  const root = await fs.realpath(path.resolve(rootDir));
-  const absolute = path.resolve(root, configPath);
-  if (absolute !== root && !absolute.startsWith(`${root}${path.sep}`)) throw new Error(`Configuration escapes the workspace root: ${configPath}`);
-  const realConfiguration = await fs.realpath(absolute);
-  if (realConfiguration !== root && !realConfiguration.startsWith(`${root}${path.sep}`)) throw new Error(`Configuration symlink escapes the workspace root: ${configPath}`);
-  const value: unknown = JSON.parse(await fs.readFile(realConfiguration, 'utf8'));
-  return parseCodingAgentConfiguration(value);
+export async function loadCodingAgentConfiguration(root: WorkspaceFileRoot, security: WorkspaceSecurityBoundary, configPath = 'coding-agent.config.json'): Promise<ProjectConfigurationProposal<CodingAgentConfiguration>> {
+  const canonicalPath = root.canonicalPath(configPath);
+  const file = await root.openFile(canonicalPath);
+  try {
+    const bytes = await file.readAll(4 * 1024 * 1024);
+    const currentIdentity = await file.identityNow();
+    if (!workspaceFileIdentitiesEqual(file.identity, currentIdentity)) throw new Error(`Project configuration changed while it was read: ${canonicalPath}`);
+    const text = bytes.toString('utf8');
+    const adopted = security.adoptContent({ content: text, kind: 'source', sourceUri: `file:${canonicalPath}`, scope: '.', maxBytes: 4 * 1024 * 1024 });
+    if (adopted.provenance.hazards.length > 0 || adopted.provenance.truncated) throw new Error('Project configuration contains unsafe or oversized text.');
+    const value: unknown = JSON.parse(text);
+    return Object.freeze({ value: parseCodingAgentConfiguration(value), provenance: adopted.provenance });
+  } finally { await file.close(); }
 }
 
 export function parseCodingAgentConfiguration(input: unknown): CodingAgentConfiguration {

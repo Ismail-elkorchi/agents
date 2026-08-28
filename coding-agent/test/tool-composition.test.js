@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describeWorkspace } from '@ismail-elkorchi/coding-agent';
+import { loadWorkspace } from '@ismail-elkorchi/coding-agent';
 import { LocalArtifactRepository } from '@agent-core/evidence/node';
 import { createLocalToolHost, TextPatchJournal, WorkspaceFileRoot } from '@agent-core/tools-local';
 import { createToolCall, prepareToolCall } from '@agent-core/tools';
@@ -14,7 +14,7 @@ const codingTools = ['list_directory', 'find_files', 'read_files', 'search_text'
 
 test('CLI local host composition executes artifact, image, and process tools with production services', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'coding-agent-cli-composition-'));
-  const workspace = describeWorkspace(root);
+  const workspace = await loadWorkspace(root, { stateRoot: `${root}-state` });
   await mkdir(workspace.artifactsDir, { recursive: true });
   const patchJournalPath = path.join(workspace.runtimeDir, 'transactions', 'patch');
   await mkdir(patchJournalPath, { recursive: true, mode: 0o700 });
