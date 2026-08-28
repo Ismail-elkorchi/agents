@@ -13,7 +13,7 @@ export const statuses = new Set([
 ]);
 
 const shaPattern = /^[0-9a-f]{40}$/u;
-const nodeIdPattern = /^(?:L|R|C|SEC|T|E|A|D|S|V|F|Q)\d+$/u;
+const nodeIdPattern = /^(?:L|R|C|SEC|T|E|A|D|S|G|V|F|Q)\d+$/u;
 
 function fail(message) {
   throw new Error(`Coding-agent plan is invalid: ${message}`);

@@ -6,7 +6,7 @@
   "generatedSummary": ".coding-agent-implementation-plan.md",
   "architecture": ".coding-agent-plan/architecture.md",
   "reviewedHeads": {
-    "agents": "a4abd2d3ec342e83eae295355d9dcbce49b8fd39",
+    "agents": "5f53304abb36c2933ec2e55ebae0782b01818337",
     "agent-core": "6eeba19b86ba477859c7bb3b2747a93955d6bd9f",
     "terminal-ui": "d83d01432056470d17f42793bb83f6d7c93e595d",
     "sandbox": "d2b79bf82766bb5832ed20bd1c9bc653f90c30c2"
@@ -231,18 +231,21 @@
         "A1"
       ],
       "wave": 3,
-      "status": "current",
-      "currentOwner": "codex/root",
+      "status": "done",
+      "currentOwner": null,
       "ownedPaths": [
         "agents:coding-agent/src/workspace/**",
-        "agents:coding-agent/src/instructions/**"
+        "agents:coding-agent/src/instructions/**",
+        "agents:coding-agent/src/configuration.ts",
+        "agents:coding-agent/src/index.ts",
+        "agents:coding-agent/test/repository-orientation.test.js"
       ],
       "specification": ".coding-agent-plan/nodes/A2.md",
       "decisions": [
         ".coding-agent-plan/decisions/adversarial-review.md"
       ],
       "evidence": ".coding-agent-plan/evidence/A2.md",
-      "lastVerifiedCommit": null
+      "lastVerifiedCommit": "5f53304abb36c2933ec2e55ebae0782b01818337"
     },
     {
       "id": "D1",
@@ -253,8 +256,8 @@
         "E0"
       ],
       "wave": 4,
-      "status": "not_started",
-      "currentOwner": null,
+      "status": "current",
+      "currentOwner": "codex/root",
       "ownedPaths": [
         "agent-core:packages/model/**",
         "agent-core:packages/providers/**",
@@ -334,6 +337,28 @@
       "lastVerifiedCommit": null
     },
     {
+      "id": "G0",
+      "title": "sandboxed Git repository observation",
+      "owner": "agents/coding-agent",
+      "dependencies": [
+        "A2",
+        "S0"
+      ],
+      "wave": 6,
+      "status": "not_started",
+      "currentOwner": null,
+      "ownedPaths": [
+        "agents:coding-agent/src/workspace/git/**",
+        "agents:coding-agent/test/git-orientation.test.js"
+      ],
+      "specification": ".coding-agent-plan/nodes/G0.md",
+      "decisions": [
+        ".coding-agent-plan/decisions/adversarial-review.md"
+      ],
+      "evidence": ".coding-agent-plan/evidence/G0.md",
+      "lastVerifiedCommit": null
+    },
+    {
       "id": "A3",
       "title": "permission modes and sandbox composition",
       "owner": "agents/coding-agent",
@@ -341,10 +366,11 @@
         "SEC0",
         "A1",
         "A2",
+        "G0",
         "D2",
         "S0"
       ],
-      "wave": 6,
+      "wave": 7,
       "status": "not_started",
       "currentOwner": null,
       "ownedPaths": [
@@ -368,7 +394,7 @@
         "A2",
         "A3"
       ],
-      "wave": 7,
+      "wave": 8,
       "status": "not_started",
       "currentOwner": null,
       "ownedPaths": [
@@ -391,7 +417,7 @@
         "D2",
         "A3"
       ],
-      "wave": 7,
+      "wave": 8,
       "status": "not_started",
       "currentOwner": null,
       "ownedPaths": [
@@ -419,7 +445,7 @@
         "A4",
         "A5"
       ],
-      "wave": 8,
+      "wave": 9,
       "status": "not_started",
       "currentOwner": null,
       "ownedPaths": [
@@ -441,7 +467,7 @@
         "D2",
         "V0"
       ],
-      "wave": 9,
+      "wave": 10,
       "status": "not_started",
       "currentOwner": null,
       "ownedPaths": [
@@ -463,7 +489,7 @@
         "A4",
         "V0"
       ],
-      "wave": 9,
+      "wave": 10,
       "status": "not_started",
       "currentOwner": null,
       "ownedPaths": [
@@ -488,7 +514,7 @@
         "A1",
         "V0"
       ],
-      "wave": 9,
+      "wave": 10,
       "status": "not_started",
       "currentOwner": null,
       "ownedPaths": [
@@ -512,7 +538,7 @@
         "S0",
         "V0"
       ],
-      "wave": 10,
+      "wave": 11,
       "status": "not_started",
       "currentOwner": null,
       "ownedPaths": [
@@ -542,7 +568,7 @@
         "A6",
         "V0"
       ],
-      "wave": 11,
+      "wave": 12,
       "status": "not_started",
       "currentOwner": null,
       "ownedPaths": [
@@ -563,7 +589,7 @@
       "dependencies": [
         "A7"
       ],
-      "wave": 12,
+      "wave": 13,
       "status": "not_started",
       "currentOwner": null,
       "ownedPaths": [
@@ -588,7 +614,7 @@
         "F0",
         "T1"
       ],
-      "wave": 13,
+      "wave": 14,
       "status": "not_started",
       "currentOwner": null,
       "ownedPaths": [
@@ -611,7 +637,7 @@
       "dependencies": [
         "Q0"
       ],
-      "wave": 14,
+      "wave": 15,
       "status": "not_started",
       "currentOwner": null,
       "ownedPaths": [
