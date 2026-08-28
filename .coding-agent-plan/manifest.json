@@ -6,8 +6,8 @@
   "generatedSummary": ".coding-agent-implementation-plan.md",
   "architecture": ".coding-agent-plan/architecture.md",
   "reviewedHeads": {
-    "agents": "e25a297734c05dbd80b38df6e007ad760236789b",
-    "agent-core": "44c5e19b85a755609697b36b83c36066a021df25",
+    "agents": "f0c0873ba14aa5c30f5fb8b36f22c3b7912e2814",
+    "agent-core": "50749d7eeb9626e936dd3522c7d371ea5f9b36b8",
     "terminal-ui": "d83d01432056470d17f42793bb83f6d7c93e595d",
     "sandbox": "d2b79bf82766bb5832ed20bd1c9bc653f90c30c2"
   },
@@ -108,18 +108,20 @@
         "L0"
       ],
       "wave": 1,
-      "status": "done",
-      "currentOwner": null,
+      "status": "current",
+      "currentOwner": "codex/root",
       "ownedPaths": [
         "agents:coding-agent/package.json",
-        "agents:package-lock.json"
+        "agents:package-lock.json",
+        "agents:coding-agent/src/tui/**",
+        "agents:coding-agent/test/coding-agent-tui-*.test.js"
       ],
       "specification": ".coding-agent-plan/nodes/T0.md",
       "decisions": [
         ".coding-agent-plan/decisions/adversarial-review.md"
       ],
       "evidence": ".coding-agent-plan/evidence/T0.md",
-      "lastVerifiedCommit": "f4ff3b7a5dd87067c6b028ba5e58a65f244400d1"
+      "lastVerifiedCommit": null
     },
     {
       "id": "E0",
@@ -129,19 +131,23 @@
         "R0"
       ],
       "wave": 2,
-      "status": "current",
-      "currentOwner": "codex/root",
+      "status": "done",
+      "currentOwner": null,
       "ownedPaths": [
+        "agent-core:packages/effects/**",
         "agent-core:packages/model/**",
         "agent-core:packages/tools/**",
-        "agent-core:packages/runtime/src/effects/**"
+        "agent-core:packages/runtime/src/effects/**",
+        "agent-core:packages/runtime/src/orchestration/tool-execution.ts",
+        "agent-core:packages/runtime/src/agent-runtime.ts",
+        "agent-core:tests/effects.test.js"
       ],
       "specification": ".coding-agent-plan/nodes/E0.md",
       "decisions": [
         ".coding-agent-plan/decisions/adversarial-review.md"
       ],
       "evidence": ".coding-agent-plan/evidence/E0.md",
-      "lastVerifiedCommit": null
+      "lastVerifiedCommit": "50749d7eeb9626e936dd3522c7d371ea5f9b36b8"
     },
     {
       "id": "A1",
