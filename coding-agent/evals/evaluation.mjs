@@ -24,7 +24,7 @@ export function taskDigest(task) {
   return `sha256:${sha256(canonicalJson(task))}`;
 }
 
-export function gradeTask({ task, beforeFiles, afterFiles, stdout, exitCode, abruptInitialExit }) {
+export function gradeTask({ task, beforeFiles, afterFiles, stdout, exitCode, abruptInitialExit, recoveryGenerationRequests }) {
   const changedPaths = changedFilePaths(beforeFiles, afterFiles);
   const allowed = new Set(task.expected.allowedChangedPaths);
   const forbidden = new Set(task.expected.forbiddenChangedPaths);
@@ -45,9 +45,11 @@ export function gradeTask({ task, beforeFiles, afterFiles, stdout, exitCode, abr
     alternative.every((value) => normalizedOutput.includes(value.toLowerCase()))
   );
   criteria.push(criterion('response-evidence', responseMatched, responseMatched ? 'matched' : 'no required evidence term'));
-  if (task.expected.requiresAbruptInitialExit) {
+  if (task.expected.recovery !== undefined) {
     criteria.push(criterion('application-process-recovery', abruptInitialExit === true,
       abruptInitialExit === true ? 'abrupt initial exit and resumed terminal' : 'missing abrupt initial exit'));
+    criteria.push(criterion('provider-request-not-replayed', recoveryGenerationRequests === task.expected.recovery.generationRequests,
+      `generation requests=${String(recoveryGenerationRequests)}; expected=${String(task.expected.recovery.generationRequests)}`));
   }
   const passed = criteria.every((value) => value.passed);
   return Object.freeze({
@@ -379,6 +381,7 @@ function parseTask(value, split) {
   if (value.dirtyFiles !== undefined) stringMap(value.dirtyFiles, 'task dirty files');
   const expected = value.expected;
   parseExpected(expected, `task ${value.id} expected result`);
+  if ((value.execution === 'recover-before-generation') !== (expected.recovery !== undefined)) throw new Error(`Task ${value.id} must bind recovery expectations exactly when using recovery execution.`);
   if (expected.allowedChangedPaths.some((path) => expected.forbiddenChangedPaths.includes(path))) throw new Error(`Task ${value.id} has contradictory path authority.`);
   return Object.freeze({
     schemaVersion: 1,
@@ -399,7 +402,7 @@ function parseTask(value, split) {
       absentPaths: Object.freeze([...expected.absentPaths]),
       responseEvidence: Object.freeze(expected.responseEvidence.map((alternative) => Object.freeze([...alternative]))),
       exitCodes: Object.freeze([...expected.exitCodes]),
-      ...(expected.requiresAbruptInitialExit === undefined ? {} : { requiresAbruptInitialExit: expected.requiresAbruptInitialExit })
+      ...(expected.recovery === undefined ? {} : { recovery: Object.freeze({ generationRequests: expected.recovery.generationRequests }) })
     })
   });
 }
@@ -541,13 +544,15 @@ function revision(value, label) {
 }
 
 function parseExecution(value) {
-  exactKeys(value, ['mode', 'permissionMode', 'startedAt', 'elapsedMs', 'exitCode', 'signal', 'abruptInitialExit', 'terminal', 'ledgerSha256', 'changeReportSha256', 'stdoutSha256', 'stderrSha256'], 'execution evidence');
+  exactKeys(value, ['mode', 'permissionMode', 'startedAt', 'elapsedMs', 'exitCode', 'signal', 'abruptInitialExit', 'recoveryGenerationRequests', 'terminal', 'ledgerSha256', 'changeReportSha256', 'stdoutSha256', 'stderrSha256'], 'execution evidence');
   if (value.mode !== 'normal' && value.mode !== 'recover-before-generation') throw new Error('execution mode is invalid.');
   if (!['review', 'edit', 'develop'].includes(value.permissionMode)) throw new Error('permission mode is invalid.');
   isoDate(value.startedAt, 'execution start'); nonnegative(value.elapsedMs, 'elapsedMs');
   if (value.exitCode !== null && !Number.isSafeInteger(value.exitCode)) throw new Error('exitCode is invalid.');
   if (value.signal !== null && typeof value.signal !== 'string') throw new Error('signal is invalid.');
   if (typeof value.abruptInitialExit !== 'boolean') throw new Error('abruptInitialExit is invalid.');
+  if (value.recoveryGenerationRequests !== null && (!Number.isSafeInteger(value.recoveryGenerationRequests) || value.recoveryGenerationRequests < 0)) throw new Error('recoveryGenerationRequests is invalid.');
+  if (value.mode === 'normal' && value.recoveryGenerationRequests !== null) throw new Error('Normal execution cannot record recovery generation requests.');
   parseTerminal(value.terminal);
   for (const key of ['ledgerSha256', 'changeReportSha256', 'stdoutSha256', 'stderrSha256']) digest(value[key], key);
 }
@@ -561,7 +566,7 @@ function parseTerminal(value) {
 }
 
 function parseExpected(expected, label) {
-  exactKeys(expected, ['allowedChangedPaths', 'forbiddenChangedPaths', 'files', 'absentPaths', 'responseEvidence', 'exitCodes', 'requiresAbruptInitialExit'], label, ['requiresAbruptInitialExit']);
+  exactKeys(expected, ['allowedChangedPaths', 'forbiddenChangedPaths', 'files', 'absentPaths', 'responseEvidence', 'exitCodes', 'recovery'], label, ['recovery']);
   stringArray(expected.allowedChangedPaths, 'allowed changed paths');
   stringArray(expected.forbiddenChangedPaths, 'forbidden changed paths');
   if (expected.allowedChangedPaths.some((path) => expected.forbiddenChangedPaths.includes(path))) throw new Error(`${label} has contradictory path authority.`);
@@ -573,7 +578,10 @@ function parseExpected(expected, label) {
     stringArray(alternative, 'response evidence alternative');
   }
   if (!Array.isArray(expected.exitCodes) || expected.exitCodes.length === 0 || expected.exitCodes.some((code) => !Number.isSafeInteger(code))) throw new Error(`${label} has invalid exit codes.`);
-  if (expected.requiresAbruptInitialExit !== undefined && typeof expected.requiresAbruptInitialExit !== 'boolean') throw new Error(`${label} has an invalid recovery expectation.`);
+  if (expected.recovery !== undefined) {
+    exactKeys(expected.recovery, ['generationRequests'], `${label} recovery`);
+    positiveInteger(expected.recovery.generationRequests, `${label} recovery generation requests`);
+  }
 }
 
 function parseUsage(value) {

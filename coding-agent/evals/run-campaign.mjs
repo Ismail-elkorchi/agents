@@ -30,7 +30,6 @@ const cli = path.join(repositoryRoot, 'coding-agent/dist/index.js');
 const developmentTasksPath = path.join(import.meta.dirname, 'tasks/development.json');
 const holdoutTasksPath = path.join(import.meta.dirname, 'tasks/holdout.json');
 const policyPath = path.join(import.meta.dirname, 'policy.json');
-const codexUpstream = new URL('https://chatgpt.com/backend-api/');
 const lunaDocumentation = 'https://developers.openai.com/api/docs/models/gpt-5.6-luna';
 
 const options = parseArguments(process.argv.slice(2));
@@ -135,8 +134,9 @@ async function runEvaluation({ campaignId: currentCampaignId, task, repetition, 
   const start = Date.now();
   const evaluationRunId = `${task.split}-${task.id}-${String(repetition)}-${randomUUID()}`;
   let abruptInitialExit = false;
+  let recoveryGenerationRequests = null;
   let result = { exitCode: null, signal: null, stdout: '', stderr: '', timedOut: false };
-  let recoveryProxy;
+  let recoverySentinel;
   const runtimeConfiguration = configuration(task, campaignOptions.model, campaignOptions.reasoningEffort);
   const taskPolicyRevision = await revisionFromInputs([
     ...fixed.policyRevision.inputs,
@@ -158,24 +158,25 @@ async function runEvaluation({ campaignId: currentCampaignId, task, repetition, 
     if (trustResult.exitCode !== 0) throw new Error(`Failed to trust evaluation workspace: ${trustResult.stderr}`);
 
     if (task.execution === 'recover-before-generation') {
-      recoveryProxy = await createCodexRecoveryProxy();
-      recoveryProxy.blockNextGeneration();
-      const initial = spawnCapturedControllable(cliArguments(workspace, stateRoot, recoveryProxy.endpoint, campaignOptions,
+      recoverySentinel = await createCodexRecoverySentinel();
+      recoverySentinel.blockNextGeneration();
+      const initial = spawnCapturedControllable(cliArguments(workspace, stateRoot, recoverySentinel.endpoint, campaignOptions,
         ['exec', task.prompt, '--permissions', task.permissionMode]), campaignOptions.timeoutMs);
-      await recoveryProxy.waitForBlockedGeneration(30_000);
+      await recoverySentinel.waitForBlockedGeneration(30_000);
       initial.killAbruptly();
       const interrupted = await initial.result;
       abruptInitialExit = interrupted.signal === 'SIGKILL' || (process.platform === 'win32' && interrupted.exitCode !== 0);
-      recoveryProxy.releaseBlockedGeneration();
-      result = await spawnCaptured(cliArguments(workspace, stateRoot, recoveryProxy.endpoint, campaignOptions,
+      recoverySentinel.releaseBlockedGeneration();
+      result = await spawnCaptured(cliArguments(workspace, stateRoot, recoverySentinel.endpoint, campaignOptions,
         ['exec', '--resume', '--permissions', task.permissionMode]), campaignOptions.timeoutMs);
+      recoveryGenerationRequests = recoverySentinel.generationRequests();
     } else {
       result = await spawnCaptured(cliArguments(workspace, stateRoot, undefined, campaignOptions,
         ['exec', task.prompt, '--permissions', task.permissionMode]), campaignOptions.timeoutMs);
     }
 
     const afterFiles = await snapshotFiles(workspace);
-    let grade = gradeTask({ task, beforeFiles, afterFiles, stdout: result.stdout, exitCode: result.exitCode, abruptInitialExit });
+    let grade = gradeTask({ task, beforeFiles, afterFiles, stdout: result.stdout, exitCode: result.exitCode, abruptInitialExit, recoveryGenerationRequests });
     if (result.timedOut) grade = { ...grade, outcome: 'inconclusive' };
     const ledgerPath = matchLine(result.stderr, /^Ledger: (.+)$/mu);
     const changeReportPath = await oneOptionalFile(path.join(stateRoot, 'run-change-reports'));
@@ -206,6 +207,7 @@ async function runEvaluation({ campaignId: currentCampaignId, task, repetition, 
         exitCode: result.exitCode,
         signal: result.signal,
         abruptInitialExit,
+        recoveryGenerationRequests,
         terminal: terminalFromOutput(result.stdout),
         ledgerSha256: digest(ledgerText),
         changeReportSha256: digest(changeReportText),
@@ -239,9 +241,9 @@ async function runEvaluation({ campaignId: currentCampaignId, task, repetition, 
     validateEvaluationRecord(record);
     return record;
   } finally {
-    recoveryProxy?.releaseBlockedGeneration();
+    recoverySentinel?.releaseBlockedGeneration();
     try {
-      if (recoveryProxy) await recoveryProxy.close();
+      if (recoverySentinel) await recoverySentinel.close();
     } finally {
       await rm(parent, { recursive: true, force: true });
     }
@@ -347,7 +349,7 @@ function unavailableRecord({ campaignId: currentCampaignId, evaluationRunId, tas
     },
     execution: {
       mode: task.execution, permissionMode: task.permissionMode, startedAt, elapsedMs,
-      exitCode: result.exitCode, signal: result.signal, abruptInitialExit, terminal: null,
+      exitCode: result.exitCode, signal: result.signal, abruptInitialExit, recoveryGenerationRequests: null, terminal: null,
       ledgerSha256: digest(''), changeReportSha256: digest(''), stdoutSha256: digest(result.stdout), stderrSha256: digest(result.stderr)
     },
     usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
@@ -406,7 +408,7 @@ function cliArguments(workspace, stateRoot, endpoint, campaignOptions, command) 
 
 function providerBinding(provider, executionMode) {
   return executionMode === 'recover-before-generation'
-    ? { ...provider, endpointClass: 'local-recovery-proxy-to-chatgpt-subscription' }
+    ? { ...provider, endpointClass: 'local-recovery-sentinel' }
     : { ...provider, endpointClass: 'chatgpt-subscription-direct' };
 }
 
@@ -471,43 +473,35 @@ function spawnCapturedControllable([executable, ...args], timeoutMs) {
   return { killAbruptly: () => child.kill(process.platform === 'win32' ? undefined : 'SIGKILL'), result };
 }
 
-async function createCodexRecoveryProxy() {
-  const upstreamRequests = new Set();
+async function createCodexRecoverySentinel() {
   let blockGeneration = false;
+  let generationRequests = 0;
   let blockedResolve;
   let releaseResolve;
   let blocked = Promise.resolve();
   let release = Promise.resolve();
   const server = createServer(async (request, response) => {
-    const controller = new AbortController();
-    const abortUpstream = () => controller.abort();
-    upstreamRequests.add(controller);
-    response.once('close', abortUpstream);
     try {
-      const body = await readRequest(request);
-      if (request.url?.endsWith('/codex/responses') && blockGeneration) {
+      await drainRequest(request);
+      if (!request.url?.endsWith('/codex/responses')) {
+        response.writeHead(404, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ error: 'Unexpected recovery-sentinel route.' }));
+        return;
+      }
+      generationRequests += 1;
+      if (blockGeneration) {
         blockGeneration = false;
         blockedResolve?.();
         await release;
         if (response.destroyed) return;
       }
-      const target = new URL((request.url ?? '/').replace(/^\//u, ''), codexUpstream);
-      const headers = new Headers();
-      for (const [name, value] of Object.entries(request.headers)) {
-        if (value !== undefined && !['host', 'connection', 'content-length'].includes(name)) headers.set(name, Array.isArray(value) ? value.join(', ') : value);
-      }
-      const upstreamResponse = await fetch(target, { method: request.method, headers, signal: controller.signal, ...(body.length === 0 ? {} : { body }) });
-      response.writeHead(upstreamResponse.status, Object.fromEntries(upstreamResponse.headers.entries()));
-      if (upstreamResponse.body) for await (const chunk of upstreamResponse.body) response.write(chunk);
-      response.end();
+      response.writeHead(502, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ error: 'Recovery sentinel never forwards provider requests.' }));
     } catch (error) {
       if (!response.destroyed) {
         if (!response.headersSent) response.writeHead(502, { 'content-type': 'application/json' });
         response.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
       }
-    } finally {
-      response.off('close', abortUpstream);
-      upstreamRequests.delete(controller);
     }
   });
   await new Promise((resolve, reject) => {
@@ -515,7 +509,7 @@ async function createCodexRecoveryProxy() {
     server.listen({ host: '127.0.0.1', port: 0 }, resolve);
   });
   const address = server.address();
-  if (address === null || typeof address === 'string') throw new Error('OpenAI Codex recovery proxy did not bind a TCP port.');
+  if (address === null || typeof address === 'string') throw new Error('OpenAI Codex recovery sentinel did not bind a TCP port.');
   return {
     endpoint: `http://127.0.0.1:${String(address.port)}`,
     blockNextGeneration() {
@@ -525,8 +519,8 @@ async function createCodexRecoveryProxy() {
     },
     waitForBlockedGeneration(timeoutMs) { return withTimeout(blocked, timeoutMs, 'OpenAI Codex request was not observed before recovery timeout.'); },
     releaseBlockedGeneration() { releaseResolve?.(); },
+    generationRequests: () => generationRequests,
     close: () => {
-      for (const controller of upstreamRequests) controller.abort();
       return new Promise((resolve, reject) => {
         server.close((error) => error === undefined ? resolve() : reject(error));
         server.closeAllConnections();
@@ -628,10 +622,10 @@ async function gitStatus(root) { return (await runFile('git', ['status', '--porc
 function digest(value) { return `sha256:${sha256(value)}`; }
 function matchLine(value, pattern) { return pattern.exec(value)?.[1]?.trim(); }
 
-async function readRequest(request) {
-  const chunks = [];
-  for await (const chunk of request) chunks.push(Buffer.from(chunk));
-  return Buffer.concat(chunks);
+async function drainRequest(request) {
+  for await (const _chunk of request) {
+    // The recovery sentinel observes delivery without retaining credentials or request content.
+  }
 }
 
 function withTimeout(promise, timeoutMs, message) {

@@ -45,7 +45,8 @@ test('machine grading fails forbidden mutations independently of model prose', a
     afterFiles: { ...beforeFiles, 'src/target.js': "export const color = 'blue';\n" },
     stdout: 'Changed target.js to blue.',
     exitCode: 0,
-    abruptInitialExit: false
+    abruptInitialExit: false,
+    recoveryGenerationRequests: null
   });
   assert.equal(passing.outcome, 'passed');
 
@@ -59,11 +60,30 @@ test('machine grading fails forbidden mutations independently of model prose', a
     },
     stdout: 'Changed only target.js to blue.',
     exitCode: 0,
-    abruptInitialExit: false
+    abruptInitialExit: false,
+    recoveryGenerationRequests: null
   });
   assert.equal(failing.outcome, 'failed');
   assert.equal(failing.forbiddenMutationObserved, true);
   assert.deepEqual(failing.changedPaths, ['src/sibling.js', 'src/target.js']);
+});
+
+test('recovery grading requires an explicit unknown outcome without provider replay', async () => {
+  const tasks = await loadTaskCorpus(taskPaths);
+  const task = tasks.find((candidate) => candidate.id === 'process-recovery');
+  const input = {
+    task,
+    beforeFiles: task.files,
+    afterFiles: task.files,
+    stdout: 'Execution: Waiting for recovery decision\nReason: Provider outcome unknown\n',
+    exitCode: 7,
+    abruptInitialExit: true,
+    recoveryGenerationRequests: 1
+  };
+  assert.equal(gradeTask(input).outcome, 'passed');
+  const replayed = gradeTask({ ...input, recoveryGenerationRequests: 2 });
+  assert.equal(replayed.outcome, 'failed');
+  assert.equal(replayed.criteria.find((criterion) => criterion.id === 'provider-request-not-replayed').passed, false);
 });
 
 test('Wilson distributions retain non-measured and individual outcomes', () => {
@@ -168,7 +188,7 @@ function record(evaluationRunId, split, category, taskId, repetition, outcome) {
     },
     execution: {
       mode: 'normal', permissionMode: 'edit', startedAt: '2026-08-28T00:00:00.000Z', elapsedMs: 1,
-      exitCode: 0, signal: null, abruptInitialExit: false, terminal: null,
+      exitCode: 0, signal: null, abruptInitialExit: false, recoveryGenerationRequests: null, terminal: null,
       ledgerSha256: digest('ledger'), changeReportSha256: digest('report'), stdoutSha256: digest('stdout'), stderrSha256: digest('stderr')
     },
     usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },

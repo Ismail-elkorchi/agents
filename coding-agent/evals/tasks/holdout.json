@@ -58,7 +58,7 @@
     },
     {
       "id": "process-recovery",
-      "version": 1,
+      "version": 2,
       "category": "recovery",
       "execution": "recover-before-generation",
       "permissionMode": "review",
@@ -70,9 +70,9 @@
         "forbiddenChangedPaths": ["src/state.js"],
         "files": {},
         "absentPaths": [],
-        "responseEvidence": [["prior"], ["before"], ["increment"]],
-        "exitCodes": [0],
-        "requiresAbruptInitialExit": true
+        "responseEvidence": [["waiting for recovery decision", "provider outcome unknown"]],
+        "exitCodes": [7],
+        "recovery": {"generationRequests": 1}
       }
     },
     {
