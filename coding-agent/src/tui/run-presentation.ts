@@ -45,7 +45,6 @@ function failureHeadline(reason: AgentTerminalSnapshot['terminationReason']): st
     case 'empty_response': return 'No answer';
     case 'malformed_response': return 'Malformed answer';
     case 'limit_exhausted': return 'Run limit reached';
-    case 'uncertain_tool_effect': return 'Unsafe retry refused';
     default: return 'Run failed';
   }
 }

@@ -45,7 +45,7 @@ Input is parsed and canonicalized before authorization. When a call requires app
 const result = await runtime.run({ task: 'update the workspace' }).result;
 if (result.state === 'suspended') {
   const approval = result.pendingApprovals[0];
-  const resumedControl = await reopenedRuntime.resumeApproval({
+  const resumedControl = await reopenedRuntime.resolveApproval({
     runId: result.runId,
     approvalId: approval.approvalId,
     fingerprint: approval.fingerprint,
