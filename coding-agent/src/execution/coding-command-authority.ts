@@ -111,7 +111,10 @@ function validatePrepared(prepared: SandboxPreparedCommand): void {
     || !summary.execution.environmentNames.includes('CI')) {
     throw new Error('Sandbox command preparation has an unexpected environment.');
   }
-  if (enforcement.guarantees.some((fact) => fact.status !== 'satisfied')) throw new Error('Sandbox command preparation contains an unsatisfied enforcement guarantee.');
+  for (const required of LINUX_PROCESS_BASELINE_REQUIREMENTS.required) {
+    const fact = enforcement.guarantees.find((candidate) => candidate.id === required);
+    if (fact?.status !== 'satisfied') throw new Error(`Sandbox command preparation did not satisfy required guarantee ${required}.`);
+  }
 }
 
 function targetDirectory(workspacePath: string): string {
