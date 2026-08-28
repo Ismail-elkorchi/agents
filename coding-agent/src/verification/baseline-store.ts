@@ -53,6 +53,17 @@ export async function loadOrCaptureVerificationBaseline(input: {
   return snapshot;
 }
 
+export async function deleteVerificationBaseline(state: PrivateStateDirectory, runId: string): Promise<void> {
+  const directory = baselineDirectory(runId);
+  const stored = await state.read(`${directory}/manifest.json`);
+  if (stored === undefined) return;
+  const manifest = decodeManifest(JSON.parse(stored), runId);
+  for (let index = 0; index < manifest.chunkCount; index += 1) {
+    await state.delete(`${directory}/entries-${String(index)}.json`);
+  }
+  await state.delete(`${directory}/manifest.json`);
+}
+
 async function loadBaseline(
   state: PrivateStateDirectory,
   directory: string,

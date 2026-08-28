@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { WorkspaceFileRoot } from '@agent-core/tools-local';
@@ -77,6 +77,7 @@ test('one run keeps its original verification baseline across process restart', 
 
 test('configured checks reject changed or mutating verification oracles', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'coding-agent-oracle-'));
+  const runtimeDirectory = await mkdtemp(path.join(tmpdir(), 'coding-agent-oracle-runtime-'));
   await mkdir(path.join(directory, 'test'));
   await writeFile(path.join(directory, 'source.js'), 'export const value = 1;\n');
   await writeFile(path.join(directory, 'test', 'source.test.js'), 'assert(value === 1);\n');
@@ -85,8 +86,7 @@ test('configured checks reject changed or mutating verification oracles', async 
     const baseline = await captureWorkspaceSnapshot(root);
     const proposals = configuredCheckProposals(configuration('node test/source.test.js'));
     let calls = 0;
-    const commandExecution = commandAuthority(async () => { calls += 1; return commandResult(); });
-    const [check] = createConfiguredChecks({ proposals, root, baseline, commandExecution, commandYieldMs: 0 });
+    const [check] = createConfiguredChecks({ proposals, root, baseline, runtimeDirectory, createCommandExecution: async () => commandAuthority(async () => { calls += 1; return commandResult(); }), commandYieldMs: 0 });
     assert.ok(check.implementationId.startsWith('coding-agent.command-check.v1:'));
     await writeFile(path.join(directory, 'test', 'source.test.js'), 'assert(true);\n');
     const changed = await check.prepare(context());
@@ -96,21 +96,30 @@ test('configured checks reject changed or mutating verification oracles', async 
 
     await writeFile(path.join(directory, 'test', 'source.test.js'), 'assert(value === 1);\n');
     let mutatingCalls = 0;
-    const mutatingAuthority = commandAuthority(async () => {
-      mutatingCalls += 1;
-      await writeFile(path.join(directory, 'generated.txt'), 'side effect\n');
-      return commandResult();
+    const [mutatingCheck] = createConfiguredChecks({
+      proposals,
+      root,
+      baseline,
+      runtimeDirectory,
+      createCommandExecution: async ({ root: verifierRoot }) => commandAuthority(async () => {
+        mutatingCalls += 1;
+        await writeFile(path.join(verifierRoot.identity.canonicalPath, 'generated.txt'), 'side effect\n');
+        return commandResult();
+      }),
+      commandYieldMs: 0
     });
-    const [mutatingCheck] = createConfiguredChecks({ proposals, root, baseline, commandExecution: mutatingAuthority, commandYieldMs: 0 });
     const prepared = await mutatingCheck.prepare(context());
     assert.equal(typeof prepared.start, 'function');
     const mutating = await prepared.start(context().signal);
-    assert.equal(mutating.verdict, 'unknown');
-    assert.equal(mutating.output.classification, 'candidate_not_exact');
+    await prepared.release();
+    assert.equal(mutating.verdict, 'passed');
+    assert.deepEqual(mutating.output.verifierWorkspaceChanges, ['generated.txt']);
     assert.equal(mutatingCalls, 1);
+    await assert.rejects(access(path.join(directory, 'generated.txt')));
   } finally {
     root.close();
     await rm(directory, { recursive: true, force: true });
+    await rm(runtimeDirectory, { recursive: true, force: true });
   }
 });
 
@@ -131,6 +140,7 @@ test('workspace aliases make verification coverage explicitly partial', async ()
 
 test('verification results distinguish coverage, failed checks, and unavailable execution', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'coding-agent-result-'));
+  const runtimeDirectory = await mkdtemp(path.join(tmpdir(), 'coding-agent-result-runtime-'));
   await writeFile(path.join(directory, 'source.js'), 'content\n');
   const root = WorkspaceFileRoot.adopt(directory);
   try {
@@ -141,11 +151,13 @@ test('verification results distinguish coverage, failed checks, and unavailable 
         proposals: configuredCheckProposals(configured),
         root,
         baseline,
-        commandExecution: commandAuthority(async () => result),
+        runtimeDirectory,
+        createCommandExecution: async () => commandAuthority(async () => result),
         commandYieldMs: 0
       });
       const prepared = await check.prepare(context());
-      return prepared.start(context().signal);
+      try { return await prepared.start(context().signal); }
+      finally { await prepared.release(); }
     };
 
     const targeted = await observe('targeted', commandResult());
@@ -164,6 +176,7 @@ test('verification results distinguish coverage, failed checks, and unavailable 
   } finally {
     root.close();
     await rm(directory, { recursive: true, force: true });
+    await rm(runtimeDirectory, { recursive: true, force: true });
   }
 });
 

@@ -11,6 +11,7 @@ import {
 import type { WorkspaceFileRoot } from '@agent-core/tools-local';
 import type { CodingAgentCheckConfiguration, CodingAgentConfiguration } from '../configuration.js';
 import type { SandboxCommandExecution } from '../execution/sandbox-command-execution.js';
+import { materializeVerificationCandidate } from './candidate-materialization.js';
 import {
   captureWorkspaceSnapshot,
   changedWorkspacePaths,
@@ -33,7 +34,11 @@ export function createConfiguredChecks(input: {
   readonly proposals: ReturnType<typeof configuredCheckProposals>;
   readonly root: WorkspaceFileRoot;
   readonly baseline: WorkspaceSnapshot;
-  readonly commandExecution: SandboxCommandExecution;
+  readonly runtimeDirectory: string;
+  readonly createCommandExecution: (input: {
+    readonly root: WorkspaceFileRoot;
+    readonly repositoryDirectory: string;
+  }) => Promise<SandboxCommandExecution>;
   readonly commandYieldMs: number;
 }): readonly AgentCheckDefinition[] {
   return Object.freeze(input.proposals.map(({ check, requirement }) => configuredCommandCheck(check, requirement, input)));
@@ -42,7 +47,7 @@ export function createConfiguredChecks(input: {
 function configuredCommandCheck(
   check: CodingAgentCheckConfiguration,
   requirement: 'required' | 'advisory',
-  input: Pick<Parameters<typeof createConfiguredChecks>[0], 'root' | 'baseline' | 'commandExecution' | 'commandYieldMs'>
+  input: Pick<Parameters<typeof createConfiguredChecks>[0], 'root' | 'baseline' | 'runtimeDirectory' | 'createCommandExecution' | 'commandYieldMs'>
 ): AgentCheckDefinition {
   const definition: AgentCheckDefinition = {
     id: check.id,
@@ -61,21 +66,47 @@ function configuredCommandCheck(
       if (changedVerifierDefinitions.length > 0) {
         return unknownSnapshot(check.command, input.baseline, candidate, 'Verifier definitions changed after the pre-edit oracle was captured.', candidateChanges, changedVerifierDefinitions);
       }
+      const materialization = await materializeVerificationCandidate({
+        source: input.root,
+        snapshot: candidate,
+        runtimeDirectory: input.runtimeDirectory,
+        runId: context.runId,
+        checkId: check.id
+      });
+      let commandExecution: SandboxCommandExecution;
+      try {
+        commandExecution = await input.createCommandExecution({
+          root: materialization.workspaceRoot,
+          repositoryDirectory: materialization.executionRepositoryDirectory
+        });
+      } catch (error) {
+        materialization.workspaceRoot.close();
+        throw error;
+      }
       const owner = verificationOwner(context.runId, context.turnId, check.id);
       const outputTokenBudget = Math.max(64, Math.ceil((check.maxOutputBytes ?? 64_000) / 4));
-      const prepared = await prepareCommandExecution(input.commandExecution, {
-        owner,
-        command: check.command,
-        workspacePath: '.',
-        pty: false,
-        timeoutMs: check.timeoutMs ?? 60_000,
-        yieldMs: input.commandYieldMs,
-        outputTokenBudget
-      });
-      const processId = input.commandExecution.executionId(owner);
+      let prepared: PreparedCommandExecution;
+      try {
+        prepared = await prepareCommandExecution(commandExecution, {
+          owner,
+          command: check.command,
+          workspacePath: '.',
+          pty: false,
+          timeoutMs: check.timeoutMs ?? 60_000,
+          yieldMs: input.commandYieldMs,
+          outputTokenBudget
+        });
+      } catch (error) {
+        await commandExecution.close();
+        materialization.workspaceRoot.close();
+        throw error;
+      }
+      const processId = commandExecution.executionId(owner);
       const expiresAt = prepared.authorization.expiresAt;
       if (typeof expiresAt !== 'string') {
-        await releasePreparedCommandExecution(input.commandExecution, prepared);
+        await releasePreparedCommandExecution(commandExecution, prepared);
+        await commandExecution.close();
+        materialization.workspaceRoot.close();
         throw new Error(`Sandbox preparation for ${check.id} has no recovery expiry.`);
       }
       return createAgentPreparedCheckEffect({
@@ -91,23 +122,29 @@ function configuredCommandCheck(
         },
         recovery: {
           kind: 'queryable',
-          service: input.commandExecution.descriptor.recoveryIdentity,
-          reconcilerId: input.commandExecution.descriptor.implementationId,
+          service: commandExecution.descriptor.recoveryIdentity,
+          reconcilerId: commandExecution.descriptor.implementationId,
           externalExecutionId: processId,
           expiresAt
         },
         start: async (signal) => {
-          const result = await completeCommand(input.commandExecution, prepared, owner, outputTokenBudget, input.commandYieldMs, signal);
-          return commandObservation(check, input.baseline, candidate, candidateChanges, result, await captureWorkspaceSnapshot(input.root, signal));
+          const result = await completeCommand(commandExecution, prepared, owner, outputTokenBudget, input.commandYieldMs, signal);
+          return commandObservation(check, input.baseline, candidate, candidateChanges, result, await captureWorkspaceSnapshot(materialization.workspaceRoot, signal));
         },
         reconcile: async (signal) => {
           if (signal.aborted) throw signal.reason;
-          const recovered = await input.commandExecution.reconcileExecution(owner, outputTokenBudget, input.commandYieldMs);
+          const recovered = await commandExecution.reconcileExecution(owner, outputTokenBudget, input.commandYieldMs);
           if (recovered.status !== 'settled') return recovered;
-          const observation = commandObservation(check, input.baseline, candidate, candidateChanges, recovered.result, await captureWorkspaceSnapshot(input.root, signal));
+          const observation = commandObservation(check, input.baseline, candidate, candidateChanges, recovered.result, await captureWorkspaceSnapshot(materialization.workspaceRoot, signal));
           return Object.freeze({ status: 'settled' as const, observation });
         },
-        release: () => releasePreparedCommandExecution(input.commandExecution, prepared)
+        release: async () => {
+          try { await releasePreparedCommandExecution(commandExecution, prepared); }
+          finally {
+            try { await commandExecution.close(); }
+            finally { materialization.workspaceRoot.close(); }
+          }
+        }
       });
     }
   };
@@ -138,8 +175,13 @@ function commandObservation(
   result: CommandExecutionResult,
   after: WorkspaceSnapshot
 ): AgentCheckObservation {
-  if (after.coverage !== 'complete' || after.digest !== candidate.digest) {
-    return unknownSnapshot(check.command, baseline, after, 'The verifier mutated the workspace or the candidate changed while verification was running.', candidateChanges);
+  const verifierChanges = changedWorkspacePaths(candidate, after);
+  const changedVerifierDefinitions = verifierDefinitionPaths(verifierChanges);
+  if (after.coverage !== 'complete' || changedVerifierDefinitions.length > 0) {
+    return unknownSnapshot(check.command, baseline, candidate, 'The verifier changed its own definition or its isolated workspace could not be observed completely.', candidateChanges, changedVerifierDefinitions, {
+      verifierWorkspaceDigest: after.digest,
+      verifierWorkspaceChanges: JSON.stringify(boundedPaths(verifierChanges))
+    });
   }
   if (result.status !== 'exited') {
     return unknownSnapshot(check.command, baseline, after, `The verification process ended without a trustworthy exit result (${commandTermination(result)}).`, candidateChanges, [], {
@@ -159,6 +201,7 @@ function commandObservation(
       baselineOutcome: 'not_observed',
       candidateDigest: candidate.digest,
       candidateChanges: boundedPaths(candidateChanges),
+      verifierWorkspaceChanges: boundedPaths(verifierChanges),
       coverage: check.coverage,
       processId: result.processId,
       status: result.status,

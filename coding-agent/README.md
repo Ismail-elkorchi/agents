@@ -47,7 +47,10 @@ A trusted project may propose a narrower boundary:
   "instructions": [],
   "tools": { "enabled": ["read_files", "search_text", "apply_patch"] },
   "permissions": { "maximumMode": "edit", "requireApprovalFor": ["write", "delete"] },
-  "verification": { "required": [], "advisory": [] }
+  "verification": {
+    "required": [{ "id": "test", "command": "npm test", "coverage": "full" }],
+    "advisory": []
+  }
 }
 ```
 
@@ -84,6 +87,8 @@ coding-agent approval allow RUN_ID APPROVAL_ID FINGERPRINT --root . --config cod
 ```ts
 const checks = [{
   id: 'mentions-risk',
+  implementationId: 'my-application/mentions-risk@1',
+  kind: 'deterministic' as const,
   requirement: 'required' as const,
   timeoutMs: 2_000,
   async run({ candidate, signal }) {
@@ -95,7 +100,7 @@ const checks = [{
 }];
 ```
 
-Checks are read-only by default. In `develop` mode, configured commands use the same no-network Sandbox authority as command tools. A lower mode leaves command checks explicitly unavailable rather than running them on the host.
+Deterministic checks inspect only their admitted candidate and evidence. In `develop` mode, configured commands run through a durable no-network Sandbox execution against a private exact copy of the candidate, never the authoritative workspace. `coverage` is required and must be `targeted` or `full`; it describes what the command actually proves. Changes to tests, package scripts, compiler/build configuration, CI workflows, dependencies, or lockfiles make the configured check inconclusive instead of letting a modified verifier certify itself. A lower permission mode leaves command checks explicitly unavailable rather than running them on the host.
 
 ## Result semantics
 

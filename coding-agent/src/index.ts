@@ -43,6 +43,7 @@ import { createCodingCommandAuthority } from './execution/coding-command-authori
 import { parseCodingPermissionMode, resolveCodingAuthority, type CodingApprovalKind, type CodingPermissionMode } from './security/permission-mode.js';
 import { configuredCheckProposals, createConfiguredChecks } from './verification/configured-checks.js';
 import { loadOrCaptureVerificationBaseline } from './verification/baseline-store.js';
+import { deleteVerificationRunState } from './verification/run-cleanup.js';
 
 export {
   loadCodingAgentConfiguration,
@@ -303,7 +304,12 @@ async function createRuntime(
               runId: runtimeContext.runId,
               resuming: runtimeContext.resuming
             }),
-            commandExecution,
+            runtimeDirectory: workspace.runtimeDir,
+            createCommandExecution: ({ root, repositoryDirectory }) => createCodingCommandAuthority({
+              repositoryDirectory,
+              workspaceFileRoot: root,
+              state: openedWorkspace.privateState
+            }),
             commandYieldMs: localToolConfiguration.process.maxYieldMs
           })
           : Object.freeze([]);
@@ -357,6 +363,9 @@ async function createRuntime(
       },
       summarizeConversation: request => summarizeConversation(providerRuntime.provider, request.configuration.model, request.conversation)
     });
+    agent.subscribe((event) => event.type === 'run.completed' && event.result.state === 'ended'
+      ? deleteVerificationRunState({ state: openedWorkspace.privateState, runtimeDirectory: workspace.runtimeDir, runId: event.runId })
+      : undefined);
     if (options.branch) await agent.branchFrom(options.branch, 'cli branch');
     return {
       agent,
