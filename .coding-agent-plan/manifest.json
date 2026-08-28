@@ -9,7 +9,7 @@
     "agents": "559cb6f6ccbd44a0b30cedc8d1c22d0e298eec85",
     "agent-core": "bfefe709fb544c3324b3aa61e328a4c2737fc94c",
     "terminal-ui": "01277f04674c5f021cbe93dccfe378bacec7b632",
-    "sandbox": "f323ee5da7518b80c98842fc1d877ef7c5010062"
+    "sandbox": "bf15a9b7356b7547564352c5f027bcb6f2e82f42"
   },
   "nodes": [
     {
@@ -653,6 +653,11 @@
         "agent-core:scripts/**",
         "sandbox:scripts/**",
         "sandbox:.github/workflows/quality.yml",
+        "sandbox:docs/execution-repository.md",
+        "sandbox:packages/sandbox/src/execution-record.ts",
+        "sandbox:packages/sandbox/src/execution-repository.ts",
+        "sandbox:packages/sandbox/src/execution-worker.ts",
+        "sandbox:packages/sandbox/test/execution-repository.test.mjs",
         "terminal-ui:scripts/**"
       ],
       "specification": ".coding-agent-plan/nodes/Q0.md",
