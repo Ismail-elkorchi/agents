@@ -642,8 +642,8 @@
         "T1"
       ],
       "wave": 14,
-      "status": "current",
-      "currentOwner": "codex/root",
+      "status": "done",
+      "currentOwner": null,
       "ownedPaths": [
         "agents:scripts/**",
         "agents:package.json",
@@ -675,10 +675,11 @@
         "Q0"
       ],
       "wave": 15,
-      "status": "not_started",
-      "currentOwner": null,
+      "status": "current",
+      "currentOwner": "codex/root",
       "ownedPaths": [
-        "agents:coding-agent/evals/**"
+        "agents:coding-agent/evals/**",
+        "agents:coding-agent/test/real-model-evaluation.test.js"
       ],
       "specification": ".coding-agent-plan/nodes/Q1.md",
       "decisions": [
