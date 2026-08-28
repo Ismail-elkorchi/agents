@@ -6,7 +6,7 @@
   "generatedSummary": ".coding-agent-implementation-plan.md",
   "architecture": ".coding-agent-plan/architecture.md",
   "reviewedHeads": {
-    "agents": "9e33fecdac7f2941747c31d332a9c6defafba1bb",
+    "agents": "beaf00120d78ac1ec8070777becdc6c08ec9e131",
     "agent-core": "616a50d67bdd82a6691ab8dfcdbf67609460140d",
     "terminal-ui": "d83d01432056470d17f42793bb83f6d7c93e595d",
     "sandbox": "e82ff3dd94a7c87b14bd25665b8898ae3b081767"
@@ -448,12 +448,13 @@
         "A5"
       ],
       "wave": 9,
-      "status": "current",
-      "currentOwner": "codex/root",
+      "status": "done",
+      "currentOwner": null,
       "ownedPaths": [
         "agents:coding-agent/test/resilience.test.js",
         "agents:coding-agent/src/index.ts",
         "agents:coding-agent/README.md",
+        "agents:coding-agent/src/execution/coding-command-authority.ts",
         "agents:coding-agent/src/state/private-state.ts",
         "agents:coding-agent/src/workspace.ts",
         "agents:coding-agent/test/cli-bin.test.js",
@@ -466,7 +467,7 @@
         ".coding-agent-plan/decisions/adversarial-review.md"
       ],
       "evidence": ".coding-agent-plan/evidence/V0.md",
-      "lastVerifiedCommit": null
+      "lastVerifiedCommit": "beaf00120d78ac1ec8070777becdc6c08ec9e131"
     },
     {
       "id": "D3",
@@ -477,8 +478,8 @@
         "V0"
       ],
       "wave": 10,
-      "status": "not_started",
-      "currentOwner": null,
+      "status": "current",
+      "currentOwner": "codex/root",
       "ownedPaths": [
         "agent-core:packages/runtime/src/operation/tools/**"
       ],
