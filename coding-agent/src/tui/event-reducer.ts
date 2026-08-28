@@ -231,6 +231,7 @@ function phaseLabel(phase: AgentRunPhase): string {
     case 'executing_tools': return 'Using tools';
     case 'waiting_for_approval': return 'Approval required';
     case 'verifying': return 'Verifying';
+    case 'deciding': return 'Evaluating candidate';
     case 'finalizing': return 'Finishing';
     case 'ended': return 'Completed';
   }

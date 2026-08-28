@@ -45,6 +45,8 @@ function failureHeadline(reason: AgentTerminalSnapshot['terminationReason']): st
     case 'empty_response': return 'No answer';
     case 'malformed_response': return 'Malformed answer';
     case 'limit_exhausted': return 'Run limit reached';
+    case 'candidate_rejected': return 'Candidate rejected';
+    case 'disposition_inconclusive': return 'Candidate evaluation inconclusive';
     default: return 'Run failed';
   }
 }

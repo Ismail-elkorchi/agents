@@ -20,6 +20,7 @@ export interface CodingAgentLimitConfiguration {
   readonly modelTurns?: number;
   readonly totalToolCalls?: number;
   readonly repeatedIdenticalToolCalls?: number;
+  readonly candidateRevisions?: number;
   readonly elapsedMs?: number;
   readonly promptTokens?: number;
   readonly completionTokens?: number;
@@ -105,11 +106,13 @@ export function isCodingAgentProviderId(value: unknown): value is CodingAgentPro
 function instructionArray(value: unknown): value is readonly CodingAgentInstructionConfiguration[] { return Array.isArray(value) && value.length <= 32 && value.every(item => isRecord(item) && Object.keys(item).every((key) => key === 'path') && relativePath(item.path)); }
 function checkArray(value: unknown): value is readonly CodingAgentCheckConfiguration[] { return Array.isArray(value) && value.every(item => isRecord(item) && Object.keys(item).every((key) => ['id', 'command', 'coverage', 'timeoutMs', 'maxOutputBytes'].includes(key)) && typeof item.id === 'string' && item.id.length > 0 && typeof item.command === 'string' && item.command.length > 0 && (item.coverage === 'targeted' || item.coverage === 'full') && optionalPositive(item.timeoutMs) && optionalPositive(item.maxOutputBytes)); }
 function optionalPositive(value: unknown): boolean { return value === undefined || (typeof value === 'number' && Number.isInteger(value) && value > 0); }
+function optionalNonnegative(value: unknown): boolean { return value === undefined || (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0); }
 function validLimits(value: unknown): value is CodingAgentLimitConfiguration {
   if (!isRecord(value)) return false;
   const numeric = ['maxConcurrentToolCalls', 'modelTurns', 'totalToolCalls', 'repeatedIdenticalToolCalls', 'elapsedMs', 'promptTokens', 'completionTokens', 'activeImageCount', 'activeImageBytes', 'activeImageTokens', 'consecutiveProviderFailures', 'consecutiveToolFailures'];
-  if (Object.keys(value).some((key) => ![...numeric, 'knownCost'].includes(key))) return false;
+  if (Object.keys(value).some((key) => ![...numeric, 'candidateRevisions', 'knownCost'].includes(key))) return false;
   if (numeric.some((key) => value[key] !== undefined && !optionalPositive(value[key]))) return false;
+  if (!optionalNonnegative(value.candidateRevisions)) return false;
   return value.knownCost === undefined || (isRecord(value.knownCost) && typeof value.knownCost.amount === 'number' && Number.isFinite(value.knownCost.amount) && value.knownCost.amount > 0 && typeof value.knownCost.currency === 'string' && value.knownCost.currency.trim().length > 0);
 }
 function stringArray(value: unknown): value is readonly string[] { return Array.isArray(value) && value.every(item => typeof item === 'string' && item.length > 0); }
