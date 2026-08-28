@@ -74,6 +74,8 @@ export function parseCodingAgentConfiguration(input: unknown): CodingAgentConfig
   }
   const checkIds = verification.required.map((item) => item.id).concat(verification.advisory.map((item) => item.id));
   if (new Set(checkIds).size !== checkIds.length) throw new Error('Verification check IDs must be unique.');
+  const instructionPaths = value.instructions.map((item) => item.path);
+  if (new Set(instructionPaths).size !== instructionPaths.length) throw new Error('Workspace instruction paths must be unique.');
   return Object.freeze({
     version: 1,
     provider: value.provider,
@@ -92,7 +94,7 @@ function snapshotCheck(check: CodingAgentCheckConfiguration): CodingAgentCheckCo
 }
 
 export function isCodingAgentProviderId(value: unknown): value is CodingAgentProviderId { return value === 'ollama' || value === 'openrouter' || value === 'openai' || value === 'openai-codex'; }
-function instructionArray(value: unknown): value is readonly CodingAgentInstructionConfiguration[] { return Array.isArray(value) && value.every(item => isRecord(item) && Object.keys(item).every((key) => key === 'path') && relativePath(item.path)); }
+function instructionArray(value: unknown): value is readonly CodingAgentInstructionConfiguration[] { return Array.isArray(value) && value.length <= 32 && value.every(item => isRecord(item) && Object.keys(item).every((key) => key === 'path') && relativePath(item.path)); }
 function checkArray(value: unknown): value is readonly CodingAgentCheckConfiguration[] { return Array.isArray(value) && value.every(item => isRecord(item) && Object.keys(item).every((key) => ['id', 'command', 'timeoutMs', 'maxOutputBytes'].includes(key)) && typeof item.id === 'string' && item.id.length > 0 && typeof item.command === 'string' && item.command.length > 0 && optionalPositive(item.timeoutMs) && optionalPositive(item.maxOutputBytes)); }
 function optionalPositive(value: unknown): boolean { return value === undefined || (typeof value === 'number' && Number.isInteger(value) && value > 0); }
 function validLimits(value: unknown): value is CodingAgentLimitConfiguration {

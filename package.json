@@ -21,6 +21,7 @@
   "devDependencies": {
     "@agent-core/auth": "file:../agent-core/packages/auth",
     "@agent-core/evidence": "file:../agent-core/packages/evidence",
+    "@agent-core/effects": "file:../agent-core/packages/effects",
     "@agent-core/json": "file:../agent-core/packages/json",
     "@agent-core/model": "file:../agent-core/packages/model",
     "@agent-core/provider-ollama": "file:../agent-core/packages/providers/ollama",

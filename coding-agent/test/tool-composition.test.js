@@ -7,7 +7,7 @@ import { loadWorkspace } from '@ismail-elkorchi/coding-agent';
 import { LocalArtifactRepository } from '@agent-core/evidence/node';
 import { createLocalToolHost, TextPatchJournal, WorkspaceFileRoot } from '@agent-core/tools-local';
 import { createToolCall, prepareToolCall } from '@agent-core/tools';
-import { invokeToolCall, jsonToolCall } from './tool-call-helpers.js';
+import { invokePreparedForTest, invokeToolCall, jsonToolCall } from './tool-call-helpers.js';
 
 const owner = { runId: 'cli-composition-run', turnId: 'turn-1', requestAttempt: 1, toolBatchId: 'batch-1', callIndex: 0, toolAttempt: 1 };
 const codingTools = ['list_directory', 'find_files', 'read_files', 'search_text', 'apply_patch', 'exec_command', 'write_stdin', 'stop_process', 'view_image', 'read_artifact'];
@@ -72,11 +72,13 @@ test('local host exposes dry-run patching without a transaction directory and ga
   const dryContext = contextFor(withoutDirectory.services);
   const dryPrepared = await prepareToolCall(createToolCall({ name: 'apply_patch', input: { kind: 'json', value: { patch, dryRun: true } } }), withoutDirectory.tools, dryContext);
   assert.equal(dryPrepared.ok, true);
-  const dry = await dryPrepared.prepared.invoke(dryContext);
+  const dry = await invokePreparedForTest(dryPrepared.prepared, dryContext);
   assert.equal(dry.output.operationStatus, 'dry_run');
   const writePrepared = await prepareToolCall(createToolCall({ name: 'apply_patch', input: { kind: 'text', value: patch } }), withoutDirectory.tools, dryContext);
   assert.equal(writePrepared.ok, true);
-  await assert.rejects(writePrepared.prepared.invoke(dryContext), /patchJournal/u);
+  const missing = await invokePreparedForTest(writePrepared.prepared, dryContext);
+  assert.equal(missing.kind, 'failure');
+  assert.match(missing.summary, /patchJournal/u);
   await withoutDirectory.close();
 
   const patchJournalPath = path.join(root, 'patch-transactions');
@@ -93,7 +95,7 @@ test('local host exposes dry-run patching without a transaction directory and ga
   const writeContext = contextFor(withDirectory.services);
   const prepared = await prepareToolCall(createToolCall({ name: 'apply_patch', input: { kind: 'text', value: patch } }), withDirectory.tools, writeContext);
   assert.equal(prepared.ok, true);
-  const applied = await prepared.prepared.invoke(writeContext);
+  const applied = await invokePreparedForTest(prepared.prepared, writeContext);
   assert.equal(applied.output.operationStatus, 'applied');
   await withDirectory.close();
 });

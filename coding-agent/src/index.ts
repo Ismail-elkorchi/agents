@@ -4,7 +4,7 @@ import path from 'node:path';
 import type { Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { FileCredentialStore } from '@agent-core/auth';
-import { AgentOperationCoordinator, AgentRuntime, AgentSession, agentEventCodec, type AgentEvent, type AgentInstruction, type AgentProgressEvent, type AgentRunResult, type SessionConversationItem, type SessionDescriptor } from '@agent-core/runtime';
+import { AgentOperationCoordinator, AgentRuntime, AgentSession, agentEventCodec, type AgentEvent, type AgentProgressEvent, type AgentRunResult, type SessionConversationItem, type SessionDescriptor } from '@agent-core/runtime';
 import { JsonlSessionRepository } from '@agent-core/runtime/node';
 import { JsonlEventRepository, LocalArtifactRepository } from '@agent-core/evidence/node';
 import { type ModelProvider, type ModelReasoningEffort, type ModelReasoningRequest, SimpleTokenEstimator } from '@agent-core/model';
@@ -37,6 +37,8 @@ import {
 } from './tui/index.js';
 import { parseJsonValue } from '@agent-core/json';
 import { createTrustDecision } from './security/workspace-trust.js';
+import { loadRepositoryInstructions } from './instructions/repository-instructions.js';
+import { inspectRepositoryOrientation, repositoryOrientationContext } from './workspace/repository-orientation.js';
 
 export {
   loadCodingAgentConfiguration,
@@ -226,7 +228,8 @@ async function createRuntime(
   const existingRunIds = new Set(await events.listRunIds());
   const authority = resolveCliAuthority(options, projectExecutionPolicy);
   const checks = configuredChecks(projectExecutionPolicy ? options.configuration : undefined);
-  const instructions = await loadWorkspaceInstructions(openedWorkspace, options.configuration);
+  const instructionSet = await loadRepositoryInstructions(openedWorkspace, options.configuration?.instructions.map((instruction) => instruction.path));
+  const orientation = await inspectRepositoryOrientation(openedWorkspace, instructionSet, options.configuration);
   let localHost: LocalToolHost | undefined;
   try {
     await fs.mkdir(workspace.artifactsDir, { recursive: true, mode: 0o700 });
@@ -305,7 +308,8 @@ async function createRuntime(
               ? { decision: 'require_approval' as const, reason: `Workspace configuration requires approval for ${[...new Set(approvalAccesses)].join(', ')} access.${ambient ? ' This grants ambient process authority that can indirectly read, write, or delete files, access the network, and start child processes.' : ''}` }
               : { decision: 'allow' as const, reason: 'Allowed by workspace policy.' };
           },
-          ...(instructions.length > 0 ? { instructions } : {}),
+          instructions: instructionSet.instructions,
+          contextItems: Object.freeze([repositoryOrientationContext(orientation)]),
           ...(checks.length > 0 ? { checks } : {}),
           ...(projectExecutionPolicy && options.configuration?.limits ? { limits: options.configuration.limits } : {}),
           ...(authority.verificationCommands === 'ambient' ? { verification: { evidence: { read: () => Promise.resolve({ items: [], bytes: 0, truncated: false }), readArtifact: ref => artifactStore.readVerified(ref) }, runCommand: async (request, signal) => {
@@ -409,18 +413,6 @@ function renderConversationItem(item: SessionConversationItem): string {
     case 'observation': return `Tool observation (${item.runId}/${item.toolName}, ${item.ok ? 'ok' : 'failed'}): ${item.summary}${item.output === undefined ? '' : `\n${JSON.stringify(item.output)}`}`;
     case 'compaction': return `Previous semantic summary (${item.provider}/${item.model}): ${item.summary}`;
   }
-}
-
-async function loadWorkspaceInstructions(workspace: OpenCodingWorkspace, configuration: CodingAgentConfiguration | undefined): Promise<AgentInstruction[]> {
-  if (!configuration) return [];
-  return Promise.all(configuration.instructions.map(async (instruction, index) => {
-    const file = await workspace.fileRoot.openFile(instruction.path);
-    try {
-      const content = (await file.readAll(256 * 1024)).toString('utf8');
-      const adopted = workspace.security.adoptContent({ content, kind: 'instruction', sourceUri: `file:${file.path}`, scope: path.posix.dirname(file.path), maxBytes: 256 * 1024 });
-      return { id: `workspace-${String(index + 1)}-${adopted.provenance.sha256}`, content: adopted.content, role: 'environment', sourceUri: adopted.provenance.sourceUri, priority: 100 };
-    } finally { await file.close(); }
-  }));
 }
 
 function configuredChecks(configuration: CodingAgentConfiguration | undefined): AgentCheckDefinition[] {

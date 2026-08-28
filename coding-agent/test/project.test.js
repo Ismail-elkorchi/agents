@@ -64,6 +64,7 @@ test('workspace configuration validates first-party policy, checks, and exact li
   assert.throws(() => parseCodingAgentConfiguration({ ...configuration, limits: { mysteryLimit: 1 } }), /run limits/iu);
   assert.throws(() => parseCodingAgentConfiguration({ ...configuration, authorization: { allowedRisks: ['read'], requireApprovalFor: ['write'] } }), /Approval risks/u);
   assert.throws(() => parseCodingAgentConfiguration({ ...configuration, verification: { required: [{ id: 'same', command: 'true' }], advisory: [{ id: 'same', command: 'true' }] } }), /unique/u);
+  assert.throws(() => parseCodingAgentConfiguration({ ...configuration, instructions: [{ path: 'AGENTS.md' }, { path: 'AGENTS.md' }] }), /instruction paths must be unique/u);
   assert.throws(() => parseCodingAgentConfiguration({ ...configuration, tools: { enabled: [], unknown: true } }), /tool configuration/iu);
   let accessed = false;
   const accessor = { ...configuration };
