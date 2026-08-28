@@ -26,6 +26,7 @@ test('change reports preserve user baselines and distinguish exact mutations fro
     }
   };
   const final = snapshot('b', [
+    file('added.txt', hash('5'), 1),
     file('source.txt', hash('1'), 11),
     file('user.txt', hash('2'), 21),
     file('renamed.txt', hash('3'), 41),
@@ -35,11 +36,12 @@ test('change reports preserve user baselines and distinguish exact mutations fro
     receipt(10, [mutation('source.txt', 'update', hash('a'), hash('1'), 10, 11)]),
     receipt(20, [mutation('user.txt', 'update', hash('b'), hash('2'), 20, 21)]),
     receipt(30, [mutation('removed.txt', 'delete', hash('c'), undefined, 30, 0)]),
-    receipt(40, [{ ...mutation('moved.txt', 'move', hash('d'), hash('3'), 40, 41), destinationPath: 'renamed.txt' }])
+    receipt(40, [{ ...mutation('moved.txt', 'move', hash('d'), hash('3'), 40, 41), destinationPath: 'renamed.txt' }]),
+    receipt(50, [mutation('added.txt', 'add', undefined, hash('5'), 0, 1)])
   ]);
 
   assert.equal(report.coverage, 'complete');
-  assert.deepEqual(report.facts.structuredMutationPaths, ['moved.txt', 'removed.txt', 'renamed.txt', 'source.txt', 'user.txt']);
+  assert.deepEqual(report.facts.structuredMutationPaths, ['added.txt', 'moved.txt', 'removed.txt', 'renamed.txt', 'source.txt', 'user.txt']);
   assert.deepEqual(report.facts.externalOrConcurrentPaths, ['external.bin']);
   assert.equal(report.changes.find((change) => change.path === 'user.txt').versionControlBaseline, 'changed');
   assert.equal(report.changes.find((change) => change.path === 'user.txt').initial, 'existing');
