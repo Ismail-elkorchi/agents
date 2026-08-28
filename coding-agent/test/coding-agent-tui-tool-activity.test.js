@@ -12,7 +12,7 @@ test('tool activity collapses success, expands failure, and keeps bounded eviden
     eventSource: events,
     commandHandler: { execute: () => ({ message: 'Exiting.', exit: true }) }
   });
-  const running = runTui(app, host, { initialFocus: { kind: 'element', elementId: 'composer' } });
+  const running = runTui(app, { host });
   await waitFor(() => host.frames().length > 0);
 
   events.enqueue({ type: 'progress', event: toolStarted('call-ok', 'echo ok') });
@@ -42,7 +42,7 @@ function toolStarted(callId, command) {
     type: 'tool.started', ...identity(callId), toolName: 'exec_command',
     input: { id: callId, name: 'exec_command', input: { kind: 'json', value: { command } } },
     fingerprint: `fingerprint-${callId}`,
-    effects: { accesses: [{ mode: 'execute', scope: 'workspace/command' }], lockScopes: ['workspace/command'], idempotency: 'non_idempotent' }
+    effects: { accesses: [{ mode: 'execute', scope: 'workspace/command' }], lockScopes: ['workspace/command'], recovery: { kind: 'unknown' } }
   };
 }
 

@@ -130,7 +130,15 @@ function formatToolInput(call: ToolCall): string {
 function formatEffects(effects: ToolEffects): string {
   const accesses = effects.accesses.map((access) => `${humanize(access.mode)} ${access.scope}`).join(', ');
   const locks = effects.lockScopes.length > 0 ? ` · locks ${effects.lockScopes.join(', ')}` : '';
-  return `Effects\n${accesses || 'none'}${locks} · ${humanize(effects.idempotency)}`;
+  return `Effects\n${accesses || 'none'}${locks} · ${formatRecovery(effects.recovery)}`;
+}
+
+function formatRecovery(recovery: ToolEffects['recovery']): string {
+  if (recovery.kind === 'unknown') return 'recovery unknown';
+  if (recovery.kind === 'preconditioned_reexecution') return `re-executable with ${String(recovery.preconditions.length)} precondition${recovery.preconditions.length === 1 ? '' : 's'}`;
+  if (recovery.kind === 'queryable') return `queryable until ${recovery.expiresAt}`;
+  if (recovery.kind === 'idempotency_key') return `parameter-bound idempotency until ${recovery.expiresAt}`;
+  return `journal-reconcilable ${recovery.transactionId}`;
 }
 
 function formatOutput(output: ToolObservation['output']): string | undefined {

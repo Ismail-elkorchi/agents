@@ -104,13 +104,15 @@ function inspectRequest(request: ModelRequest, maxBytes: number): { readonly byt
 function wrapProvider(provider: ModelProvider, admit: (request: ModelRequest) => void): ModelProvider {
   const stream = provider.stream?.bind(provider);
   const createSession = provider.createSession?.bind(provider);
+  const requestRecovery = provider.requestRecovery?.bind(provider);
   return Object.freeze({
     id: provider.id,
     describe: () => provider.describe(),
     describeModel: (model: string) => provider.describeModel(model),
     complete: async (request: ModelRequest) => { admit(request); return provider.complete(request); },
     ...(stream ? { stream: (request: ModelRequest) => { admit(request); return stream(request); } } : {}),
-    ...(createSession ? { createSession: () => wrapSession(createSession(), admit) } : {})
+    ...(createSession ? { createSession: () => wrapSession(createSession(), admit) } : {}),
+    ...(requestRecovery ? { requestRecovery } : {})
   });
 }
 

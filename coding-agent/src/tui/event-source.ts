@@ -4,6 +4,7 @@ import {
 } from '@ismail-elkorchi/terminal-ui/tui';
 import type {
   TuiEventSource,
+  TuiSourceSink,
   TuiSourceEmission,
   TuiSubscriptionContext
 } from '@ismail-elkorchi/terminal-ui/tui';
@@ -34,11 +35,14 @@ export class CodingAgentTuiEventSource implements TuiEventSource<CodingAgentTuiM
     this.queued.push(message);
   }
 
-  async *messages(context: TuiSubscriptionContext): AsyncIterable<TuiSourceEmission<CodingAgentTuiMessage>> {
+  async run(
+    context: TuiSubscriptionContext,
+    sink: TuiSourceSink<CodingAgentTuiMessage>
+  ): Promise<void> {
     while (!this.closed && !context.signal.aborted) {
       const next = await this.next(context.signal);
       if (next === undefined) return;
-      yield sourceEmission(next);
+      await sink.emit(sourceEmission(next));
     }
   }
 

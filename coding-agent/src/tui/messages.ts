@@ -1,11 +1,11 @@
 import type { AgentApprovalSuspension, AgentEndedRunResult, AgentProgressEvent } from '@agent-core/runtime';
 import type {
-  ScrollAction,
+  ScrollTransition,
   SearchPickerAcceptEvent,
-  SearchPickerControlTransition
+  SearchPickerControlTransition,
+  TextAreaTransition
 } from '@ismail-elkorchi/terminal-ui/behavior';
-import type { TextAreaAction } from '@ismail-elkorchi/terminal-ui/components';
-import type { ScrollEvent } from '@ismail-elkorchi/terminal-ui/interaction';
+import type { ScrollRequest } from '@ismail-elkorchi/terminal-ui/interaction';
 import type { CodingAgentTuiCommandExecution } from './command-surface.js';
 
 export type CodingAgentTuiMessage =
@@ -14,12 +14,12 @@ export type CodingAgentTuiMessage =
   | { readonly type: 'failure'; readonly message: string }
   | { readonly type: 'approval.required'; readonly suspension: AgentApprovalSuspension }
   | { readonly type: 'approval.decide'; readonly decision: 'allow' | 'deny' }
-  | { readonly type: 'composer.edit'; readonly action: TextAreaAction }
+  | { readonly type: 'composer.edit'; readonly transition: TextAreaTransition }
   | { readonly type: 'composer.submit' }
   | { readonly type: 'command.completed'; readonly execution: CodingAgentTuiCommandExecution; readonly recordResult: boolean }
   | { readonly type: 'command.failed'; readonly message: string }
-  | { readonly type: 'conversation.scroll'; readonly action: ScrollAction }
-  | { readonly type: 'conversation.scrolled'; readonly event: ScrollEvent }
+  | { readonly type: 'conversation.scroll'; readonly transition: ScrollTransition }
+  | { readonly type: 'conversation.scrolled'; readonly request: ScrollRequest }
   | { readonly type: 'activity.toggle'; readonly id: string }
   | { readonly type: 'overlay.open'; readonly overlay: 'commands' | 'search' | 'help' | 'debug' }
   | { readonly type: 'overlay.close' }
@@ -28,4 +28,5 @@ export type CodingAgentTuiMessage =
   | { readonly type: 'commands.accept'; readonly event: SearchPickerAcceptEvent }
   | { readonly type: 'search.transition'; readonly transition: SearchPickerControlTransition }
   | { readonly type: 'search.accept'; readonly event: SearchPickerAcceptEvent }
+  | { readonly type: 'terminal.resized' }
   | { readonly type: 'app.exit'; readonly reason?: string };

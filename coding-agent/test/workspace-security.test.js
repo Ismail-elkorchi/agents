@@ -73,15 +73,15 @@ test('trust action decisions keep authority distinct from workspace content', ()
   assert.equal(decideWorkspaceAction('restricted', 'workspace_mutation').kind, 'approval_required');
   assert.equal(decideWorkspaceAction('restricted', 'project_execution_policy').kind, 'blocked');
   assert.equal(decideWorkspaceAction('trusted', 'command_execution').kind, 'allowed');
-  assert.equal(decideToolEffects('trusted', { accesses: [{ mode: 'read', scope: 'workspace/files/.env.local' }], lockScopes: [], idempotency: 'pure' }).kind, 'blocked');
-  assert.equal(decideToolEffects('restricted', { accesses: [{ mode: 'write', scope: 'workspace/files/src/a.ts' }], lockScopes: [], idempotency: 'non_idempotent' }).kind, 'approval_required');
+  assert.equal(decideToolEffects('trusted', { accesses: [{ mode: 'read', scope: 'workspace/files/.env.local' }], lockScopes: [], recovery: { kind: 'unknown' } }).kind, 'blocked');
+  assert.equal(decideToolEffects('restricted', { accesses: [{ mode: 'write', scope: 'workspace/files/src/a.ts' }], lockScopes: [], recovery: { kind: 'unknown' } }).kind, 'approval_required');
   for (const candidate of ['.env', 'nested/.env.production', '.ssh/id_ed25519', 'keys/private-key.pem', '.npmrc']) assert.equal(isSensitiveWorkspacePath(candidate), true, candidate);
   assert.equal(isSensitiveWorkspacePath('src/environment.ts'), false);
   assert.deepEqual(narrowRiskCeiling(['read', 'write'], ['read']), ['read']);
   assert.throws(() => narrowRiskCeiling(['read'], ['execute']), /cannot grant authority/u);
   const workspace = Object.freeze({ id: 'workspace-' + 'd'.repeat(64), platform: process.platform, canonicalPath: '/workspace', device: '1', inode: '2', mountId: '3' });
   const boundary = new WorkspaceSecurityBoundary(workspace, 'restricted');
-  assert.equal(boundary.authorizeTool({ effects: { accesses: [{ mode: 'execute', scope: 'workspace/processes' }], lockScopes: [], idempotency: 'non_idempotent' } }).decision, 'require_approval');
+  assert.equal(boundary.authorizeTool({ effects: { accesses: [{ mode: 'execute', scope: 'workspace/processes' }], lockScopes: [], recovery: { kind: 'unknown' } } }).decision, 'require_approval');
 });
 
 test('workspace content preserves provenance while making deceptive controls visible', () => {
@@ -104,6 +104,7 @@ test('provider egress blocks untrusted workspaces, secrets, and oversized reques
     id: 'scripted',
     describe: () => ({ id: 'scripted', displayName: 'Scripted', defaultModel: 'test' }),
     describeModel: async () => ({ id: 'test', provider: 'scripted', capabilities: { streaming: false, toolCalling: false, supportedToolInputs: [], jsonMode: false, jsonSchema: false, logprobs: false, temperature: false, topP: false }, modalities: { input: ['text'], output: ['text'] }, limits: {}, supportedParameters: [] }),
+    requestRecovery: () => ({ kind: 'unknown' }),
     async complete() { calls += 1; return { content: 'done', model: 'test', provider: 'scripted', terminationReason: 'stop' }; }
   };
   const request = { model: 'test', messages: [{ role: 'user', content: 'hello' }] };
@@ -112,7 +113,9 @@ test('provider egress blocks untrusted workspaces, secrets, and oversized reques
   await assert.rejects(protectProviderEgress({ provider, workspace, trustLevel: 'restricted', policy: { maxRequestBytes: 4 } }).complete(request), /egress limit/u);
   assert.equal(calls, 0);
   const receipts = [];
-  const response = await protectProviderEgress({ provider, workspace, trustLevel: 'restricted', policy: { onAdmitted: receipt => receipts.push(receipt) } }).complete(request);
+  const protectedProvider = protectProviderEgress({ provider, workspace, trustLevel: 'restricted', policy: { onAdmitted: receipt => receipts.push(receipt) } });
+  assert.deepEqual(protectedProvider.requestRecovery(request), { kind: 'unknown' });
+  const response = await protectedProvider.complete(request);
   assert.equal(response.content, 'done');
   assert.equal(calls, 1);
   assert.equal(receipts.length, 1);

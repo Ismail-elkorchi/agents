@@ -63,7 +63,7 @@ function runProjectionApp() {
   return {
     host,
     events,
-    running: runTui(app, host, { initialFocus: { kind: 'element', elementId: 'composer' } })
+    running: runTui(app, { host })
   };
 }
 

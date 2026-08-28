@@ -1,11 +1,11 @@
 import {
   createScrollState,
   createTextAreaState,
-  prepareSearchPickerIndex,
+  createSearchPickerIndex,
   textAreaReducer
 } from '@ismail-elkorchi/terminal-ui/behavior';
-import type { SearchPickerIndex } from '@ismail-elkorchi/terminal-ui/behavior';
-import type { SearchEntry, TextAreaAction } from '@ismail-elkorchi/terminal-ui/components';
+import type { SearchPickerIndex, TextAreaTransition } from '@ismail-elkorchi/terminal-ui/behavior';
+import type { SearchEntry } from '@ismail-elkorchi/terminal-ui/components';
 import { textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
 import { INTERACTIVE_COMMANDS } from './interactive-commands.js';
 import type { InteractiveCommandResult } from './interactive-commands.js';
@@ -43,12 +43,12 @@ export const COMMAND_ENTRIES: readonly SearchEntry[] = INTERACTIVE_COMMANDS.map(
   keywords: [command.name.slice(1), command.description]
 }));
 
-export const COMMAND_INDEX: SearchPickerIndex = prepareSearchPickerIndex(COMMAND_ENTRIES);
+export const COMMAND_INDEX: SearchPickerIndex = createSearchPickerIndex(COMMAND_ENTRIES);
 
-export function editComposer(state: CodingAgentTuiState, action: TextAreaAction): CodingAgentTuiState {
+export function editComposer(state: CodingAgentTuiState, transition: TextAreaTransition): CodingAgentTuiState {
   return {
     ...state,
-    composer: { ...state.composer, input: textAreaReducer(state.composer.input, action) }
+    composer: { ...state.composer, input: textAreaReducer(state.composer.input, transition).state }
   };
 }
 

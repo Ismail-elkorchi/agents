@@ -19,7 +19,7 @@ test('delayed command effects preserve progress received while the effect is run
       }
     }
   });
-  const running = runTui(app, host, { initialFocus: { kind: 'element', elementId: 'composer' } });
+  const running = runTui(app, { host });
 
   await waitFor(() => host.frames().length > 0);
   host.input('/delayed\r');

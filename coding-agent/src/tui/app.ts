@@ -1,17 +1,19 @@
 import type { AgentApprovalRequest, AgentApprovalSuspension } from '@agent-core/runtime';
 import {
-  applyScrollEvent,
+  applyScrollRequest,
   createSearchPickerState,
-  measuredWindow,
   normalizeScrollState,
-  prepareMeasuredCollection,
-  prepareSearchPickerIndex,
+  createSearchPickerIndex,
   searchPickerReducer,
   searchPickerEntryById,
-  searchPickerPresentation,
+  searchPickerView,
   scrollReducer
 } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { SearchPickerIndex } from '@ismail-elkorchi/terminal-ui/behavior';
+import {
+  createMeasuredCollection,
+  measuredWindow
+} from '@ismail-elkorchi/terminal-ui/collection';
 import type { ScrollGeometry } from '@ismail-elkorchi/terminal-ui/interaction';
 import {
   button,
@@ -70,14 +72,17 @@ export function createCodingAgentTuiApp(task: string, options: CodingAgentTuiApp
   const eventSource = options.eventSource;
   return defineTui<CodingAgentTuiState, CodingAgentTuiMessage>({
     id: 'coding-agent',
-    init: () => createInitialCodingAgentTuiState(task, options.runtimeDetails),
+    init: () => ({
+      state: createInitialCodingAgentTuiState(task, options.runtimeDetails),
+      focus: { kind: 'element', elementId: 'composer' }
+    }),
     update: (state, message, context) => updateCodingAgentTui(state, message, context, options),
     inputBindings: [
       binding('commands', 'p', { ctrl: true }, { type: 'overlay.open', overlay: 'commands' }, ({ state }) => canOpenOverlay(state)),
       binding('search', 'f', { ctrl: true }, { type: 'overlay.open', overlay: 'search' }, ({ state }) => canOpenOverlay(state)),
       binding('help', 'f1', {}, { type: 'overlay.open', overlay: 'help' }, ({ state }) => canOpenOverlay(state)),
-      binding('page-up', 'pageUp', {}, { type: 'conversation.scroll', action: { kind: 'scrollPages', rows: -1 } }, ({ state }) => canScroll(state)),
-      binding('page-down', 'pageDown', {}, { type: 'conversation.scroll', action: { kind: 'scrollPages', rows: 1 } }, ({ state }) => canScroll(state)),
+      binding('page-up', 'pageUp', {}, { type: 'conversation.scroll', transition: { kind: 'scrollPages', rows: -1 } }, ({ state }) => canScroll(state)),
+      binding('page-down', 'pageDown', {}, { type: 'conversation.scroll', transition: { kind: 'scrollPages', rows: 1 } }, ({ state }) => canScroll(state)),
       binding('composer-submit', 'enter', {}, { type: 'composer.submit' }, composerBindingEnabled),
       binding(
         'composer-newline-shift-enter',
@@ -91,6 +96,7 @@ export function createCodingAgentTuiApp(task: string, options: CodingAgentTuiApp
     ...(eventSource === undefined
       ? {}
       : { subscriptions: (): readonly TuiEventSource<CodingAgentTuiMessage>[] => [eventSource] }),
+    resizeMessage: (): CodingAgentTuiMessage => ({ type: 'terminal.resized' }),
     view: agentTuiView
   });
 }
@@ -118,7 +124,7 @@ function updateCodingAgentTui(
         effects: [approvalEffect(state.run.suspension, message.decision, options.approvalHandler)]
       };
     }
-    case 'composer.edit': return updated(editComposer(state, message.action), context);
+    case 'composer.edit': return updated(editComposer(state, message.transition), context);
     case 'composer.submit': return submit(state, context, options.commandHandler);
     case 'command.completed': {
       const result = applyCommandExecution(state, message.execution, message.recordResult);
@@ -140,7 +146,7 @@ function updateCodingAgentTui(
         ...state,
         conversation: {
           ...state.conversation,
-          scroll: scrollReducer(layout.scroll, message.action, layout.geometry)
+          scroll: scrollReducer(layout.scroll, message.transition, layout.geometry)
         }
       }, context);
     }
@@ -148,7 +154,7 @@ function updateCodingAgentTui(
       ...state,
       conversation: {
         ...state.conversation,
-        scroll: applyScrollEvent(state.conversation.scroll, message.event),
+        scroll: applyScrollRequest(state.conversation.scroll, message.request),
       }
     }, context);
     case 'activity.toggle': return updated(toggleActivity(state, message.id), context);
@@ -161,6 +167,7 @@ function updateCodingAgentTui(
     case 'commands.accept': return acceptCommand(state, message.event.id, context, options.commandHandler);
     case 'search.transition': return transitionSearch(state, message.transition);
     case 'search.accept': return acceptSearchResult(state, message.event.id, context);
+    case 'terminal.resized': return updated(state, context);
     case 'app.exit': return {
       state,
       exit: message.reason === undefined ? {} : { reason: message.reason }
@@ -340,13 +347,14 @@ function composerView(state: CodingAgentTuiState): Element<CodingAgentTuiMessage
   const placeholder = state.run.kind === 'working' ? 'Queue a follow-up' : 'Send a message';
   return textArea({
     id: 'composer',
-    presentation: state.composer.input,
+    meta: { accessibleName: 'Message composer' },
+    state: state.composer.input,
     placeholder,
     wrap: true,
     scrollbar: { axis: 'vertical', visible: 'auto' },
-    onAction: (
-      action: Extract<CodingAgentTuiMessage, { type: 'composer.edit' }>['action']
-    ): CodingAgentTuiMessage => ({ type: 'composer.edit', action })
+    onTransition: (
+      transition: Extract<CodingAgentTuiMessage, { type: 'composer.edit' }>['transition']
+    ): CodingAgentTuiMessage => ({ type: 'composer.edit', transition })
   });
 }
 
@@ -356,10 +364,10 @@ function conversationView(state: CodingAgentTuiState, context: TuiContext): Elem
     return viewport(text({ content: 'Start with a message.', id: 'conversation-empty', textRole: 'caption' }), {
       id: 'conversation',
       offset: { row: 0 },
-      onScroll: (event): CodingAgentTuiMessage => ({ type: 'conversation.scrolled', event })
+      onScroll: (request): CodingAgentTuiMessage => ({ type: 'conversation.scrolled', request })
     });
   }
-  const window = measuredWindow(prepareMeasuredCollection(layout.items), {
+  const window = measuredWindow(createMeasuredCollection(layout.items), {
     viewportRows: layout.geometry.viewportRows,
     offsetRow: layout.scroll.offsetRow
   });
@@ -383,7 +391,7 @@ function conversationView(state: CodingAgentTuiState, context: TuiContext): Elem
     id: 'conversation',
     offset: { row: layout.scroll.offsetRow },
     scrollbar: { axis: 'vertical', visible: 'auto' },
-    onScroll: (event): CodingAgentTuiMessage => ({ type: 'conversation.scrolled', event })
+    onScroll: (request): CodingAgentTuiMessage => ({ type: 'conversation.scrolled', request })
   });
 }
 
@@ -397,7 +405,7 @@ function conversationEntryView(entry: CodingAgentTuiConversationEntry, state: Co
       slots: {
         content: richText({ id: `${entry.id}:details`, segments: body(entry.details), wrap: true })
       },
-      onAction: (): CodingAgentTuiMessage => ({ type: 'activity.toggle', id: entry.id })
+      onTransition: (): CodingAgentTuiMessage => ({ type: 'activity.toggle', id: entry.id })
     });
   }
   return richText({ id: entry.id, segments: conversationSegments(entry), wrap: true });
@@ -411,10 +419,10 @@ function overlayView(state: CodingAgentTuiState, context: TuiContext): Element<C
     case 'commands': return dialog({
       ...modalOptions('commands-dialog', 'Commands', 'command-picker', width, height),
       slots: {
-        content: searchPicker({
+        content: searchPicker<string, CodingAgentTuiMessage, CodingAgentTuiMessage>({
           id: 'command-picker',
           title: 'Commands',
-          presentation: searchPickerPresentation(state.overlay.picker),
+          view: searchPickerView(state.overlay.picker),
           searchPickerIndex: COMMAND_INDEX,
           maxVisible: Math.max(3, height - 5),
           helpText: 'Enter choose · Esc close',
@@ -429,10 +437,10 @@ function overlayView(state: CodingAgentTuiState, context: TuiContext): Element<C
     case 'search': return dialog({
       ...modalOptions('search-dialog', 'Find', 'conversation-search', width, height),
       slots: {
-        content: searchPicker({
+        content: searchPicker<CodingAgentTuiConversationEntry, CodingAgentTuiMessage, CodingAgentTuiMessage>({
           id: 'conversation-search',
           title: 'Find in conversation',
-          presentation: searchPickerPresentation(state.overlay.picker),
+          view: searchPickerView(state.overlay.picker),
           searchPickerIndex: conversationSearchIndex(state),
           maxVisible: Math.max(3, height - 5),
           emptyText: 'No matching messages',
@@ -491,12 +499,12 @@ function approvalDialog(state: CodingAgentTuiState, context: TuiContext): Elemen
     modal: true,
     focusPolicy: { initialFocus: { kind: 'element', elementId: 'approval-deny' }, returnFocus: 'restore' },
     dismissal: { dismissOnEscape: true, dismissOnOutsidePress: false },
-    onAction: (): CodingAgentTuiMessage => ({ type: 'approval.decide', decision: 'deny' }),
+    onDismiss: (): CodingAgentTuiMessage => ({ type: 'approval.decide', decision: 'deny' }),
     slots: {
       content: modalViewport(bodyElement, state, 'approval-content-scroll'),
       actions: row([
-        button({ id: 'approval-deny', label: 'Deny', tone: 'destructive', onAction: (): CodingAgentTuiMessage => ({ type: 'approval.decide', decision: 'deny' }) }),
-        button({ id: 'approval-allow', label: 'Allow once', tone: 'primary', onAction: (): CodingAgentTuiMessage => ({ type: 'approval.decide', decision: 'allow' }) })
+        button({ id: 'approval-deny', label: 'Deny', tone: 'destructive', onPress: (): CodingAgentTuiMessage => ({ type: 'approval.decide', decision: 'deny' }) }),
+        button({ id: 'approval-allow', label: 'Allow once', tone: 'primary', onPress: (): CodingAgentTuiMessage => ({ type: 'approval.decide', decision: 'allow' }) })
       ], { id: 'approval-actions', gap: 2 })
     },
     width,
@@ -542,7 +550,7 @@ function approvalContent(
       slots: {
         content: richText({ id: 'approval-raw', segments: body(details), wrap: true })
       },
-      onAction: (): CodingAgentTuiMessage => ({ type: 'activity.toggle', id: 'approval-details' })
+      onTransition: (): CodingAgentTuiMessage => ({ type: 'activity.toggle', id: 'approval-details' })
     })
   ], { id: 'approval-content', gap: 1 });
 }
@@ -683,7 +691,7 @@ function conversationSearchIndex(
 ): SearchPickerIndex<CodingAgentTuiConversationEntry> {
   const cached = conversationSearchIndexes.get(state.conversation);
   if (cached !== undefined) return cached;
-  const index = prepareSearchPickerIndex(
+  const index = createSearchPickerIndex(
     visibleConversationItems(state),
     conversationSearchEntry,
   );
@@ -724,7 +732,7 @@ function modalOptions(id: string, title: string, focusId: string, width: number,
       dismissOnEscape: true as const,
       dismissOnOutsidePress: false as const
     },
-    onAction: (): CodingAgentTuiMessage => ({ type: 'overlay.close' }),
+    onDismiss: (): CodingAgentTuiMessage => ({ type: 'overlay.close' }),
     width,
     height,
     padding: 1
@@ -756,7 +764,7 @@ function composerBindingEnabled({ state, focusPath }: TuiInputBindingContext<Cod
 function composerNewlineMessage(): CodingAgentTuiMessage {
   return {
     type: 'composer.edit',
-    action: { kind: 'edit', operation: { kind: 'insert', text: '\n' } }
+    transition: { kind: 'edit', operation: { kind: 'insert', text: '\n' } }
   };
 }
 

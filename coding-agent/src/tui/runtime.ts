@@ -196,9 +196,7 @@ export async function runCodingAgentTuiApp(
       }
     }
   });
-  const exit = runTui(app, host, {
-    initialFocus: { kind: 'element', elementId: 'composer' }
-  });
+  const exit = runTui(app, { host });
   progress.attachDispatch((message) => {
     events.enqueue(message);
   });
