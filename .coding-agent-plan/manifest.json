@@ -6,7 +6,7 @@
   "generatedSummary": ".coding-agent-implementation-plan.md",
   "architecture": ".coding-agent-plan/architecture.md",
   "reviewedHeads": {
-    "agents": "d67d143918c7d4e1c887e45bc4d3fe15fb12795f",
+    "agents": "5b655c20c83239437e2fa7f25008b09afc38fbf7",
     "agent-core": "758dbe0dc9a49f35ff8386ff6a568be0793010ab",
     "terminal-ui": "d83d01432056470d17f42793bb83f6d7c93e595d",
     "sandbox": "e82ff3dd94a7c87b14bd25665b8898ae3b081767"
@@ -347,8 +347,8 @@
         "S0"
       ],
       "wave": 6,
-      "status": "current",
-      "currentOwner": "codex/root",
+      "status": "done",
+      "currentOwner": null,
       "ownedPaths": [
         "agents:coding-agent/src/workspace/git/**",
         "agents:coding-agent/test/git-orientation.test.js"
@@ -358,7 +358,7 @@
         ".coding-agent-plan/decisions/adversarial-review.md"
       ],
       "evidence": ".coding-agent-plan/evidence/G0.md",
-      "lastVerifiedCommit": null
+      "lastVerifiedCommit": "5b655c20c83239437e2fa7f25008b09afc38fbf7"
     },
     {
       "id": "A3",
@@ -373,8 +373,8 @@
         "S0"
       ],
       "wave": 7,
-      "status": "not_started",
-      "currentOwner": null,
+      "status": "current",
+      "currentOwner": "codex/root",
       "ownedPaths": [
         "agents:coding-agent/src/security/**",
         "agents:coding-agent/src/execution/**"
