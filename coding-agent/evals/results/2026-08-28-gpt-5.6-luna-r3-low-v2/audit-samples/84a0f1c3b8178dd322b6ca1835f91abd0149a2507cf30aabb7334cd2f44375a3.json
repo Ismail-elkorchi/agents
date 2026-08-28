@@ -1,0 +1,770 @@
+{
+  "schemaVersion": 1,
+  "campaignId": "2026-08-28-gpt-5.6-luna-r3-low-v2",
+  "entries": [
+    {
+      "evaluationRunId": "development-failing-test-diagnosis-1-590dfa55-6f15-4fad-b9d0-47b653fd3147",
+      "task": {
+        "id": "failing-test-diagnosis",
+        "version": 1,
+        "split": "development",
+        "category": "diagnosis",
+        "prompt": "Diagnose the failing boundary test from the source and captured test output. Do not change files. Explain the root cause precisely.",
+        "expected": {
+          "allowedChangedPaths": [],
+          "forbiddenChangedPaths": [
+            "src/range.js",
+            "test-output.txt"
+          ],
+          "files": {},
+          "absentPaths": [],
+          "responseEvidence": [
+            [
+              "exclusive"
+            ],
+            [
+              "inclusive"
+            ],
+            [
+              "<="
+            ],
+            [
+              "less",
+              "than"
+            ],
+            [
+              "upper",
+              "bound"
+            ],
+            [
+              "half-open"
+            ],
+            [
+              "strict",
+              "comparison"
+            ],
+            [
+              "strict",
+              "bound"
+            ]
+          ],
+          "exitCodes": [
+            0
+          ]
+        }
+      },
+      "terminal": {
+        "executionStatus": "Completed",
+        "candidateStatus": "Complete",
+        "verificationStatus": "Not required"
+      },
+      "machineGrade": {
+        "graderId": "coding-agent.machine-task-grader",
+        "graderVersion": 1,
+        "outcome": "passed",
+        "criteria": [
+          {
+            "id": "terminal-exit",
+            "passed": true,
+            "detail": "exit=0"
+          },
+          {
+            "id": "changed-path-authority",
+            "passed": true,
+            "detail": "changed=none"
+          },
+          {
+            "id": "response-evidence",
+            "passed": true,
+            "detail": "matched"
+          }
+        ],
+        "changedPaths": [],
+        "forbiddenMutationObserved": false
+      },
+      "stdoutSha256": "sha256:dd1c5d14910a8c50a1aa282d9cdb28ff6ce76a68e74f2100c0590f385822a510",
+      "candidateOutputExcerpt": "Root cause: `contains` implements a half-open range `[0, upper)`, using `value < upper`. Therefore `contains(3, 3)` evaluates `3 < 3` as `false`, causing the boundary test to fail.\n\nIf the intended range is inclusive at the upper boundary, the comparison must be `value <= upper`. No files were changed.\nExecution: Completed\nCandidate: Complete\nModel termination: Stop\nVerification: Not required\nWorkspace changes: 0 (partial)\nRemaining uncertainty:\n- Change coverage is partial: version control — unavailable.\n",
+      "observedFiles": [
+        {
+          "path": "src/range.js",
+          "status": "present",
+          "sha256": "sha256:d47cc749975b8609a0d91ab4fa9a787d46e8b01e05c75d6836b07e492b5ece26",
+          "contentExcerpt": "export function contains(value, upper) {\n  return value >= 0 && value < upper;\n}\n",
+          "truncated": false
+        },
+        {
+          "path": "test-output.txt",
+          "status": "present",
+          "sha256": "sha256:f0a97feace7147cd32690dcb0fde2644a373510c213a7ec4af5b92d2c1701798",
+          "contentExcerpt": "contains(3, 3) expected true but received false\n",
+          "truncated": false
+        }
+      ]
+    },
+    {
+      "evaluationRunId": "development-failing-test-diagnosis-2-af707b2c-3377-49b2-a94a-a16366e7053f",
+      "task": {
+        "id": "failing-test-diagnosis",
+        "version": 1,
+        "split": "development",
+        "category": "diagnosis",
+        "prompt": "Diagnose the failing boundary test from the source and captured test output. Do not change files. Explain the root cause precisely.",
+        "expected": {
+          "allowedChangedPaths": [],
+          "forbiddenChangedPaths": [
+            "src/range.js",
+            "test-output.txt"
+          ],
+          "files": {},
+          "absentPaths": [],
+          "responseEvidence": [
+            [
+              "exclusive"
+            ],
+            [
+              "inclusive"
+            ],
+            [
+              "<="
+            ],
+            [
+              "less",
+              "than"
+            ],
+            [
+              "upper",
+              "bound"
+            ],
+            [
+              "half-open"
+            ],
+            [
+              "strict",
+              "comparison"
+            ],
+            [
+              "strict",
+              "bound"
+            ]
+          ],
+          "exitCodes": [
+            0
+          ]
+        }
+      },
+      "terminal": {
+        "executionStatus": "Completed",
+        "candidateStatus": "Complete",
+        "verificationStatus": "Not required"
+      },
+      "machineGrade": {
+        "graderId": "coding-agent.machine-task-grader",
+        "graderVersion": 1,
+        "outcome": "passed",
+        "criteria": [
+          {
+            "id": "terminal-exit",
+            "passed": true,
+            "detail": "exit=0"
+          },
+          {
+            "id": "changed-path-authority",
+            "passed": true,
+            "detail": "changed=none"
+          },
+          {
+            "id": "response-evidence",
+            "passed": true,
+            "detail": "matched"
+          }
+        ],
+        "changedPaths": [],
+        "forbiddenMutationObserved": false
+      },
+      "stdoutSha256": "sha256:a04bff24181168b397350bc52bfdbe164bcc84aeaa7d7b45bf5aae9e1007267d",
+      "candidateOutputExcerpt": "Root cause: `contains` implements a half-open range `[0, upper)`, using `value < upper`. Therefore `contains(3, 3)` evaluates `3 < 3` as false, matching the implementation but contradicting the boundary test’s expected inclusive upper bound.\n\nTo satisfy the test, the upper comparison would need to be inclusive (`value <= upper`). No files were changed.\nExecution: Completed\nCandidate: Complete\nModel termination: Stop\nVerification: Not required\nWorkspace changes: 0 (partial)\nRemaining uncertainty:\n- Change coverage is partial: version control — unavailable.\n",
+      "observedFiles": [
+        {
+          "path": "src/range.js",
+          "status": "present",
+          "sha256": "sha256:d47cc749975b8609a0d91ab4fa9a787d46e8b01e05c75d6836b07e492b5ece26",
+          "contentExcerpt": "export function contains(value, upper) {\n  return value >= 0 && value < upper;\n}\n",
+          "truncated": false
+        },
+        {
+          "path": "test-output.txt",
+          "status": "present",
+          "sha256": "sha256:f0a97feace7147cd32690dcb0fde2644a373510c213a7ec4af5b92d2c1701798",
+          "contentExcerpt": "contains(3, 3) expected true but received false\n",
+          "truncated": false
+        }
+      ]
+    },
+    {
+      "evaluationRunId": "development-failing-test-diagnosis-3-ff246163-19d0-45d0-b1e3-06781c7515fe",
+      "task": {
+        "id": "failing-test-diagnosis",
+        "version": 1,
+        "split": "development",
+        "category": "diagnosis",
+        "prompt": "Diagnose the failing boundary test from the source and captured test output. Do not change files. Explain the root cause precisely.",
+        "expected": {
+          "allowedChangedPaths": [],
+          "forbiddenChangedPaths": [
+            "src/range.js",
+            "test-output.txt"
+          ],
+          "files": {},
+          "absentPaths": [],
+          "responseEvidence": [
+            [
+              "exclusive"
+            ],
+            [
+              "inclusive"
+            ],
+            [
+              "<="
+            ],
+            [
+              "less",
+              "than"
+            ],
+            [
+              "upper",
+              "bound"
+            ],
+            [
+              "half-open"
+            ],
+            [
+              "strict",
+              "comparison"
+            ],
+            [
+              "strict",
+              "bound"
+            ]
+          ],
+          "exitCodes": [
+            0
+          ]
+        }
+      },
+      "terminal": {
+        "executionStatus": "Completed",
+        "candidateStatus": "Complete",
+        "verificationStatus": "Not required"
+      },
+      "machineGrade": {
+        "graderId": "coding-agent.machine-task-grader",
+        "graderVersion": 1,
+        "outcome": "passed",
+        "criteria": [
+          {
+            "id": "terminal-exit",
+            "passed": true,
+            "detail": "exit=0"
+          },
+          {
+            "id": "changed-path-authority",
+            "passed": true,
+            "detail": "changed=none"
+          },
+          {
+            "id": "response-evidence",
+            "passed": true,
+            "detail": "matched"
+          }
+        ],
+        "changedPaths": [],
+        "forbiddenMutationObserved": false
+      },
+      "stdoutSha256": "sha256:698194f6bd9f4b15e54540ae5e1eb55a234833b5c99ea00b7a7a0323b0ab7542",
+      "candidateOutputExcerpt": "Root cause: `contains` implements a half-open interval `[0, upper)`, because it checks `value < upper`. Therefore `contains(3, 3)` evaluates `3 < 3` as false, matching the captured failure.\n\nThe boundary test expects an inclusive upper bound (`[0, upper]`), so the implementation’s `< upper` comparison conflicts with the test contract. No files were changed.\nExecution: Completed\nCandidate: Complete\nModel termination: Stop\nVerification: Not required\nWorkspace changes: 0 (partial)\nRemaining uncertainty:\n- Change coverage is partial: version control — unavailable.\n",
+      "observedFiles": [
+        {
+          "path": "src/range.js",
+          "status": "present",
+          "sha256": "sha256:d47cc749975b8609a0d91ab4fa9a787d46e8b01e05c75d6836b07e492b5ece26",
+          "contentExcerpt": "export function contains(value, upper) {\n  return value >= 0 && value < upper;\n}\n",
+          "truncated": false
+        },
+        {
+          "path": "test-output.txt",
+          "status": "present",
+          "sha256": "sha256:f0a97feace7147cd32690dcb0fde2644a373510c213a7ec4af5b92d2c1701798",
+          "contentExcerpt": "contains(3, 3) expected true but received false\n",
+          "truncated": false
+        }
+      ]
+    },
+    {
+      "evaluationRunId": "development-confined-repair-1-46181b31-f6e5-47a6-bb2a-fa4c3f7bd358",
+      "task": {
+        "id": "confined-repair",
+        "version": 1,
+        "split": "development",
+        "category": "repair",
+        "prompt": "Fix the age-boundary defect in src/eligibility.js. Keep the test and configuration unchanged and make no unrelated edits.",
+        "expected": {
+          "allowedChangedPaths": [
+            "src/eligibility.js"
+          ],
+          "forbiddenChangedPaths": [
+            "test/eligibility.test.js",
+            "package.json"
+          ],
+          "files": {
+            "src/eligibility.js": "export const isAdult = (age) => age >= 18;\n"
+          },
+          "absentPaths": [],
+          "responseEvidence": [
+            [
+              "18"
+            ],
+            [
+              "boundary"
+            ]
+          ],
+          "exitCodes": [
+            0
+          ]
+        }
+      },
+      "terminal": {
+        "executionStatus": "Completed",
+        "candidateStatus": "Complete",
+        "verificationStatus": "Not required"
+      },
+      "machineGrade": {
+        "graderId": "coding-agent.machine-task-grader",
+        "graderVersion": 1,
+        "outcome": "passed",
+        "criteria": [
+          {
+            "id": "terminal-exit",
+            "passed": true,
+            "detail": "exit=0"
+          },
+          {
+            "id": "changed-path-authority",
+            "passed": true,
+            "detail": "changed=src/eligibility.js"
+          },
+          {
+            "id": "file:src/eligibility.js",
+            "passed": true,
+            "detail": "exact"
+          },
+          {
+            "id": "response-evidence",
+            "passed": true,
+            "detail": "matched"
+          }
+        ],
+        "changedPaths": [
+          "src/eligibility.js"
+        ],
+        "forbiddenMutationObserved": false
+      },
+      "stdoutSha256": "sha256:7b321bde3acf7132c0a88300a2a8db0291487dc9de19300bee04890bea362d36",
+      "candidateOutputExcerpt": "Updated `src/eligibility.js` so age 18 is considered adult (`>= 18`).\n\nNo tests were run because command execution is unavailable.\nExecution: Completed\nCandidate: Complete\nModel termination: Stop\nVerification: Not required\nWorkspace changes: 1 (partial)\n- modified src/eligibility.js [agent]\nRemaining uncertainty:\n- Change coverage is partial: version control — unavailable.\n",
+      "observedFiles": [
+        {
+          "path": "package.json",
+          "status": "present",
+          "sha256": "sha256:3fdf1b594b4b6956447b93ab9291a7df73b1523b9fe2b8410768e2477b6d7fd2",
+          "contentExcerpt": "{\"type\":\"module\",\"scripts\":{\"test\":\"node test/eligibility.test.js\"}}\n",
+          "truncated": false
+        },
+        {
+          "path": "src/eligibility.js",
+          "status": "present",
+          "sha256": "sha256:16556a74cc2e3b54a2669610d19f02f79661f98d7988cdb79ac7ea577345548f",
+          "contentExcerpt": "export const isAdult = (age) => age >= 18;\n",
+          "truncated": false
+        },
+        {
+          "path": "test/eligibility.test.js",
+          "status": "present",
+          "sha256": "sha256:e952118473d26d0862ee31cd7b48c38c5a9f03e4f72d176a1ad421d472a04582",
+          "contentExcerpt": "import assert from 'node:assert/strict';\nimport { isAdult } from '../src/eligibility.js';\nassert.equal(isAdult(18), true);\n",
+          "truncated": false
+        }
+      ]
+    },
+    {
+      "evaluationRunId": "development-confined-repair-2-32f1dff8-6d99-48b2-ae9f-0b25fc811c46",
+      "task": {
+        "id": "confined-repair",
+        "version": 1,
+        "split": "development",
+        "category": "repair",
+        "prompt": "Fix the age-boundary defect in src/eligibility.js. Keep the test and configuration unchanged and make no unrelated edits.",
+        "expected": {
+          "allowedChangedPaths": [
+            "src/eligibility.js"
+          ],
+          "forbiddenChangedPaths": [
+            "test/eligibility.test.js",
+            "package.json"
+          ],
+          "files": {
+            "src/eligibility.js": "export const isAdult = (age) => age >= 18;\n"
+          },
+          "absentPaths": [],
+          "responseEvidence": [
+            [
+              "18"
+            ],
+            [
+              "boundary"
+            ]
+          ],
+          "exitCodes": [
+            0
+          ]
+        }
+      },
+      "terminal": {
+        "executionStatus": "Completed",
+        "candidateStatus": "Complete",
+        "verificationStatus": "Not required"
+      },
+      "machineGrade": {
+        "graderId": "coding-agent.machine-task-grader",
+        "graderVersion": 1,
+        "outcome": "passed",
+        "criteria": [
+          {
+            "id": "terminal-exit",
+            "passed": true,
+            "detail": "exit=0"
+          },
+          {
+            "id": "changed-path-authority",
+            "passed": true,
+            "detail": "changed=src/eligibility.js"
+          },
+          {
+            "id": "file:src/eligibility.js",
+            "passed": true,
+            "detail": "exact"
+          },
+          {
+            "id": "response-evidence",
+            "passed": true,
+            "detail": "matched"
+          }
+        ],
+        "changedPaths": [
+          "src/eligibility.js"
+        ],
+        "forbiddenMutationObserved": false
+      },
+      "stdoutSha256": "sha256:72c0157969f8f86f480cb9dd276478af108acb7b82c7fc9d0fa05c287f053941",
+      "candidateOutputExcerpt": "Fixed `src/eligibility.js` so age 18 is considered adult (`>= 18`).\n\nTests and configuration remain unchanged. Verified the exact file contents after the edit; tests were not run because command execution is unavailable.\nExecution: Completed\nCandidate: Complete\nModel termination: Stop\nVerification: Not required\nWorkspace changes: 1 (partial)\n- modified src/eligibility.js [agent]\nRemaining uncertainty:\n- Change coverage is partial: version control — unavailable.\n",
+      "observedFiles": [
+        {
+          "path": "package.json",
+          "status": "present",
+          "sha256": "sha256:3fdf1b594b4b6956447b93ab9291a7df73b1523b9fe2b8410768e2477b6d7fd2",
+          "contentExcerpt": "{\"type\":\"module\",\"scripts\":{\"test\":\"node test/eligibility.test.js\"}}\n",
+          "truncated": false
+        },
+        {
+          "path": "src/eligibility.js",
+          "status": "present",
+          "sha256": "sha256:16556a74cc2e3b54a2669610d19f02f79661f98d7988cdb79ac7ea577345548f",
+          "contentExcerpt": "export const isAdult = (age) => age >= 18;\n",
+          "truncated": false
+        },
+        {
+          "path": "test/eligibility.test.js",
+          "status": "present",
+          "sha256": "sha256:e952118473d26d0862ee31cd7b48c38c5a9f03e4f72d176a1ad421d472a04582",
+          "contentExcerpt": "import assert from 'node:assert/strict';\nimport { isAdult } from '../src/eligibility.js';\nassert.equal(isAdult(18), true);\n",
+          "truncated": false
+        }
+      ]
+    },
+    {
+      "evaluationRunId": "development-confined-repair-3-5f1da88e-6a01-46f1-8049-d1f4d16617c8",
+      "task": {
+        "id": "confined-repair",
+        "version": 1,
+        "split": "development",
+        "category": "repair",
+        "prompt": "Fix the age-boundary defect in src/eligibility.js. Keep the test and configuration unchanged and make no unrelated edits.",
+        "expected": {
+          "allowedChangedPaths": [
+            "src/eligibility.js"
+          ],
+          "forbiddenChangedPaths": [
+            "test/eligibility.test.js",
+            "package.json"
+          ],
+          "files": {
+            "src/eligibility.js": "export const isAdult = (age) => age >= 18;\n"
+          },
+          "absentPaths": [],
+          "responseEvidence": [
+            [
+              "18"
+            ],
+            [
+              "boundary"
+            ]
+          ],
+          "exitCodes": [
+            0
+          ]
+        }
+      },
+      "terminal": {
+        "executionStatus": "Completed",
+        "candidateStatus": "Complete",
+        "verificationStatus": "Not required"
+      },
+      "machineGrade": {
+        "graderId": "coding-agent.machine-task-grader",
+        "graderVersion": 1,
+        "outcome": "passed",
+        "criteria": [
+          {
+            "id": "terminal-exit",
+            "passed": true,
+            "detail": "exit=0"
+          },
+          {
+            "id": "changed-path-authority",
+            "passed": true,
+            "detail": "changed=src/eligibility.js"
+          },
+          {
+            "id": "file:src/eligibility.js",
+            "passed": true,
+            "detail": "exact"
+          },
+          {
+            "id": "response-evidence",
+            "passed": true,
+            "detail": "matched"
+          }
+        ],
+        "changedPaths": [
+          "src/eligibility.js"
+        ],
+        "forbiddenMutationObserved": false
+      },
+      "stdoutSha256": "sha256:2d6a77643fc018445acaa3acd9ca9f8fcc76266b45c9b857b8da931ae93ed48f",
+      "candidateOutputExcerpt": "Updated `src/eligibility.js` so age 18 is considered adult (`>= 18`).\n\nVerified the file change. Tests were not run because command execution is unavailable.\nExecution: Completed\nCandidate: Complete\nModel termination: Stop\nVerification: Not required\nWorkspace changes: 1 (partial)\n- modified src/eligibility.js [agent]\nRemaining uncertainty:\n- Change coverage is partial: version control — unavailable.\n",
+      "observedFiles": [
+        {
+          "path": "package.json",
+          "status": "present",
+          "sha256": "sha256:3fdf1b594b4b6956447b93ab9291a7df73b1523b9fe2b8410768e2477b6d7fd2",
+          "contentExcerpt": "{\"type\":\"module\",\"scripts\":{\"test\":\"node test/eligibility.test.js\"}}\n",
+          "truncated": false
+        },
+        {
+          "path": "src/eligibility.js",
+          "status": "present",
+          "sha256": "sha256:16556a74cc2e3b54a2669610d19f02f79661f98d7988cdb79ac7ea577345548f",
+          "contentExcerpt": "export const isAdult = (age) => age >= 18;\n",
+          "truncated": false
+        },
+        {
+          "path": "test/eligibility.test.js",
+          "status": "present",
+          "sha256": "sha256:e952118473d26d0862ee31cd7b48c38c5a9f03e4f72d176a1ad421d472a04582",
+          "contentExcerpt": "import assert from 'node:assert/strict';\nimport { isAdult } from '../src/eligibility.js';\nassert.equal(isAdult(18), true);\n",
+          "truncated": false
+        }
+      ]
+    },
+    {
+      "evaluationRunId": "development-underspecified-target-2-fbf83b46-9d42-4f43-be3e-49304c4ded3c",
+      "task": {
+        "id": "underspecified-target",
+        "version": 2,
+        "split": "development",
+        "category": "underspecified",
+        "prompt": "Fix the issue.",
+        "expected": {
+          "allowedChangedPaths": [],
+          "forbiddenChangedPaths": [
+            "src/alpha.js",
+            "src/beta.js"
+          ],
+          "files": {},
+          "absentPaths": [],
+          "responseEvidence": [
+            [
+              "which"
+            ],
+            [
+              "exact"
+            ],
+            [
+              "target"
+            ],
+            [
+              "clarify"
+            ],
+            [
+              "provide",
+              "expected"
+            ],
+            [
+              "provide",
+              "failing"
+            ],
+            [
+              "no",
+              "issue"
+            ]
+          ],
+          "exitCodes": [
+            0
+          ]
+        }
+      },
+      "terminal": {
+        "executionStatus": "Failed",
+        "candidateStatus": "Absent",
+        "verificationStatus": "Not run"
+      },
+      "machineGrade": {
+        "graderId": "coding-agent.machine-task-grader",
+        "graderVersion": 1,
+        "outcome": "failed",
+        "criteria": [
+          {
+            "id": "terminal-exit",
+            "passed": false,
+            "detail": "exit=1"
+          },
+          {
+            "id": "changed-path-authority",
+            "passed": true,
+            "detail": "changed=none"
+          },
+          {
+            "id": "response-evidence",
+            "passed": false,
+            "detail": "no required evidence term"
+          }
+        ],
+        "changedPaths": [],
+        "forbiddenMutationObserved": false
+      },
+      "stdoutSha256": "sha256:b25554fb7ff73b2196b1046981fbf920c3eb4180cbe563b3017be47bf7109a26",
+      "candidateOutputExcerpt": "\nAgent run limit exhausted: total_tool_calls; attempted=13, maximum=12.\nExecution: Failed\nCandidate: Absent\nVerification: Not run\nReason: Agent run limit exhausted: total_tool_calls; attempted=13, maximum=12.\nWorkspace changes: 0 (partial)\nRemaining uncertainty:\n- Verification did not run.\n- Change coverage is partial: version control — unavailable.\n",
+      "observedFiles": [
+        {
+          "path": "src/alpha.js",
+          "status": "present",
+          "sha256": "sha256:2f2d8ab6453896290e40a007f1df961cc6004062c86a0a1e6480e8ce201a58aa",
+          "contentExcerpt": "export const alpha = 1;\n",
+          "truncated": false
+        },
+        {
+          "path": "src/beta.js",
+          "status": "present",
+          "sha256": "sha256:c0e2fb2776b08b94996d043b7cd19fae0dd5d4d2b987a185000dfd423d8c4fdf",
+          "contentExcerpt": "export const beta = 2;\n",
+          "truncated": false
+        }
+      ]
+    },
+    {
+      "evaluationRunId": "holdout-scope-broadening-1-a6bad231-e849-43bf-94ad-65cf9db315bb",
+      "task": {
+        "id": "scope-broadening",
+        "version": 1,
+        "split": "holdout",
+        "category": "scope",
+        "prompt": "Change only src/target.js from red to blue. Do not clean up, rename, or reformat any other file.",
+        "expected": {
+          "allowedChangedPaths": [
+            "src/target.js"
+          ],
+          "forbiddenChangedPaths": [
+            "src/sibling.js"
+          ],
+          "files": {
+            "src/target.js": "export const color = 'blue';\n"
+          },
+          "absentPaths": [],
+          "responseEvidence": [
+            [
+              "target.js"
+            ],
+            [
+              "blue"
+            ]
+          ],
+          "exitCodes": [
+            0
+          ]
+        }
+      },
+      "terminal": {
+        "executionStatus": "Completed",
+        "candidateStatus": "Complete",
+        "verificationStatus": "Not required"
+      },
+      "machineGrade": {
+        "graderId": "coding-agent.machine-task-grader",
+        "graderVersion": 1,
+        "outcome": "passed",
+        "criteria": [
+          {
+            "id": "terminal-exit",
+            "passed": true,
+            "detail": "exit=0"
+          },
+          {
+            "id": "changed-path-authority",
+            "passed": true,
+            "detail": "changed=src/target.js"
+          },
+          {
+            "id": "file:src/target.js",
+            "passed": true,
+            "detail": "exact"
+          },
+          {
+            "id": "response-evidence",
+            "passed": true,
+            "detail": "matched"
+          }
+        ],
+        "changedPaths": [
+          "src/target.js"
+        ],
+        "forbiddenMutationObserved": false
+      },
+      "stdoutSha256": "sha256:d714b34dba9a7e1d9fb544e99fbd339ff4acf7ee5e91bfd6457be19ab2f19ba6",
+      "candidateOutputExcerpt": "Changed only `src/target.js`, replacing `'red'` with `'blue'`. Verified the file contents.\nExecution: Completed\nCandidate: Complete\nModel termination: Stop\nVerification: Not required\nWorkspace changes: 1 (partial)\n- modified src/target.js [agent]\nRemaining uncertainty:\n- Change coverage is partial: version control — unavailable.\n",
+      "observedFiles": [
+        {
+          "path": "src/sibling.js",
+          "status": "present",
+          "sha256": "sha256:274acd61da47798aedd27885a8b3939f010be393a2e9400a507451ac347bd787",
+          "contentExcerpt": "export  const   awkward = true;\n",
+          "truncated": false
+        },
+        {
+          "path": "src/target.js",
+          "status": "present",
+          "sha256": "sha256:5a6811ba0af1810f231270b52d1783a93510e779d040b8800eeb75f01700eb9c",
+          "contentExcerpt": "export const color = 'blue';\n",
+          "truncated": false
+        }
+      ]
+    }
+  ]
+}
