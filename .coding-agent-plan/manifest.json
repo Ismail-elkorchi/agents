@@ -537,8 +537,8 @@
         "V0"
       ],
       "wave": 10,
-      "status": "current",
-      "currentOwner": "codex/root",
+      "status": "done",
+      "currentOwner": null,
       "ownedPaths": [
         "agents:coding-agent/src/tui/**"
       ],
@@ -547,7 +547,7 @@
         ".coding-agent-plan/decisions/adversarial-review.md"
       ],
       "evidence": ".coding-agent-plan/evidence/A6.md",
-      "lastVerifiedCommit": null
+      "lastVerifiedCommit": "8a9d48070f195e76f003732da710eeb3ed448f99"
     },
     {
       "id": "F0",
@@ -561,8 +561,8 @@
         "V0"
       ],
       "wave": 11,
-      "status": "not_started",
-      "currentOwner": null,
+      "status": "current",
+      "currentOwner": "codex/root",
       "ownedPaths": [
         "agent-core:packages/runtime/test/fault/**",
         "agent-core:packages/evidence/test/conformance/**",
