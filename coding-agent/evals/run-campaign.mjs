@@ -66,7 +66,8 @@ try {
     }
   }
 } finally {
-  await proxy.close();
+  try { await proxy.unloadModel(options.model); }
+  finally { await proxy.close(); }
 }
 
 const selectedRunIds = new Set(selectHumanAuditSample(records, policy.humanAudit));
@@ -107,6 +108,7 @@ const campaign = {
     maxOutputTokens: options.maxOutputTokens,
     temperature: options.temperature,
     reasoningMode: options.reasoningMode,
+    modelCleanup: 'unload-after-timeout-and-campaign',
     timeoutMs: options.timeoutMs
   },
   regressionPolicy: policy.regression,
@@ -148,6 +150,7 @@ async function runEvaluation({ campaignId: currentCampaignId, task, repetition, 
       maxOutputTokens: campaignOptions.maxOutputTokens,
       temperature: campaignOptions.temperature,
       reasoningMode: campaignOptions.reasoningMode,
+      modelCleanup: 'unload-after-timeout-and-campaign',
       timeoutMs: campaignOptions.timeoutMs
     })
   ]);
@@ -243,7 +246,11 @@ async function runEvaluation({ campaignId: currentCampaignId, task, repetition, 
     return record;
   } finally {
     providerProxy.releaseBlockedShow();
-    await rm(parent, { recursive: true, force: true });
+    try {
+      if (result.timedOut) await providerProxy.unloadModel(campaignOptions.model);
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
   }
 }
 
@@ -505,6 +512,16 @@ async function createOllamaProxy(upstreamValue) {
     },
     waitForBlockedShow(timeoutMs) { return withTimeout(blocked, timeoutMs, 'Ollama show request was not observed before recovery timeout.'); },
     releaseBlockedShow() { releaseResolve?.(); },
+    async unloadModel(model) {
+      const response = await fetch(new URL('/api/generate', upstream), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model, keep_alive: 0 }),
+        signal: AbortSignal.timeout(30_000)
+      });
+      if (!response.ok) throw new Error(`Ollama model cleanup failed with ${String(response.status)}.`);
+      await response.arrayBuffer();
+    },
     close: () => {
       for (const controller of upstreamRequests) controller.abort();
       return new Promise((resolve, reject) => {

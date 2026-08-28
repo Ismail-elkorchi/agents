@@ -214,7 +214,7 @@ function campaignFixture(records, sample, evidence) {
       campaignPolicyDigest: digest('campaign-policy')
     },
     sampling: { requestedRunsPerTask: 2, tasks: 2, plannedRuns: 4, mixedOutcomeExpansionRuns: 10 },
-    inference: { maxOutputTokens: 512, temperature: 0.2, reasoningMode: 'disabled', timeoutMs: 120000 },
+    inference: { maxOutputTokens: 512, temperature: 0.2, reasoningMode: 'disabled', modelCleanup: 'unload-after-timeout-and-campaign', timeoutMs: 120000 },
     regressionPolicy: { minimumPassRateDecline: 0.15, requireNonOverlappingIntervals: true, dimensions: ['modelRevision'] },
     humanAuditPolicy: { minimumRuns: 4, minimumFraction: 0.2, stratifyBy: ['split', 'outcome'], disagreementOutcome: 'disputed', expandDisputedTaskToAllRuns: true },
     holdoutPolicy: { access: 'after revisions fixed', useForPromptIteration: false },
