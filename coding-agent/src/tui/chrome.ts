@@ -40,6 +40,7 @@ function runPresentation(state: CodingAgentTuiState): { readonly text: string; r
     case 'idle': return { text: 'Idle', status: 'idle' };
     case 'working': return { text: state.run.label, status: 'running' };
     case 'waiting_for_approval': return { text: 'Approval required', status: 'warning' };
+    case 'waiting_for_recovery': return { text: 'Recovery decision required', status: 'warning' };
     case 'failed': return { text: 'Failed', status: 'error' };
     case 'ended': {
       const terminal = terminalPresentation(state.run.terminal);

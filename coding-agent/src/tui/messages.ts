@@ -1,4 +1,4 @@
-import type { AgentApprovalSuspension, AgentEndedRunResult, AgentProgressEvent } from '@agent-core/runtime';
+import type { AgentApprovalSuspension, AgentEndedRunResult, AgentOperationSuspension, AgentProgressEvent } from '@agent-core/runtime';
 import type {
   ScrollTransition,
   SearchPickerAcceptEvent,
@@ -13,6 +13,7 @@ export type CodingAgentTuiMessage =
   | { readonly type: 'result'; readonly result: AgentEndedRunResult }
   | { readonly type: 'failure'; readonly message: string }
   | { readonly type: 'approval.required'; readonly suspension: AgentApprovalSuspension }
+  | { readonly type: 'operation.suspended'; readonly suspension: AgentOperationSuspension }
   | { readonly type: 'approval.decide'; readonly decision: 'allow' | 'deny' }
   | { readonly type: 'composer.edit'; readonly transition: TextAreaTransition }
   | { readonly type: 'composer.submit' }

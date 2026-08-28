@@ -72,6 +72,30 @@ test('approval dialogs focus Deny and Escape also denies', async () => {
   await runtime.dispose();
 });
 
+test('non-approval suspensions remain distinct recovery decisions', async () => {
+  const host = createMemoryTerminalHost({ terminalSize: { columns: 90, rows: 20 } });
+  const runtime = createTuiRuntime({
+    app: createCodingAgentTuiApp(''),
+    host,
+    initialFocus: { kind: 'element', elementId: 'composer' }
+  });
+  await runtime.start();
+  await runtime.dispatch({
+    type: 'operation.suspended',
+    suspension: {
+      state: 'suspended',
+      reason: 'tool_outcome_unknown',
+      runId: 'run',
+      finalizationId: 'final',
+      effectId: 'effect',
+      budget: approvalSuspension().budget
+    }
+  });
+  assert.equal(runtime.state().run.kind, 'waiting_for_recovery');
+  assert.equal(runtime.state().run.suspension.reason, 'tool_outcome_unknown');
+  await runtime.dispose();
+});
+
 function approvalSuspension() {
   return {
     state: 'suspended', reason: 'approval_required', runId: 'run', finalizationId: 'final',

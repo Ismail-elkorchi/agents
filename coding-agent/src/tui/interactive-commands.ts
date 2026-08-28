@@ -51,7 +51,7 @@ export const INTERACTIVE_COMMAND_REGISTRY = {
     const compaction = await session.compact();
     return { message: `Session compacted with ${compaction.provider}/${compaction.model}.` };
   }),
-  '/abort': command('/abort', 'Abort the active run.', false, (session, value) => { if (!session.abort(value || undefined, session.state().activeRunId)) throw new Error('No active run to abort.'); return { message: 'Abort requested.', effect: { type: 'abort-requested', reason: value || 'requested' } }; }),
+  '/abort': command('/abort', 'Abort the active run.', false, async (session, value) => { if (!await session.abort(value || undefined, session.state().activeRunId)) throw new Error('No active run to abort.'); return { message: 'Abort requested.', effect: { type: 'abort-requested', reason: value || 'requested' } }; }),
   '/status': command('/status', 'Show the current session status.', false, session => ({ message: runtimeStatus(session.state()) })),
   '/debug': command('/debug', 'Inspect detailed session state.', false, session => ({ message: JSON.stringify(session.state(), null, 2), view: 'debug' }))
 } satisfies Record<InteractiveCommandName, InteractiveCommandSpec>;
@@ -89,6 +89,10 @@ function requireCommandValue(command: string, value: string): string {
 }
 
 function runtimeStatus(state: AgentSessionState): string {
-  const status = state.phase === 'running' ? 'Running' : state.phase === 'waiting_for_approval' ? 'Waiting for approval' : state.phase === 'compacting' ? 'Compacting' : 'Idle';
+  const status = state.phase === 'running'
+    ? 'Running'
+    : state.phase === 'waiting_for_user'
+      ? state.suspensionReason === 'approval_required' ? 'Waiting for approval' : 'Waiting for recovery decision'
+      : state.phase === 'compacting' ? 'Compacting' : 'Idle';
   return `${status} · ${state.configuration.model}${state.queuedInputs === 0 ? '' : ` · ${String(state.queuedInputs)} queued`}`;
 }

@@ -117,6 +117,11 @@ function updateCodingAgentTui(
       overlay: { kind: 'none' },
       modalOffsetRow: 0
     }, context, { kind: 'element', elementId: 'approval-deny' });
+    case 'operation.suspended': return updated({
+      ...state,
+      run: { kind: 'waiting_for_recovery', suspension: message.suspension },
+      overlay: { kind: 'none' }
+    }, context);
     case 'approval.decide': {
       if (state.run.kind !== 'waiting_for_approval') return { state };
       return {

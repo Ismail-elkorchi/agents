@@ -8,6 +8,7 @@ import type { ModelProvider, ModelReasoningRequest } from '@agent-core/model';
 import { OpenAICodexProvider } from '@agent-core/provider-openai-codex';
 import {
   AgentRuntime,
+  AgentOperationCoordinator,
   AgentSession,
   agentEventCodec,
   type AgentEvent,
@@ -110,6 +111,7 @@ export async function runDocumentRevision(options: DocumentRevisionOptions): Pro
     const session = new AgentSession({
       descriptor,
       repository: sessions,
+      operations: new AgentOperationCoordinator(events),
       configuration: {
         provider: options.provider.id,
         model: options.model,

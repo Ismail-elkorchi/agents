@@ -44,7 +44,9 @@ export class CodingAgentTuiProgressRenderer {
 
   async showSuspension(suspension: Extract<AgentRunResult, { state: 'suspended' }>): Promise<void> {
     this.flushPendingStreamEvents();
-    this.enqueue({ type: 'approval.required', suspension });
+    this.enqueue(suspension.reason === 'approval_required'
+      ? { type: 'approval.required', suspension }
+      : { type: 'operation.suspended', suspension });
     await this.flush();
   }
 
@@ -174,8 +176,9 @@ export async function runCodingAgentTuiApp(
     if (event.result.state === 'suspended') await progress.showSuspension(event.result);
     else await progress.showResult(event.result);
     if (exitOnCompletion && session.state().queuedInputs === 0) {
-      const terminal = event.result.state === 'ended' ? event.result.terminal : undefined;
-      events.enqueue({ type: 'app.exit', reason: terminal ? `${terminal.executionStatus}:${terminal.verificationStatus}:${terminal.terminationReason}` : 'approval_required' });
+      events.enqueue({ type: 'app.exit', reason: event.result.state === 'ended'
+        ? `${event.result.terminal.executionStatus}:${event.result.terminal.verificationStatus}:${event.result.terminal.terminationReason}`
+        : event.result.reason });
     }
   });
   const app = createCodingAgentTuiApp(normalizeTaskInput(options.initialTask ?? ''), {

@@ -4,7 +4,7 @@ import path from 'node:path';
 import type { Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { FileCredentialStore } from '@agent-core/auth';
-import { AgentRuntime, AgentSession, agentEventCodec, type AgentEvent, type AgentInstruction, type AgentProgressEvent, type AgentRunResult, type SessionConversationItem, type SessionDescriptor } from '@agent-core/runtime';
+import { AgentOperationCoordinator, AgentRuntime, AgentSession, agentEventCodec, type AgentEvent, type AgentInstruction, type AgentProgressEvent, type AgentRunResult, type SessionConversationItem, type SessionDescriptor } from '@agent-core/runtime';
 import { JsonlSessionRepository } from '@agent-core/runtime/node';
 import { JsonlEventRepository, LocalArtifactRepository } from '@agent-core/evidence/node';
 import { type ModelProvider, type ModelReasoningEffort, type ModelReasoningRequest, SimpleTokenEstimator } from '@agent-core/model';
@@ -269,6 +269,7 @@ async function createRuntime(
     const agent = new AgentSession({
       descriptor: sessionBinding.session,
       repository: sessionBinding.repository,
+      operations: new AgentOperationCoordinator(events),
       configuration: {
         provider: providerRuntime.providerId,
         model: providerRuntime.model,
@@ -817,6 +818,13 @@ function writeLine(output: Writable, text: string): void {
 
 function printResult(result: AgentRunResult, progress?: CodingAgentProgressRenderer, output: Writable = process.stdout): void {
   if (result.state === 'suspended') {
+    if (result.reason !== 'approval_required') {
+      writeLine(output, 'Execution: Waiting for recovery decision');
+      writeLine(output, `Run: ${result.runId}`);
+      writeLine(output, `Reason: ${title(result.reason.replaceAll('_', ' '))}`);
+      if (result.effectId !== undefined) writeLine(output, `Effect: ${result.effectId}`);
+      return;
+    }
     writeLine(output, 'Execution: Waiting for approval');
     writeLine(output, `Run: ${result.runId}`);
     for (const approval of result.pendingApprovals) {
