@@ -217,6 +217,27 @@ test('sandbox command adapter decodes progress across byte-chunk boundaries', as
   }
 });
 
+test('sandbox command adapter preserves native runtime failure diagnostics', async () => {
+  const fixture = await createFixture({ runtimeFailure: true });
+  try {
+    const execution = await SandboxCommandExecution.create({
+      repository: fixture.repository,
+      workspaceFileRoot: fixture.root,
+      state: fixture.state,
+      maxRetainedOutputBytes: 1024,
+      createRun: requestValue => run(fixture.workspace, requestValue.command),
+      validatePrepared: () => undefined
+    });
+    const result = await startCommand(execution, request());
+    assert.equal(result.status, 'failed');
+    assert.equal(result.diagnostic, 'launcher exited without structured target status');
+    await execution.close();
+  } finally {
+    fixture.root.close();
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
 test('sandbox adapter satisfies start, output, ownership, terminal receipt, and restart recovery', { skip: !sandboxAvailable }, async () => {
   const parent = await mkdtemp(path.join(tmpdir(), 'coding-agent-sandbox-conformance-'));
   const workspace = path.join(parent, 'workspace');
@@ -239,7 +260,7 @@ test('sandbox adapter satisfies start, output, ownership, terminal receipt, and 
     const firstRepository = await openSandboxExecutionRepository({ directory: repositoryPath, maxRetainedOutputBytes: 1024 * 1024 });
     const first = await SandboxCommandExecution.create({ repository: firstRepository, workspaceFileRoot: root, state, maxRetainedOutputBytes: 1024 * 1024, createRun, validatePrepared: () => undefined });
     const result = await startCommand(first, { ...request(), command: 'printf durable-sandbox' });
-    assert.equal(result.status, 'exited');
+    assert.equal(result.status, 'exited', result.diagnostic);
     assert.equal(result.stdout.text, 'durable-sandbox');
     await assert.rejects(first.query(result.processId, 100, 0, 0, { ...owner, turnId: 'wrong' }), /another tool invocation/);
     await first.close();
@@ -306,7 +327,8 @@ async function createFixture(options = {}) {
   const repository = new FakeSandboxExecutionRepository(
     options.initialUnknown === true,
     options.splitUtf8Output === true,
-    options.activationDelayMs
+    options.activationDelayMs,
+    options.runtimeFailure === true
   );
   if (options.initialUnknown === true) {
     const recoveryIdentity = `${repository.identity}:${createHash('sha256').update(root.identity.canonicalPath).digest('hex')}`;
@@ -326,10 +348,11 @@ class FakeSandboxExecutionRepository {
   unknownId;
   observations = new Map();
 
-  constructor(initialUnknown, splitUtf8Output, activationDelayMs = 0) {
+  constructor(initialUnknown, splitUtf8Output, activationDelayMs = 0, runtimeFailure = false) {
     if (!initialUnknown) this.unknownId = undefined;
     this.splitUtf8Output = splitUtf8Output;
     this.activationDelayMs = activationDelayMs;
+    this.runtimeFailure = runtimeFailure;
   }
 
   async prepare(request) {
@@ -341,7 +364,9 @@ class FakeSandboxExecutionRepository {
 
   async activate(executionId) {
     this.activationCount += 1;
-    const observation = this.splitUtf8Output ? settledWithSplitUtf8(executionId) : settled(executionId);
+    const observation = this.runtimeFailure
+      ? settledWithRuntimeFailure(executionId)
+      : this.splitUtf8Output ? settledWithSplitUtf8(executionId) : settled(executionId);
     if (this.activationDelayMs === 0) this.observations.set(executionId, observation);
     else setTimeout(() => this.observations.set(executionId, observation), this.activationDelayMs);
   }
@@ -414,6 +439,20 @@ function settledWithSplitUtf8(executionId) {
         { cursorStart: 0, cursorEnd: 3, stream: 'stdout', data: bytes.subarray(0, 3) },
         { cursorStart: 3, cursorEnd: bytes.byteLength, stream: 'stdout', data: bytes.subarray(3) }
       ]
+    }
+  };
+}
+
+function settledWithRuntimeFailure(executionId) {
+  const base = settled(executionId);
+  return {
+    ...base,
+    result: {
+      ...base.result,
+      termination: {
+        reason: 'runtime-failure',
+        error: { code: 'runtime_failed.launcher', message: 'launcher exited without structured target status', phase: 'execute', targetExecuted: true }
+      }
     }
   };
 }

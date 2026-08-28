@@ -362,6 +362,12 @@ export class SandboxCommandExecution implements CommandExecution {
         stdout: output.stdout, stderr: output.stderr, combined: output.combined });
     }
     const status = statusFromTermination(observation.result.termination);
+    const diagnostics = [
+      ...(observation.result.termination.reason === 'runtime-failure' ? [observation.result.termination.error.message] : []),
+      ...(!observation.result.cleanup.completed
+        ? [`Sandbox cleanup failed: ${observation.result.cleanup.failures.map((failure) => `${failure.code}: ${failure.message}`).join('; ')}`]
+        : [])
+    ];
     return Object.freeze({
       processId: observation.executionId,
       owner,
@@ -374,7 +380,7 @@ export class SandboxCommandExecution implements CommandExecution {
       combined: output.combined,
       ...(observation.result.termination.reason === 'exit' ? { exitCode: observation.result.termination.code, signal: null } : {}),
       ...(observation.result.termination.reason === 'signal' ? { exitCode: null, signal: observation.result.termination.signal } : {}),
-      ...(!observation.result.cleanup.completed ? { diagnostic: `Sandbox cleanup failed: ${observation.result.cleanup.failures.map((failure) => `${failure.code}: ${failure.message}`).join('; ')}` } : {})
+      ...(diagnostics.length > 0 ? { diagnostic: diagnostics.join('; ') } : {})
     });
   }
 
