@@ -7,6 +7,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { createSandbox } from '@ismail-elkorchi/sandbox';
 import {
+  auditEntryDigest,
   canonicalJson,
   gradeTask,
   loadTaskCorpus,
@@ -15,6 +16,8 @@ import {
   sha256,
   summarizeEvaluationRecords,
   taskDigest,
+  validateAuditArtifact,
+  validateCampaign,
   validateEvaluationRecord
 } from './evaluation.mjs';
 
@@ -33,6 +36,7 @@ const policy = JSON.parse(await readFile(policyPath, 'utf8'));
 const campaignId = options.campaignId ?? `campaign-${new Date().toISOString().replaceAll(/[:.]/gu, '-')}-${randomUUID().slice(0, 8)}`;
 const outputDirectory = path.resolve(options.output ?? path.join(import.meta.dirname, 'results', campaignId));
 
+await requireNewOutputDirectory(outputDirectory);
 const revisions = await captureFixedRevisions(options, policy);
 const developmentTasks = await loadTaskCorpus([developmentTasksPath]);
 // Holdout bodies are loaded only after every evaluated product and contract revision is fixed.
@@ -45,18 +49,19 @@ if (selectedTasks.length === 0) throw new Error('No evaluation tasks match the s
 
 const proxy = await createOllamaProxy(options.endpoint);
 const records = [];
+const auditEvidence = new Map();
 try {
   for (const task of selectedTasks) {
     for (let repetition = 1; repetition <= options.runs; repetition += 1) {
       process.stderr.write(`[${task.split}] ${task.id} ${String(repetition)}/${String(options.runs)}\n`);
-      records.push(await runEvaluation({ campaignId, task, repetition, proxy, options, revisions }));
+      records.push(await runEvaluation({ campaignId, task, repetition, proxy, options, revisions, auditEvidence }));
     }
     const initial = records.filter((record) => record.binding.task.id === task.id && record.binding.task.split === task.split);
     const measuredOutcomes = new Set(initial.map((record) => record.grade.outcome).filter((outcome) => outcome === 'passed' || outcome === 'failed'));
     if (measuredOutcomes.size > 1 && options.runs < policy.mixedOutcomeExpansionRuns) {
       for (let repetition = options.runs + 1; repetition <= policy.mixedOutcomeExpansionRuns; repetition += 1) {
         process.stderr.write(`[${task.split}] ${task.id} mixed-outcome expansion ${String(repetition)}/${String(policy.mixedOutcomeExpansionRuns)}\n`);
-        records.push(await runEvaluation({ campaignId, task, repetition, proxy, options, revisions }));
+        records.push(await runEvaluation({ campaignId, task, repetition, proxy, options, revisions, auditEvidence }));
       }
     }
   }
@@ -64,9 +69,25 @@ try {
   await proxy.close();
 }
 
-const auditSelection = new Set(selectHumanAuditSample(records, policy.humanAudit));
+const selectedRunIds = new Set(selectHumanAuditSample(records, policy.humanAudit));
+const evidenceEntries = records.map((record) => auditEvidence.get(record.evaluationRunId));
+if (evidenceEntries.some((entry) => entry === undefined)) throw new Error('Retained human-audit evidence is incomplete.');
+const evidenceArtifact = { schemaVersion: 1, campaignId, entries: evidenceEntries };
+validateAuditArtifact(evidenceArtifact);
+const auditSelection = records.filter((record) => selectedRunIds.has(record.evaluationRunId)).map((record) => record.evaluationRunId);
+const sampleArtifact = { schemaVersion: 1, campaignId, entries: auditSelection.map((evaluationRunId) => auditEvidence.get(evaluationRunId)) };
+validateAuditArtifact(sampleArtifact);
+const evidenceArtifactDigest = digest(canonicalJson(evidenceArtifact));
+const sampleArtifactDigest = digest(canonicalJson(sampleArtifact));
+const sampleArtifactPath = `audit-samples/${sampleArtifactDigest.slice('sha256:'.length)}.json`;
 const boundRecords = records.map((record) => {
-  const bound = { ...record, humanAudit: { status: auditSelection.has(record.evaluationRunId) ? 'selected-pending' : 'not-selected' } };
+  const selected = selectedRunIds.has(record.evaluationRunId);
+  const bound = {
+    ...record,
+    humanAudit: selected
+      ? { status: 'selected-pending', evidenceDigest: auditEntryDigest(auditEvidence.get(record.evaluationRunId)) }
+      : { status: 'not-selected' }
+  };
   validateEvaluationRecord(bound);
   return bound;
 });
@@ -85,16 +106,26 @@ const campaign = {
   regressionPolicy: policy.regression,
   humanAuditPolicy: policy.humanAudit,
   holdoutPolicy: policy.holdout,
-  auditSelection: [...auditSelection],
+  auditSelection,
+  auditArtifacts: {
+    sample: { path: sampleArtifactPath, digest: sampleArtifactDigest },
+    evidence: { path: 'audit-evidence.json', digest: evidenceArtifactDigest }
+  },
+  auditDecisionArtifacts: [],
+  auditStatus: 'pending',
   records: boundRecords,
   summary
 };
+validateCampaign(campaign);
 await mkdir(outputDirectory, { recursive: true });
+await mkdir(path.join(outputDirectory, 'audit-samples'), { recursive: true });
+await writeFile(path.join(outputDirectory, sampleArtifactPath), `${JSON.stringify(sampleArtifact, null, 2)}\n`, { mode: 0o600 });
+await writeFile(path.join(outputDirectory, 'audit-evidence.json'), `${JSON.stringify(evidenceArtifact, null, 2)}\n`, { mode: 0o600 });
 await writeFile(path.join(outputDirectory, 'campaign.json'), `${JSON.stringify(campaign, null, 2)}\n`, { mode: 0o600 });
 await writeFile(path.join(outputDirectory, 'report.md'), renderCampaignReport(campaign), { mode: 0o600 });
 process.stdout.write(`${JSON.stringify({ campaignId, outputDirectory, runs: boundRecords.length, outcomes: summary.overall.outcomes }, null, 2)}\n`);
 
-async function runEvaluation({ campaignId: currentCampaignId, task, repetition, proxy: providerProxy, options: campaignOptions, revisions: fixed }) {
+async function runEvaluation({ campaignId: currentCampaignId, task, repetition, proxy: providerProxy, options: campaignOptions, revisions: fixed, auditEvidence: evidence }) {
   const parent = await mkdtemp(path.join(tmpdir(), 'coding-agent-real-eval-'));
   const workspace = path.join(parent, 'workspace');
   const stateRoot = path.join(parent, 'state');
@@ -174,9 +205,11 @@ async function runEvaluation({ campaignId: currentCampaignId, task, repetition, 
       },
       usage,
       cost: { amount: 0, currency: 'USD', basis: 'local Ollama inference; electricity and hardware depreciation not measured' },
+      outcome: grade.outcome,
       grade,
       humanAudit: { status: 'not-selected' }
     };
+    evidence.set(evaluationRunId, auditEntry({ record, task, stdout: result.stdout }));
     validateEvaluationRecord(record);
     return record;
   } catch (error) {
@@ -193,12 +226,31 @@ async function runEvaluation({ campaignId: currentCampaignId, task, repetition, 
       diagnostic: error instanceof Error ? error.message : String(error),
       policyRevision: taskPolicyRevision
     });
+    evidence.set(evaluationRunId, auditEntry({ record, task, stdout: `${result.stdout}\nCampaign infrastructure: ${error instanceof Error ? error.message : String(error)}` }));
     validateEvaluationRecord(record);
     return record;
   } finally {
     providerProxy.releaseBlockedShow();
     await rm(parent, { recursive: true, force: true });
   }
+}
+
+function auditEntry({ record, task, stdout }) {
+  return {
+    evaluationRunId: record.evaluationRunId,
+    task: {
+      id: task.id,
+      version: task.version,
+      split: task.split,
+      category: task.category,
+      prompt: task.prompt,
+      expected: task.expected
+    },
+    terminal: record.execution.terminal,
+    machineGrade: record.grade,
+    stdoutSha256: record.execution.stdoutSha256,
+    candidateOutputExcerpt: boundedTail(stdout, 6_000)
+  };
 }
 
 async function captureFixedRevisions(campaignOptions, campaignPolicy) {
@@ -274,6 +326,7 @@ function unavailableRecord({ campaignId: currentCampaignId, evaluationRunId, tas
     },
     usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
     cost: { amount: 0, currency: 'USD', basis: 'provider execution unavailable; no API cost observed' },
+    outcome: 'unavailable',
     grade: {
       graderId: 'coding-agent.machine-task-grader', graderVersion: 1, outcome: 'unavailable',
       criteria: [{ id: 'campaign-infrastructure', passed: false, detail: diagnostic.slice(0, 512) }],
@@ -508,12 +561,27 @@ function terminalFromOutput(output) {
   return { executionStatus: executionStatus ?? 'missing', candidateStatus: candidateStatus ?? 'missing', verificationStatus: verificationStatus ?? 'missing' };
 }
 
+function boundedTail(value, maximumCharacters) {
+  if (value.length <= maximumCharacters) return value;
+  return `[earlier output omitted]\n${value.slice(-maximumCharacters)}`;
+}
+
 async function oneOptionalFile(directory) {
   let entries;
   try { entries = await readdir(directory); } catch { return undefined; }
   const files = [];
   for (const entry of entries) if ((await stat(path.join(directory, entry))).isFile()) files.push(path.join(directory, entry));
   return files.length === 1 ? files[0] : undefined;
+}
+
+async function requireNewOutputDirectory(directory) {
+  try {
+    await stat(directory);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return;
+    throw error;
+  }
+  throw new Error(`Campaign output directory already exists: ${directory}`);
 }
 
 async function gitHead(root) { return (await runFile('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim(); }

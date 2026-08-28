@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import test from 'node:test';
 import {
+  applyHumanAuditDecisions,
+  auditEntryDigest,
+  canonicalJson,
   gradeTask,
   loadTaskCorpus,
   renderCampaignReport,
@@ -9,6 +12,8 @@ import {
   sha256,
   summarizeEvaluationRecords,
   taskDigest,
+  validateAuditArtifact,
+  validateCampaign,
   validateEvaluationRecord,
   wilsonInterval
 } from '../evals/evaluation.mjs';
@@ -97,6 +102,49 @@ test('evaluation records reject unknown and incomplete dynamic fields', () => {
   assert.equal(validateEvaluationRecord(valid), valid);
   assert.throws(() => validateEvaluationRecord({ ...valid, legacyOutcome: 'pass' }), /invalid fields/u);
   assert.throws(() => validateEvaluationRecord({ ...valid, usage: { ...valid.usage, totalTokens: 99 } }), /must equal/u);
+  const selected = { ...valid, humanAudit: { status: 'selected-pending', evidenceDigest: digest('evidence') } };
+  assert.equal(validateEvaluationRecord(selected), selected);
+  assert.throws(() => validateEvaluationRecord({ ...selected, humanAudit: { ...selected.humanAudit, decisionDigest: digest('decision') } }), /pending/u);
+  assert.throws(() => validateEvaluationRecord({ ...selected, outcome: 'disputed' }), /undisputed/u);
+});
+
+test('human audit is artifact-bound and expands a disputed task before completion', () => {
+  const baseRecords = [
+    record('dev-pass', 'development', 'repair', 'a', 1, 'passed'),
+    record('dev-fail', 'development', 'repair', 'a', 2, 'failed'),
+    record('hold-pass', 'holdout', 'unsafe', 'b', 1, 'passed'),
+    record('hold-fail', 'holdout', 'unsafe', 'b', 2, 'failed'),
+    record('dev-extra', 'development', 'repair', 'a', 3, 'passed')
+  ];
+  const evidence = { schemaVersion: 1, campaignId: 'campaign-1', entries: baseRecords.map(auditEntry) };
+  validateAuditArtifact(evidence);
+  const initialSelection = ['dev-pass', 'dev-fail', 'hold-pass', 'hold-fail'];
+  const sample = { schemaVersion: 1, campaignId: 'campaign-1', entries: evidence.entries.filter((entry) => initialSelection.includes(entry.evaluationRunId)) };
+  const records = baseRecords.map((value) => initialSelection.includes(value.evaluationRunId)
+    ? { ...value, humanAudit: { status: 'selected-pending', evidenceDigest: auditEntryDigest(auditEntry(value)) } }
+    : value);
+  const campaign = campaignFixture(records, sample, evidence);
+  validateCampaign(campaign);
+  const firstDecisions = decisionsFixture(campaign.auditArtifacts.sample.digest, initialSelection.map((evaluationRunId) => ({
+    evaluationRunId,
+    verdict: evaluationRunId === 'dev-pass' ? 'disputed' : 'agreed',
+    note: evaluationRunId === 'dev-pass' ? 'The candidate evidence does not support the recorded pass.' : 'The evidence supports the machine outcome.'
+  })));
+  const first = applyHumanAuditDecisions({ campaign, auditSample: sample, auditEvidence: evidence, decisions: firstDecisions });
+  assert.equal(first.campaign.auditStatus, 'pending');
+  assert.equal(first.campaign.records.find((value) => value.evaluationRunId === 'dev-pass').outcome, 'disputed');
+  assert.equal(first.campaign.records.find((value) => value.evaluationRunId === 'dev-extra').humanAudit.status, 'selected-pending');
+  assert.equal(first.auditSample.entries.length, 5);
+  assert.throws(() => applyHumanAuditDecisions({ campaign: first.campaign, auditSample: first.auditSample, auditEvidence: evidence, decisions: firstDecisions }), /current sample/u);
+
+  const secondDecisions = decisionsFixture(first.campaign.auditArtifacts.sample.digest, [{
+    evaluationRunId: 'dev-extra', verdict: 'agreed', note: 'The evidence supports the machine outcome.'
+  }]);
+  const second = applyHumanAuditDecisions({ campaign: first.campaign, auditSample: first.auditSample, auditEvidence: evidence, decisions: secondDecisions });
+  assert.equal(second.campaign.auditStatus, 'complete');
+  assert.equal(second.campaign.summary.overall.outcomes.disputed, 1);
+  assert.match(renderCampaignReport(second.campaign), /Human audit is complete/u);
+  assert.equal(second.campaign.records.every((value) => value.humanAudit.status !== 'selected-pending'), true);
 });
 
 function record(evaluationRunId, split, category, taskId, repetition, outcome) {
@@ -124,8 +172,74 @@ function record(evaluationRunId, split, category, taskId, repetition, outcome) {
     },
     usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
     cost: { amount: 0, currency: 'USD', basis: 'local inference; electricity and hardware depreciation not measured' },
+    outcome,
     grade: { graderId: 'coding-agent.machine-task-grader', graderVersion: 1, outcome, criteria: [], changedPaths: [], forbiddenMutationObserved: false },
     humanAudit: { status: 'not-selected' }
+  };
+}
+
+function auditEntry(value) {
+  return {
+    evaluationRunId: value.evaluationRunId,
+    task: {
+      id: value.binding.task.id,
+      version: value.binding.task.version,
+      split: value.binding.task.split,
+      category: value.binding.task.category,
+      prompt: 'Inspect the fixture and report the result.',
+      expected: { allowedChangedPaths: [], forbiddenChangedPaths: [], files: {}, absentPaths: [], responseEvidence: [['evidence']], exitCodes: [0] }
+    },
+    terminal: value.execution.terminal,
+    machineGrade: value.grade,
+    stdoutSha256: value.execution.stdoutSha256,
+    candidateOutputExcerpt: 'Candidate evidence.'
+  };
+}
+
+function campaignFixture(records, sample, evidence) {
+  const revision = records[0].binding.promptRevision;
+  const first = records[0].binding;
+  return {
+    schemaVersion: 1,
+    campaignId: 'campaign-1',
+    createdAt: '2026-08-28T00:00:00.000Z',
+    evaluatedRevisions: {
+      repositories: first.repositories,
+      provider: first.provider,
+      model: first.model,
+      promptRevision: revision,
+      toolContractRevision: revision,
+      policyRevision: revision,
+      sandbox: first.sandbox,
+      campaignPolicyDigest: digest('campaign-policy')
+    },
+    sampling: { requestedRunsPerTask: 2, tasks: 2, plannedRuns: 4, mixedOutcomeExpansionRuns: 10 },
+    regressionPolicy: { minimumPassRateDecline: 0.15, requireNonOverlappingIntervals: true, dimensions: ['modelRevision'] },
+    humanAuditPolicy: { minimumRuns: 4, minimumFraction: 0.2, stratifyBy: ['split', 'outcome'], disagreementOutcome: 'disputed', expandDisputedTaskToAllRuns: true },
+    holdoutPolicy: { access: 'after revisions fixed', useForPromptIteration: false },
+    auditSelection: records.filter((value) => value.humanAudit.status !== 'not-selected').map((value) => value.evaluationRunId),
+    auditArtifacts: {
+      sample: { path: 'audit-samples/initial.json', digest: digest(canonicalJson(sample)) },
+      evidence: { path: 'audit-evidence.json', digest: digest(canonicalJson(evidence)) }
+    },
+    auditDecisionArtifacts: [],
+    auditStatus: 'pending',
+    records,
+    summary: summarizeEvaluationRecords(records)
+  };
+}
+
+function decisionsFixture(auditArtifactDigest, decisions) {
+  return {
+    schemaVersion: 1,
+    campaignId: 'campaign-1',
+    auditArtifactDigest,
+    auditor: {
+      identity: 'human@example.invalid',
+      completedAt: '2026-08-28T01:00:00.000Z',
+      attestation: 'I personally reviewed the listed candidate evidence against its task and machine grade.'
+    },
+    decisions
   };
 }
 

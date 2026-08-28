@@ -16,4 +16,38 @@ Run an explicit local campaign after `npm run build`:
 node coding-agent/evals/run-campaign.mjs --model gemma4:e2b --runs 3
 ```
 
-Campaign records contain bounded hashes and outcomes, not raw provider reasoning or private state. Local Ollama inference records zero API cost with an explicit basis; it does not pretend electricity or hardware depreciation is known. Human audit remains a distinct signed disposition. A pending audit cannot complete Q1.
+Campaign records contain bounded hashes and outcomes, not raw provider reasoning or private state. `audit-evidence.json` retains a bounded final CLI excerpt for every run so a disagreement can expand to the complete task version without rerunning a different stochastic sample. The digest-named file under `audit-samples/` contains only the currently selected review set. Each selected record binds its exact evidence entry.
+
+Local Ollama inference records zero API cost with an explicit basis; it does not pretend electricity or hardware depreciation is known. The deterministic grader checks exact files, path authority, terminal facts, recovery facts, and versioned lexical evidence alternatives. Its machine outcome remains distinct from the adjudicated outcome.
+
+Human decisions use the current-only schema below. Every pending selected run must appear exactly once, and no other run may appear. `completedAt` is a canonical ISO timestamp. A dispute changes the adjudicated outcome to `disputed` and expands the sample to every run of that task version; a second decision artifact is then required for the newly pending records.
+
+```json
+{
+  "schemaVersion": 1,
+  "campaignId": "campaign-id-from-campaign.json",
+  "auditArtifactDigest": "sha256:current-sample-digest-from-campaign.json",
+  "auditor": {
+    "identity": "reviewer identity",
+    "completedAt": "2026-08-28T12:00:00.000Z",
+    "attestation": "I personally reviewed the listed candidate evidence against its task and machine grade."
+  },
+  "decisions": [
+    {
+      "evaluationRunId": "selected-run-id",
+      "verdict": "agreed",
+      "note": "The evidence supports the machine outcome."
+    }
+  ]
+}
+```
+
+Apply a completed human disposition with:
+
+```bash
+node coding-agent/evals/apply-human-audit.mjs \
+  --campaign coding-agent/evals/results/<campaign-id> \
+  --decisions /path/to/human-decisions.json
+```
+
+Decision and sample artifacts are immutable, digest-named files. The campaign and reproducible report advance atomically per file. A pending audit cannot complete Q1.
