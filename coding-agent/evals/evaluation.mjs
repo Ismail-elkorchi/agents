@@ -98,7 +98,7 @@ export function renderCampaignReport(campaign) {
   const lines = [
     `# Coding Agent real-model campaign ${campaign.campaignId}`,
     '',
-    `Model: \`${campaign.evaluatedRevisions.model.id}\` at \`${campaign.evaluatedRevisions.model.digest}\``,
+    `Model: \`${campaign.evaluatedRevisions.model.id}\`; revision: \`${campaign.evaluatedRevisions.model.revisionKind}:${campaign.evaluatedRevisions.model.revision}\`; immutable: ${String(campaign.evaluatedRevisions.model.immutable)}.`,
     '',
     `Runs: ${String(campaign.summary.totalRuns)}; measured pass rate: ${rate(campaign.summary.overall.passRate)}; 95% Wilson interval: ${interval(campaign.summary.overall.interval)}.`,
     '',
@@ -215,11 +215,9 @@ export function validateCampaign(campaign) {
   exactKeys(campaign.sampling, ['requestedRunsPerTask', 'tasks', 'plannedRuns', 'mixedOutcomeExpansionRuns'], 'campaign sampling');
   for (const key of ['requestedRunsPerTask', 'tasks', 'plannedRuns', 'mixedOutcomeExpansionRuns']) positiveInteger(campaign.sampling[key], `campaign sampling ${key}`);
   if (campaign.sampling.plannedRuns !== campaign.sampling.requestedRunsPerTask * campaign.sampling.tasks) throw new Error('Campaign planned runs must equal tasks times requested runs.');
-  exactKeys(campaign.inference, ['maxOutputTokens', 'temperature', 'reasoningMode', 'modelCleanup', 'timeoutMs'], 'campaign inference');
-  positiveInteger(campaign.inference.maxOutputTokens, 'campaign max output tokens');
-  if (typeof campaign.inference.temperature !== 'number' || !Number.isFinite(campaign.inference.temperature) || campaign.inference.temperature < 0) throw new Error('Campaign temperature is invalid.');
-  if (campaign.inference.reasoningMode !== 'disabled' && campaign.inference.reasoningMode !== 'enabled') throw new Error('Campaign reasoning mode is invalid.');
-  if (campaign.inference.modelCleanup !== 'unload-after-timeout-and-campaign') throw new Error('Campaign model-cleanup policy is invalid.');
+  exactKeys(campaign.inference, ['transport', 'reasoningEffort', 'timeoutMs'], 'campaign inference');
+  if (campaign.inference.transport !== 'http_sse') throw new Error('Campaign transport is invalid.');
+  if (!['low', 'medium', 'high', 'xhigh', 'max'].includes(campaign.inference.reasoningEffort)) throw new Error('Campaign reasoning effort is invalid.');
   positiveInteger(campaign.inference.timeoutMs, 'campaign timeout');
   parseRegressionPolicy(campaign.regressionPolicy);
   parseHumanAuditPolicy(campaign.humanAuditPolicy);
@@ -471,10 +469,13 @@ function parseProvider(value) {
 }
 
 function parseModel(value) {
-  exactKeys(value, ['id', 'digest', 'modifiedAt'], 'model binding');
-  nonempty(value.id, 'model id');
-  digest(value.digest, 'model digest');
-  isoDate(value.modifiedAt, 'model modifiedAt');
+  exactKeys(value, ['id', 'revisionKind', 'revision', 'immutable', 'profileRevision', 'documentationUrl'], 'model binding');
+  if (value.id !== 'gpt-5.6-luna') throw new Error('The current model binding must identify gpt-5.6-luna.');
+  if (value.revisionKind !== 'provider-alias') throw new Error('model revision kind is invalid.');
+  if (value.revision !== value.id) throw new Error('The provider-alias revision must equal the model id.');
+  if (value.immutable !== false) throw new Error('The current model binding must disclose that its provider alias is not immutable.');
+  revision(value.profileRevision, 'model profile revision');
+  if (value.documentationUrl !== 'https://developers.openai.com/api/docs/models/gpt-5.6-luna') throw new Error('model documentation URL is invalid.');
 }
 
 function parseSandbox(value) {
@@ -583,7 +584,7 @@ function parseUsage(value) {
 
 function parseCost(value) {
   exactKeys(value, ['amount', 'currency', 'basis'], 'cost');
-  if (typeof value.amount !== 'number' || !Number.isFinite(value.amount) || value.amount < 0) throw new Error('cost amount is invalid.');
+  if (value.amount !== null && (typeof value.amount !== 'number' || !Number.isFinite(value.amount) || value.amount < 0)) throw new Error('cost amount is invalid.');
   nonempty(value.currency, 'cost currency'); nonempty(value.basis, 'cost basis');
 }
 

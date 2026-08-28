@@ -13,14 +13,16 @@ node --test coding-agent/test/real-model-evaluation.test.js
 Run an explicit local campaign after `npm run build`:
 
 ```bash
-node coding-agent/evals/run-campaign.mjs --model gemma4:e2b --runs 3
+node coding-agent/evals/run-campaign.mjs --model gpt-5.6-luna --runs 3
 ```
 
-The runner defaults to explicit disabled model reasoning, temperature `0.2`, 2,048 output tokens, and a 240-second application timeout. Override them with `--reasoning-mode enabled`, `--temperature`, `--max-output-tokens`, and `--timeout-ms`. These values are recorded in campaign metadata and repeated in each run's policy/configuration digest; provider defaults are never an unbound experimental variable. The endpoint must be dedicated to the campaign: the runner uses Ollama's documented `keep_alive: 0` cleanup after a timeout and when the campaign ends, preventing one abandoned generation from contaminating later repetitions.
+The current runner is intentionally bound to `gpt-5.6-luna` through the Coding Agent's stored `openai-codex` ChatGPT subscription credentials and HTTP SSE transport. It defaults to explicit `low` reasoning and a 240-second application timeout; override those with `--reasoning-effort` and `--timeout-ms`. The exact transport, reasoning, timeout, provider implementation, model profile sources, and provider alias are bound into the campaign and each run. The provider alias is disclosed as non-immutable because the subscription channel does not expose a dated model snapshot.
+
+Normal tasks connect directly to the subscription endpoint. The process-recovery task alone uses an in-memory loopback forwarder: it holds the first Codex request before any body or credential is sent upstream, kills the application, then verifies resume through a fresh request. The proxy never logs or persists headers, bodies, credentials, or provider output.
 
 Campaign records contain bounded hashes and outcomes, not raw provider reasoning or private state. `audit-evidence.json` retains a bounded final CLI excerpt for every run so a disagreement can expand to the complete task version without rerunning a different stochastic sample. The digest-named file under `audit-samples/` contains only the currently selected review set. Each selected record binds its exact evidence entry.
 
-Local Ollama inference records zero API cost with an explicit basis; it does not pretend electricity or hardware depreciation is known. The deterministic grader checks exact files, path authority, terminal facts, recovery facts, and versioned lexical evidence alternatives. Its machine outcome remains distinct from the adjudicated outcome.
+The ChatGPT subscription transport does not expose marginal per-run billing, so cost remains explicitly unknown rather than borrowing OpenAI Platform API pricing. The deterministic grader checks exact files, path authority, terminal facts, recovery facts, and versioned lexical evidence alternatives. Its machine outcome remains distinct from the adjudicated outcome.
 
 Human decisions use the current-only schema below. Every pending selected run must appear exactly once, and no other run may appear. `completedAt` is a canonical ISO timestamp. A dispute changes the adjudicated outcome to `disputed` and expands the sample to every run of that task version; a second decision artifact is then required for the newly pending records.
 

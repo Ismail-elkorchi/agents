@@ -30,6 +30,8 @@ const cli = path.join(repositoryRoot, 'coding-agent/dist/index.js');
 const developmentTasksPath = path.join(import.meta.dirname, 'tasks/development.json');
 const holdoutTasksPath = path.join(import.meta.dirname, 'tasks/holdout.json');
 const policyPath = path.join(import.meta.dirname, 'policy.json');
+const codexUpstream = new URL('https://chatgpt.com/backend-api/');
+const lunaDocumentation = 'https://developers.openai.com/api/docs/models/gpt-5.6-luna';
 
 const options = parseArguments(process.argv.slice(2));
 const policy = JSON.parse(await readFile(policyPath, 'utf8'));
@@ -47,27 +49,21 @@ const selectedTasks = [...developmentTasks, ...holdoutTasks].filter((task) =>
 );
 if (selectedTasks.length === 0) throw new Error('No evaluation tasks match the selected filters.');
 
-const proxy = await createOllamaProxy(options.endpoint);
 const records = [];
 const auditEvidence = new Map();
-try {
-  for (const task of selectedTasks) {
-    for (let repetition = 1; repetition <= options.runs; repetition += 1) {
-      process.stderr.write(`[${task.split}] ${task.id} ${String(repetition)}/${String(options.runs)}\n`);
-      records.push(await runEvaluation({ campaignId, task, repetition, proxy, options, revisions, auditEvidence }));
-    }
-    const initial = records.filter((record) => record.binding.task.id === task.id && record.binding.task.split === task.split);
-    const measuredOutcomes = new Set(initial.map((record) => record.grade.outcome).filter((outcome) => outcome === 'passed' || outcome === 'failed'));
-    if (measuredOutcomes.size > 1 && options.runs < policy.mixedOutcomeExpansionRuns) {
-      for (let repetition = options.runs + 1; repetition <= policy.mixedOutcomeExpansionRuns; repetition += 1) {
-        process.stderr.write(`[${task.split}] ${task.id} mixed-outcome expansion ${String(repetition)}/${String(policy.mixedOutcomeExpansionRuns)}\n`);
-        records.push(await runEvaluation({ campaignId, task, repetition, proxy, options, revisions, auditEvidence }));
-      }
+for (const task of selectedTasks) {
+  for (let repetition = 1; repetition <= options.runs; repetition += 1) {
+    process.stderr.write(`[${task.split}] ${task.id} ${String(repetition)}/${String(options.runs)}\n`);
+    records.push(await runEvaluation({ campaignId, task, repetition, options, revisions, auditEvidence }));
+  }
+  const initial = records.filter((record) => record.binding.task.id === task.id && record.binding.task.split === task.split);
+  const measuredOutcomes = new Set(initial.map((record) => record.grade.outcome).filter((outcome) => outcome === 'passed' || outcome === 'failed'));
+  if (measuredOutcomes.size > 1 && options.runs < policy.mixedOutcomeExpansionRuns) {
+    for (let repetition = options.runs + 1; repetition <= policy.mixedOutcomeExpansionRuns; repetition += 1) {
+      process.stderr.write(`[${task.split}] ${task.id} mixed-outcome expansion ${String(repetition)}/${String(policy.mixedOutcomeExpansionRuns)}\n`);
+      records.push(await runEvaluation({ campaignId, task, repetition, options, revisions, auditEvidence }));
     }
   }
-} finally {
-  try { await proxy.unloadModel(options.model); }
-  finally { await proxy.close(); }
 }
 
 const selectedRunIds = new Set(selectHumanAuditSample(records, policy.humanAudit));
@@ -105,10 +101,8 @@ const campaign = {
     mixedOutcomeExpansionRuns: policy.mixedOutcomeExpansionRuns
   },
   inference: {
-    maxOutputTokens: options.maxOutputTokens,
-    temperature: options.temperature,
-    reasoningMode: options.reasoningMode,
-    modelCleanup: 'unload-after-timeout-and-campaign',
+    transport: 'http_sse',
+    reasoningEffort: options.reasoningEffort,
     timeoutMs: options.timeoutMs
   },
   regressionPolicy: policy.regression,
@@ -133,7 +127,7 @@ await writeFile(path.join(outputDirectory, 'campaign.json'), `${JSON.stringify(c
 await writeFile(path.join(outputDirectory, 'report.md'), renderCampaignReport(campaign), { mode: 0o600 });
 process.stdout.write(`${JSON.stringify({ campaignId, outputDirectory, runs: boundRecords.length, outcomes: summary.overall.outcomes }, null, 2)}\n`);
 
-async function runEvaluation({ campaignId: currentCampaignId, task, repetition, proxy: providerProxy, options: campaignOptions, revisions: fixed, auditEvidence: evidence }) {
+async function runEvaluation({ campaignId: currentCampaignId, task, repetition, options: campaignOptions, revisions: fixed, auditEvidence: evidence }) {
   const parent = await mkdtemp(path.join(tmpdir(), 'coding-agent-real-eval-'));
   const workspace = path.join(parent, 'workspace');
   const stateRoot = path.join(parent, 'state');
@@ -142,15 +136,14 @@ async function runEvaluation({ campaignId: currentCampaignId, task, repetition, 
   const evaluationRunId = `${task.split}-${task.id}-${String(repetition)}-${randomUUID()}`;
   let abruptInitialExit = false;
   let result = { exitCode: null, signal: null, stdout: '', stderr: '', timedOut: false };
-  const runtimeConfiguration = configuration(task, campaignOptions.model, campaignOptions.reasoningMode);
+  let recoveryProxy;
+  const runtimeConfiguration = configuration(task, campaignOptions.model, campaignOptions.reasoningEffort);
   const taskPolicyRevision = await revisionFromInputs([
     ...fixed.policyRevision.inputs,
     syntheticInput('evaluation', `${task.split}/${task.id}/runtime-configuration.json`, runtimeConfiguration),
     syntheticInput('evaluation', 'campaign-inference.json', {
-      maxOutputTokens: campaignOptions.maxOutputTokens,
-      temperature: campaignOptions.temperature,
-      reasoningMode: campaignOptions.reasoningMode,
-      modelCleanup: 'unload-after-timeout-and-campaign',
+      transport: 'http_sse',
+      reasoningEffort: campaignOptions.reasoningEffort,
       timeoutMs: campaignOptions.timeoutMs
     })
   ]);
@@ -165,18 +158,19 @@ async function runEvaluation({ campaignId: currentCampaignId, task, repetition, 
     if (trustResult.exitCode !== 0) throw new Error(`Failed to trust evaluation workspace: ${trustResult.stderr}`);
 
     if (task.execution === 'recover-before-generation') {
-      providerProxy.blockNextShow();
-      const initial = spawnCapturedControllable(cliArguments(workspace, stateRoot, providerProxy.endpoint, campaignOptions,
+      recoveryProxy = await createCodexRecoveryProxy();
+      recoveryProxy.blockNextGeneration();
+      const initial = spawnCapturedControllable(cliArguments(workspace, stateRoot, recoveryProxy.endpoint, campaignOptions,
         ['exec', task.prompt, '--permissions', task.permissionMode]), campaignOptions.timeoutMs);
-      await providerProxy.waitForBlockedShow(30_000);
+      await recoveryProxy.waitForBlockedGeneration(30_000);
       initial.killAbruptly();
       const interrupted = await initial.result;
       abruptInitialExit = interrupted.signal === 'SIGKILL' || (process.platform === 'win32' && interrupted.exitCode !== 0);
-      providerProxy.releaseBlockedShow();
-      result = await spawnCaptured(cliArguments(workspace, stateRoot, providerProxy.endpoint, campaignOptions,
+      recoveryProxy.releaseBlockedGeneration();
+      result = await spawnCaptured(cliArguments(workspace, stateRoot, recoveryProxy.endpoint, campaignOptions,
         ['exec', '--resume', '--permissions', task.permissionMode]), campaignOptions.timeoutMs);
     } else {
-      result = await spawnCaptured(cliArguments(workspace, stateRoot, providerProxy.endpoint, campaignOptions,
+      result = await spawnCaptured(cliArguments(workspace, stateRoot, undefined, campaignOptions,
         ['exec', task.prompt, '--permissions', task.permissionMode]), campaignOptions.timeoutMs);
     }
 
@@ -194,7 +188,7 @@ async function runEvaluation({ campaignId: currentCampaignId, task, repetition, 
       evaluationRunId,
       recordedAt: new Date().toISOString(),
       binding: {
-        provider: fixed.provider,
+        provider: providerBinding(fixed.provider, task.execution),
         model: fixed.model,
         promptRevision: fixed.promptRevision,
         toolContractRevision: fixed.toolContractRevision,
@@ -219,7 +213,7 @@ async function runEvaluation({ campaignId: currentCampaignId, task, repetition, 
         stderrSha256: digest(result.stderr)
       },
       usage,
-      cost: { amount: 0, currency: 'USD', basis: 'local Ollama inference; electricity and hardware depreciation not measured' },
+      cost: { amount: null, currency: 'USD', basis: 'ChatGPT subscription transport; marginal per-run cost is not exposed' },
       outcome: grade.outcome,
       grade,
       humanAudit: { status: 'not-selected' }
@@ -245,9 +239,9 @@ async function runEvaluation({ campaignId: currentCampaignId, task, repetition, 
     validateEvaluationRecord(record);
     return record;
   } finally {
-    providerProxy.releaseBlockedShow();
+    recoveryProxy?.releaseBlockedGeneration();
     try {
-      if (result.timedOut) await providerProxy.unloadModel(campaignOptions.model);
+      if (recoveryProxy) await recoveryProxy.close();
     } finally {
       await rm(parent, { recursive: true, force: true });
     }
@@ -282,7 +276,20 @@ async function captureFixedRevisions(campaignOptions, campaignPolicy) {
   for (const [name, root] of Object.entries({ agents: repositoryRoot, agentCore: agentCoreRoot, sandbox: sandboxRoot, terminalUi: terminalUiRoot })) {
     if ((await gitStatus(root)).length > 0) throw new Error(`${name} must be clean before fixing evaluation revisions.`);
   }
-  const model = await modelBinding(campaignOptions.endpoint, campaignOptions.model);
+  const authStatus = await runFile(process.execPath, [cli, 'auth', 'status', 'openai-codex']);
+  if (!/Stored OAuth credentials: present/u.test(authStatus.stdout)) throw new Error('OpenAI Codex stored OAuth credentials are required for the campaign.');
+  const modelProfileRevision = await revisionFromPaths([
+    source(agentCoreRoot, 'agent-core', 'packages/providers/openai-codex/src/model-profile.ts'),
+    source(agentCoreRoot, 'agent-core', 'packages/providers/openai-codex/src/request.ts')
+  ]);
+  const model = {
+    id: campaignOptions.model,
+    revisionKind: 'provider-alias',
+    revision: campaignOptions.model,
+    immutable: false,
+    profileRevision: modelProfileRevision,
+    documentationUrl: lunaDocumentation
+  };
   const promptRevision = await revisionFromPaths([
     source(repositoryRoot, 'agents', 'coding-agent/src/instructions/coding-contract.ts'),
     source(repositoryRoot, 'agents', 'coding-agent/src/workspace/repository-orientation.ts'),
@@ -305,9 +312,9 @@ async function captureFixedRevisions(campaignOptions, campaignPolicy) {
     probeDigest: digest(canonicalJson(sandboxProbe))
   };
   const provider = {
-    id: 'ollama',
-    implementationRevision: `${repositories.agentCore}:packages/providers/ollama`,
-    endpointClass: loopbackEndpoint(campaignOptions.endpoint) ? 'local-loopback' : 'remote-explicit'
+    id: 'openai-codex',
+    implementationRevision: `${repositories.agentCore}:packages/providers/openai-codex`,
+    endpointClass: 'chatgpt-subscription'
   };
   return {
     repositories,
@@ -328,7 +335,7 @@ function unavailableRecord({ campaignId: currentCampaignId, evaluationRunId, tas
     evaluationRunId,
     recordedAt: new Date().toISOString(),
     binding: {
-      provider: revisions.provider,
+      provider: providerBinding(revisions.provider, task.execution),
       model: revisions.model,
       promptRevision: revisions.promptRevision,
       toolContractRevision: revisions.toolContractRevision,
@@ -344,7 +351,7 @@ function unavailableRecord({ campaignId: currentCampaignId, evaluationRunId, tas
       ledgerSha256: digest(''), changeReportSha256: digest(''), stdoutSha256: digest(result.stdout), stderrSha256: digest(result.stderr)
     },
     usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-    cost: { amount: 0, currency: 'USD', basis: 'provider execution unavailable; no API cost observed' },
+    cost: { amount: null, currency: 'USD', basis: 'ChatGPT subscription transport; marginal per-run cost is not exposed' },
     outcome: 'unavailable',
     grade: {
       graderId: 'coding-agent.machine-task-grader', graderVersion: 1, outcome: 'unavailable',
@@ -355,12 +362,12 @@ function unavailableRecord({ campaignId: currentCampaignId, evaluationRunId, tas
   };
 }
 
-function configuration(task, model, reasoningMode) {
+function configuration(task, model, reasoningEffort) {
   return {
     version: 1,
-    provider: 'ollama',
+    provider: 'openai-codex',
     model,
-    reasoning: { strategy: reasoningMode },
+    reasoning: { strategy: 'effort', effort: reasoningEffort },
     instructions: [],
     tools: { enabled: task.tools },
     permissions: { maximumMode: task.permissionMode, requireApprovalFor: [] },
@@ -381,19 +388,26 @@ function configuration(task, model, reasoningMode) {
 }
 
 function cliArguments(workspace, stateRoot, endpoint, campaignOptions, command) {
-  return [
+  const args = [
     process.execPath,
     cli,
     ...command,
     '--root', workspace,
     '--state-root', stateRoot,
     '--config', 'coding-agent.config.json',
-    '--provider', 'ollama',
+    '--provider', 'openai-codex',
     '--model', campaignOptions.model,
-    '--provider-endpoint', endpoint,
-    '--max-output-tokens', String(campaignOptions.maxOutputTokens),
-    '--temperature', String(campaignOptions.temperature)
+    '--codex-transport', 'http_sse',
+    '--reasoning-effort', campaignOptions.reasoningEffort
   ];
+  if (endpoint !== undefined) args.push('--provider-endpoint', endpoint);
+  return args;
+}
+
+function providerBinding(provider, executionMode) {
+  return executionMode === 'recover-before-generation'
+    ? { ...provider, endpointClass: 'local-recovery-proxy-to-chatgpt-subscription' }
+    : { ...provider, endpointClass: 'chatgpt-subscription-direct' };
 }
 
 function trustCliArguments(workspace, stateRoot) {
@@ -457,10 +471,9 @@ function spawnCapturedControllable([executable, ...args], timeoutMs) {
   return { killAbruptly: () => child.kill(process.platform === 'win32' ? undefined : 'SIGKILL'), result };
 }
 
-async function createOllamaProxy(upstreamValue) {
-  const upstream = new URL(upstreamValue);
+async function createCodexRecoveryProxy() {
   const upstreamRequests = new Set();
-  let blockShow = false;
+  let blockGeneration = false;
   let blockedResolve;
   let releaseResolve;
   let blocked = Promise.resolve();
@@ -471,14 +484,14 @@ async function createOllamaProxy(upstreamValue) {
     upstreamRequests.add(controller);
     response.once('close', abortUpstream);
     try {
-      if (request.url === '/api/show' && blockShow) {
-        blockShow = false;
+      const body = await readRequest(request);
+      if (request.url?.endsWith('/codex/responses') && blockGeneration) {
+        blockGeneration = false;
         blockedResolve?.();
         await release;
         if (response.destroyed) return;
       }
-      const body = await readRequest(request);
-      const target = new URL(request.url ?? '/', upstream);
+      const target = new URL((request.url ?? '/').replace(/^\//u, ''), codexUpstream);
       const headers = new Headers();
       for (const [name, value] of Object.entries(request.headers)) {
         if (value !== undefined && !['host', 'connection', 'content-length'].includes(name)) headers.set(name, Array.isArray(value) ? value.join(', ') : value);
@@ -502,26 +515,16 @@ async function createOllamaProxy(upstreamValue) {
     server.listen({ host: '127.0.0.1', port: 0 }, resolve);
   });
   const address = server.address();
-  if (address === null || typeof address === 'string') throw new Error('Ollama evaluation proxy did not bind a TCP port.');
+  if (address === null || typeof address === 'string') throw new Error('OpenAI Codex recovery proxy did not bind a TCP port.');
   return {
     endpoint: `http://127.0.0.1:${String(address.port)}`,
-    blockNextShow() {
-      blockShow = true;
+    blockNextGeneration() {
+      blockGeneration = true;
       blocked = new Promise((resolve) => { blockedResolve = resolve; });
       release = new Promise((resolve) => { releaseResolve = resolve; });
     },
-    waitForBlockedShow(timeoutMs) { return withTimeout(blocked, timeoutMs, 'Ollama show request was not observed before recovery timeout.'); },
-    releaseBlockedShow() { releaseResolve?.(); },
-    async unloadModel(model) {
-      const response = await fetch(new URL('/api/generate', upstream), {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ model, keep_alive: 0 }),
-        signal: AbortSignal.timeout(30_000)
-      });
-      if (!response.ok) throw new Error(`Ollama model cleanup failed with ${String(response.status)}.`);
-      await response.arrayBuffer();
-    },
+    waitForBlockedGeneration(timeoutMs) { return withTimeout(blocked, timeoutMs, 'OpenAI Codex request was not observed before recovery timeout.'); },
+    releaseBlockedGeneration() { releaseResolve?.(); },
     close: () => {
       for (const controller of upstreamRequests) controller.abort();
       return new Promise((resolve, reject) => {
@@ -530,17 +533,6 @@ async function createOllamaProxy(upstreamValue) {
       });
     }
   };
-}
-
-async function modelBinding(endpoint, modelId) {
-  const response = await fetch(new URL('/api/tags', endpoint));
-  if (!response.ok) throw new Error(`Ollama tags request failed with ${String(response.status)}.`);
-  const value = await response.json();
-  const model = Array.isArray(value.models) ? value.models.find((candidate) => candidate.name === modelId || candidate.model === modelId) : undefined;
-  if (!model || typeof model.digest !== 'string' || !/^[a-f0-9]{64}$/u.test(model.digest) || typeof model.modified_at !== 'string') {
-    throw new Error(`Ollama model ${modelId} is unavailable or has no immutable digest.`);
-  }
-  return { id: modelId, digest: `sha256:${model.digest}`, modifiedAt: new Date(model.modified_at).toISOString() };
 }
 
 async function probeSandbox() {
@@ -635,7 +627,6 @@ async function gitStatus(root) { return (await runFile('git', ['status', '--porc
 
 function digest(value) { return `sha256:${sha256(value)}`; }
 function matchLine(value, pattern) { return pattern.exec(value)?.[1]?.trim(); }
-function loopbackEndpoint(value) { const host = new URL(value).hostname; return host === '127.0.0.1' || host === 'localhost' || host === '::1'; }
 
 async function readRequest(request) {
   const chunks = [];
@@ -649,24 +640,21 @@ function withTimeout(promise, timeoutMs, message) {
 }
 
 function parseArguments(args) {
-  const parsed = { endpoint: 'http://127.0.0.1:11434', runs: 3, taskIds: [], maxOutputTokens: 2048, temperature: 0.2, reasoningMode: 'disabled', timeoutMs: 240_000 };
+  const parsed = { model: 'gpt-5.6-luna', runs: 3, taskIds: [], reasoningEffort: 'low', timeoutMs: 240_000 };
   for (let index = 0; index < args.length; index += 1) {
     const name = args[index];
     const value = args[index + 1];
     if (name === '--model' && value) { parsed.model = value; index += 1; }
-    else if (name === '--endpoint' && value) { parsed.endpoint = value; index += 1; }
     else if (name === '--runs' && value) { parsed.runs = positive(value, 'runs'); index += 1; }
     else if (name === '--task' && value) { parsed.taskIds.push(value); index += 1; }
     else if (name === '--split' && (value === 'development' || value === 'holdout')) { parsed.split = value; index += 1; }
     else if (name === '--output' && value) { parsed.output = value; index += 1; }
     else if (name === '--campaign-id' && value) { parsed.campaignId = value; index += 1; }
-    else if (name === '--max-output-tokens' && value) { parsed.maxOutputTokens = positive(value, 'max-output-tokens'); index += 1; }
-    else if (name === '--temperature' && value && Number.isFinite(Number(value)) && Number(value) >= 0) { parsed.temperature = Number(value); index += 1; }
-    else if (name === '--reasoning-mode' && (value === 'disabled' || value === 'enabled')) { parsed.reasoningMode = value; index += 1; }
+    else if (name === '--reasoning-effort' && ['low', 'medium', 'high', 'xhigh', 'max'].includes(value)) { parsed.reasoningEffort = value; index += 1; }
     else if (name === '--timeout-ms' && value) { parsed.timeoutMs = positive(value, 'timeout-ms'); index += 1; }
     else throw new Error(`Unknown or incomplete evaluation argument: ${name ?? '<missing>'}`);
   }
-  if (typeof parsed.model !== 'string' || parsed.model.length === 0) throw new Error('--model is required.');
+  if (parsed.model !== 'gpt-5.6-luna') throw new Error('The current Q1 campaign runner is bound to --model gpt-5.6-luna.');
   return parsed;
 }
 

@@ -77,7 +77,7 @@ test('Wilson distributions retain non-measured and individual outcomes', () => {
   assert.deepEqual(wilsonInterval(0, 0), { confidenceLevel: 0.95, lower: null, upper: null });
   const interval = wilsonInterval(1, 2);
   assert.ok(interval.lower < 0.5 && interval.upper > 0.5);
-  const campaign = { campaignId: 'campaign-1', evaluatedRevisions: { model: { id: 'model', digest: digest('model') } }, summary };
+  const campaign = { campaignId: 'campaign-1', evaluatedRevisions: { model: modelBinding(record('model-run', 'development', 'repair', 'model-task', 1, 'passed').binding.promptRevision) }, summary };
   const report = renderCampaignReport(campaign);
   assert.equal(renderCampaignReport(campaign), report);
   assert.match(report, /development/u);
@@ -102,6 +102,7 @@ test('evaluation records reject unknown and incomplete dynamic fields', () => {
   assert.equal(validateEvaluationRecord(valid), valid);
   assert.throws(() => validateEvaluationRecord({ ...valid, legacyOutcome: 'pass' }), /invalid fields/u);
   assert.throws(() => validateEvaluationRecord({ ...valid, usage: { ...valid.usage, totalTokens: 99 } }), /must equal/u);
+  assert.throws(() => validateEvaluationRecord({ ...valid, binding: { ...valid.binding, model: { id: 'model', digest: digest('model'), modifiedAt: '2026-08-27T00:00:00.000Z' } } }), /invalid fields|gpt-5\.6-luna/u);
   const selected = { ...valid, humanAudit: { status: 'selected-pending', evidenceDigest: digest('evidence') } };
   assert.equal(validateEvaluationRecord(selected), selected);
   assert.throws(() => validateEvaluationRecord({ ...selected, humanAudit: { ...selected.humanAudit, decisionDigest: digest('decision') } }), /pending/u);
@@ -155,8 +156,8 @@ function record(evaluationRunId, split, category, taskId, repetition, outcome) {
     evaluationRunId,
     recordedAt: '2026-08-28T00:00:00.000Z',
     binding: {
-      provider: { id: 'ollama', implementationRevision: 'provider@1', endpointClass: 'local-loopback' },
-      model: { id: 'model', digest: digest('model'), modifiedAt: '2026-08-27T00:00:00.000Z' },
+      provider: { id: 'openai-codex', implementationRevision: 'provider@1', endpointClass: 'chatgpt-subscription-direct' },
+      model: modelBinding(revision),
       promptRevision: revision,
       toolContractRevision: revision,
       policyRevision: revision,
@@ -214,7 +215,7 @@ function campaignFixture(records, sample, evidence) {
       campaignPolicyDigest: digest('campaign-policy')
     },
     sampling: { requestedRunsPerTask: 2, tasks: 2, plannedRuns: 4, mixedOutcomeExpansionRuns: 10 },
-    inference: { maxOutputTokens: 512, temperature: 0.2, reasoningMode: 'disabled', modelCleanup: 'unload-after-timeout-and-campaign', timeoutMs: 120000 },
+    inference: { transport: 'http_sse', reasoningEffort: 'low', timeoutMs: 120000 },
     regressionPolicy: { minimumPassRateDecline: 0.15, requireNonOverlappingIntervals: true, dimensions: ['modelRevision'] },
     humanAuditPolicy: { minimumRuns: 4, minimumFraction: 0.2, stratifyBy: ['split', 'outcome'], disagreementOutcome: 'disputed', expandDisputedTaskToAllRuns: true },
     holdoutPolicy: { access: 'after revisions fixed', useForPromptIteration: false },
@@ -241,6 +242,17 @@ function decisionsFixture(auditArtifactDigest, decisions) {
       attestation: 'I personally reviewed the listed candidate evidence against its task and machine grade.'
     },
     decisions
+  };
+}
+
+function modelBinding(profileRevision) {
+  return {
+    id: 'gpt-5.6-luna',
+    revisionKind: 'provider-alias',
+    revision: 'gpt-5.6-luna',
+    immutable: false,
+    profileRevision,
+    documentationUrl: 'https://developers.openai.com/api/docs/models/gpt-5.6-luna'
   };
 }
 
