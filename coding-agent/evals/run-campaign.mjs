@@ -135,6 +135,7 @@ async function runEvaluation({ campaignId: currentCampaignId, task, repetition, 
   const evaluationRunId = `${task.split}-${task.id}-${String(repetition)}-${randomUUID()}`;
   let abruptInitialExit = false;
   let recoveryGenerationRequests = null;
+  let auditAfterFiles = null;
   let result = { exitCode: null, signal: null, stdout: '', stderr: '', timedOut: false };
   let recoverySentinel;
   const runtimeConfiguration = configuration(task, campaignOptions.model, campaignOptions.reasoningEffort);
@@ -176,6 +177,7 @@ async function runEvaluation({ campaignId: currentCampaignId, task, repetition, 
     }
 
     const afterFiles = await snapshotFiles(workspace);
+    auditAfterFiles = afterFiles;
     let grade = gradeTask({ task, beforeFiles, afterFiles, stdout: result.stdout, exitCode: result.exitCode, abruptInitialExit, recoveryGenerationRequests });
     if (result.timedOut) grade = { ...grade, outcome: 'inconclusive' };
     const ledgerPath = matchLine(result.stderr, /^Ledger: (.+)$/mu);
@@ -220,7 +222,7 @@ async function runEvaluation({ campaignId: currentCampaignId, task, repetition, 
       grade,
       humanAudit: { status: 'not-selected' }
     };
-    evidence.set(evaluationRunId, auditEntry({ record, task, stdout: result.stdout }));
+    evidence.set(evaluationRunId, auditEntry({ record, task, stdout: result.stdout, afterFiles }));
     validateEvaluationRecord(record);
     return record;
   } catch (error) {
@@ -237,7 +239,7 @@ async function runEvaluation({ campaignId: currentCampaignId, task, repetition, 
       diagnostic: error instanceof Error ? error.message : String(error),
       policyRevision: taskPolicyRevision
     });
-    evidence.set(evaluationRunId, auditEntry({ record, task, stdout: `${result.stdout}\nCampaign infrastructure: ${error instanceof Error ? error.message : String(error)}` }));
+    evidence.set(evaluationRunId, auditEntry({ record, task, stdout: `${result.stdout}\nCampaign infrastructure: ${error instanceof Error ? error.message : String(error)}`, afterFiles: auditAfterFiles }));
     validateEvaluationRecord(record);
     return record;
   } finally {
@@ -250,7 +252,7 @@ async function runEvaluation({ campaignId: currentCampaignId, task, repetition, 
   }
 }
 
-function auditEntry({ record, task, stdout }) {
+function auditEntry({ record, task, stdout, afterFiles }) {
   return {
     evaluationRunId: record.evaluationRunId,
     task: {
@@ -264,8 +266,26 @@ function auditEntry({ record, task, stdout }) {
     terminal: record.execution.terminal,
     machineGrade: record.grade,
     stdoutSha256: record.execution.stdoutSha256,
-    candidateOutputExcerpt: boundedTail(stdout, 6_000)
+    candidateOutputExcerpt: boundedTail(stdout, 6_000),
+    observedFiles: observedFileEvidence(task, record.grade.changedPaths, afterFiles)
   };
+}
+
+function observedFileEvidence(task, changedPaths, files) {
+  if (files === null) return [];
+  const paths = [...new Set([
+    ...task.expected.allowedChangedPaths,
+    ...task.expected.forbiddenChangedPaths,
+    ...Object.keys(task.expected.files),
+    ...task.expected.absentPaths,
+    ...changedPaths
+  ])].sort();
+  return paths.map((relativePath) => {
+    const content = files[relativePath];
+    return content === undefined
+      ? { path: relativePath, status: 'absent', sha256: null, contentExcerpt: null, truncated: false }
+      : { path: relativePath, status: 'present', sha256: digest(content), contentExcerpt: content.slice(0, 4_000), truncated: content.length > 4_000 };
+  });
 }
 
 async function captureFixedRevisions(campaignOptions, campaignPolicy) {

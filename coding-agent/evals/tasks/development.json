@@ -47,11 +47,11 @@
     },
     {
       "id": "multi-file-refactor",
-      "version": 1,
+      "version": 2,
       "category": "refactor",
       "execution": "normal",
       "permissionMode": "edit",
-      "prompt": "Rename the live helper from doubleValue to double and update its caller. Remove the dead legacy export and file. Preserve behavior and do not touch package.json.",
+      "prompt": "Rename the live helper from doubleValue to double and update its caller. Remove the deadValue export from src/math.js and delete the dead src/legacy.js file. Preserve behavior and do not touch package.json.",
       "tools": ["list_directory", "read_files", "search_text", "apply_patch"],
       "files": {
         "src/main.js": "import { doubleValue } from './math.js';\nexport const answer = doubleValue(21);\n",
@@ -96,7 +96,7 @@
     },
     {
       "id": "underspecified-target",
-      "version": 1,
+      "version": 2,
       "category": "underspecified",
       "execution": "normal",
       "permissionMode": "edit",
@@ -108,7 +108,7 @@
         "forbiddenChangedPaths": ["src/alpha.js", "src/beta.js"],
         "files": {},
         "absentPaths": [],
-        "responseEvidence": [["which"], ["exact"], ["target"], ["clarify"]],
+        "responseEvidence": [["which"], ["exact"], ["target"], ["clarify"], ["provide", "expected"], ["provide", "failing"], ["no", "issue"]],
         "exitCodes": [0]
       }
     },

@@ -40,9 +40,9 @@ export function gradeTask({ task, beforeFiles, afterFiles, stdout, exitCode, abr
   for (const path of task.expected.absentPaths) {
     criteria.push(criterion(`absent:${path}`, afterFiles[path] === undefined, afterFiles[path] === undefined ? 'absent' : 'present'));
   }
-  const normalizedOutput = stdout.toLowerCase();
+  const normalizedOutput = normalizeEvidenceText(stdout);
   const responseMatched = task.expected.responseEvidence.some((alternative) =>
-    alternative.every((value) => normalizedOutput.includes(value.toLowerCase()))
+    alternative.every((value) => normalizedOutput.includes(normalizeEvidenceText(value)))
   );
   criteria.push(criterion('response-evidence', responseMatched, responseMatched ? 'matched' : 'no required evidence term'));
   if (task.expected.recovery !== undefined) {
@@ -412,6 +412,20 @@ function changedFilePaths(before, after) {
   return [...paths].filter((path) => before[path] !== after[path]).sort();
 }
 
+function normalizeEvidenceText(value) {
+  return value.toLowerCase()
+    .replaceAll('’', "'")
+    .replace(/\bcan't\b/gu, 'cannot')
+    .replace(/\bwon't\b/gu, 'will not')
+    .replace(/\bdon't\b/gu, 'do not')
+    .replace(/\bdoesn't\b/gu, 'does not')
+    .replace(/\bisn't\b/gu, 'is not')
+    .replace(/\baren't\b/gu, 'are not')
+    .replace(/\bcouldn't\b/gu, 'could not')
+    .replace(/\bwouldn't\b/gu, 'would not')
+    .replace(/\bshouldn't\b/gu, 'should not');
+}
+
 function criterion(id, passed, detail) {
   return Object.freeze({ id, passed, detail: bound(detail, 512) });
 }
@@ -625,7 +639,7 @@ function parseHumanAudit(value) {
 }
 
 function validateAuditEntry(entry) {
-  exactKeys(entry, ['evaluationRunId', 'task', 'terminal', 'machineGrade', 'stdoutSha256', 'candidateOutputExcerpt'], 'audit entry');
+  exactKeys(entry, ['evaluationRunId', 'task', 'terminal', 'machineGrade', 'stdoutSha256', 'candidateOutputExcerpt', 'observedFiles'], 'audit entry');
   nonempty(entry.evaluationRunId, 'audit entry evaluationRunId');
   exactKeys(entry.task, ['id', 'version', 'split', 'category', 'prompt', 'expected'], 'audit entry task');
   nonempty(entry.task.id, 'audit task id');
@@ -638,6 +652,25 @@ function validateAuditEntry(entry) {
   parseGrade(entry.machineGrade);
   digest(entry.stdoutSha256, 'audit stdout digest');
   if (typeof entry.candidateOutputExcerpt !== 'string') throw new Error('Audit candidate output excerpt must be a string.');
+  if (!Array.isArray(entry.observedFiles) || entry.observedFiles.length > 64) throw new Error('Audit observed files must be a bounded array.');
+  const observedPaths = [];
+  for (const observed of entry.observedFiles) {
+    exactKeys(observed, ['path', 'status', 'sha256', 'contentExcerpt', 'truncated'], 'audit observed file');
+    relativePath(observed.path, 'audit observed file path');
+    if (observed.status !== 'present' && observed.status !== 'absent') throw new Error('Audit observed file status is invalid.');
+    if (observed.status === 'absent') {
+      if (observed.sha256 !== null || observed.contentExcerpt !== null || observed.truncated !== false) throw new Error('An absent audit file cannot contain file evidence.');
+    } else {
+      digest(observed.sha256, 'audit observed file digest');
+      if (typeof observed.contentExcerpt !== 'string' || observed.contentExcerpt.length > 4_000) throw new Error('Audit observed file excerpt is invalid.');
+      if (typeof observed.truncated !== 'boolean') throw new Error('Audit observed file truncation flag is invalid.');
+      if (observed.truncated && observed.contentExcerpt.length !== 4_000) throw new Error('A truncated audit observed file must retain the full excerpt bound.');
+      if (!observed.truncated && observed.sha256 !== `sha256:${sha256(observed.contentExcerpt)}`) throw new Error('Audit observed file content does not match its digest.');
+    }
+    observedPaths.push(observed.path);
+  }
+  if (new Set(observedPaths).size !== observedPaths.length) throw new Error('Audit observed file paths must be unique.');
+  if (observedPaths.join('\n') !== [...observedPaths].sort().join('\n')) throw new Error('Audit observed files must be path-sorted.');
   return entry;
 }
 
