@@ -68,7 +68,7 @@ test('sandbox command adapter cancels an invalid preparation without activation'
   }
 });
 
-test('released command preparation can be recreated with the same authorization evidence', async () => {
+test('released command preparation can be recreated with fresh time-bound authorization evidence', async () => {
   const fixture = await createFixture();
   try {
     const execution = await SandboxCommandExecution.create({
@@ -83,7 +83,9 @@ test('released command preparation can be recreated with the same authorization 
     const authorization = first.authorization;
     await first.release();
     const second = await execution.prepare(request());
-    assert.deepEqual(second.authorization, authorization);
+    assert.equal(second.authorization.requestDigest, authorization.requestDigest);
+    assert.equal(second.authorization.policyDigest, authorization.policyDigest);
+    assert.equal(second.authorization.executionDigest, authorization.executionDigest);
     const result = await execution.start(second);
     assert.equal(result.status, 'exited');
     assert.equal(fixture.repository.activationCount, 1);
@@ -152,7 +154,7 @@ test('sandbox command adapter rejects a receipt that conflicts with its durable 
     await execution.close();
     await fixture.state.write(
       `sandbox-processes/${result.processId}.json`,
-      `${JSON.stringify({ schemaVersion: 1, processId: result.processId, owner, requestDigest: `sha256:${'f'.repeat(64)}` })}\n`
+      `${JSON.stringify({ schemaVersion: 1, processId: result.processId, owner, requestDigest: `sha256:${'f'.repeat(64)}`, authorization: {} })}\n`
     );
     await assert.rejects(
       SandboxCommandExecution.create({

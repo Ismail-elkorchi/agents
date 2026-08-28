@@ -7,7 +7,13 @@ import type { WorkspaceSecurityBoundary } from './security/workspace-security-bo
 import { CODING_AGENT_TOOLS, parseCodingApprovalKinds, parseCodingPermissionMode, type CodingPermissionConfiguration } from './security/permission-mode.js';
 
 export interface CodingAgentInstructionConfiguration { readonly path: string }
-export interface CodingAgentCheckConfiguration { readonly id: string; readonly command: string; readonly timeoutMs?: number; readonly maxOutputBytes?: number }
+export interface CodingAgentCheckConfiguration {
+  readonly id: string;
+  readonly command: string;
+  readonly coverage: 'targeted' | 'full';
+  readonly timeoutMs?: number;
+  readonly maxOutputBytes?: number;
+}
 export type CodingAgentProviderId = 'ollama' | 'openrouter' | 'openai' | 'openai-codex';
 export interface CodingAgentLimitConfiguration {
   readonly maxConcurrentToolCalls?: number;
@@ -92,12 +98,12 @@ export function parseCodingAgentConfiguration(input: unknown): CodingAgentConfig
 }
 
 function snapshotCheck(check: CodingAgentCheckConfiguration): CodingAgentCheckConfiguration {
-  return Object.freeze({ id: check.id, command: check.command, ...(check.timeoutMs === undefined ? {} : { timeoutMs: check.timeoutMs }), ...(check.maxOutputBytes === undefined ? {} : { maxOutputBytes: check.maxOutputBytes }) });
+  return Object.freeze({ id: check.id, command: check.command, coverage: check.coverage, ...(check.timeoutMs === undefined ? {} : { timeoutMs: check.timeoutMs }), ...(check.maxOutputBytes === undefined ? {} : { maxOutputBytes: check.maxOutputBytes }) });
 }
 
 export function isCodingAgentProviderId(value: unknown): value is CodingAgentProviderId { return value === 'ollama' || value === 'openrouter' || value === 'openai' || value === 'openai-codex'; }
 function instructionArray(value: unknown): value is readonly CodingAgentInstructionConfiguration[] { return Array.isArray(value) && value.length <= 32 && value.every(item => isRecord(item) && Object.keys(item).every((key) => key === 'path') && relativePath(item.path)); }
-function checkArray(value: unknown): value is readonly CodingAgentCheckConfiguration[] { return Array.isArray(value) && value.every(item => isRecord(item) && Object.keys(item).every((key) => ['id', 'command', 'timeoutMs', 'maxOutputBytes'].includes(key)) && typeof item.id === 'string' && item.id.length > 0 && typeof item.command === 'string' && item.command.length > 0 && optionalPositive(item.timeoutMs) && optionalPositive(item.maxOutputBytes)); }
+function checkArray(value: unknown): value is readonly CodingAgentCheckConfiguration[] { return Array.isArray(value) && value.every(item => isRecord(item) && Object.keys(item).every((key) => ['id', 'command', 'coverage', 'timeoutMs', 'maxOutputBytes'].includes(key)) && typeof item.id === 'string' && item.id.length > 0 && typeof item.command === 'string' && item.command.length > 0 && (item.coverage === 'targeted' || item.coverage === 'full') && optionalPositive(item.timeoutMs) && optionalPositive(item.maxOutputBytes)); }
 function optionalPositive(value: unknown): boolean { return value === undefined || (typeof value === 'number' && Number.isInteger(value) && value > 0); }
 function validLimits(value: unknown): value is CodingAgentLimitConfiguration {
   if (!isRecord(value)) return false;

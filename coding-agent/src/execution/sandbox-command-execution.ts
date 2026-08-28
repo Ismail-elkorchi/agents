@@ -18,6 +18,7 @@ import {
   type StartPreparedCommandOptions
 } from '@agent-core/tools';
 import type { WorkspaceFileRoot } from '@agent-core/tools-local';
+import { parseJsonObject, type JsonObject } from '@agent-core/json';
 import type {
   SandboxDetachedRunOptions,
   SandboxExecutionObservation,
@@ -41,6 +42,11 @@ export interface SandboxPreparedCommand {
   readonly expiresAtMs: number;
 }
 
+export type SandboxCommandRecovery =
+  | Readonly<{ readonly status: 'running' }>
+  | Readonly<{ readonly status: 'settled'; readonly result: CommandExecutionResult }>
+  | Readonly<{ readonly status: 'unknown' | 'expired' }>;
+
 export interface SandboxCommandExecutionOptions {
   readonly repository: SandboxExecutionRepository;
   readonly workspaceFileRoot: WorkspaceFileRoot;
@@ -58,6 +64,7 @@ interface StoredOwner {
   readonly processId: string;
   readonly owner: CommandExecutionOwner;
   readonly requestDigest?: string;
+  readonly authorization?: JsonObject;
 }
 
 class SandboxCommandPreparation {
@@ -66,7 +73,7 @@ class SandboxCommandPreparation {
   constructor(
     readonly authority: SandboxCommandExecution,
     readonly request: PrepareCommandRequest,
-    readonly observation: Extract<SandboxExecutionObservation, { kind: 'prepared' }>,
+    readonly observation: SandboxExecutionObservation,
     private readonly releaseAuthority: () => Promise<void>
   ) {
   }
@@ -136,37 +143,37 @@ export class SandboxCommandExecution implements CommandExecution {
       await this.#bindOwner({ schemaVersion: 1, processId, owner: ownOwner(request.owner), requestDigest: prepared.requestDigest });
       throw new Error(`Sandbox rejected command preparation: ${prepared.error.message}`);
     }
-    if (prepared.kind !== 'prepared') return this.#requireKnown(prepared);
-    await this.#bindOwner({ schemaVersion: 1, processId, owner: ownOwner(request.owner), requestDigest: prepared.requestDigest });
-    try {
-      await this.options.validatePrepared(Object.freeze({
-        request,
-        executionId: processId,
-        requestDigest: prepared.requestDigest,
-        policyDigest: prepared.policyDigest,
-        executionDigest: prepared.executionDigest,
-        summary: prepared.summary,
-        enforcement: prepared.enforcement,
-        expiresAtMs: prepared.expiresAtMs
-      }));
-    } catch (error) {
-      await this.options.repository.terminate(processId).catch(() => undefined);
-      await this.options.repository.forget(processId).catch(() => undefined);
-      throw error;
+    if (prepared.requestDigest === undefined) throw new Error(`Sandbox execution ${processId} has no request binding.`);
+    const authorization = prepared.kind === 'prepared'
+      ? sandboxCommandAuthorization(this.descriptor, prepared)
+      : (await this.#storedOwner(processId)).authorization;
+    if (!authorization) throw new Error(`Sandbox execution ${processId} has no durable authorization evidence.`);
+    await this.#bindOwner({ schemaVersion: 1, processId, owner: ownOwner(request.owner), requestDigest: prepared.requestDigest, authorization });
+    if (prepared.kind === 'prepared') {
+      try {
+        await this.options.validatePrepared(Object.freeze({
+          request,
+          executionId: processId,
+          requestDigest: prepared.requestDigest,
+          policyDigest: prepared.policyDigest,
+          executionDigest: prepared.executionDigest,
+          summary: prepared.summary,
+          enforcement: prepared.enforcement,
+          expiresAtMs: prepared.expiresAtMs
+        }));
+      } catch (error) {
+        await this.options.repository.terminate(processId).catch(() => undefined);
+        await this.options.repository.forget(processId).catch(() => undefined);
+        throw error;
+      }
     }
     const owned = new SandboxCommandPreparation(this, request, prepared, async () => {
+      if (prepared.kind !== 'prepared') return;
       await this.options.repository.terminate(prepared.executionId);
       await this.options.repository.forget(prepared.executionId);
+      await this.options.state.delete(ownerPath(prepared.executionId));
     });
-    const preparation = createCommandExecutionPreparation({
-      authority: this.descriptor.implementationId,
-      recoveryIdentity: this.descriptor.recoveryIdentity,
-      requestDigest: prepared.requestDigest,
-      policyDigest: prepared.policyDigest,
-      executionDigest: prepared.executionDigest,
-      summary: prepared.summary,
-      enforcement: prepared.enforcement
-    }, () => owned.release());
+    const preparation = createCommandExecutionPreparation(authorization, () => owned.release());
     this.#preparations.set(preparation, owned);
     return preparation;
   }
@@ -184,9 +191,13 @@ export class SandboxCommandExecution implements CommandExecution {
       throw abortError(options.signal);
     }
     this.#bindAbort(processId, options.signal);
-    await this.options.repository.activate(processId, prepared);
-    owned.markActivated();
-    let observation = await this.#waitForProcessObservation(processId, Math.max(1_000, Math.min(request.timeoutMs, 30_000)));
+    if (prepared.kind === 'prepared') {
+      await this.options.repository.activate(processId, prepared);
+      owned.markActivated();
+    }
+    let observation = prepared.kind === 'prepared'
+      ? await this.#waitForProcessObservation(processId, Math.max(1_000, Math.min(request.timeoutMs, 30_000)))
+      : prepared;
     if (observation.kind === 'running' && request.yieldMs > 0) {
       observation = await this.options.repository.inspect(processId, {
         maxBytes: this.options.maxRetainedOutputBytes,
@@ -257,6 +268,34 @@ export class SandboxCommandExecution implements CommandExecution {
     await this.options.repository.forget(processId);
     await this.options.state.delete(ownerPath(processId));
     this.#recovered.delete(processId);
+  }
+
+  executionId(owner: CommandExecutionOwner): string {
+    validateOwner(owner);
+    return processIdentity(owner, this.descriptor.recoveryIdentity);
+  }
+
+  async reconcileExecution(
+    owner: CommandExecutionOwner,
+    outputTokenBudget: number,
+    waitMs = 0
+  ): Promise<SandboxCommandRecovery> {
+    this.#ensureOpen();
+    validateOwner(owner);
+    const processId = this.executionId(owner);
+    const stored = await this.#storedOwner(processId);
+    assertRequester(stored.owner, owner, processId);
+    const observation = await this.options.repository.inspect(processId, {
+      maxBytes: this.options.maxRetainedOutputBytes,
+      waitMs
+    });
+    assertRequestBinding(stored, observation);
+    if (observation.kind === 'unknown') return Object.freeze({ status: 'unknown' });
+    if (observation.kind === 'expired') return Object.freeze({ status: 'expired' });
+    if (observation.kind === 'preparing' || observation.kind === 'prepared' || observation.kind === 'running') {
+      return Object.freeze({ status: 'running' });
+    }
+    return Object.freeze({ status: 'settled', result: this.#result(observation, owner, outputTokenBudget, 0) });
   }
 
   async reconcile(): Promise<CommandReconciliationResult> {
@@ -426,6 +465,11 @@ export class SandboxCommandExecution implements CommandExecution {
         throw new Error(`Sandbox process request binding conflicts with its durable identity: ${owner.processId}`);
       }
       if (existing.requestDigest !== undefined && owner.requestDigest === undefined) return;
+      if (existing.authorization !== undefined && owner.authorization !== undefined
+        && JSON.stringify(existing.authorization) !== JSON.stringify(owner.authorization)) {
+        throw new Error(`Sandbox process authorization binding conflicts with its durable identity: ${owner.processId}`);
+      }
+      if (existing.authorization !== undefined && owner.authorization === undefined) return;
     }
     await this.options.state.write(ownerPath(owner.processId), `${JSON.stringify(owner)}\n`);
   }
@@ -558,7 +602,7 @@ function decodeStoredOwner(text: string, processId: string): StoredOwner {
   const keys = Object.keys(source).sort();
   const expected = source.requestDigest === undefined
     ? ['owner', 'processId', 'schemaVersion']
-    : ['owner', 'processId', 'requestDigest', 'schemaVersion'];
+    : ['authorization', 'owner', 'processId', 'requestDigest', 'schemaVersion'];
   if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) throw new Error(`Sandbox process owner record has unsupported fields: ${processId}`);
   if (source.schemaVersion !== 1 || source.processId !== processId) throw new Error(`Sandbox process owner record identity is invalid: ${processId}`);
   const requestDigest = source.requestDigest;
@@ -566,11 +610,26 @@ function decodeStoredOwner(text: string, processId: string): StoredOwner {
     throw new Error(`Sandbox process request binding is invalid: ${processId}`);
   }
   validateOwner(source.owner);
-  return Object.freeze({
-    schemaVersion: 1,
-    processId,
-    owner: ownOwner(source.owner),
-    ...(requestDigest === undefined ? {} : { requestDigest })
+  const authorization = requestDigest === undefined ? undefined : parseJsonObject(source.authorization);
+  if (requestDigest === undefined) return Object.freeze({ schemaVersion: 1, processId, owner: ownOwner(source.owner) });
+  if (!authorization) throw new Error(`Sandbox process authorization record is missing: ${processId}`);
+  return Object.freeze({ schemaVersion: 1, processId, owner: ownOwner(source.owner), requestDigest, authorization });
+}
+
+function sandboxCommandAuthorization(
+  descriptor: CommandExecutionDescriptor,
+  prepared: Extract<SandboxExecutionObservation, { readonly kind: 'prepared' }>
+): JsonObject {
+  return parseJsonObject({
+    authority: descriptor.implementationId,
+    recoveryIdentity: descriptor.recoveryIdentity,
+    executionId: prepared.executionId,
+    requestDigest: prepared.requestDigest,
+    policyDigest: prepared.policyDigest,
+    executionDigest: prepared.executionDigest,
+    summary: prepared.summary,
+    enforcement: prepared.enforcement,
+    expiresAt: new Date(prepared.expiresAtMs).toISOString()
   });
 }
 

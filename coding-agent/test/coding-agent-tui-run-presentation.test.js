@@ -10,7 +10,7 @@ test('TUI preserves terminal truth and does not duplicate the final answer', asy
   const terminal = decodeAgentTerminalSnapshot({
     ...base(),
     verificationStatus: 'failed',
-    checkResults: [{ id: 'tests', requirement: 'required', verdict: 'failed', summary: 'Tests failed', durationMs: 4 }]
+    checkResults: [{ id: 'tests', implementationId: 'coding-agent.test.check.v1', requirement: 'required', verdict: 'failed', summary: 'Tests failed', durationMs: 4 }]
   });
   const { host, events, running } = runProjectionApp();
   await waitFor(() => host.frames().length > 0);
@@ -40,7 +40,7 @@ test('advisory check failures remain visible without becoming required failures'
     type: 'progress',
     event: {
       type: 'check.ended', turnIndex: 1, turnId: 'turn-1', requestAttempt: 1,
-      result: { id: 'style', requirement: 'advisory', verdict: 'failed', summary: 'Style issue', durationMs: 3 }
+      result: { id: 'style', implementationId: 'coding-agent.test.check.v1', requirement: 'advisory', verdict: 'failed', summary: 'Style issue', durationMs: 3 }
     }
   });
   await waitFor(() => host.frames().length > 1);

@@ -8,18 +8,14 @@ import { AgentOperationCoordinator, AgentRuntime, AgentSession, agentEventCodec,
 import { JsonlSessionRepository } from '@agent-core/runtime/node';
 import { JsonlEventRepository, LocalArtifactRepository } from '@agent-core/evidence/node';
 import { type ModelProvider, type ModelReasoningEffort, type ModelReasoningRequest, SimpleTokenEstimator } from '@agent-core/model';
-import { isCodingAgentProviderId, loadCodingAgentConfiguration, type CodingAgentCheckConfiguration, type CodingAgentConfiguration, type CodingAgentProviderId } from './configuration.js';
+import { isCodingAgentProviderId, loadCodingAgentConfiguration, type CodingAgentConfiguration, type CodingAgentProviderId } from './configuration.js';
 import { openCodingWorkspace, type OpenCodingWorkspace } from './workspace.js';
 import { OllamaProvider } from '@agent-core/provider-ollama';
 import { OpenAICodexProvider, loginOpenAICodexDeviceCode, type OpenAICodexTransport } from '@agent-core/provider-openai-codex';
 import { OpenAIProvider } from '@agent-core/provider-openai';
 import { OpenRouterProvider } from '@agent-core/provider-openrouter';
-import type { AgentCheckDefinition } from '@agent-core/runtime';
 import {
   accessRisk,
-  prepareCommandExecution,
-  releasePreparedCommandExecution,
-  startPreparedCommandExecution,
   type ToolCall,
   type ToolObservation,
   type ToolProgress
@@ -45,14 +41,14 @@ import { SandboxGitRepositoryObserver } from './workspace/git/sandbox-git-observ
 import { unavailableGitRepositoryObserver, type GitRepositoryObserver } from './workspace/git/repository-observer.js';
 import { createCodingCommandAuthority } from './execution/coding-command-authority.js';
 import { parseCodingPermissionMode, resolveCodingAuthority, type CodingApprovalKind, type CodingPermissionMode } from './security/permission-mode.js';
+import { configuredCheckProposals, createConfiguredChecks } from './verification/configured-checks.js';
+import { loadOrCaptureVerificationBaseline } from './verification/baseline-store.js';
 
 export {
   loadCodingAgentConfiguration,
   parseCodingAgentConfiguration,
-  type CodingAgentCheckConfiguration,
-  type CodingAgentConfiguration,
-  type CodingAgentProviderId
 } from './configuration.js';
+export type { CodingAgentCheckConfiguration, CodingAgentConfiguration, CodingAgentProviderId } from './configuration.js';
 export { describeWorkspace, loadWorkspace, openCodingWorkspace, type OpenCodingWorkspace, type WorkspaceLayout } from './workspace.js';
 export { resolveCodingAuthority, type CodingApprovalKind, type CodingAuthority, type CodingPermissionMode } from './security/permission-mode.js';
 
@@ -229,12 +225,12 @@ async function createRuntime(
   const events = new JsonlEventRepository<AgentEvent>({ rootDir: workspace.runsDir, codec: agentEventCodec });
   const existingRunIds = new Set(await events.listRunIds());
   const activeConfiguration = projectExecutionPolicy ? options.configuration : undefined;
-  const checks = configuredChecks(activeConfiguration);
+  const checkProposals = configuredCheckProposals(activeConfiguration);
   const authority = resolveCodingAuthority({
     requestedMode: options.permissionMode,
     trust: admittedTrustLevel(openedWorkspace.security.trustLevel),
     ...(activeConfiguration ? { project: { permissions: activeConfiguration.permissions, enabledTools: activeConfiguration.tools.enabled } } : {}),
-    hasVerificationChecks: checks.length > 0
+    hasVerificationChecks: checkProposals.length > 0
   });
   const instructionSet = await loadRepositoryInstructions(openedWorkspace, options.configuration?.instructions.map((instruction) => instruction.path));
   const gitObserver = await createGitObserver(workspace.runtimeDir);
@@ -269,7 +265,8 @@ async function createRuntime(
           status: report.result.status,
           result: parseJsonValue(report)
         }, { idempotencyKey: `${runId}:process:${report.result.processId}:ended` });
-        return true;
+        const terminal = await events.latestOfType(runId, 'run.ended');
+        return terminal?.event.type === 'run.ended';
       }
     });
     await localHost.ready();
@@ -281,6 +278,7 @@ async function createRuntime(
     const estimator = new SimpleTokenEstimator();
     const localToolConfiguration = localHost.services.localToolConfiguration;
     const activeCommandExecution = localHost.commandExecution;
+    if (checkProposals.length > 0 && !commandExecution) throw new Error('Configured verification requires the admitted Sandbox command authority.');
     const services = localHost.services;
     const configuredTools = localHost.tools;
     const agent = new AgentSession({
@@ -293,8 +291,22 @@ async function createRuntime(
         ...(settings.temperature !== undefined ? { temperature: settings.temperature } : {}),
         ...(settings.reasoning !== undefined ? { reasoning: settings.reasoning } : {})
       },
-      createRuntime(configuration, onProgress) {
+      async createRuntime(configuration, onProgress, runtimeContext) {
         if (configuration.provider !== providerRuntime.providerId) throw new Error(`Provider ${configuration.provider} is not available in this session runtime.`);
+        const checks = commandExecution && checkProposals.length > 0
+          ? createConfiguredChecks({
+            proposals: checkProposals,
+            root: openedWorkspace.fileRoot,
+            baseline: await loadOrCaptureVerificationBaseline({
+              state: openedWorkspace.privateState,
+              root: openedWorkspace.fileRoot,
+              runId: runtimeContext.runId,
+              resuming: runtimeContext.resuming
+            }),
+            commandExecution,
+            commandYieldMs: localToolConfiguration.process.maxYieldMs
+          })
+          : Object.freeze([]);
         return new AgentRuntime({
           provider: providerRuntime.provider,
           model: configuration.model,
@@ -327,34 +339,6 @@ async function createRuntime(
           contextItems: Object.freeze([repositoryOrientationContext(orientation)]),
           ...(checks.length > 0 ? { checks } : {}),
           ...(projectExecutionPolicy && options.configuration?.limits ? { limits: options.configuration.limits } : {}),
-          ...(authority.verificationCommands === 'sandboxed' && activeCommandExecution ? { verification: { evidence: { read: () => Promise.resolve({ items: [], bytes: 0, truncated: false }), readArtifact: ref => artifactStore.readVerified(ref) }, runCommand: async (request, signal) => {
-            const startedAt = Date.now();
-            const outputTokenBudget = Math.max(64, Math.ceil((request.maxOutputBytes ?? 64_000) / 4));
-            const prepared = await prepareCommandExecution(activeCommandExecution, {
-              owner: request.owner,
-              command: request.command,
-              workspacePath: '.',
-              pty: false,
-              timeoutMs: request.timeoutMs ?? 60_000,
-              yieldMs: localToolConfiguration.process.maxYieldMs,
-              outputTokenBudget
-            });
-            try {
-              let result = await startPreparedCommandExecution(activeCommandExecution, prepared, { signal });
-              let stdout = result.stdout.text;
-              let stderr = result.stderr.text;
-              let cursor = result.cursorEnd;
-              while (result.status === 'running') {
-                result = await activeCommandExecution.query(result.processId, outputTokenBudget, localToolConfiguration.process.maxYieldMs, cursor, request.owner);
-                stdout += result.stdout.text;
-                stderr += result.stderr.text;
-                cursor = result.cursorEnd;
-              }
-              return { exitCode: result.status === 'exited' ? result.exitCode ?? null : null, stdout, stderr, durationMs: Date.now() - startedAt };
-            } finally {
-              await releasePreparedCommandExecution(activeCommandExecution, prepared);
-            }
-          } } } : {}),
           metadata: {
             workspaceId: workspace.identity.id,
             workspaceName: workspace.workspaceName,
@@ -463,33 +447,11 @@ function renderConversationItem(item: SessionConversationItem): string {
   }
 }
 
-function configuredChecks(configuration: CodingAgentConfiguration | undefined): AgentCheckDefinition[] {
-  if (!configuration) return [];
-  return [
-    ...configuration.verification.required.map(check => configuredCommandCheck(check, 'required')),
-    ...configuration.verification.advisory.map(check => configuredCommandCheck(check, 'advisory'))
-  ];
-}
-
 function approvalKind(risk: ReturnType<typeof accessRisk>): CodingApprovalKind | undefined {
   if (risk === 'write') return 'write';
   if (risk === 'destructive') return 'delete';
   if (risk === 'execute') return 'command';
   return undefined;
-}
-
-function configuredCommandCheck(check: CodingAgentCheckConfiguration, requirement: 'required' | 'advisory'): AgentCheckDefinition {
-  return {
-    id: check.id,
-    requirement,
-    description: `Project verification command: ${check.command}`,
-    ...(check.timeoutMs ? { timeoutMs: check.timeoutMs } : {}),
-    async run(context) {
-      if (!context.execution.runCommand) return { verdict: 'unknown', summary: `Verification command execution is unavailable: ${check.command}`, diagnostic: { kind: 'unavailable', message: 'Project command executor is unavailable.' } };
-      const result = await context.execution.runCommand({ command: check.command, owner: { runId: context.runId, turnId: context.turnId, toolBatchId: `verification:${check.id}`, callIndex: 0 }, ...(check.timeoutMs ? { timeoutMs: check.timeoutMs } : {}), ...(check.maxOutputBytes ? { maxOutputBytes: check.maxOutputBytes } : {}) }, context.signal);
-      return { verdict: result.exitCode === 0 ? 'passed' : 'failed', summary: `${check.command} ${result.exitCode === 0 ? 'passed' : `failed with exit ${String(result.exitCode)}`}.`, output: { exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr, durationMs: result.durationMs } };
-    }
-  };
 }
 
 function parseOptions(args: string[]): { options: CliOptions; positionals: string[] } {

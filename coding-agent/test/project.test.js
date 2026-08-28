@@ -43,7 +43,7 @@ test('workspace configuration validates first-party policy, checks, and exact li
     instructions: [{ path: 'AGENTS.md' }],
     tools: { enabled: ['read_files'] },
     permissions: { maximumMode: 'edit', requireApprovalFor: ['write'] },
-    verification: { required: [{ id: 'test', command: 'npm test', timeoutMs: 1_000 }], advisory: [] },
+    verification: { required: [{ id: 'test', command: 'npm test', coverage: 'full', timeoutMs: 1_000 }], advisory: [] },
     limits: { modelTurns: 3, knownCost: { amount: 10, currency: 'USD' } }
   };
   await writeFile(path.join(dir, 'coding-agent.config.json'), JSON.stringify(configuration));
@@ -63,7 +63,8 @@ test('workspace configuration validates first-party policy, checks, and exact li
   configuration.permissions.maximumMode = 'edit';
   assert.throws(() => parseCodingAgentConfiguration({ ...configuration, limits: { mysteryLimit: 1 } }), /run limits/iu);
   assert.throws(() => parseCodingAgentConfiguration({ ...configuration, permissions: { maximumMode: 'edit', requireApprovalFor: ['network'] } }), /Permission approvals/u);
-  assert.throws(() => parseCodingAgentConfiguration({ ...configuration, verification: { required: [{ id: 'same', command: 'true' }], advisory: [{ id: 'same', command: 'true' }] } }), /unique/u);
+  assert.throws(() => parseCodingAgentConfiguration({ ...configuration, verification: { required: [{ id: 'same', command: 'true', coverage: 'targeted' }], advisory: [{ id: 'same', command: 'true', coverage: 'targeted' }] } }), /unique/u);
+  assert.throws(() => parseCodingAgentConfiguration({ ...configuration, verification: { required: [{ id: 'test', command: 'npm test' }], advisory: [] } }), /Verification configuration/iu);
   assert.throws(() => parseCodingAgentConfiguration({ ...configuration, instructions: [{ path: 'AGENTS.md' }, { path: 'AGENTS.md' }] }), /instruction paths must be unique/u);
   assert.throws(() => parseCodingAgentConfiguration({ ...configuration, tools: { enabled: [], unknown: true } }), /tool configuration/iu);
   let accessed = false;
