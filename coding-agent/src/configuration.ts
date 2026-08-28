@@ -4,6 +4,7 @@ import { parseJsonObject } from '@agent-core/json';
 import { workspaceFileIdentitiesEqual, type WorkspaceFileRoot } from '@agent-core/tools-local';
 import type { ProjectConfigurationProposal } from './config/project-proposal.js';
 import type { WorkspaceSecurityBoundary } from './security/workspace-security-boundary.js';
+import { CODING_AGENT_TOOLS, parseCodingApprovalKinds, parseCodingPermissionMode, type CodingPermissionConfiguration } from './security/permission-mode.js';
 
 export interface CodingAgentInstructionConfiguration { readonly path: string }
 export interface CodingAgentCheckConfiguration { readonly id: string; readonly command: string; readonly timeoutMs?: number; readonly maxOutputBytes?: number }
@@ -30,7 +31,7 @@ export interface CodingAgentConfiguration {
   readonly reasoning?: ModelReasoningRequest;
   readonly instructions: readonly CodingAgentInstructionConfiguration[];
   readonly tools: { readonly enabled: readonly string[] };
-  readonly authorization: { readonly allowedRisks: readonly ('read' | 'write' | 'execute' | 'network' | 'destructive')[]; readonly requireApprovalFor: readonly ('read' | 'write' | 'execute' | 'network' | 'destructive')[] };
+  readonly permissions: CodingPermissionConfiguration;
   readonly verification: { readonly required: readonly CodingAgentCheckConfiguration[]; readonly advisory: readonly CodingAgentCheckConfiguration[] };
   readonly limits?: CodingAgentLimitConfiguration;
 }
@@ -53,15 +54,17 @@ export async function loadCodingAgentConfiguration(root: WorkspaceFileRoot, secu
 export function parseCodingAgentConfiguration(input: unknown): CodingAgentConfiguration {
   const value = parseJsonObject(input, { maxDepth: 16, maxCollectionEntries: 10_000, maxStringBytes: 1_000_000, maxTotalBytes: 4_000_000 });
   if (value.version !== 1) throw new Error('Coding Agent configuration must be a version 1 object.');
-  if (Object.keys(value).some((key) => !['version', 'provider', 'model', 'reasoning', 'instructions', 'tools', 'authorization', 'verification', 'limits'].includes(key))) throw new Error('Coding Agent configuration contains unknown fields.');
+  if (Object.keys(value).some((key) => !['version', 'provider', 'model', 'reasoning', 'instructions', 'tools', 'permissions', 'verification', 'limits'].includes(key))) throw new Error('Coding Agent configuration contains unknown fields.');
   if (!isCodingAgentProviderId(value.provider) || typeof value.model !== 'string' || value.model.length === 0) throw new Error('Configuration provider/model is invalid.');
   if (!instructionArray(value.instructions)) throw new Error('Workspace instructions must contain confined relative paths.');
   if (!isRecord(value.tools) || Object.keys(value.tools).some((key) => key !== 'enabled') || !stringArray(value.tools.enabled)) throw new Error('Project tool configuration is invalid.');
-  const authorization = value.authorization;
-  if (!isRecord(authorization) || Object.keys(authorization).some((key) => key !== 'allowedRisks' && key !== 'requireApprovalFor') || !riskArray(authorization.allowedRisks) || !riskArray(authorization.requireApprovalFor)) throw new Error('Project authorization configuration is invalid.');
-  const allowedRisks = authorization.allowedRisks;
-  const approvalRisks = authorization.requireApprovalFor;
-  if (!approvalRisks.every((risk) => allowedRisks.includes(risk))) throw new Error('Approval risks must also be present in authorization.allowedRisks.');
+  if (new Set(value.tools.enabled).size !== value.tools.enabled.length || !value.tools.enabled.every((tool) => CODING_AGENT_TOOLS.includes(tool))) {
+    throw new Error('Project tools must be unique Coding Agent tool names.');
+  }
+  const permissions = value.permissions;
+  if (!isRecord(permissions) || Object.keys(permissions).some((key) => key !== 'maximumMode' && key !== 'requireApprovalFor')) throw new Error('Project permission configuration is invalid.');
+  const maximumMode = parseCodingPermissionMode(permissions.maximumMode, 'permissions.maximumMode');
+  const approvalKinds = parseCodingApprovalKinds(permissions.requireApprovalFor);
   const verification = value.verification;
   if (!isRecord(verification) || Object.keys(verification).some((key) => key !== 'required' && key !== 'advisory') || !checkArray(verification.required) || !checkArray(verification.advisory)) throw new Error('Verification configuration is invalid.');
   const reasoning = value.reasoning === undefined ? undefined : parseModelReasoningRequest(value.reasoning);
@@ -82,7 +85,7 @@ export function parseCodingAgentConfiguration(input: unknown): CodingAgentConfig
     ...(reasoning === undefined ? {} : { reasoning }),
     instructions: Object.freeze(value.instructions.map((item) => Object.freeze({ path: item.path }))),
     tools: Object.freeze({ enabled: Object.freeze(value.tools.enabled.map((tool) => tool)) }),
-    authorization: Object.freeze({ allowedRisks: Object.freeze(allowedRisks.map((risk) => risk)), requireApprovalFor: Object.freeze(approvalRisks.map((risk) => risk)) }),
+    permissions: Object.freeze({ maximumMode, requireApprovalFor: approvalKinds }),
     verification: Object.freeze({ required: Object.freeze(verification.required.map(snapshotCheck)), advisory: Object.freeze(verification.advisory.map(snapshotCheck)) }),
     ...(ownedLimits === undefined ? {} : { limits: Object.freeze({ ...ownedLimits }) })
   });
@@ -103,7 +106,6 @@ function validLimits(value: unknown): value is CodingAgentLimitConfiguration {
   if (numeric.some((key) => value[key] !== undefined && !optionalPositive(value[key]))) return false;
   return value.knownCost === undefined || (isRecord(value.knownCost) && typeof value.knownCost.amount === 'number' && Number.isFinite(value.knownCost.amount) && value.knownCost.amount > 0 && typeof value.knownCost.currency === 'string' && value.knownCost.currency.trim().length > 0);
 }
-function riskArray(value: unknown): value is CodingAgentConfiguration['authorization']['allowedRisks'] { return Array.isArray(value) && value.every(item => item === 'read' || item === 'write' || item === 'execute' || item === 'network' || item === 'destructive'); }
 function stringArray(value: unknown): value is readonly string[] { return Array.isArray(value) && value.every(item => typeof item === 'string' && item.length > 0); }
 function relativePath(value: unknown): boolean { return typeof value === 'string' && value.length > 0 && !path.isAbsolute(value) && !path.win32.isAbsolute(value) && !value.split(/[\\/]/u).includes('..'); }
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value); }

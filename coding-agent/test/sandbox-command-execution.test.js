@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -27,10 +28,10 @@ test('sandbox command adapter authorizes exact preparation and preserves cursor 
       state: fixture.state,
       maxRetainedOutputBytes: 1024,
       createRun: request => run(fixture.workspace, request.command),
-      authorizePrepared(value) { prepared.push(value); return true; }
+      validatePrepared(value) { prepared.push(value); }
     });
     assert.equal(isCommandExecution(execution), true);
-    const result = await execution.start(request());
+    const result = await startCommand(execution, request());
     assert.equal(prepared.length, 1);
     assert.equal(prepared[0].summary.execution.executable, '/bin/sh');
     assert.equal(result.status, 'exited');
@@ -46,7 +47,7 @@ test('sandbox command adapter authorizes exact preparation and preserves cursor 
   }
 });
 
-test('sandbox command adapter cancels denied preparation without activation', async () => {
+test('sandbox command adapter cancels an invalid preparation without activation', async () => {
   const fixture = await createFixture();
   try {
     const execution = await SandboxCommandExecution.create({
@@ -55,12 +56,37 @@ test('sandbox command adapter cancels denied preparation without activation', as
       state: fixture.state,
       maxRetainedOutputBytes: 1024,
       createRun: request => run(fixture.workspace, request.command),
-      authorizePrepared: () => false
+      validatePrepared: () => { throw new Error('prepared policy rejected'); }
     });
-    const result = await execution.start(request());
-    assert.equal(result.status, 'failed');
+    await assert.rejects(execution.prepare(request()), /prepared policy rejected/);
     assert.equal(fixture.repository.activationCount, 0);
     assert.equal(fixture.repository.terminationCount, 1);
+    await execution.close();
+  } finally {
+    fixture.root.close();
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('released command preparation can be recreated with the same authorization evidence', async () => {
+  const fixture = await createFixture();
+  try {
+    const execution = await SandboxCommandExecution.create({
+      repository: fixture.repository,
+      workspaceFileRoot: fixture.root,
+      state: fixture.state,
+      maxRetainedOutputBytes: 1024,
+      createRun: requestValue => run(fixture.workspace, requestValue.command),
+      validatePrepared: () => undefined
+    });
+    const first = await execution.prepare(request());
+    const authorization = first.authorization;
+    await first.release();
+    const second = await execution.prepare(request());
+    assert.deepEqual(second.authorization, authorization);
+    const result = await execution.start(second);
+    assert.equal(result.status, 'exited');
+    assert.equal(fixture.repository.activationCount, 1);
     await execution.close();
   } finally {
     fixture.root.close();
@@ -77,11 +103,11 @@ test('sandbox command adapter blocks new effects until unknown recovery is ackno
       state: fixture.state,
       maxRetainedOutputBytes: 1024,
       createRun: request => run(fixture.workspace, request.command),
-      authorizePrepared: () => true
+      validatePrepared: () => undefined
     });
     const reconciliation = await execution.reconcile();
     assert.equal(reconciliation.unresolved.length, 1);
-    await assert.rejects(execution.start(request()), /Unresolved sandbox executions/);
+    await assert.rejects(execution.prepare(request()), /Unresolved sandbox executions/);
     await execution.acknowledgeUnresolved([reconciliation.unresolved[0].processId]);
     assert.equal((await execution.reconcile()).unresolved.length, 0);
     await execution.close();
@@ -100,9 +126,9 @@ test('sandbox command adapter rejects plans that do not bind the adopted workspa
       state: fixture.state,
       maxRetainedOutputBytes: 1024,
       createRun: request => run('/different/root', request.command),
-      authorizePrepared: () => true
+      validatePrepared: () => undefined
     });
-    await assert.rejects(execution.start(request()), /exactly one grant for the adopted physical workspace root/);
+    await assert.rejects(execution.prepare(request()), /exactly one grant for the adopted physical workspace root/);
     assert.equal(fixture.repository.prepareCount, 0);
     await execution.close();
   } finally {
@@ -120,9 +146,9 @@ test('sandbox command adapter rejects a receipt that conflicts with its durable 
       state: fixture.state,
       maxRetainedOutputBytes: 1024,
       createRun: requestValue => run(fixture.workspace, requestValue.command),
-      authorizePrepared: () => true
+      validatePrepared: () => undefined
     });
-    const result = await execution.start(request());
+    const result = await startCommand(execution, request());
     await execution.close();
     await fixture.state.write(
       `sandbox-processes/${result.processId}.json`,
@@ -135,7 +161,7 @@ test('sandbox command adapter rejects a receipt that conflicts with its durable 
         state: fixture.state,
         maxRetainedOutputBytes: 1024,
         createRun: requestValue => run(fixture.workspace, requestValue.command),
-        authorizePrepared: () => true
+        validatePrepared: () => undefined
       }),
       /does not match its durable request binding/
     );
@@ -155,9 +181,9 @@ test('sandbox command adapter decodes progress across byte-chunk boundaries', as
       state: fixture.state,
       maxRetainedOutputBytes: 1024,
       createRun: requestValue => run(fixture.workspace, requestValue.command),
-      authorizePrepared: () => true
+      validatePrepared: () => undefined
     });
-    const result = await execution.start({ ...request(), onProgress: event => progress.push(event) });
+    const result = await startCommand(execution, request(), { onProgress: event => progress.push(event) });
     assert.equal(result.stdout.text, 'A🙂B');
     assert.equal(progress.map(event => event.text).join(''), 'A🙂B');
     assert.equal(progress.at(-1).observedBytes, Buffer.byteLength('A🙂B'));
@@ -188,15 +214,15 @@ test('sandbox adapter satisfies start, output, ownership, terminal receipt, and 
   });
   try {
     const firstRepository = await openSandboxExecutionRepository({ directory: repositoryPath, maxRetainedOutputBytes: 1024 * 1024 });
-    const first = await SandboxCommandExecution.create({ repository: firstRepository, workspaceFileRoot: root, state, maxRetainedOutputBytes: 1024 * 1024, createRun, authorizePrepared: () => true });
-    const result = await first.start({ ...request(), command: 'printf durable-sandbox' });
+    const first = await SandboxCommandExecution.create({ repository: firstRepository, workspaceFileRoot: root, state, maxRetainedOutputBytes: 1024 * 1024, createRun, validatePrepared: () => undefined });
+    const result = await startCommand(first, { ...request(), command: 'printf durable-sandbox' });
     assert.equal(result.status, 'exited');
     assert.equal(result.stdout.text, 'durable-sandbox');
     await assert.rejects(first.query(result.processId, 100, 0, 0, { ...owner, turnId: 'wrong' }), /another tool invocation/);
     await first.close();
 
     const secondRepository = await openSandboxExecutionRepository({ directory: repositoryPath, maxRetainedOutputBytes: 1024 * 1024 });
-    const second = await SandboxCommandExecution.create({ repository: secondRepository, workspaceFileRoot: root, state, maxRetainedOutputBytes: 1024 * 1024, createRun, authorizePrepared: () => true });
+    const second = await SandboxCommandExecution.create({ repository: secondRepository, workspaceFileRoot: root, state, maxRetainedOutputBytes: 1024 * 1024, createRun, validatePrepared: () => undefined });
     const reports = second.recoveredTerminalReports();
     assert.equal(reports.length, 1);
     assert.equal(reports[0].result.processId, result.processId);
@@ -220,6 +246,11 @@ function request() {
     outputTokenBudget: 100,
     owner
   };
+}
+
+async function startCommand(execution, requestValue, options = {}) {
+  const prepared = await execution.prepare(requestValue);
+  return execution.start(prepared, options);
 }
 
 function run(workspace, command) {
@@ -251,7 +282,8 @@ async function createFixture(options = {}) {
   const state = await PrivateStateDirectory.create(path.join(parent, 'state'));
   const repository = new FakeSandboxExecutionRepository(options.initialUnknown === true, options.splitUtf8Output === true);
   if (options.initialUnknown === true) {
-    const processId = 'sandbox-' + (await import('node:crypto')).createHash('sha256').update(JSON.stringify([owner.runId, owner.turnId, owner.toolBatchId, owner.callIndex])).digest('hex');
+    const recoveryIdentity = `${repository.identity}:${createHash('sha256').update(root.identity.canonicalPath).digest('hex')}`;
+    const processId = 'sandbox-' + createHash('sha256').update(JSON.stringify([recoveryIdentity, owner.runId, owner.turnId, owner.toolBatchId, owner.callIndex])).digest('hex');
     await state.write(`sandbox-processes/${processId}.json`, `${JSON.stringify({ schemaVersion: 1, processId, owner })}\n`);
     repository.unknownId = processId;
   }

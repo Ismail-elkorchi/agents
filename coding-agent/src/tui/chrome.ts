@@ -18,12 +18,9 @@ export function statusChrome(state: CodingAgentTuiState): Element {
 function permissionLabel(state: CodingAgentTuiState): string | undefined {
   const permissions = state.runtimeDetails.permissions;
   if (!permissions) return undefined;
-  const patch = permissions.workspaceWrites === 'allowed' ? 'patch: allowed'
-    : permissions.workspaceWrites === 'dry_run' ? 'patch: dry-run'
-      : permissions.workspaceWrites === 'ambient_shell' ? 'patch: denied; workspace: ambient shell'
-        : 'patch: denied';
-  const shell = permissions.shell === 'ambient' ? 'shell: ambient' : 'shell: denied';
-  return `${patch}; ${shell}`;
+  const write = permissions.workspaceWrite === 'structured' ? 'write structured' : 'write denied';
+  const command = permissions.commandExecution === 'sandboxed' ? 'exec sandboxed' : 'exec denied';
+  return `${permissions.mode}/${permissions.trust} · ${write} · ${command} · net/escape denied · ${String(permissions.tools.length)} tools`;
 }
 
 export function hintBar(state: CodingAgentTuiState, columns: number): Element<CodingAgentTuiMessage> {

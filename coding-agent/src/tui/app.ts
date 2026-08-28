@@ -793,11 +793,22 @@ function effectSummary(approval: AgentApprovalRequest): string {
   const accesses = approval.effects.accesses;
   if (accesses.length === 0) return 'tool operation';
   const summary = accesses.map((access) => `${access.mode.replaceAll('_', ' ')} · ${access.scope}`).join(', ');
-  const ambient = accesses.some((access) => access.mode === 'execute')
-    && approval.effects.lockScopes.includes('workspace/files');
-  return ambient
-    ? `${summary}. Ambient shell authority can read, write, or delete files, access the network, and start child processes.`
-    : summary;
+  const execution = sandboxExecutionSummary(approval.input);
+  return execution ? `${summary}. ${execution}` : summary;
+}
+
+function sandboxExecutionSummary(input: AgentApprovalRequest['input']): string | undefined {
+  if (!jsonObject(input)) return undefined;
+  const execution = input.execution;
+  if (!jsonObject(execution)) return undefined;
+  const policyDigest = typeof execution.policyDigest === 'string' ? execution.policyDigest : undefined;
+  const executionDigest = typeof execution.executionDigest === 'string' ? execution.executionDigest : undefined;
+  if (!policyDigest || !executionDigest) return undefined;
+  return `Sandboxed command; network denied; host escape denied; policy ${policyDigest}; execution ${executionDigest}.`;
+}
+
+function jsonObject(value: unknown): value is import('@agent-core/json').JsonObject {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function approvalSubject(approval: AgentApprovalRequest): string {

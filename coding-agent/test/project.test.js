@@ -42,7 +42,7 @@ test('workspace configuration validates first-party policy, checks, and exact li
     reasoning: { strategy: 'effort', effort: 'max', mode: 'standard' },
     instructions: [{ path: 'AGENTS.md' }],
     tools: { enabled: ['read_files'] },
-    authorization: { allowedRisks: ['read', 'write'], requireApprovalFor: ['write'] },
+    permissions: { maximumMode: 'edit', requireApprovalFor: ['write'] },
     verification: { required: [{ id: 'test', command: 'npm test', timeoutMs: 1_000 }], advisory: [] },
     limits: { modelTurns: 3, knownCost: { amount: 10, currency: 'USD' } }
   };
@@ -53,16 +53,16 @@ test('workspace configuration validates first-party policy, checks, and exact li
   const snapshot = parseCodingAgentConfiguration(configuration);
   configuration.instructions[0].path = 'changed.md';
   configuration.verification.required[0].command = 'changed';
-  configuration.authorization.allowedRisks[0] = 'execute';
+  configuration.permissions.maximumMode = 'review';
   assert.equal(snapshot.instructions[0].path, 'AGENTS.md');
   assert.equal(snapshot.verification.required[0].command, 'npm test');
-  assert.deepEqual(snapshot.authorization.allowedRisks, ['read', 'write']);
+  assert.equal(snapshot.permissions.maximumMode, 'edit');
   assert.equal(Object.isFrozen(snapshot.verification.required[0]), true);
   configuration.instructions[0].path = 'AGENTS.md';
   configuration.verification.required[0].command = 'npm test';
-  configuration.authorization.allowedRisks[0] = 'read';
+  configuration.permissions.maximumMode = 'edit';
   assert.throws(() => parseCodingAgentConfiguration({ ...configuration, limits: { mysteryLimit: 1 } }), /run limits/iu);
-  assert.throws(() => parseCodingAgentConfiguration({ ...configuration, authorization: { allowedRisks: ['read'], requireApprovalFor: ['write'] } }), /Approval risks/u);
+  assert.throws(() => parseCodingAgentConfiguration({ ...configuration, permissions: { maximumMode: 'edit', requireApprovalFor: ['network'] } }), /Permission approvals/u);
   assert.throws(() => parseCodingAgentConfiguration({ ...configuration, verification: { required: [{ id: 'same', command: 'true' }], advisory: [{ id: 'same', command: 'true' }] } }), /unique/u);
   assert.throws(() => parseCodingAgentConfiguration({ ...configuration, instructions: [{ path: 'AGENTS.md' }, { path: 'AGENTS.md' }] }), /instruction paths must be unique/u);
   assert.throws(() => parseCodingAgentConfiguration({ ...configuration, tools: { enabled: [], unknown: true } }), /tool configuration/iu);

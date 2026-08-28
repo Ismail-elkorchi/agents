@@ -30,6 +30,12 @@ try {
   const terminalUiPack = JSON.parse(terminalUiOutput)[0];
   if (!terminalUiPack.files.some((file) => file.path.startsWith('dist/host/'))) throw new Error('Terminal UI archive is incomplete.');
   dependencies[terminalUiManifest.name] = `file:${path.join(packs, terminalUiPack.filename)}`;
+  const sandboxDirectory = path.resolve(root, '../sandbox/packages/sandbox');
+  const sandboxManifest = JSON.parse(await readFile(path.join(sandboxDirectory, 'package.json'), 'utf8'));
+  const { stdout: sandboxOutput } = await exec(process.execPath, [npmCli, 'pack', '--json', '--pack-destination', packs], { cwd: sandboxDirectory, maxBuffer: 10 * 1024 * 1024 });
+  const sandboxPack = JSON.parse(sandboxOutput)[0];
+  if (!sandboxPack.files.some((file) => file.path.startsWith('dist/'))) throw new Error('Sandbox archive is incomplete.');
+  dependencies[sandboxManifest.name] = `file:${path.join(packs, sandboxPack.filename)}`;
   const codingDirectory = path.join(root, 'coding-agent');
   const codingManifest = JSON.parse(await readFile(path.join(codingDirectory, 'package.json'), 'utf8'));
   const { stdout } = await exec(process.execPath, [npmCli, 'pack', '--json', '--pack-destination', packs], { cwd: codingDirectory, maxBuffer: 10 * 1024 * 1024 });
@@ -45,7 +51,7 @@ try {
   await mkdir(consumer, { recursive: true });
   await writeFile(path.join(consumer, 'package.json'), `${JSON.stringify({ name: 'coding-agent-consumer', private: true, type: 'module', dependencies, overrides: { '@ismail-elkorchi/terminal-ui': '$@ismail-elkorchi/terminal-ui' } }, null, 2)}\n`);
   await exec(process.execPath, [npmCli, 'install', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: consumer, maxBuffer: 20 * 1024 * 1024 });
-  await writeFile(path.join(consumer, 'index.mjs'), ["import * as coding from '@ismail-elkorchi/coding-agent';", "import * as tui from '@ismail-elkorchi/coding-agent/tui';", "import * as writing from '@ismail-elkorchi/writing-agent';", "if (!coding.createCodingAgentToolPolicy || !coding.loadCodingAgentConfiguration || !tui.createCodingAgentTuiApp) throw new Error('Coding-agent public exports are incomplete');", "if (!writing.runWritingTask || !writing.runDocumentRevision) throw new Error('Writing-agent public exports are incomplete');"].join('\n'));
+  await writeFile(path.join(consumer, 'index.mjs'), ["import * as coding from '@ismail-elkorchi/coding-agent';", "import * as tui from '@ismail-elkorchi/coding-agent/tui';", "import * as writing from '@ismail-elkorchi/writing-agent';", "if (!coding.resolveCodingAuthority || !coding.loadCodingAgentConfiguration || !tui.createCodingAgentTuiApp) throw new Error('Coding-agent public exports are incomplete');", "if (!writing.runWritingTask || !writing.runDocumentRevision) throw new Error('Writing-agent public exports are incomplete');"].join('\n'));
   await exec(process.execPath, ['index.mjs'], { cwd: consumer });
   console.log('Packed agent consumers passed.');
 } finally { await rm(temporary, { recursive: true, force: true }); }

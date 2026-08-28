@@ -22,8 +22,14 @@ export interface CodingAgentTuiRuntimeDetails {
   readonly showReasoning?: boolean;
   readonly sessionLocation?: string;
   readonly permissions?: {
-    readonly workspaceWrites: 'denied' | 'dry_run' | 'allowed' | 'ambient_shell';
-    readonly shell: 'denied' | 'ambient';
+    readonly mode: 'review' | 'edit' | 'develop';
+    readonly trust: 'restricted' | 'trusted';
+    readonly workspaceRead: 'root_bound';
+    readonly workspaceWrite: 'denied' | 'structured';
+    readonly commandExecution: 'denied' | 'sandboxed';
+    readonly network: 'denied';
+    readonly hostEscape: 'denied';
+    readonly tools: readonly string[];
   };
 }
 

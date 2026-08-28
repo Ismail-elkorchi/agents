@@ -4,14 +4,48 @@ import { spawn } from 'node:child_process';
 import { access, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createCodingAgentToolPolicy, resultExitCode } from '@ismail-elkorchi/coding-agent';
+import { resolveCodingAuthority, resultExitCode } from '@ismail-elkorchi/coding-agent';
 import { decodeAgentTerminalSnapshot } from '@agent-core/runtime';
 
-test('CLI exposes explicit risk policy', () => {
-  assert.deepEqual(createCodingAgentToolPolicy({ apply: true, dryRun: false, allowShell: true, allowUnsafeShell: false }).allowedRisks, ['read', 'write', 'destructive', 'execute']);
-  assert.deepEqual(createCodingAgentToolPolicy({ apply: true, dryRun: false, allowShell: false, allowUnsafeShell: false }).allowedRisks, ['read', 'write', 'destructive'], 'patch writes do not grant shell execution');
-  assert.deepEqual(createCodingAgentToolPolicy({ apply: false, dryRun: false, allowShell: true, allowUnsafeShell: false }).allowedRisks, ['read', 'execute'], 'shell execution does not grant apply_patch writes');
-  assert.deepEqual(createCodingAgentToolPolicy({ apply: false, dryRun: true, allowShell: false }).allowedRisks, ['read', 'write', 'destructive'], 'dry-run authorizes write validation without mutation');
+test('permission modes expose exact tools and authority', () => {
+  const review = resolveCodingAuthority({ requestedMode: 'review', trust: 'trusted', hasVerificationChecks: false });
+  assert.deepEqual(review.toolPolicy.allowedRisks, ['read']);
+  assert.equal(review.enabledTools.includes('apply_patch'), false);
+  assert.equal(review.enabledTools.includes('exec_command'), false);
+  const edit = resolveCodingAuthority({ requestedMode: 'edit', trust: 'restricted', hasVerificationChecks: false });
+  assert.deepEqual(edit.toolPolicy.allowedRisks, ['read', 'write', 'destructive']);
+  assert.deepEqual(edit.requiredApprovals, ['write', 'delete']);
+  const develop = resolveCodingAuthority({ requestedMode: 'develop', trust: 'trusted', hasVerificationChecks: true });
+  assert.deepEqual(develop.toolPolicy.allowedRisks, ['read', 'write', 'destructive', 'execute']);
+  assert.equal(develop.permissions.commandExecution, 'sandboxed');
+  assert.equal(develop.permissions.network, 'denied');
+});
+
+test('permission mode and trust matrix never grants network or host escape', () => {
+  for (const trust of ['restricted', 'trusted']) {
+    for (const mode of ['review', 'edit', 'develop']) {
+      const authority = resolveCodingAuthority({ requestedMode: mode, trust, hasVerificationChecks: true });
+      assert.equal(authority.mode, mode);
+      assert.equal(authority.permissions.network, 'denied');
+      assert.equal(authority.permissions.hostEscape, 'denied');
+      assert.equal(authority.enabledTools.includes('apply_patch'), mode !== 'review');
+      assert.equal(authority.enabledTools.includes('exec_command'), mode === 'develop');
+      assert.equal(authority.verificationCommands, mode === 'develop' ? 'sandboxed' : 'disabled');
+      assert.equal(authority.requiredApprovals.includes('command'), trust === 'restricted' && mode === 'develop');
+    }
+  }
+  const narrowed = resolveCodingAuthority({
+    requestedMode: 'develop',
+    trust: 'trusted',
+    hasVerificationChecks: false,
+    project: {
+      permissions: { maximumMode: 'edit', requireApprovalFor: ['write'] },
+      enabledTools: ['read_files', 'apply_patch', 'exec_command']
+    }
+  });
+  assert.equal(narrowed.mode, 'edit');
+  assert.deepEqual(narrowed.enabledTools, ['read_files', 'apply_patch']);
+  assert.deepEqual(narrowed.requiredApprovals, ['write']);
 });
 
 test('CLI rejects retired presentation flags', async () => {
@@ -36,10 +70,9 @@ test('CLI binary help works through the published executable', async () => {
   assert.equal(output.code, 0);
   assert.match(output.stdout + output.stderr, /coding-agent/i);
   assert.match(output.stdout + output.stderr, /approval <allow\|deny> <run-id> <approval-id> <fingerprint>/u);
-  assert.match(output.stdout + output.stderr, /ambient shell authority runs with this Coding Agent process's permissions/iu);
-  assert.match(output.stdout + output.stderr, /read, write, or delete files, access the network, and start child processes/iu);
-  assert.match(output.stdout + output.stderr, /Persistent ambient processes block conflicting workspace tools until they exit or stop/iu);
-  assert.match(output.stdout + output.stderr, /--apply\s+Allow apply_patch add, update, move, and delete operations/iu);
+  assert.match(output.stdout + output.stderr, /review mode exposes root-bound read tools only/iu);
+  assert.match(output.stdout + output.stderr, /Commands and verification run with no network/iu);
+  assert.match(output.stdout + output.stderr, /--permissions <mode>\s+Authority ceiling: review, edit, or develop/iu);
   assert.match(output.stdout + output.stderr, /--codex-transport <http_sse\|websocket>/u);
 });
 
@@ -55,7 +88,7 @@ test('CLI discards configured reasoning when provider or model identity changes'
     reasoning: { strategy: 'effort', effort: 'max', mode: 'standard' },
     instructions: [],
     tools: { enabled: [] },
-    authorization: { allowedRisks: ['read'], requireApprovalFor: [] },
+    permissions: { maximumMode: 'review', requireApprovalFor: [] },
     verification: { required: [], advisory: [] }
   }));
   const trust = await run(path.resolve('coding-agent/dist/index.js'), ['trust', 'trusted', '--root', root], { env: { ...process.env, HOME: home, USERPROFILE: home, XDG_STATE_HOME: stateHome } });
@@ -83,7 +116,7 @@ test('workspace trust and explicit model setup are enforced before provider I/O'
     model: 'gpt-5.6-sol',
     instructions: [],
     tools: { enabled: [] },
-    authorization: { allowedRisks: ['read'], requireApprovalFor: [] },
+    permissions: { maximumMode: 'review', requireApprovalFor: [] },
     verification: { required: [], advisory: [] }
   }));
   const restricted = await run(path.resolve('coding-agent/dist/index.js'), ['trust', 'restricted', '--root', root], { env: environment });

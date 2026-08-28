@@ -4,15 +4,18 @@ import { StringDecoder } from 'node:string_decoder';
 import {
   ResourceLeaseCoordinator,
   adoptCommandExecution,
+  createCommandExecutionPreparation,
   type CommandExecution,
   type CommandExecutionDescriptor,
   type CommandExecutionOwner,
+  type CommandExecutionPreparation,
   type CommandExecutionReport,
   type CommandExecutionResult,
   type CommandExecutionStatus,
   type CommandOutputView,
   type CommandReconciliationResult,
-  type StartCommandRequest
+  type PrepareCommandRequest,
+  type StartPreparedCommandOptions
 } from '@agent-core/tools';
 import type { WorkspaceFileRoot } from '@agent-core/tools-local';
 import type {
@@ -28,7 +31,7 @@ export interface SandboxCommandPlanContext {
 }
 
 export interface SandboxPreparedCommand {
-  readonly request: StartCommandRequest;
+  readonly request: PrepareCommandRequest;
   readonly executionId: string;
   readonly requestDigest: string;
   readonly policyDigest: string;
@@ -43,10 +46,10 @@ export interface SandboxCommandExecutionOptions {
   readonly workspaceFileRoot: WorkspaceFileRoot;
   readonly state: PrivateStateDirectory;
   readonly createRun: (
-    request: StartCommandRequest,
+    request: PrepareCommandRequest,
     context: SandboxCommandPlanContext
   ) => SandboxDetachedRunOptions | Promise<SandboxDetachedRunOptions>;
-  readonly authorizePrepared: (prepared: SandboxPreparedCommand) => boolean | Promise<boolean>;
+  readonly validatePrepared: (prepared: SandboxPreparedCommand) => void | Promise<void>;
   readonly maxRetainedOutputBytes: number;
 }
 
@@ -57,6 +60,35 @@ interface StoredOwner {
   readonly requestDigest?: string;
 }
 
+class SandboxCommandPreparation {
+  #state: 'prepared' | 'started' | 'activated' | 'released' = 'prepared';
+
+  constructor(
+    readonly authority: SandboxCommandExecution,
+    readonly request: PrepareCommandRequest,
+    readonly observation: Extract<SandboxExecutionObservation, { kind: 'prepared' }>,
+    private readonly releaseAuthority: () => Promise<void>
+  ) {
+  }
+
+  start() {
+    if (this.#state !== 'prepared') throw new Error('Sandbox command preparation is single-use.');
+    this.#state = 'started';
+    return { request: this.request, observation: this.observation };
+  }
+
+  markActivated(): void {
+    if (this.#state !== 'started') throw new Error('Sandbox command preparation was not started.');
+    this.#state = 'activated';
+  }
+
+  async release(): Promise<void> {
+    if (this.#state === 'released' || this.#state === 'activated') return;
+    this.#state = 'released';
+    await this.releaseAuthority();
+  }
+}
+
 /** Coding Agent's fail-closed adapter from Agent Core command behavior to Sandbox execution. */
 export class SandboxCommandExecution implements CommandExecution {
   readonly descriptor: CommandExecutionDescriptor;
@@ -64,6 +96,7 @@ export class SandboxCommandExecution implements CommandExecution {
   readonly #recovered = new Map<string, CommandExecutionReport>();
   readonly #unresolved = new Map<string, { workspace: string; diagnostic: string }>();
   readonly #abortListeners = new Map<string, { signal: AbortSignal; listener: () => void }>();
+  readonly #preparations = new WeakMap<CommandExecutionPreparation, SandboxCommandPreparation>();
   #closed = false;
 
   private constructor(private readonly options: SandboxCommandExecutionOptions) {
@@ -83,12 +116,12 @@ export class SandboxCommandExecution implements CommandExecution {
     return execution;
   }
 
-  async start(request: StartCommandRequest): Promise<CommandExecutionResult> {
+  async prepare(request: PrepareCommandRequest): Promise<CommandExecutionPreparation> {
     this.#ensureOpen();
     if (this.#unresolved.size > 0) throw new Error('Unresolved sandbox executions block new command starts for this workspace.');
     if (request.pty) throw new Error('The configured sandbox command execution does not support PTY mode.');
     validateOwner(request.owner);
-    const processId = processIdentity(request.owner);
+    const processId = processIdentity(request.owner, this.descriptor.recoveryIdentity);
     await this.#bindOwner({ schemaVersion: 1, processId, owner: ownOwner(request.owner) });
     const run = await this.options.createRun(request, {
       hostWorkspaceRoot: this.options.workspaceFileRoot.identity.canonicalPath,
@@ -101,13 +134,12 @@ export class SandboxCommandExecution implements CommandExecution {
     });
     if (prepared.kind === 'rejected') {
       await this.#bindOwner({ schemaVersion: 1, processId, owner: ownOwner(request.owner), requestDigest: prepared.requestDigest });
-      return this.#result(prepared, request.owner, request.outputTokenBudget, 0);
+      throw new Error(`Sandbox rejected command preparation: ${prepared.error.message}`);
     }
     if (prepared.kind !== 'prepared') return this.#requireKnown(prepared);
     await this.#bindOwner({ schemaVersion: 1, processId, owner: ownOwner(request.owner), requestDigest: prepared.requestDigest });
-    let authorized: boolean;
     try {
-      authorized = await this.options.authorizePrepared(Object.freeze({
+      await this.options.validatePrepared(Object.freeze({
         request,
         executionId: processId,
         requestDigest: prepared.requestDigest,
@@ -119,20 +151,41 @@ export class SandboxCommandExecution implements CommandExecution {
       }));
     } catch (error) {
       await this.options.repository.terminate(processId).catch(() => undefined);
+      await this.options.repository.forget(processId).catch(() => undefined);
       throw error;
     }
-    if (!authorized) {
-      await this.options.repository.terminate(processId);
-      const rejected = await this.#waitForProcessObservation(processId, 2_000);
-      if (rejected.kind !== 'rejected') throw new Error('Denied sandbox preparation did not settle without executing its target.');
-      return this.#result(rejected, request.owner, request.outputTokenBudget, 0);
+    const owned = new SandboxCommandPreparation(this, request, prepared, async () => {
+      await this.options.repository.terminate(prepared.executionId);
+      await this.options.repository.forget(prepared.executionId);
+    });
+    const preparation = createCommandExecutionPreparation({
+      authority: this.descriptor.implementationId,
+      recoveryIdentity: this.descriptor.recoveryIdentity,
+      requestDigest: prepared.requestDigest,
+      policyDigest: prepared.policyDigest,
+      executionDigest: prepared.executionDigest,
+      summary: prepared.summary,
+      enforcement: prepared.enforcement
+    }, () => owned.release());
+    this.#preparations.set(preparation, owned);
+    return preparation;
+  }
+
+  async start(preparation: CommandExecutionPreparation, options: StartPreparedCommandOptions = {}): Promise<CommandExecutionResult> {
+    this.#ensureOpen();
+    const owned = this.#preparations.get(preparation);
+    if (owned?.authority !== this) {
+      throw new TypeError('Command preparation does not belong to this sandbox authority.');
     }
-    if (request.signal?.aborted) {
-      await this.options.repository.terminate(processId);
-      throw abortError(request.signal);
+    const { request, observation: prepared } = owned.start();
+    const processId = prepared.executionId;
+    if (options.signal?.aborted) {
+      await owned.release();
+      throw abortError(options.signal);
     }
-    this.#bindAbort(processId, request.signal);
+    this.#bindAbort(processId, options.signal);
     await this.options.repository.activate(processId, prepared);
+    owned.markActivated();
     let observation = await this.#waitForProcessObservation(processId, Math.max(1_000, Math.min(request.timeoutMs, 30_000)));
     if (observation.kind === 'running' && request.yieldMs > 0) {
       observation = await this.options.repository.inspect(processId, {
@@ -141,8 +194,8 @@ export class SandboxCommandExecution implements CommandExecution {
       });
     }
     const result = this.#result(observation, request.owner, request.outputTokenBudget, 0);
-    if (result.status === 'running' && request.lease) request.lease.transferToProcess(processId, `workspace/processes/${processId}`);
-    await this.#emitOutput(request.onProgress, observation);
+    if (result.status === 'running' && options.lease) options.lease.transferToProcess(processId, `workspace/processes/${processId}`);
+    await this.#emitOutput(options.onProgress, observation);
     this.#releaseIfTerminal(result);
     return result;
   }
@@ -290,7 +343,7 @@ export class SandboxCommandExecution implements CommandExecution {
     throw new Error(`Sandbox execution did not reach a process observation: ${observation.kind}.`);
   }
 
-  async #emitOutput(callback: StartCommandRequest['onProgress'], observation: SandboxExecutionObservation): Promise<void> {
+  async #emitOutput(callback: StartPreparedCommandOptions['onProgress'], observation: SandboxExecutionObservation): Promise<void> {
     if (!callback) return;
     let sequence = 0;
     const observed = { stdout: 0, stderr: 0 };
@@ -368,7 +421,7 @@ export class SandboxCommandExecution implements CommandExecution {
     const existingText = await this.options.state.read(ownerPath(owner.processId));
     if (existingText !== undefined) {
       const existing = decodeStoredOwner(existingText, owner.processId);
-      if (processIdentity(existing.owner) !== processIdentity(owner.owner)) throw new Error(`Sandbox process owner binding conflicts with its durable identity: ${owner.processId}`);
+      if (!sameOwner(existing.owner, owner.owner)) throw new Error(`Sandbox process owner binding conflicts with its durable identity: ${owner.processId}`);
       if (existing.requestDigest !== undefined && owner.requestDigest !== undefined && existing.requestDigest !== owner.requestDigest) {
         throw new Error(`Sandbox process request binding conflicts with its durable identity: ${owner.processId}`);
       }
@@ -384,7 +437,9 @@ export class SandboxCommandExecution implements CommandExecution {
   async #storedOwner(processId: string): Promise<StoredOwner> {
     const text = await this.options.state.read(ownerPath(processId));
     if (text === undefined) throw new Error(`Sandbox process owner is unavailable: ${processId}`);
-    return decodeStoredOwner(text, processId);
+    const stored = decodeStoredOwner(text, processId);
+    if (processIdentity(stored.owner, this.descriptor.recoveryIdentity) !== processId) throw new Error(`Sandbox process owner record does not match its process identity: ${processId}`);
+    return stored;
   }
 
   #reconciliationResult(): CommandReconciliationResult {
@@ -476,8 +531,8 @@ function validateWorkspaceGrant(run: SandboxDetachedRunOptions, canonicalRoot: s
   if (run.process.stdout !== 'pipe' || run.process.stderr !== 'pipe') throw new Error('Sandbox command plan must expose stdout and stderr as durable output streams.');
 }
 
-function processIdentity(owner: CommandExecutionOwner): string {
-  const identity = JSON.stringify([owner.runId, owner.turnId, owner.toolBatchId, owner.callIndex]);
+function processIdentity(owner: CommandExecutionOwner, recoveryIdentity: string): string {
+  const identity = JSON.stringify([recoveryIdentity, owner.runId, owner.turnId, owner.toolBatchId, owner.callIndex]);
   return `sandbox-${createHash('sha256').update(identity).digest('hex')}`;
 }
 
@@ -531,8 +586,11 @@ function ownOwner(owner: CommandExecutionOwner): CommandExecutionOwner {
 }
 
 function assertRequester(owner: CommandExecutionOwner, requester: CommandExecutionOwner | undefined, processId: string): void {
-  if (requester && processIdentity(requester) !== processId) throw new Error(`Sandbox process belongs to another tool invocation: ${processId}`);
-  if (processIdentity(owner) !== processId) throw new Error(`Sandbox process owner record does not match its process identity: ${processId}`);
+  if (requester && !sameOwner(owner, requester)) throw new Error(`Sandbox process belongs to another tool invocation: ${processId}`);
+}
+
+function sameOwner(left: CommandExecutionOwner, right: CommandExecutionOwner): boolean {
+  return left.runId === right.runId && left.turnId === right.turnId && left.toolBatchId === right.toolBatchId && left.callIndex === right.callIndex;
 }
 
 function identity(value: unknown): value is string {

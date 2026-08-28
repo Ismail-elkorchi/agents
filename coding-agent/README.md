@@ -35,7 +35,23 @@ coding-agent --session SESSION_ID
 
 Session selection is not part of project configuration. A resumed session restores its latest provider and model unless explicitly overridden. Resolution order is explicit CLI options, resumed-session settings, trusted project configuration, then environment values. There is no hidden provider or model fallback.
 
-Configured authorization restricts rather than grants invocation authority. Use `--apply` for structured mutation, `--dry-run` to validate structured writes without mutation, and `--allow-shell` for ambient execution. Configured command checks require `--allow-shell` and project `execute` authorization.
+Select one permission ceiling with `--permissions`: `review` exposes root-bound reads, `edit` adds structured patch mutation, and `develop` adds sandboxed commands and verification. Project configuration can only narrow that ceiling and exact tool set. Coding Agent never falls back to ambient command execution; if Sandbox cannot establish the declared boundary, commands are unavailable.
+
+A trusted project may propose a narrower boundary:
+
+```json
+{
+  "version": 1,
+  "provider": "openai",
+  "model": "gpt-5.6-sol",
+  "instructions": [],
+  "tools": { "enabled": ["read_files", "search_text", "apply_patch"] },
+  "permissions": { "maximumMode": "edit", "requireApprovalFor": ["write", "delete"] },
+  "verification": { "required": [], "advisory": [] }
+}
+```
+
+The repository cannot activate this policy or raise trust. Restricted workspaces treat configuration as attributed data and independently require approval for every mutation and command.
 
 ## Approvals
 
@@ -60,7 +76,7 @@ Changed input, effects, implementation, policy, or execution boundary invalidate
 The CLI supports the same persisted operation after process restart:
 
 ```bash
-coding-agent approval allow RUN_ID APPROVAL_ID FINGERPRINT --root . --config coding-agent.config.json --allow-shell
+coding-agent approval allow RUN_ID APPROVAL_ID FINGERPRINT --root . --config coding-agent.config.json --permissions develop
 ```
 
 ## Checks
@@ -79,7 +95,7 @@ const checks = [{
 }];
 ```
 
-Checks are read-only by default. Grant a bounded verification command executor only when command execution is intended.
+Checks are read-only by default. In `develop` mode, configured commands use the same no-network Sandbox authority as command tools. A lower mode leaves command checks explicitly unavailable rather than running them on the host.
 
 ## Result semantics
 
@@ -107,9 +123,7 @@ Run `coding-agent [initial task] [options]` for the interactive TUI. Run `coding
 | `--temperature <n>` | Set a finite temperature when the selected provider/model supports it. OpenAI Codex subscription requests do not support temperature. |
 | `--reasoning-effort <level>` | Select `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`, subject to provider/model support. |
 | `--show-reasoning` | Render reasoning text or summaries exposed by the provider. It does not expose private chain-of-thought. |
-| `--apply` | Authorize structured patch writes, subject to committed authorization policy and approvals. |
-| `--dry-run` | Validate structured patch writes without applying them. This does not sandbox shell commands. |
-| `--allow-shell` | Authorize ambient shell execution. Required for configured command checks and subject to committed authorization policy and approvals. |
+| `--permissions <review\|edit\|develop>` | Select the authority ceiling. Defaults to `review`; `edit` adds structured patches; `develop` adds sandboxed commands and command checks. |
 | `--resume` | Resume the most recently active session for this workspace. |
 | `--session <id>` | Open an existing session by exact ID. |
 | `--branch <entry-id>` | Branch the selected existing session from an entry. Requires `--resume` or `--session`. |

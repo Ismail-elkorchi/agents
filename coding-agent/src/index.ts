@@ -17,11 +17,12 @@ import { OpenRouterProvider } from '@agent-core/provider-openrouter';
 import type { AgentCheckDefinition } from '@agent-core/runtime';
 import {
   accessRisk,
+  prepareCommandExecution,
+  releasePreparedCommandExecution,
+  startPreparedCommandExecution,
   type ToolCall,
   type ToolObservation,
-  type ToolPolicy,
-  type ToolProgress,
-  type ToolRisk
+  type ToolProgress
 } from '@agent-core/tools';
 import {
   createLocalToolHost,
@@ -42,6 +43,8 @@ import { inspectRepositoryOrientation, repositoryOrientationContext } from './wo
 import { openSandboxExecutionRepository } from '@ismail-elkorchi/sandbox';
 import { SandboxGitRepositoryObserver } from './workspace/git/sandbox-git-observer.js';
 import { unavailableGitRepositoryObserver, type GitRepositoryObserver } from './workspace/git/repository-observer.js';
+import { createCodingCommandAuthority } from './execution/coding-command-authority.js';
+import { parseCodingPermissionMode, resolveCodingAuthority, type CodingApprovalKind, type CodingPermissionMode } from './security/permission-mode.js';
 
 export {
   loadCodingAgentConfiguration,
@@ -51,6 +54,7 @@ export {
   type CodingAgentProviderId
 } from './configuration.js';
 export { describeWorkspace, loadWorkspace, openCodingWorkspace, type OpenCodingWorkspace, type WorkspaceLayout } from './workspace.js';
+export { resolveCodingAuthority, type CodingApprovalKind, type CodingAuthority, type CodingPermissionMode } from './security/permission-mode.js';
 
 type CliProviderId = CodingAgentProviderId;
 type CliAuthProviderId = 'openai' | 'openai-codex';
@@ -67,9 +71,7 @@ interface CliOptions {
   providerEndpoint?: string;
   codexTransport?: OpenAICodexTransport;
   maxOutputTokens?: number;
-  apply: boolean;
-  dryRun: boolean;
-  allowShell: boolean;
+  permissionMode: CodingPermissionMode;
   showReasoning: boolean;
   sessionSelection: SessionSelection;
   branch?: string;
@@ -79,12 +81,6 @@ interface CliOptions {
   stateRoot?: string;
   configuration?: CodingAgentConfiguration;
   configurationSource?: { readonly sourceUri: string; readonly sha256: string; readonly trustLevel: 'restricted' | 'trusted' };
-}
-
-export interface CodingAgentToolPolicyOptions {
-  apply: boolean;
-  dryRun: boolean;
-  allowShell: boolean;
 }
 
 interface CliProviderRuntime {
@@ -107,12 +103,6 @@ interface PersistedModelSettings {
   readonly model?: string;
   readonly temperature?: number;
   readonly reasoningEffort?: string;
-}
-
-interface EffectiveCliAuthority {
-  readonly toolPolicy: ToolPolicy;
-  readonly verificationCommands: 'disabled' | 'ambient';
-  readonly permissions: NonNullable<CodingAgentTuiRuntimeDetails['permissions']>;
 }
 
 interface CliRuntime {
@@ -201,11 +191,16 @@ async function withCliRuntime<T>(options: CliOptions, workspace: OpenCodingWorks
   let runtime: CliRuntime;
   try { runtime = await createRuntime(options, workspace, persistedSessionId); }
   catch (error) { workspace.fileRoot.close(); throw error; }
-  try { return await run(runtime); }
-  finally {
-    await runtime.localHost.close();
-    await runtime.gitObserver.close();
-  }
+  let outcome: { readonly kind: 'returned'; readonly value: T } | { readonly kind: 'failed'; readonly error: unknown };
+  try { outcome = { kind: 'returned', value: await run(runtime) }; }
+  catch (error) { outcome = { kind: 'failed', error }; }
+  const cleanupFailures: unknown[] = [];
+  try { await runtime.localHost.close(); } catch (error) { cleanupFailures.push(error); }
+  try { await runtime.gitObserver.close(); } catch (error) { cleanupFailures.push(error); }
+  if (outcome.kind === 'failed' && cleanupFailures.length > 0) throw new AggregateError([outcome.error, ...cleanupFailures], 'Coding Agent run and cleanup failed.', { cause: outcome.error });
+  if (outcome.kind === 'failed') throw outcome.error;
+  if (cleanupFailures.length > 0) throw new AggregateError(cleanupFailures, 'Coding Agent runtime cleanup failed.');
+  return outcome.value;
 }
 
 async function createRuntime(
@@ -233,25 +228,37 @@ async function createRuntime(
   const sessionBinding = { repository: sessions, session };
   const events = new JsonlEventRepository<AgentEvent>({ rootDir: workspace.runsDir, codec: agentEventCodec });
   const existingRunIds = new Set(await events.listRunIds());
-  const authority = resolveCliAuthority(options, projectExecutionPolicy);
-  const checks = configuredChecks(projectExecutionPolicy ? options.configuration : undefined);
+  const activeConfiguration = projectExecutionPolicy ? options.configuration : undefined;
+  const checks = configuredChecks(activeConfiguration);
+  const authority = resolveCodingAuthority({
+    requestedMode: options.permissionMode,
+    trust: admittedTrustLevel(openedWorkspace.security.trustLevel),
+    ...(activeConfiguration ? { project: { permissions: activeConfiguration.permissions, enabledTools: activeConfiguration.tools.enabled } } : {}),
+    hasVerificationChecks: checks.length > 0
+  });
   const instructionSet = await loadRepositoryInstructions(openedWorkspace, options.configuration?.instructions.map((instruction) => instruction.path));
   const gitObserver = await createGitObserver(workspace.runtimeDir);
   const orientation = await inspectRepositoryOrientation(openedWorkspace, instructionSet, options.configuration, gitObserver);
   let localHost: LocalToolHost | undefined;
   try {
     await fs.mkdir(workspace.artifactsDir, { recursive: true, mode: 0o700 });
+    const patchEnabled = authority.enabledTools.includes('apply_patch');
+    const commandEnabled = authority.permissions.commandExecution === 'sandboxed';
     const patchJournalPath = path.join(workspace.runtimeDir, 'transactions', 'patch');
-    await fs.mkdir(patchJournalPath, { recursive: true, mode: 0o700 });
+    if (patchEnabled) await fs.mkdir(patchJournalPath, { recursive: true, mode: 0o700 });
+    const commandExecution = commandEnabled
+      ? await createCodingCommandAuthority({
+        repositoryDirectory: path.join(workspace.runtimeDir, 'sandbox-commands'),
+        workspaceFileRoot: openedWorkspace.fileRoot,
+        state: openedWorkspace.privateState
+      })
+      : undefined;
     localHost = createLocalToolHost({
       workspaceFileRoot: openedWorkspace.fileRoot,
       artifactRepository: new LocalArtifactRepository({ rootDir: workspace.artifactsDir }),
-      processLedgerDirectory: path.join(workspace.runtimeDir, 'processes'),
-      patchJournal: TextPatchJournal.adopt(patchJournalPath),
-      enabledTools: options.configuration?.tools.enabled ?? [
-        'list_directory', 'find_files', 'read_files', 'search_text', 'apply_patch',
-        'exec_command', 'write_stdin', 'stop_process', 'view_image', 'read_artifact'
-      ],
+      ...(commandExecution ? { commandExecution } : {}),
+      ...(patchEnabled ? { patchJournal: TextPatchJournal.adopt(patchJournalPath) } : {}),
+      enabledTools: authority.enabledTools,
       async deliverRecoveredTerminalReport(report) {
         const runId = report.result.owner.runId;
         if (!existingRunIds.has(runId)) return false;
@@ -268,13 +275,12 @@ async function createRuntime(
     await localHost.ready();
     const reconciliation = await localHost.reconciliation();
     if (reconciliation.unresolved.length > 0) {
-      throw new Error('Unresolved ambient process supervision blocks this workspace: ' + reconciliation.unresolved.map((item) => `${item.processId}: ${item.diagnostic}`).join('; '));
+      throw new Error('Unresolved sandbox command execution blocks this workspace: ' + reconciliation.unresolved.map((item) => `${item.processId}: ${item.diagnostic}`).join('; '));
     }
     const artifactStore = localHost.artifactRepository;
     const estimator = new SimpleTokenEstimator();
     const localToolConfiguration = localHost.services.localToolConfiguration;
-    const commandExecution = localHost.commandExecution;
-    if (!commandExecution) throw new Error('Coding Agent requires the configured local command authority.');
+    const activeCommandExecution = localHost.commandExecution;
     const services = localHost.services;
     const configuredTools = localHost.tools;
     const agent = new AgentSession({
@@ -292,7 +298,10 @@ async function createRuntime(
         return new AgentRuntime({
           provider: providerRuntime.provider,
           model: configuration.model,
-          toolBoundary: { authorizationPolicyId: 'coding-agent-cli/workspace-policy@1', executionTargetId: workspace.identity.id },
+          toolBoundary: {
+            authorizationPolicyId: `coding-agent/${authority.mode}/${openedWorkspace.security.trustLevel}@1`,
+            executionTargetId: activeCommandExecution?.descriptor.recoveryIdentity ?? `${workspace.identity.id}:no-command-authority`
+          },
           repositories: {
             events,
             session: { repository: sessionBinding.repository, sessionId: sessionBinding.session.id },
@@ -308,41 +317,43 @@ async function createRuntime(
           toolAuthorizer: request => {
             const trustDecision = openedWorkspace.security.authorizeTool(request);
             if (trustDecision.decision !== 'allow') return trustDecision;
-            const approvalAccesses = request.effects.accesses.map((access) => accessRisk(access.mode))
-              .filter((risk) => options.configuration?.authorization.requireApprovalFor.includes(risk));
-            const ambient = request.effects.accesses.some((access) => access.mode === 'execute')
-              && request.effects.lockScopes.includes('workspace/files');
-            return approvalAccesses.length > 0
-              ? { decision: 'require_approval' as const, reason: `Workspace configuration requires approval for ${[...new Set(approvalAccesses)].join(', ')} access.${ambient ? ' This grants ambient process authority that can indirectly read, write, or delete files, access the network, and start child processes.' : ''}` }
+            const approvalKinds = request.effects.accesses.map((access) => approvalKind(accessRisk(access.mode)))
+              .filter((kind): kind is CodingApprovalKind => kind !== undefined && authority.requiredApprovals.includes(kind));
+            return approvalKinds.length > 0
+              ? { decision: 'require_approval' as const, reason: `The active permission boundary requires approval for ${[...new Set(approvalKinds)].join(', ')}.` }
               : { decision: 'allow' as const, reason: 'Allowed by workspace policy.' };
           },
           instructions: instructionSet.instructions,
           contextItems: Object.freeze([repositoryOrientationContext(orientation)]),
           ...(checks.length > 0 ? { checks } : {}),
           ...(projectExecutionPolicy && options.configuration?.limits ? { limits: options.configuration.limits } : {}),
-          ...(authority.verificationCommands === 'ambient' ? { verification: { evidence: { read: () => Promise.resolve({ items: [], bytes: 0, truncated: false }), readArtifact: ref => artifactStore.readVerified(ref) }, runCommand: async (request, signal) => {
+          ...(authority.verificationCommands === 'sandboxed' && activeCommandExecution ? { verification: { evidence: { read: () => Promise.resolve({ items: [], bytes: 0, truncated: false }), readArtifact: ref => artifactStore.readVerified(ref) }, runCommand: async (request, signal) => {
             const startedAt = Date.now();
             const outputTokenBudget = Math.max(64, Math.ceil((request.maxOutputBytes ?? 64_000) / 4));
-            let result = await commandExecution.start({
+            const prepared = await prepareCommandExecution(activeCommandExecution, {
               owner: request.owner,
               command: request.command,
               workspacePath: '.',
               pty: false,
               timeoutMs: request.timeoutMs ?? 60_000,
               yieldMs: localToolConfiguration.process.maxYieldMs,
-              outputTokenBudget,
-              signal
+              outputTokenBudget
             });
-            let stdout = result.stdout.text;
-            let stderr = result.stderr.text;
-            let cursor = result.cursorEnd;
-            while (result.status === 'running') {
-              result = await commandExecution.query(result.processId, outputTokenBudget, localToolConfiguration.process.maxYieldMs, cursor, request.owner);
-              stdout += result.stdout.text;
-              stderr += result.stderr.text;
-              cursor = result.cursorEnd;
+            try {
+              let result = await startPreparedCommandExecution(activeCommandExecution, prepared, { signal });
+              let stdout = result.stdout.text;
+              let stderr = result.stderr.text;
+              let cursor = result.cursorEnd;
+              while (result.status === 'running') {
+                result = await activeCommandExecution.query(result.processId, outputTokenBudget, localToolConfiguration.process.maxYieldMs, cursor, request.owner);
+                stdout += result.stdout.text;
+                stderr += result.stderr.text;
+                cursor = result.cursorEnd;
+              }
+              return { exitCode: result.status === 'exited' ? result.exitCode ?? null : null, stdout, stderr, durationMs: Date.now() - startedAt };
+            } finally {
+              await releasePreparedCommandExecution(activeCommandExecution, prepared);
             }
-            return { exitCode: result.status === 'exited' ? result.exitCode ?? null : null, stdout, stderr, durationMs: Date.now() - startedAt };
           } } } : {}),
           metadata: {
             workspaceId: workspace.identity.id,
@@ -391,6 +402,11 @@ async function createRuntime(
     await gitObserver.close().catch(() => undefined);
     throw error;
   }
+}
+
+function admittedTrustLevel(value: OpenCodingWorkspace['security']['trustLevel']): 'restricted' | 'trusted' {
+  if (value === 'restricted' || value === 'trusted') return value;
+  throw new Error('Runtime creation requires an admitted workspace.');
 }
 
 function platformGitExecutable(): string {
@@ -455,6 +471,13 @@ function configuredChecks(configuration: CodingAgentConfiguration | undefined): 
   ];
 }
 
+function approvalKind(risk: ReturnType<typeof accessRisk>): CodingApprovalKind | undefined {
+  if (risk === 'write') return 'write';
+  if (risk === 'destructive') return 'delete';
+  if (risk === 'execute') return 'command';
+  return undefined;
+}
+
 function configuredCommandCheck(check: CodingAgentCheckConfiguration, requirement: 'required' | 'advisory'): AgentCheckDefinition {
   return {
     id: check.id,
@@ -472,9 +495,7 @@ function configuredCommandCheck(check: CodingAgentCheckConfiguration, requiremen
 function parseOptions(args: string[]): { options: CliOptions; positionals: string[] } {
   const options: CliOptions = {
     root: process.cwd(),
-    apply: false,
-    dryRun: false,
-    allowShell: false,
+    permissionMode: 'review',
     showReasoning: false,
     sessionSelection: { kind: 'new' }
   };
@@ -508,9 +529,7 @@ const CLI_OPTION_SPECS = {
   '--max-output-tokens': valued((options, value, key) => { options.maxOutputTokens = parsePositiveIntegerOption(key, value); }),
   '--temperature': valued((options, value) => { const temperature = Number(value); if (!Number.isFinite(temperature)) throw new Error('--temperature must be a finite number.'); options.temperature = temperature; }),
   '--reasoning-effort': valued((options, value, key) => { options.reasoning = reasoningFromEffort(parseReasoningEffort(value, key)); }),
-  '--apply': flagged(options => { options.apply = true; }),
-  '--dry-run': flagged(options => { options.dryRun = true; }),
-  '--allow-shell': flagged(options => { options.allowShell = true; }),
+  '--permissions': valued((options, value) => { options.permissionMode = parseCodingPermissionMode(value, '--permissions'); }),
   '--show-reasoning': flagged(options => { options.showReasoning = true; }),
   '--resume': flagged(options => { setSessionSelection(options, { kind: 'latest' }, '--resume'); }),
   '--session': valued((options, value) => { setSessionSelection(options, { kind: 'existing', id: value }, '--session'); }),
@@ -749,40 +768,6 @@ async function loginAuth(provider: CliAuthProviderId): Promise<void> {
     }
   });
   console.log(`Stored credentials for ${provider}.`);
-}
-
-export function createCodingAgentToolPolicy(options: CodingAgentToolPolicyOptions): ToolPolicy {
-  const allowedRisks: ToolRisk[] = ['read'];
-  if (options.apply || options.dryRun) {
-    allowedRisks.push('write', 'destructive');
-  }
-  if (options.allowShell) {
-    allowedRisks.push('execute');
-  }
-  return {
-    allowedRisks: [...new Set(allowedRisks)],
-    ...(options.dryRun ? { dryRunWrites: true } : {})
-  };
-}
-
-function resolveCliAuthority(options: CliOptions, projectExecutionPolicy: boolean): EffectiveCliAuthority {
-  const invocation = createCodingAgentToolPolicy(options);
-  const configured = options.configuration?.authorization.allowedRisks;
-  const allowedRisks = configured ? invocation.allowedRisks.filter((risk) => configured.includes(risk)) : invocation.allowedRisks;
-  const toolPolicy = Object.freeze({ allowedRisks: Object.freeze([...allowedRisks]), ...(invocation.dryRunWrites ? { dryRunWrites: true } : {}) });
-  const hasChecks = projectExecutionPolicy && (options.configuration?.verification.required.length ?? 0) + (options.configuration?.verification.advisory.length ?? 0) > 0;
-  const verificationCommands = hasChecks && options.allowShell && allowedRisks.includes('execute') ? 'ambient' : 'disabled';
-  if (hasChecks && verificationCommands === 'disabled') throw new Error('Configured verification commands require --allow-shell and execute authorization.');
-  const ambientShell = allowedRisks.includes('execute');
-  const writes = allowedRisks.includes('write') || allowedRisks.includes('destructive');
-  return Object.freeze({
-    toolPolicy,
-    verificationCommands,
-    permissions: Object.freeze({
-      workspaceWrites: ambientShell ? 'ambient_shell' : writes ? options.dryRun ? 'dry_run' : 'allowed' : 'denied',
-      shell: ambientShell ? 'ambient' : 'denied'
-    })
-  });
 }
 
 async function selectSession(options: CliOptions, repository: JsonlSessionRepository, persistedSessionId?: string): Promise<SessionDescriptor | undefined> {
@@ -1189,10 +1174,9 @@ Usage:
 Safety defaults:
   New and identity-changed workspaces are untrusted and cannot send provider requests or run effects.
   Private runs, sessions, artifacts, journals, and trust records are stored outside the workspace.
-  Structured patch mutation is disabled unless --apply or --dry-run is supplied.
-  Ambient shell execution is disabled unless --allow-shell is supplied.
-  Ambient shell authority runs with this Coding Agent process's permissions and can indirectly read, write, or delete files, access the network, and start child processes.
-  Persistent ambient processes block conflicting workspace tools until they exit or stop.
+  review mode exposes root-bound read tools only; edit adds structured mutation; develop adds sandboxed commands.
+  Commands and verification run with no network, no host-process access, no inherited environment, and no ambient fallback.
+  Restricted workspaces require approval before every mutation or command. Repository policy can narrow but never expand the selected mode.
 
 Common options:
   --root <dir>           Workspace root. Default: current directory.
@@ -1210,9 +1194,7 @@ Common options:
   --reasoning-effort <level>
                          Optional reasoning effort: none, minimal, low, medium, high, xhigh, max.
   --show-reasoning       Stream separate model reasoning or reasoning summaries to stderr.
-  --apply                Allow apply_patch add, update, move, and delete operations.
-  --dry-run              Validate writes without changing files.
-  --allow-shell          Allow ambient shell execution with process-level file, network, and child-process authority. Does not authorize apply_patch.
+  --permissions <mode>   Authority ceiling: review, edit, or develop. Default: review.
   --resume               Resume the latest session for this workspace.
   --session <id>         Open an existing session by ID.
   --branch <entry-id>    Branch the active session from a prior entry before running.
