@@ -6,8 +6,8 @@
   "generatedSummary": ".coding-agent-implementation-plan.md",
   "architecture": ".coding-agent-plan/architecture.md",
   "reviewedHeads": {
-    "agents": "03de5d78c0df530e01f42e8d2b9bbd6259a29547",
-    "agent-core": "be41b876bea7deb5dd7ca67bd7a1f22555eb818d",
+    "agents": "9ad4d5ce4a8ae682ab4adde51518d6681e2c8d40",
+    "agent-core": "616a50d67bdd82a6691ab8dfcdbf67609460140d",
     "terminal-ui": "d83d01432056470d17f42793bb83f6d7c93e595d",
     "sandbox": "e82ff3dd94a7c87b14bd25665b8898ae3b081767"
   },
@@ -55,7 +55,7 @@
         ".coding-agent-plan/decisions/adversarial-review.md"
       ],
       "evidence": ".coding-agent-plan/evidence/R0.md",
-      "lastVerifiedCommit": "be41b876bea7deb5dd7ca67bd7a1f22555eb818d"
+      "lastVerifiedCommit": "616a50d67bdd82a6691ab8dfcdbf67609460140d"
     },
     {
       "id": "C0",
