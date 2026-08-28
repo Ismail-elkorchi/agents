@@ -6,8 +6,8 @@
   "generatedSummary": ".coding-agent-implementation-plan.md",
   "architecture": ".coding-agent-plan/architecture.md",
   "reviewedHeads": {
-    "agents": "d4cfcf215dd43e14c4f7cae1e510139b036b4d8e",
-    "agent-core": "92e604d7deec1ba3c219040ac0b0c478f4ef93e7",
+    "agents": "a4abd2d3ec342e83eae295355d9dcbce49b8fd39",
+    "agent-core": "8fbf015dd79156444aa8ad932bbae6a999c75042",
     "terminal-ui": "d83d01432056470d17f42793bb83f6d7c93e595d",
     "sandbox": "d2b79bf82766bb5832ed20bd1c9bc653f90c30c2"
   },
@@ -180,8 +180,8 @@
         "E0"
       ],
       "wave": 3,
-      "status": "current",
-      "currentOwner": "codex/root",
+      "status": "done",
+      "currentOwner": null,
       "ownedPaths": [
         "agent-core:packages/evidence/src/event-repository.ts",
         "agent-core:packages/evidence/src/repositories.ts",
@@ -200,7 +200,7 @@
         ".coding-agent-plan/decisions/adversarial-review.md"
       ],
       "evidence": ".coding-agent-plan/evidence/D0.md",
-      "lastVerifiedCommit": null
+      "lastVerifiedCommit": "8fbf015dd79156444aa8ad932bbae6a999c75042"
     },
     {
       "id": "C1",
@@ -210,8 +210,8 @@
         "E0"
       ],
       "wave": 3,
-      "status": "not_started",
-      "currentOwner": null,
+      "status": "current",
+      "currentOwner": "codex/root",
       "ownedPaths": [
         "agent-core:packages/tools/src/**"
       ],
