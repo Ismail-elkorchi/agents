@@ -42,6 +42,7 @@ import { unavailableGitRepositoryObserver, type GitRepositoryObserver } from './
 import { createCodingCommandAuthority } from './execution/coding-command-authority.js';
 import { parseCodingPermissionMode, resolveCodingAuthority, type CodingApprovalKind, type CodingPermissionMode } from './security/permission-mode.js';
 import { configuredCheckProposals, createConfiguredChecks } from './verification/configured-checks.js';
+import { CODING_AGENT_DISPOSITION } from './verification/coding-disposition.js';
 import { loadOrCaptureRunWorkspaceBaseline } from './changes/workspace-baseline-store.js';
 import { RunChangeReportService } from './changes/run-change-report-service.js';
 import type { RunChangeReport } from './changes/run-change-report.js';
@@ -416,6 +417,7 @@ async function createRuntime(
           instructions: instructionSet.instructions,
           contextItems: Object.freeze([repositoryOrientationContext(orientation)]),
           ...(checks.length > 0 ? { checks } : {}),
+          disposition: CODING_AGENT_DISPOSITION,
           ...(projectExecutionPolicy && options.configuration?.limits ? { limits: options.configuration.limits } : {}),
           metadata: {
             workspaceId: workspace.identity.id,
