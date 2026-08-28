@@ -9,13 +9,14 @@
   "sandbox": { "path": "../sandbox", "commit": "f323ee5da7518b80c98842fc1d877ef7c5010062" },
   "scripts": {
     "check:plan": "node scripts/check-coding-agent-plan.mjs && node scripts/generate-coding-agent-plan-summary.mjs --check && node --test scripts/check-coding-agent-plan.test.mjs",
+    "check:conformance": "node --test scripts/coding-agent-conformance-metrics.test.mjs && node scripts/check-coding-agent-conformance.mjs",
     "plan:context": "node scripts/coding-agent-plan-context.mjs",
     "build": "node scripts/verify-source-dependencies.mjs && tsc -b && node scripts/post-build.mjs",
     "lint": "eslint \"coding-agent/src/**/*.ts\" \"writing-agent/src/**/*.ts\"",
     "test": "npm run build && npm run test:unit",
     "test:unit": "node scripts/run-test-suite.mjs",
     "package": "node scripts/test-packed-consumer.mjs",
-    "verify": "npm run check:plan && npm run clean && npm run build && npm run lint && npm run test:unit",
+    "verify": "npm run check:plan && npm run clean && npm run build && npm run lint && npm run check:conformance && npm run test:unit",
     "verify:release": "npm run verify && npm run package",
     "clean": "node scripts/clean.mjs"
   },
