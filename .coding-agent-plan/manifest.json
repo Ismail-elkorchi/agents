@@ -6,8 +6,8 @@
   "generatedSummary": ".coding-agent-implementation-plan.md",
   "architecture": ".coding-agent-plan/architecture.md",
   "reviewedHeads": {
-    "agents": "0ad440bb03b5f32e1b24ee70073eefdbf5fd0266",
-    "agent-core": "1c74a3c0688ed9b71318d6b8ecb5e107f9204f04",
+    "agents": "464279d9c9d2a13f8685e6f790c43e43445bf696",
+    "agent-core": "48b4a2ee5dfc25d31d5093f322378bfd10f33375",
     "terminal-ui": "d83d01432056470d17f42793bb83f6d7c93e595d",
     "sandbox": "e82ff3dd94a7c87b14bd25665b8898ae3b081767"
   },
@@ -512,8 +512,8 @@
         "V0"
       ],
       "wave": 10,
-      "status": "current",
-      "currentOwner": "codex/root",
+      "status": "done",
+      "currentOwner": null,
       "ownedPaths": [
         "agent-core:packages/runtime/src/operation/disposition/**"
       ],
@@ -522,7 +522,7 @@
         ".coding-agent-plan/decisions/adversarial-review.md"
       ],
       "evidence": ".coding-agent-plan/evidence/C3.md",
-      "lastVerifiedCommit": null
+      "lastVerifiedCommit": "48b4a2ee5dfc25d31d5093f322378bfd10f33375"
     },
     {
       "id": "A6",
@@ -537,8 +537,8 @@
         "V0"
       ],
       "wave": 10,
-      "status": "not_started",
-      "currentOwner": null,
+      "status": "current",
+      "currentOwner": "codex/root",
       "ownedPaths": [
         "agents:coding-agent/src/tui/**"
       ],
