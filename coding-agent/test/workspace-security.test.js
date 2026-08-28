@@ -102,6 +102,7 @@ test('provider egress blocks untrusted workspaces, secrets, and oversized reques
   let calls = 0;
   const provider = {
     id: 'scripted',
+    implementationId: 'agents.tests.workspace-security-provider@1',
     describe: () => ({ id: 'scripted', displayName: 'Scripted', defaultModel: 'test' }),
     describeModel: async () => ({ id: 'test', provider: 'scripted', capabilities: { streaming: false, toolCalling: false, supportedToolInputs: [], jsonMode: false, jsonSchema: false, logprobs: false, temperature: false, topP: false }, modalities: { input: ['text'], output: ['text'] }, limits: {}, supportedParameters: [] }),
     requestRecovery: () => ({ kind: 'unknown' }),

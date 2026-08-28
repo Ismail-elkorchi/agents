@@ -107,6 +107,7 @@ function wrapProvider(provider: ModelProvider, admit: (request: ModelRequest) =>
   const requestRecovery = provider.requestRecovery?.bind(provider);
   return Object.freeze({
     id: provider.id,
+    implementationId: provider.implementationId,
     describe: () => provider.describe(),
     describeModel: (model: string) => provider.describeModel(model),
     complete: async (request: ModelRequest) => { admit(request); return provider.complete(request); },
@@ -122,7 +123,6 @@ function wrapSession(session: ModelProviderSession | undefined, admit: (request:
   return Object.freeze({
     complete: async (request: ModelRequest) => { admit(request); return session.complete(request); },
     ...(stream ? { stream: (request: ModelRequest) => { admit(request); return stream(request); } } : {}),
-    retryDisposition: (error: unknown) => session.retryDisposition(error),
     ...(session.restoreProviderState ? { restoreProviderState: session.restoreProviderState.bind(session) } : {}),
     ...(session.resetContinuation ? { resetContinuation: session.resetContinuation.bind(session) } : {}),
     ...(session.close ? { close: session.close.bind(session) } : {})

@@ -7,6 +7,7 @@ import { runDocumentRevision, runWritingTask } from '../dist/index.js';
 
 class WritingProvider {
   id = 'writing-test';
+  implementationId = 'agents.tests.writing-provider@1';
   requests = [];
   constructor(responses = ['A focused draft.']) { this.responses = [...responses]; }
   describe() { return { id: this.id, displayName: 'Writing test provider', defaultModel: 'writing-test' }; }
