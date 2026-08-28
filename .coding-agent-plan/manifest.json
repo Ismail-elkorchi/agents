@@ -646,6 +646,7 @@
       "currentOwner": "codex/root",
       "ownedPaths": [
         "agents:scripts/**",
+        "agents:package.json",
         "agent-core:scripts/**",
         "sandbox:scripts/**",
         "terminal-ui:scripts/**"
