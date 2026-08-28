@@ -647,6 +647,7 @@
       "ownedPaths": [
         "agents:scripts/**",
         "agents:package.json",
+        "agents:.github/workflows/release.yml",
         "agent-core:scripts/**",
         "sandbox:scripts/**",
         "terminal-ui:scripts/**"
