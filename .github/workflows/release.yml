@@ -17,17 +17,24 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-        with: { path: agents }
-      - name: Read Agent Core revision
-        id: agent-core
+        with:
+          path: agents
+          fetch-depth: 0
+      - name: Read reviewed dependency revisions
+        id: revisions
         shell: bash
         working-directory: agents
-        run: node -e "require('node:fs').appendFileSync(process.env.GITHUB_OUTPUT, 'commit=' + require('./package.json').agentCore.commit + '\\n')"
+        run: node -e "const fs = require('node:fs'); const manifest = require('./.coding-agent-plan/manifest.json'); fs.appendFileSync(process.env.GITHUB_OUTPUT, 'agent-core=' + manifest.reviewedHeads['agent-core'] + '\\nterminal-ui=' + manifest.reviewedHeads['terminal-ui'] + '\\n')"
       - uses: actions/checkout@v4
         with:
           repository: Ismail-elkorchi/agent-core
-          ref: ${{ steps.agent-core.outputs.commit }}
+          ref: ${{ steps.revisions.outputs.agent-core }}
           path: agent-core
+      - uses: actions/checkout@v4
+        with:
+          repository: Ismail-elkorchi/terminal-ui
+          ref: ${{ steps.revisions.outputs.terminal-ui }}
+          path: terminal-ui
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}

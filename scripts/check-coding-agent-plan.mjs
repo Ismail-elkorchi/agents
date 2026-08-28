@@ -199,6 +199,15 @@ async function main() {
   const planRoot = path.join(repositoryRoot, '.coding-agent-plan');
   const manifest = JSON.parse(await readFile(path.join(planRoot, 'manifest.json'), 'utf8'));
   await validateFiles(planRoot, manifest);
+  const applicationPackage = JSON.parse(await readFile(path.join(repositoryRoot, 'package.json'), 'utf8'));
+  if (applicationPackage.agentCore?.commit !== manifest.reviewedHeads['agent-core']) {
+    fail('package.json Agent Core revision does not match the reviewed head.');
+  }
+  const codingAgentPackage = JSON.parse(await readFile(path.join(repositoryRoot, 'coding-agent/package.json'), 'utf8'));
+  const terminalUiDependency = codingAgentPackage.dependencies?.['@ismail-elkorchi/terminal-ui'];
+  if (typeof terminalUiDependency !== 'string' || terminalUiDependency.split('#')[1] !== manifest.reviewedHeads['terminal-ui']) {
+    fail('Coding Agent Terminal UI revision does not match the reviewed head.');
+  }
   const repositories = {
     agents: {
       path: repositoryRoot,
