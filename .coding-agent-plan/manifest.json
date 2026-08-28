@@ -6,7 +6,7 @@
   "generatedSummary": ".coding-agent-implementation-plan.md",
   "architecture": ".coding-agent-plan/architecture.md",
   "reviewedHeads": {
-    "agents": "a644906c060c1935911283f153126dc863b56ac3",
+    "agents": "d13447ed613dfa9dcdab1bb21aa10405c3894dcb",
     "agent-core": "bfefe709fb544c3324b3aa61e328a4c2737fc94c",
     "terminal-ui": "01277f04674c5f021cbe93dccfe378bacec7b632",
     "sandbox": "f323ee5da7518b80c98842fc1d877ef7c5010062"
@@ -656,7 +656,7 @@
         ".coding-agent-plan/decisions/adversarial-review.md"
       ],
       "evidence": ".coding-agent-plan/evidence/Q0.md",
-      "lastVerifiedCommit": null
+      "lastVerifiedCommit": "d13447ed613dfa9dcdab1bb21aa10405c3894dcb"
     },
     {
       "id": "Q1",
