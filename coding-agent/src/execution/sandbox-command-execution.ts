@@ -26,6 +26,8 @@ import type {
 } from '@ismail-elkorchi/sandbox';
 import { PrivateStateDirectory } from '../state/private-state.js';
 
+const PROCESS_OBSERVATION_TIMEOUT_MS = 30_000;
+
 export interface SandboxCommandPlanContext {
   readonly hostWorkspaceRoot: string;
   readonly workspacePath: string;
@@ -196,7 +198,7 @@ export class SandboxCommandExecution implements CommandExecution {
       owned.markActivated();
     }
     let observation = prepared.kind === 'prepared'
-      ? await this.#waitForProcessObservation(processId, Math.max(1_000, Math.min(request.timeoutMs, 30_000)))
+      ? await this.#waitForProcessObservation(processId, PROCESS_OBSERVATION_TIMEOUT_MS)
       : prepared;
     if (observation.kind === 'running' && request.yieldMs > 0) {
       observation = await this.options.repository.inspect(processId, {

@@ -47,6 +47,27 @@ test('sandbox command adapter authorizes exact preparation and preserves cursor 
   }
 });
 
+test('sandbox activation readiness is independent of the target wall-time limit', async () => {
+  const fixture = await createFixture({ activationDelayMs: 1_100 });
+  try {
+    const execution = await SandboxCommandExecution.create({
+      repository: fixture.repository,
+      workspaceFileRoot: fixture.root,
+      state: fixture.state,
+      maxRetainedOutputBytes: 1024,
+      createRun: requestValue => run(fixture.workspace, requestValue.command),
+      validatePrepared: () => undefined
+    });
+    const result = await startCommand(execution, { ...request(), timeoutMs: 1 });
+    assert.equal(result.status, 'exited');
+    assert.equal(result.stdout.text, 'sandboxed');
+    await execution.close();
+  } finally {
+    fixture.root.close();
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
 test('sandbox command adapter cancels an invalid preparation without activation', async () => {
   const fixture = await createFixture();
   try {
@@ -282,7 +303,11 @@ async function createFixture(options = {}) {
   await mkdir(workspace);
   const root = WorkspaceFileRoot.adopt(workspace);
   const state = await PrivateStateDirectory.create(path.join(parent, 'state'));
-  const repository = new FakeSandboxExecutionRepository(options.initialUnknown === true, options.splitUtf8Output === true);
+  const repository = new FakeSandboxExecutionRepository(
+    options.initialUnknown === true,
+    options.splitUtf8Output === true,
+    options.activationDelayMs
+  );
   if (options.initialUnknown === true) {
     const recoveryIdentity = `${repository.identity}:${createHash('sha256').update(root.identity.canonicalPath).digest('hex')}`;
     const processId = 'sandbox-' + createHash('sha256').update(JSON.stringify([recoveryIdentity, owner.runId, owner.turnId, owner.toolBatchId, owner.callIndex])).digest('hex');
@@ -301,9 +326,10 @@ class FakeSandboxExecutionRepository {
   unknownId;
   observations = new Map();
 
-  constructor(initialUnknown, splitUtf8Output) {
+  constructor(initialUnknown, splitUtf8Output, activationDelayMs = 0) {
     if (!initialUnknown) this.unknownId = undefined;
     this.splitUtf8Output = splitUtf8Output;
+    this.activationDelayMs = activationDelayMs;
   }
 
   async prepare(request) {
@@ -315,11 +341,17 @@ class FakeSandboxExecutionRepository {
 
   async activate(executionId) {
     this.activationCount += 1;
-    this.observations.set(executionId, this.splitUtf8Output ? settledWithSplitUtf8(executionId) : settled(executionId));
+    const observation = this.splitUtf8Output ? settledWithSplitUtf8(executionId) : settled(executionId);
+    if (this.activationDelayMs === 0) this.observations.set(executionId, observation);
+    else setTimeout(() => this.observations.set(executionId, observation), this.activationDelayMs);
   }
 
-  async inspect(executionId) {
+  async inspect(executionId, options = {}) {
     if (executionId === this.unknownId) return unknown(executionId);
+    const initial = this.observations.get(executionId) ?? unknown(executionId);
+    if ((initial.kind === 'prepared' || initial.kind === 'preparing') && options.waitMs > 0) {
+      await new Promise(resolve => setTimeout(resolve, options.waitMs));
+    }
     return this.observations.get(executionId) ?? unknown(executionId);
   }
 
