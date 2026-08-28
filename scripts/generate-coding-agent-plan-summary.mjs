@@ -47,7 +47,7 @@ const expected = `${lines.join('\n')}\n`;
 const summaryPath = path.join(root, manifest.generatedSummary);
 if (process.argv.includes('--check')) {
   const actual = await readFile(summaryPath, 'utf8');
-  if (actual !== expected) throw new Error(`Generated plan summary is stale: ${manifest.generatedSummary}`);
+  if (actual.replaceAll('\r\n', '\n') !== expected) throw new Error(`Generated plan summary is stale: ${manifest.generatedSummary}`);
 } else {
   await writeFile(summaryPath, expected);
 }

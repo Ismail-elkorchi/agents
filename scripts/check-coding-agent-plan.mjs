@@ -203,6 +203,9 @@ async function main() {
   if (applicationPackage.agentCore?.commit !== manifest.reviewedHeads['agent-core']) {
     fail('package.json Agent Core revision does not match the reviewed head.');
   }
+  if (applicationPackage.sandbox?.commit !== manifest.reviewedHeads.sandbox) {
+    fail('package.json Sandbox revision does not match the reviewed head.');
+  }
   const codingAgentPackage = JSON.parse(await readFile(path.join(repositoryRoot, 'coding-agent/package.json'), 'utf8'));
   const terminalUiDependency = codingAgentPackage.dependencies?.['@ismail-elkorchi/terminal-ui'];
   if (typeof terminalUiDependency !== 'string' || terminalUiDependency.split('#')[1] !== manifest.reviewedHeads['terminal-ui']) {
@@ -223,6 +226,7 @@ async function main() {
     },
     'agent-core': { path: path.resolve(repositoryRoot, '../agent-core'), allowedPlanPaths: [] },
     'terminal-ui': { path: path.resolve(repositoryRoot, '../terminal-ui'), allowedPlanPaths: [] },
+    sandbox: { path: path.resolve(repositoryRoot, '../sandbox'), allowedPlanPaths: [] },
   };
   for (const [name, repository] of Object.entries(repositories)) {
     const expected = manifest.reviewedHeads[name];
