@@ -106,7 +106,7 @@ const campaign = {
   inference: {
     maxOutputTokens: options.maxOutputTokens,
     temperature: options.temperature,
-    reasoningEffort: options.reasoningEffort,
+    reasoningMode: options.reasoningMode,
     timeoutMs: options.timeoutMs
   },
   regressionPolicy: policy.regression,
@@ -140,14 +140,14 @@ async function runEvaluation({ campaignId: currentCampaignId, task, repetition, 
   const evaluationRunId = `${task.split}-${task.id}-${String(repetition)}-${randomUUID()}`;
   let abruptInitialExit = false;
   let result = { exitCode: null, signal: null, stdout: '', stderr: '', timedOut: false };
-  const runtimeConfiguration = configuration(task, campaignOptions.model, campaignOptions.reasoningEffort);
+  const runtimeConfiguration = configuration(task, campaignOptions.model, campaignOptions.reasoningMode);
   const taskPolicyRevision = await revisionFromInputs([
     ...fixed.policyRevision.inputs,
     syntheticInput('evaluation', `${task.split}/${task.id}/runtime-configuration.json`, runtimeConfiguration),
     syntheticInput('evaluation', 'campaign-inference.json', {
       maxOutputTokens: campaignOptions.maxOutputTokens,
       temperature: campaignOptions.temperature,
-      reasoningEffort: campaignOptions.reasoningEffort,
+      reasoningMode: campaignOptions.reasoningMode,
       timeoutMs: campaignOptions.timeoutMs
     })
   ]);
@@ -348,12 +348,12 @@ function unavailableRecord({ campaignId: currentCampaignId, evaluationRunId, tas
   };
 }
 
-function configuration(task, model, reasoningEffort) {
+function configuration(task, model, reasoningMode) {
   return {
     version: 1,
     provider: 'ollama',
     model,
-    reasoning: reasoningEffort === 'none' ? { strategy: 'disabled' } : { strategy: 'effort', effort: reasoningEffort },
+    reasoning: { strategy: reasoningMode },
     instructions: [],
     tools: { enabled: task.tools },
     permissions: { maximumMode: task.permissionMode, requireApprovalFor: [] },
@@ -385,8 +385,7 @@ function cliArguments(workspace, stateRoot, endpoint, campaignOptions, command) 
     '--model', campaignOptions.model,
     '--provider-endpoint', endpoint,
     '--max-output-tokens', String(campaignOptions.maxOutputTokens),
-    '--temperature', String(campaignOptions.temperature),
-    '--reasoning-effort', campaignOptions.reasoningEffort
+    '--temperature', String(campaignOptions.temperature)
   ];
 }
 
@@ -633,7 +632,7 @@ function withTimeout(promise, timeoutMs, message) {
 }
 
 function parseArguments(args) {
-  const parsed = { endpoint: 'http://127.0.0.1:11434', runs: 3, taskIds: [], maxOutputTokens: 2048, temperature: 0.2, reasoningEffort: 'none', timeoutMs: 240_000 };
+  const parsed = { endpoint: 'http://127.0.0.1:11434', runs: 3, taskIds: [], maxOutputTokens: 2048, temperature: 0.2, reasoningMode: 'disabled', timeoutMs: 240_000 };
   for (let index = 0; index < args.length; index += 1) {
     const name = args[index];
     const value = args[index + 1];
@@ -646,7 +645,7 @@ function parseArguments(args) {
     else if (name === '--campaign-id' && value) { parsed.campaignId = value; index += 1; }
     else if (name === '--max-output-tokens' && value) { parsed.maxOutputTokens = positive(value, 'max-output-tokens'); index += 1; }
     else if (name === '--temperature' && value && Number.isFinite(Number(value)) && Number(value) >= 0) { parsed.temperature = Number(value); index += 1; }
-    else if (name === '--reasoning-effort' && ['none', 'low', 'medium', 'high'].includes(value)) { parsed.reasoningEffort = value; index += 1; }
+    else if (name === '--reasoning-mode' && (value === 'disabled' || value === 'enabled')) { parsed.reasoningMode = value; index += 1; }
     else if (name === '--timeout-ms' && value) { parsed.timeoutMs = positive(value, 'timeout-ms'); index += 1; }
     else throw new Error(`Unknown or incomplete evaluation argument: ${name ?? '<missing>'}`);
   }

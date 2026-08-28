@@ -215,10 +215,10 @@ export function validateCampaign(campaign) {
   exactKeys(campaign.sampling, ['requestedRunsPerTask', 'tasks', 'plannedRuns', 'mixedOutcomeExpansionRuns'], 'campaign sampling');
   for (const key of ['requestedRunsPerTask', 'tasks', 'plannedRuns', 'mixedOutcomeExpansionRuns']) positiveInteger(campaign.sampling[key], `campaign sampling ${key}`);
   if (campaign.sampling.plannedRuns !== campaign.sampling.requestedRunsPerTask * campaign.sampling.tasks) throw new Error('Campaign planned runs must equal tasks times requested runs.');
-  exactKeys(campaign.inference, ['maxOutputTokens', 'temperature', 'reasoningEffort', 'timeoutMs'], 'campaign inference');
+  exactKeys(campaign.inference, ['maxOutputTokens', 'temperature', 'reasoningMode', 'timeoutMs'], 'campaign inference');
   positiveInteger(campaign.inference.maxOutputTokens, 'campaign max output tokens');
   if (typeof campaign.inference.temperature !== 'number' || !Number.isFinite(campaign.inference.temperature) || campaign.inference.temperature < 0) throw new Error('Campaign temperature is invalid.');
-  if (!['none', 'low', 'medium', 'high'].includes(campaign.inference.reasoningEffort)) throw new Error('Campaign reasoning effort is invalid.');
+  if (campaign.inference.reasoningMode !== 'disabled' && campaign.inference.reasoningMode !== 'enabled') throw new Error('Campaign reasoning mode is invalid.');
   positiveInteger(campaign.inference.timeoutMs, 'campaign timeout');
   parseRegressionPolicy(campaign.regressionPolicy);
   parseHumanAuditPolicy(campaign.humanAuditPolicy);
