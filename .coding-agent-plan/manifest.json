@@ -6,10 +6,10 @@
   "generatedSummary": ".coding-agent-implementation-plan.md",
   "architecture": ".coding-agent-plan/architecture.md",
   "reviewedHeads": {
-    "agents": "87a24a2319b8895d9fc5e245db033553ae4d7aba",
+    "agents": "d67d143918c7d4e1c887e45bc4d3fe15fb12795f",
     "agent-core": "758dbe0dc9a49f35ff8386ff6a568be0793010ab",
     "terminal-ui": "d83d01432056470d17f42793bb83f6d7c93e595d",
-    "sandbox": "d2b79bf82766bb5832ed20bd1c9bc653f90c30c2"
+    "sandbox": "e82ff3dd94a7c87b14bd25665b8898ae3b081767"
   },
   "nodes": [
     {
@@ -325,8 +325,8 @@
         "C2"
       ],
       "wave": 5,
-      "status": "current",
-      "currentOwner": "codex/root",
+      "status": "done",
+      "currentOwner": null,
       "ownedPaths": [
         "sandbox:**",
         "agents:coding-agent/src/execution/sandbox/**"
@@ -336,7 +336,7 @@
         ".coding-agent-plan/decisions/adversarial-review.md"
       ],
       "evidence": ".coding-agent-plan/evidence/S0.md",
-      "lastVerifiedCommit": null
+      "lastVerifiedCommit": "d67d143918c7d4e1c887e45bc4d3fe15fb12795f"
     },
     {
       "id": "G0",
@@ -347,8 +347,8 @@
         "S0"
       ],
       "wave": 6,
-      "status": "not_started",
-      "currentOwner": null,
+      "status": "current",
+      "currentOwner": "codex/root",
       "ownedPaths": [
         "agents:coding-agent/src/workspace/git/**",
         "agents:coding-agent/test/git-orientation.test.js"

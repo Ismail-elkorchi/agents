@@ -39,6 +39,9 @@ import { parseJsonValue } from '@agent-core/json';
 import { createTrustDecision } from './security/workspace-trust.js';
 import { loadRepositoryInstructions } from './instructions/repository-instructions.js';
 import { inspectRepositoryOrientation, repositoryOrientationContext } from './workspace/repository-orientation.js';
+import { openSandboxExecutionRepository } from '@ismail-elkorchi/sandbox';
+import { SandboxGitRepositoryObserver } from './workspace/git/sandbox-git-observer.js';
+import { unavailableGitRepositoryObserver, type GitRepositoryObserver } from './workspace/git/repository-observer.js';
 
 export {
   loadCodingAgentConfiguration,
@@ -119,6 +122,7 @@ interface CliRuntime {
   session: SessionDescriptor;
   tuiDetails: CodingAgentTuiRuntimeDetails;
   localHost: LocalToolHost;
+  gitObserver: GitRepositoryObserver;
 }
 
 export async function main(argv: string[]): Promise<void> {
@@ -198,7 +202,10 @@ async function withCliRuntime<T>(options: CliOptions, workspace: OpenCodingWorks
   try { runtime = await createRuntime(options, workspace, persistedSessionId); }
   catch (error) { workspace.fileRoot.close(); throw error; }
   try { return await run(runtime); }
-  finally { await runtime.localHost.close(); }
+  finally {
+    await runtime.localHost.close();
+    await runtime.gitObserver.close();
+  }
 }
 
 async function createRuntime(
@@ -229,7 +236,8 @@ async function createRuntime(
   const authority = resolveCliAuthority(options, projectExecutionPolicy);
   const checks = configuredChecks(projectExecutionPolicy ? options.configuration : undefined);
   const instructionSet = await loadRepositoryInstructions(openedWorkspace, options.configuration?.instructions.map((instruction) => instruction.path));
-  const orientation = await inspectRepositoryOrientation(openedWorkspace, instructionSet, options.configuration);
+  const gitObserver = await createGitObserver(workspace.runtimeDir);
+  const orientation = await inspectRepositoryOrientation(openedWorkspace, instructionSet, options.configuration, gitObserver);
   let localHost: LocalToolHost | undefined;
   try {
     await fs.mkdir(workspace.artifactsDir, { recursive: true, mode: 0o700 });
@@ -369,14 +377,38 @@ async function createRuntime(
       sessionLocation: sessionBinding.repository.location(sessionBinding.session.id),
       permissions: authority.permissions
       },
-      localHost
+      localHost,
+      gitObserver
     };
   } catch (error) {
     if (localHost) {
       try { await localHost.close(); }
-      catch (closeError) { throw new AggregateError([error, closeError], 'CLI runtime initialization and cleanup both failed.', { cause: closeError }); }
+      catch (closeError) {
+        await gitObserver.close().catch(() => undefined);
+        throw new AggregateError([error, closeError], 'CLI runtime initialization and cleanup both failed.', { cause: closeError });
+      }
     }
+    await gitObserver.close().catch(() => undefined);
     throw error;
+  }
+}
+
+function platformGitExecutable(): string {
+  if (process.platform === 'win32') return path.join(process.env.ProgramFiles ?? 'C:\\Program Files', 'Git', 'cmd', 'git.exe');
+  return '/usr/bin/git';
+}
+
+async function createGitObserver(runtimeDirectory: string): Promise<GitRepositoryObserver> {
+  try {
+    const repository = await openSandboxExecutionRepository({
+      directory: path.join(runtimeDirectory, 'git-observations'),
+      maxRetainedOutputBytes: 2 * 1024 * 1024,
+      completedRetentionMs: 60 * 60 * 1_000,
+      expiredIdentityRetentionMs: 24 * 60 * 60 * 1_000
+    });
+    return new SandboxGitRepositoryObserver({ repository, gitExecutable: platformGitExecutable() });
+  } catch {
+    return unavailableGitRepositoryObserver();
   }
 }
 
