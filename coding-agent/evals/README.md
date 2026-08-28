@@ -16,6 +16,8 @@ Run an explicit local campaign after `npm run build`:
 node coding-agent/evals/run-campaign.mjs --model gemma4:e2b --runs 3
 ```
 
+The runner defaults to explicit disabled model reasoning, temperature `0.2`, 2,048 output tokens, and a 240-second application timeout. Override them with `--reasoning-effort`, `--temperature`, `--max-output-tokens`, and `--timeout-ms`. These values are recorded in campaign metadata and repeated in each run's policy/configuration digest; provider defaults are never an unbound experimental variable.
+
 Campaign records contain bounded hashes and outcomes, not raw provider reasoning or private state. `audit-evidence.json` retains a bounded final CLI excerpt for every run so a disagreement can expand to the complete task version without rerunning a different stochastic sample. The digest-named file under `audit-samples/` contains only the currently selected review set. Each selected record binds its exact evidence entry.
 
 Local Ollama inference records zero API cost with an explicit basis; it does not pretend electricity or hardware depreciation is known. The deterministic grader checks exact files, path authority, terminal facts, recovery facts, and versioned lexical evidence alternatives. Its machine outcome remains distinct from the adjudicated outcome.

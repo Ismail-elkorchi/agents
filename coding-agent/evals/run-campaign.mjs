@@ -103,6 +103,12 @@ const campaign = {
     plannedRuns: selectedTasks.length * options.runs,
     mixedOutcomeExpansionRuns: policy.mixedOutcomeExpansionRuns
   },
+  inference: {
+    maxOutputTokens: options.maxOutputTokens,
+    temperature: options.temperature,
+    reasoningEffort: options.reasoningEffort,
+    timeoutMs: options.timeoutMs
+  },
   regressionPolicy: policy.regression,
   humanAuditPolicy: policy.humanAudit,
   holdoutPolicy: policy.holdout,
@@ -134,10 +140,16 @@ async function runEvaluation({ campaignId: currentCampaignId, task, repetition, 
   const evaluationRunId = `${task.split}-${task.id}-${String(repetition)}-${randomUUID()}`;
   let abruptInitialExit = false;
   let result = { exitCode: null, signal: null, stdout: '', stderr: '', timedOut: false };
-  const runtimeConfiguration = configuration(task, campaignOptions.model);
+  const runtimeConfiguration = configuration(task, campaignOptions.model, campaignOptions.reasoningEffort);
   const taskPolicyRevision = await revisionFromInputs([
     ...fixed.policyRevision.inputs,
-    syntheticInput('evaluation', `${task.split}/${task.id}/runtime-configuration.json`, runtimeConfiguration)
+    syntheticInput('evaluation', `${task.split}/${task.id}/runtime-configuration.json`, runtimeConfiguration),
+    syntheticInput('evaluation', 'campaign-inference.json', {
+      maxOutputTokens: campaignOptions.maxOutputTokens,
+      temperature: campaignOptions.temperature,
+      reasoningEffort: campaignOptions.reasoningEffort,
+      timeoutMs: campaignOptions.timeoutMs
+    })
   ]);
   try {
     await mkdir(workspace);
@@ -336,11 +348,12 @@ function unavailableRecord({ campaignId: currentCampaignId, evaluationRunId, tas
   };
 }
 
-function configuration(task, model) {
+function configuration(task, model, reasoningEffort) {
   return {
     version: 1,
     provider: 'ollama',
     model,
+    reasoning: reasoningEffort === 'none' ? { strategy: 'disabled' } : { strategy: 'effort', effort: reasoningEffort },
     instructions: [],
     tools: { enabled: task.tools },
     permissions: { maximumMode: task.permissionMode, requireApprovalFor: [] },
@@ -372,7 +385,8 @@ function cliArguments(workspace, stateRoot, endpoint, campaignOptions, command) 
     '--model', campaignOptions.model,
     '--provider-endpoint', endpoint,
     '--max-output-tokens', String(campaignOptions.maxOutputTokens),
-    '--temperature', String(campaignOptions.temperature)
+    '--temperature', String(campaignOptions.temperature),
+    '--reasoning-effort', campaignOptions.reasoningEffort
   ];
 }
 
@@ -619,7 +633,7 @@ function withTimeout(promise, timeoutMs, message) {
 }
 
 function parseArguments(args) {
-  const parsed = { endpoint: 'http://127.0.0.1:11434', runs: 3, taskIds: [], maxOutputTokens: 2048, temperature: 0.2, timeoutMs: 240_000 };
+  const parsed = { endpoint: 'http://127.0.0.1:11434', runs: 3, taskIds: [], maxOutputTokens: 2048, temperature: 0.2, reasoningEffort: 'none', timeoutMs: 240_000 };
   for (let index = 0; index < args.length; index += 1) {
     const name = args[index];
     const value = args[index + 1];
@@ -631,7 +645,8 @@ function parseArguments(args) {
     else if (name === '--output' && value) { parsed.output = value; index += 1; }
     else if (name === '--campaign-id' && value) { parsed.campaignId = value; index += 1; }
     else if (name === '--max-output-tokens' && value) { parsed.maxOutputTokens = positive(value, 'max-output-tokens'); index += 1; }
-    else if (name === '--temperature' && value && Number.isFinite(Number(value))) { parsed.temperature = Number(value); index += 1; }
+    else if (name === '--temperature' && value && Number.isFinite(Number(value)) && Number(value) >= 0) { parsed.temperature = Number(value); index += 1; }
+    else if (name === '--reasoning-effort' && ['none', 'low', 'medium', 'high'].includes(value)) { parsed.reasoningEffort = value; index += 1; }
     else if (name === '--timeout-ms' && value) { parsed.timeoutMs = positive(value, 'timeout-ms'); index += 1; }
     else throw new Error(`Unknown or incomplete evaluation argument: ${name ?? '<missing>'}`);
   }
