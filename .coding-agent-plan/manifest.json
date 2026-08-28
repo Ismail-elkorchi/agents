@@ -6,7 +6,7 @@
   "generatedSummary": ".coding-agent-implementation-plan.md",
   "architecture": ".coding-agent-plan/architecture.md",
   "reviewedHeads": {
-    "agents": "078c8e2a8675b70aa994291b760e5bce6789993a",
+    "agents": "25014203d4bc92ac74b30c3ac9fecd941f78180e",
     "agent-core": "44c5e19b85a755609697b36b83c36066a021df25",
     "terminal-ui": "d83d01432056470d17f42793bb83f6d7c93e595d",
     "sandbox": "d2b79bf82766bb5832ed20bd1c9bc653f90c30c2"
@@ -152,8 +152,8 @@
         "C0"
       ],
       "wave": 2,
-      "status": "current",
-      "currentOwner": "codex/root",
+      "status": "done",
+      "currentOwner": null,
       "ownedPaths": [
         "agents:coding-agent/src/config/**",
         "agents:coding-agent/src/state/**"
@@ -163,7 +163,7 @@
         ".coding-agent-plan/decisions/adversarial-review.md"
       ],
       "evidence": ".coding-agent-plan/evidence/A1.md",
-      "lastVerifiedCommit": null
+      "lastVerifiedCommit": "25014203d4bc92ac74b30c3ac9fecd941f78180e"
     },
     {
       "id": "D0",
