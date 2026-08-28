@@ -451,8 +451,8 @@
       "status": "current",
       "currentOwner": "codex/root",
       "ownedPaths": [
-        "agents:coding-agent/test/resilience/**",
-        "agents:coding-agent/src/cli/**"
+        "agents:coding-agent/test/resilience.test.js",
+        "agents:coding-agent/src/index.ts"
       ],
       "specification": ".coding-agent-plan/nodes/V0.md",
       "decisions": [
