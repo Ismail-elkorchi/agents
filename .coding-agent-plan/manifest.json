@@ -652,6 +652,7 @@
         "agents:coding-agent/test/sandbox-command-execution.test.js",
         "agent-core:scripts/**",
         "sandbox:scripts/**",
+        "sandbox:.github/workflows/quality.yml",
         "terminal-ui:scripts/**"
       ],
       "specification": ".coding-agent-plan/nodes/Q0.md",
