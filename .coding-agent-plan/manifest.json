@@ -648,6 +648,8 @@
         "agents:scripts/**",
         "agents:package.json",
         "agents:.github/workflows/release.yml",
+        "agents:coding-agent/src/execution/sandbox-command-execution.ts",
+        "agents:coding-agent/test/sandbox-command-execution.test.js",
         "agent-core:scripts/**",
         "sandbox:scripts/**",
         "terminal-ui:scripts/**"
