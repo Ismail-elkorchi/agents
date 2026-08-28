@@ -76,7 +76,7 @@ test('CLI binary help works through the published executable', async () => {
   assert.match(output.stdout + output.stderr, /--codex-transport <http_sse\|websocket>/u);
 });
 
-test('CLI discards configured reasoning when provider or model identity changes', async () => {
+test('CLI discards configured reasoning when provider or model identity changes', { skip: process.platform !== 'linux' }, async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'coding-agent-cli-provider-'));
   const home = path.join(root, 'home');
   const stateHome = `${root}-state`;
@@ -101,7 +101,7 @@ test('CLI discards configured reasoning when provider or model identity changes'
   assert.doesNotMatch(output.stderr, /reasoning\.mode|reasoning mode/iu);
 });
 
-test('workspace trust and explicit model setup are enforced before provider I/O', async () => {
+test('workspace trust and explicit model setup are enforced before provider I/O', { skip: process.platform !== 'linux' }, async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'coding-agent-cli-trust-'));
   const stateHome = `${root}-state`;
   const environment = { ...process.env, XDG_STATE_HOME: stateHome };

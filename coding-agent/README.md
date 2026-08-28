@@ -31,6 +31,10 @@ printf '%s\n' 'summarize the workspace' | coding-agent exec -
 # Resume the most recently active session or open an existing ID
 coding-agent --resume
 coding-agent --session SESSION_ID
+
+# Noninteractive recovery drives the unfinished accepted operation without queuing a new task
+coding-agent exec --resume
+coding-agent exec --session SESSION_ID
 ```
 
 Session selection is not part of project configuration. A resumed session restores its latest provider and model unless explicitly overridden. Resolution order is explicit CLI options, resumed-session settings, trusted project configuration, then environment values. There is no hidden provider or model fallback.
@@ -131,8 +135,8 @@ Run `coding-agent [initial task] [options]` for the interactive TUI. Run `coding
 | `--reasoning-effort <level>` | Select `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`, subject to provider/model support. |
 | `--show-reasoning` | Render reasoning text or summaries exposed by the provider. It does not expose private chain-of-thought. |
 | `--permissions <review\|edit\|develop>` | Select the authority ceiling. Defaults to `review`; `edit` adds structured patches; `develop` adds sandboxed commands and command checks. |
-| `--resume` | Resume the most recently active session for this workspace. |
-| `--session <id>` | Open an existing session by exact ID. |
+| `--resume` | Select the most recently active session. In taskless `exec` mode, drive its unfinished accepted operation without creating another submission. |
+| `--session <id>` | Select an existing session by exact ID. In taskless `exec` mode, drive its unfinished accepted operation without creating another submission. |
 | `--branch <entry-id>` | Branch the selected existing session from an entry. Requires `--resume` or `--session`. |
 
 Runtime-setting precedence is explicit CLI option, resumed-session setting, matching trusted project configuration, then environment. Provider-specific project settings are meaningful only for their configured provider. A provider and model must be selected explicitly through one of those sources.

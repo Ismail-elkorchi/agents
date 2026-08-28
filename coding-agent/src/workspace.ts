@@ -34,12 +34,13 @@ export async function openCodingWorkspace(rootPath: string, options: OpenWorkspa
   try {
     const identity = identifyCodingWorkspace(fileRoot.identity);
     const requestedStatePath = path.resolve(options.stateRoot ?? defaultCodingAgentStateRoot());
-    if (requestedStatePath === identity.canonicalPath || requestedStatePath.startsWith(`${identity.canonicalPath}${path.sep}`)) {
+    const requestedPhysicalStatePath = await resolvePotentialPhysicalPath(requestedStatePath);
+    if (containsPath(identity.canonicalPath, requestedPhysicalStatePath)) {
       throw new Error('Coding Agent private state must be outside the workspace root.');
     }
     const privateState = await PrivateStateDirectory.create(requestedStatePath);
     const statePath = await realpath(privateState.path);
-    if (statePath === identity.canonicalPath || statePath.startsWith(`${identity.canonicalPath}${path.sep}`)) {
+    if (containsPath(identity.canonicalPath, statePath)) {
       throw new Error('Coding Agent private state must be outside the workspace root.');
     }
     const trustStore = new WorkspaceTrustStore(privateState);
@@ -74,4 +75,28 @@ export function describeWorkspace(identity: CodingWorkspaceIdentity, stateRoot =
     sessionsDir: path.join(runtimeDir, 'sessions'),
     artifactsDir: path.join(runtimeDir, 'artifacts')
   });
+}
+
+async function resolvePotentialPhysicalPath(candidate: string): Promise<string> {
+  let existing = path.resolve(candidate);
+  const absentSegments: string[] = [];
+  for (;;) {
+    try { return path.join(await realpath(existing), ...absentSegments.reverse()); }
+    catch (error) {
+      if (nodeCode(error) !== 'ENOENT') throw error;
+      const parent = path.dirname(existing);
+      if (parent === existing) throw error;
+      absentSegments.push(path.basename(existing));
+      existing = parent;
+    }
+  }
+}
+
+function containsPath(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+function nodeCode(error: unknown): string | undefined {
+  return typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string' ? error.code : undefined;
 }

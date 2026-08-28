@@ -140,10 +140,10 @@ export async function main(argv: string[]): Promise<void> {
   }
   const parsed = parseOptions(exec ? argv.slice(1) : argv);
   let task = normalizeTaskInput(parsed.positionals.join(' '));
-  if (exec) {
-    if (task === '-' || (task.length === 0 && !process.stdin.isTTY)) task = normalizeTaskInput(await readStandardInput());
-    if (task.length === 0) throw new Error('coding-agent exec requires a task string or piped stdin.');
-  } else if (!process.stdin.isTTY) throw new Error('Interactive mode requires a terminal. Use coding-agent exec with piped input.');
+  if (exec && (task === '-' || (task.length === 0 && !process.stdin.isTTY))) task = normalizeTaskInput(await readStandardInput());
+  const resumeOnly = exec && task.length === 0 && parsed.options.sessionSelection.kind !== 'new';
+  if (exec && task.length === 0 && !resumeOnly) throw new Error('coding-agent exec requires a task string, piped stdin, or an existing session selected with --resume or --session.');
+  if (!exec && !process.stdin.isTTY) throw new Error('Interactive mode requires a terminal. Use coding-agent exec with piped input.');
   const root = path.resolve(parsed.options.root);
   const workspace = await openCodingWorkspace(root, parsed.options.stateRoot ? { stateRoot: parsed.options.stateRoot } : {});
   if (workspace.security.trustLevel === 'untrusted') {
@@ -161,11 +161,17 @@ export async function main(argv: string[]): Promise<void> {
   if (exec) {
     const progress = new CodingAgentProgressRenderer({ showReasoning: options.showReasoning });
     await withCliRuntime(options, workspace, async (runtime) => {
-      const unsubscribe = runtime.agent.subscribe((event) => { if (event.type === 'run.progress') { progress.handle(event.event); } });
+      let resumedResult: AgentRunResult | undefined;
+      let resumedFailure: Error | undefined;
+      const unsubscribe = runtime.agent.subscribe((event) => {
+        if (event.type === 'run.progress') progress.handle(event.event);
+        else if (event.type === 'run.completed') resumedResult = event.result;
+        else if (event.type === 'run.failed') resumedFailure = event.error;
+      });
       try {
-        const submission = await runtime.agent.submit({ task });
-        if (submission.kind === 'rejected') throw new Error(`Task was rejected: ${submission.reason}.`);
-        const result = await submission.completion;
+        const result = resumeOnly
+          ? await resumeAcceptedOperation(runtime.agent, () => resumedResult, () => resumedFailure)
+          : await submitTask(runtime.agent, task);
         const changeReport = result.state === 'ended' ? await runtime.changeReports.finalize(result.terminal.runId, result) : undefined;
         printResult(result, progress, process.stdout, changeReport);
         printPersistenceLocations(runtime, result);
@@ -173,7 +179,7 @@ export async function main(argv: string[]): Promise<void> {
       } finally {
         unsubscribe();
       }
-    });
+    }, undefined, resumeOnly);
     return;
   }
 
@@ -188,9 +194,37 @@ export async function main(argv: string[]): Promise<void> {
   });
 }
 
-async function withCliRuntime<T>(options: CliOptions, workspace: OpenCodingWorkspace, run: (runtime: CliRuntime) => Promise<T>, persistedSessionId?: string): Promise<T> {
+async function submitTask(agent: AgentSession, task: string): Promise<AgentRunResult> {
+  const submission = await agent.submit({ task });
+  if (submission.kind === 'rejected') throw new Error(`Task was rejected: ${submission.reason}.`);
+  return submission.completion;
+}
+
+async function resumeAcceptedOperation(
+  agent: AgentSession,
+  result: () => AgentRunResult | undefined,
+  failure: () => Error | undefined
+): Promise<AgentRunResult> {
+  await agent.restore();
+  const restored = agent.state();
+  if (restored.phase === 'waiting_for_user') {
+    throw new Error(`The selected session is waiting for ${restored.suspensionReason?.replaceAll('_', ' ') ?? 'an explicit recovery decision'}; resolve that suspension explicitly.`);
+  }
+  if (restored.phase === 'idle' && restored.queuedInputs === 0) {
+    throw new Error('The selected session has no unfinished operation to resume. Supply a new task to continue the session.');
+  }
+  await agent.resumePending();
+  await agent.waitForIdle();
+  const failed = failure();
+  if (failed) throw failed;
+  const completed = result();
+  if (!completed) throw new Error('The selected session did not publish a recovered operation result.');
+  return completed;
+}
+
+async function withCliRuntime<T>(options: CliOptions, workspace: OpenCodingWorkspace, run: (runtime: CliRuntime) => Promise<T>, persistedSessionId?: string, requireExistingSession = false): Promise<T> {
   let runtime: CliRuntime;
-  try { runtime = await createRuntime(options, workspace, persistedSessionId); }
+  try { runtime = await createRuntime(options, workspace, persistedSessionId, requireExistingSession); }
   catch (error) { workspace.fileRoot.close(); throw error; }
   let outcome: { readonly kind: 'returned'; readonly value: T } | { readonly kind: 'failed'; readonly error: unknown };
   try { outcome = { kind: 'returned', value: await run(runtime) }; }
@@ -208,11 +242,13 @@ async function withCliRuntime<T>(options: CliOptions, workspace: OpenCodingWorks
 async function createRuntime(
   options: CliOptions,
   openedWorkspace: OpenCodingWorkspace,
-  persistedSessionId?: string
+  persistedSessionId?: string,
+  requireExistingSession = false
 ): Promise<CliRuntime> {
   const workspace = openedWorkspace.layout;
   const sessions = new JsonlSessionRepository({ rootDir: workspace.sessionsDir });
   let session = await selectSession(options, sessions, persistedSessionId);
+  if (!session && requireExistingSession) throw new Error('The selected workspace has no existing session to resume.');
   const replay = session ? await sessions.loadReplayState(session.id) : undefined;
   const latestSettings = replay ? [...replay.branch].reverse().find((entry) => entry.type === 'model_settings') : undefined;
   const persistedSettings: PersistedModelSettings | undefined = latestSettings ?? (session ? {
@@ -1165,6 +1201,7 @@ function printHelp(): void {
 Usage:
   coding-agent ["initial task"] [options]
   coding-agent exec <task|-> [options]
+  coding-agent exec --resume [options]
   coding-agent auth status openai
   coding-agent auth login openai-codex
   coding-agent trust <status|restricted|trusted|revoke> [--root .]
@@ -1195,7 +1232,7 @@ Common options:
                          Optional reasoning effort: none, minimal, low, medium, high, xhigh, max.
   --show-reasoning       Stream separate model reasoning or reasoning summaries to stderr.
   --permissions <mode>   Authority ceiling: review, edit, or develop. Default: review.
-  --resume               Resume the latest session for this workspace.
+  --resume               Select the latest session; taskless exec drives only its unfinished operation.
   --session <id>         Open an existing session by ID.
   --branch <entry-id>    Branch the active session from a prior entry before running.
 

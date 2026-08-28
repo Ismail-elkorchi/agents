@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { lstat, mkdir, mkdtemp, readFile, rename, symlink, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, mkdtemp, readFile, rename, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { WorkspaceFileRoot } from '@agent-core/tools-local';
@@ -13,6 +13,14 @@ import { WorkspaceSecurityBoundary } from '../dist/security/workspace-security-b
 import { narrowRiskCeiling } from '../dist/config/project-proposal.js';
 import { PrivateStateDirectory } from '../dist/state/private-state.js';
 import { WorkspaceTrustStore } from '../dist/state/workspace-trust-store.js';
+import { openCodingWorkspace } from '../dist/workspace.js';
+
+test('workspace file authority fails closed where secure root adoption is unavailable', { skip: process.platform === 'linux' }, () => {
+  assert.throws(
+    () => WorkspaceFileRoot.adopt(process.cwd()),
+    new RegExp(`Root-bound host file access is unavailable on ${process.platform}`, 'u')
+  );
+});
 
 test('workspace identity binds the canonical path and exact adopted physical root', { skip: process.platform !== 'linux' }, async () => {
   const parent = await mkdtemp(path.join(tmpdir(), 'coding-agent-identity-'));
@@ -27,6 +35,17 @@ test('workspace identity binds the canonical path and exact adopted physical roo
   assert.notEqual(first.id, replacement.id);
   assert.equal(first.canonicalPath, replacement.canonicalPath);
   firstRoot.close(); replacementRoot.close();
+});
+
+test('private state aliases into the workspace are rejected before state mutation', { skip: process.platform !== 'linux' }, async () => {
+  const parent = await mkdtemp(path.join(tmpdir(), 'coding-agent-state-alias-'));
+  const rootPath = path.join(parent, 'workspace');
+  await mkdir(rootPath);
+  const alias = path.join(parent, 'workspace-alias');
+  await symlink(rootPath, alias, 'dir');
+  const statePath = path.join(alias, 'private-state');
+  await assert.rejects(openCodingWorkspace(rootPath, { stateRoot: statePath }), /outside the workspace/u);
+  await assert.rejects(access(path.join(rootPath, 'private-state')));
 });
 
 test('workspace trust records are private, checksummed, revocable, and invalid for changed identity', async () => {

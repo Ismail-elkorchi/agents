@@ -20,9 +20,9 @@ export class PrivateStateDirectory {
     await mkdir(absolute, { recursive: true, mode: 0o700 });
     const info = await lstat(absolute);
     if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(`Private state root is not a real directory: ${absolute}`);
-    if (await realpath(absolute) !== absolute) throw new Error(`Private state root contains an aliased path component: ${absolute}`);
-    const markerPath = path.join(absolute, '.coding-agent-state-root');
-    const entries = await readdir(absolute);
+    const canonical = await realpath(absolute);
+    const markerPath = path.join(canonical, '.coding-agent-state-root');
+    const entries = await readdir(canonical);
     if (!entries.includes('.coding-agent-state-root')) {
       if (entries.length > 0) throw new Error(`Refusing to adopt a non-empty directory without a Coding Agent state marker: ${absolute}`);
       let marker;
@@ -31,8 +31,7 @@ export class PrivateStateDirectory {
       if (marker) {
         try { await marker.writeFile('coding-agent-state-root-v1\n', 'utf8'); await marker.sync(); }
         finally { await marker.close(); }
-        const directory = await open(absolute, 'r');
-        try { await directory.sync(); } finally { await directory.close(); }
+        await syncDirectory(canonical);
       }
     }
     const marker = await open(markerPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
@@ -41,12 +40,12 @@ export class PrivateStateDirectory {
       if (!markerInfo.isFile() || markerInfo.nlink !== 1 || (await marker.readFile('utf8')) !== 'coding-agent-state-root-v1\n') throw new Error(`Private state root marker is invalid: ${absolute}`);
     } finally { await marker.close(); }
     if (process.platform !== 'win32') {
-      await chmod(absolute, 0o700);
+      await chmod(canonical, 0o700);
       await chmod(markerPath, 0o600);
-      const secured = await lstat(absolute);
+      const secured = await lstat(canonical);
       if ((secured.mode & 0o077) !== 0) throw new Error(`Private state root permissions are not private: ${absolute}`);
     }
-    return new PrivateStateDirectory(absolute);
+    return new PrivateStateDirectory(canonical);
   }
 
   async read(relativePath: string): Promise<string | undefined> {
@@ -73,16 +72,14 @@ export class PrivateStateDirectory {
     await handle.close();
     await rename(temporary, target);
     if (process.platform !== 'win32') await chmod(target, 0o600);
-    const directory = await open(path.dirname(target), 'r');
-    try { await directory.sync(); } finally { await directory.close(); }
+    await syncDirectory(path.dirname(target));
   }
 
   async delete(relativePath: string): Promise<void> {
     const target = this.target(relativePath);
     try { await unlink(target); }
     catch (error) { if (nodeCode(error) !== 'ENOENT') throw error; }
-    const directory = await open(path.dirname(target), 'r');
-    try { await directory.sync(); } finally { await directory.close(); }
+    await syncDirectory(path.dirname(target));
   }
 
   private target(relativePath: string): string {
@@ -91,6 +88,12 @@ export class PrivateStateDirectory {
     }
     return path.join(this.path, ...relativePath.split('/'));
   }
+}
+
+async function syncDirectory(directoryPath: string): Promise<void> {
+  if (process.platform === 'win32') return;
+  const directory = await open(directoryPath, 'r');
+  try { await directory.sync(); } finally { await directory.close(); }
 }
 
 function nodeCode(error: unknown): string | undefined {
