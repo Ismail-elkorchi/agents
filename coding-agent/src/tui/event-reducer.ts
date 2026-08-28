@@ -6,6 +6,7 @@ import type {
   AgentSessionState
 } from '@agent-core/runtime';
 import type { RunChangeReport } from '../changes/run-change-report.js';
+import { codingChangeUncertainties, codingRunUncertainties } from '../presentation/run-summary.js';
 import type { CodingAgentTuiState } from './state.js';
 import type { CodingAgentTuiActivityEntry } from './conversation-model.js';
 import { appendNotice, upsertActivity, upsertAssistant, upsertReasoning } from './conversation.js';
@@ -209,13 +210,19 @@ export function applyChangeReport(
 ): CodingAgentTuiState {
   const structured = report.changes.filter((change) => change.attribution === 'structured_mutation').length;
   const external = report.changes.filter((change) => change.attribution === 'external_or_concurrent').length;
-  const summary = report.totalChanges === 0
+  const terminal = state.debug.terminal?.runId === report.runId ? state.debug.terminal : undefined;
+  const uncertainties = terminal === undefined
+    ? codingChangeUncertainties(report)
+    : codingRunUncertainties(terminal, report);
+  const changeSummary = report.totalChanges === 0
     ? 'No workspace changes'
     : `${String(report.totalChanges)} changed path${report.totalChanges === 1 ? '' : 's'} · ${String(structured)} structured · ${String(external)} external/concurrent`;
+  const summary = `${changeSummary} · ${uncertainties.length === 0 ? 'no remaining uncertainty' : `${String(uncertainties.length)} remaining uncertaint${uncertainties.length === 1 ? 'y' : 'ies'}`}`;
   const details = [
     ...report.changes.map((change) => `${change.kind} ${change.path} · ${change.attribution}${change.conflicts.length === 0 ? '' : ` · ${change.conflicts.join(', ')}`}`),
     ...(report.omittedChanges === 0 ? [] : [`${String(report.omittedChanges)} additional changes omitted`]),
-    ...(report.causes.length === 0 ? [] : ['', `Coverage causes\n${report.causes.join('\n')}`])
+    '',
+    `Remaining uncertainty\n${uncertainties.length === 0 ? 'none' : uncertainties.join('\n')}`
   ].join('\n');
   const reports = state.debug.changeReports.some((candidate) => candidate.runId === report.runId)
     ? state.debug.changeReports.map((candidate) => candidate.runId === report.runId ? report : candidate)

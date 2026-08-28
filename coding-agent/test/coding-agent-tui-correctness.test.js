@@ -100,7 +100,12 @@ test('completed hydration surfaces terminal checks and persisted workspace chang
   assert.equal(runtime.state().conversation.items.find((entry) => entry.id === 'check:run-1:tests').status, 'success');
   const changes = runtime.state().conversation.items.find((entry) => entry.id === 'change:run-1');
   assert.equal(changes.status, 'success');
-  assert.match(changes.summary, /1 changed path/u);
+  assert.match(changes.summary, /1 changed path.*no remaining uncertainty/u);
+  assert.match(changes.details, /Remaining uncertainty\nnone/u);
+  const history = runtime.state().conversation.items.find((entry) => entry.id === 'session:history');
+  assert.equal(history.activity, 'history');
+  assert.match(history.summary, /1 branch point · 1 terminal run/u);
+  assert.match(history.details, /final assistant-1 · run run-1 · completed · verification passed · candidate complete/u);
   await runtime.dispose();
 });
 
@@ -320,6 +325,10 @@ function completedHydration() {
       }],
       ledgerRunIds: ['run-1']
     },
+    branchPoints: [{
+      entryId: 'assistant-1', timestamp: '2026-08-28T00:00:01.000Z', kind: 'final',
+      runId: 'run-1', finalizationId: 'final-1'
+    }],
     pendingSubmissions: [],
     operations: [],
     changeReports: [{
@@ -354,6 +363,7 @@ function baseHydration(sessionOverrides, operationOverrides) {
     replay: {
       session: descriptor(), branch: [], terminalProjections: [], ledgerRunIds: ['run-1']
     },
+    branchPoints: [],
     pendingSubmissions: [{
       submissionId: 'submission-1', runId: 'run-1', state: pendingState,
       input: { task: 'Existing task' }, configuration: { provider: 'test-provider', model: 'test-model' }

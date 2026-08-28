@@ -13,6 +13,8 @@ import { DEFAULT_CODING_CONTRACT } from '../dist/instructions/coding-contract.js
 
 test('the coding contract requires clarification before ambiguous mutation', () => {
   assert.match(DEFAULT_CODING_CONTRACT.content, /Ask for clarification.*target.*blast radius/iu);
+  assert.match(DEFAULT_CODING_CONTRACT.content, /understand, inspect, plan locally, mutate, inspect the exact change, verify, revise.*explain/iu);
+  assert.match(DEFAULT_CODING_CONTRACT.content, /Machine-derived change and verification facts override model prose/iu);
 });
 
 test('verification snapshots bind exact root content and classify verifier definitions', async () => {

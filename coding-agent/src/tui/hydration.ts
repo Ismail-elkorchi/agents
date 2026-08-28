@@ -4,7 +4,9 @@ import type {
   AgentOperationSuspension,
   AgentOperationState,
   AgentSessionState,
+  AgentTerminalSnapshot,
   SessionBranchEntry,
+  SessionBranchPoint,
   SessionPendingSubmission,
   SessionReplayState
 } from '@agent-core/runtime';
@@ -29,6 +31,7 @@ import {
 export interface CodingAgentTuiHydration {
   readonly session: AgentSessionState;
   readonly replay: SessionReplayState;
+  readonly branchPoints: readonly SessionBranchPoint[];
   readonly pendingSubmissions: readonly SessionPendingSubmission[];
   readonly operations: readonly AgentOperationInspection[];
   readonly changeReports: readonly RunChangeReport[];
@@ -54,6 +57,7 @@ export function hydrateCodingAgentTuiState(
       sessionId: hydration.session.sessionId,
       session: hydration.session,
       replayState: hydration.replay,
+      branchPoints: Object.freeze([...hydration.branchPoints]),
       pendingSubmissions: Object.freeze([...hydration.pendingSubmissions]),
       operations: Object.freeze([...hydration.operations]),
       changeReports: []
@@ -66,10 +70,43 @@ export function hydrateCodingAgentTuiState(
       next = applyCheckResult(next, check, projection.runId);
     }
   }
-  for (const report of hydration.changeReports) next = applyChangeReport(next, report);
   const latestTerminal = hydration.replay.terminalProjections.at(-1)?.terminal;
   if (latestTerminal !== undefined) next = applyHydratedTerminal(next, latestTerminal);
+  for (const report of hydration.changeReports) next = applyChangeReport(next, report);
+  next = projectSessionHistory(next, hydration.branchPoints, hydration.replay);
   return projectSessionRunState(next, hydration);
+}
+
+function projectSessionHistory(
+  state: CodingAgentTuiState,
+  branchPoints: readonly SessionBranchPoint[],
+  replay: SessionReplayState
+): CodingAgentTuiState {
+  if (branchPoints.length === 0) return state;
+  const terminals = new Map<string, AgentTerminalSnapshot>(
+    replay.terminalProjections.map((projection) => [projection.throughEntryId, projection.terminal])
+  );
+  const retained = branchPoints.slice(-100);
+  const lines = retained.map((point) => {
+    if (point.kind === 'compaction') return `compaction ${point.entryId} · ${point.timestamp}`;
+    const terminal = terminals.get(point.entryId);
+    const identity = `final ${point.entryId}${point.runId === undefined ? '' : ` · run ${point.runId}`}`;
+    return terminal === undefined
+      ? `${identity} · terminal outside active replay · ${point.timestamp}`
+      : `${identity} · ${terminal.executionStatus} · verification ${terminal.verificationStatus} · candidate ${terminal.candidate.status}`;
+  });
+  if (branchPoints.length > retained.length) lines.unshift(`${String(branchPoints.length - retained.length)} earlier branch points omitted`);
+  const details = lines.join('\n');
+  const priorRuns = branchPoints.filter((point) => point.kind === 'final').length;
+  return upsertActivity(state, {
+    id: 'session:history',
+    kind: 'activity',
+    activity: 'history',
+    label: 'Session history',
+    status: 'success',
+    summary: `${String(branchPoints.length)} branch point${branchPoints.length === 1 ? '' : 's'} · ${String(priorRuns)} terminal run${priorRuns === 1 ? '' : 's'}`,
+    details: details.length <= 6_000 ? details : `${details.slice(0, 5_999)}…`
+  });
 }
 
 function projectBranchEntry(

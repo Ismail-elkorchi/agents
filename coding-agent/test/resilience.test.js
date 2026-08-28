@@ -97,6 +97,7 @@ test('resilient CLI recovery continues the accepted root-bound read and structur
     assert.equal(await readFile(path.join(fixture.root, 'untouched.txt'), 'utf8'), 'keep\n');
     assert.match(resumed.stdout, /Workspace changes: 1 \(complete\)/u);
     assert.match(resumed.stdout, /- modified src\/note\.txt \[agent\]/u);
+    assert.match(resumed.stdout, /Remaining uncertainty: none/u);
     assert.equal(provider.chatRequests.length, 3);
     const initialRequest = JSON.stringify(provider.chatRequests[0]);
     assert.match(initialRequest, /ROOT_V0_INSTRUCTION/u);
@@ -148,6 +149,7 @@ test('resilient CLI slice recovers before generation and completes one confined 
     assert.match(resumed.stdout, /- note: required\/passed/u);
     assert.match(resumed.stdout, /Workspace changes: 1 \(complete\)/u);
     assert.match(resumed.stdout, /- modified src\/note\.txt \[agent\]/u);
+    assert.match(resumed.stdout, /Remaining uncertainty: none/u);
     assert.equal(provider.chatRequests.length, 4);
     const initialRequest = JSON.stringify(provider.chatRequests[0]);
     assert.match(initialRequest, /ROOT_V0_INSTRUCTION/u);

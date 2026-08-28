@@ -29,7 +29,7 @@ export interface CodingAgentTuiReasoningEntry {
 export interface CodingAgentTuiActivityEntry {
   readonly id: string;
   readonly kind: 'activity';
-  readonly activity: 'tool' | 'check' | 'change';
+  readonly activity: 'tool' | 'check' | 'change' | 'history';
   readonly label: string;
   readonly status: 'running' | 'success' | 'warning' | 'failed';
   readonly summary?: string;

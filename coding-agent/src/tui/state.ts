@@ -12,6 +12,7 @@ import type {
   AgentRunConfiguration,
   AgentRunPhase,
   AgentSessionState,
+  SessionBranchPoint,
   SessionPendingSubmission,
   SessionReplayState,
   AgentTerminalSnapshot
@@ -53,6 +54,7 @@ export interface CodingAgentTuiDebugState {
   readonly deliveryDiagnostics: readonly AgentDeliveryDiagnostic[];
   readonly session?: AgentSessionState;
   readonly replayState?: SessionReplayState;
+  readonly branchPoints: readonly SessionBranchPoint[];
   readonly pendingSubmissions: readonly SessionPendingSubmission[];
   readonly operations: readonly AgentOperationInspection[];
   readonly changeReports: readonly RunChangeReport[];
@@ -127,6 +129,7 @@ export function createInitialCodingAgentTuiState(
     debug: {
       ...(runtimeDetails.sessionLocation === undefined ? {} : { sessionLocation: runtimeDetails.sessionLocation }),
       deliveryDiagnostics: [],
+      branchPoints: [],
       pendingSubmissions: [],
       operations: [],
       changeReports: []

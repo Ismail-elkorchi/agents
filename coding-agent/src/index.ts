@@ -45,6 +45,7 @@ import { configuredCheckProposals, createConfiguredChecks } from './verification
 import { loadOrCaptureRunWorkspaceBaseline } from './changes/workspace-baseline-store.js';
 import { RunChangeReportService } from './changes/run-change-report-service.js';
 import type { RunChangeReport } from './changes/run-change-report.js';
+import { codingRunUncertainties } from './presentation/run-summary.js';
 
 export {
   loadCodingAgentConfiguration,
@@ -191,9 +192,10 @@ export async function main(argv: string[]): Promise<void> {
         progress,
         runtimeDetails: runtime.tuiDetails,
         loadHydration: async () => {
-          const [replay, pendingSubmissions] = await Promise.all([
+          const [replay, pendingSubmissions, branchPoints] = await Promise.all([
             runtime.sessions.loadReplayState(runtime.session.id),
-            runtime.sessions.loadPendingSubmissions(runtime.session.id)
+            runtime.sessions.loadPendingSubmissions(runtime.session.id),
+            runtime.sessions.listBranchPoints(runtime.session.id)
           ]);
           const [operations, reports] = await Promise.all([
             Promise.all(pendingSubmissions.map((submission) => runtime.operations.inspect(submission.runId))),
@@ -202,6 +204,7 @@ export async function main(argv: string[]): Promise<void> {
           return {
             session: runtime.agent.state(),
             replay,
+            branchPoints,
             pendingSubmissions,
             operations,
             changeReports: reports.filter((report): report is RunChangeReport => report !== undefined)
@@ -917,6 +920,10 @@ function printResult(
       writeLine(output, `- ${change.kind} ${change.path} [${origin}${baseline}]`);
     }
     if (changeReport.omittedChanges > 0) writeLine(output, `- ${String(changeReport.omittedChanges)} additional changes omitted`);
+    const uncertainties = codingRunUncertainties(terminal, changeReport);
+    writeLine(output, uncertainties.length === 0
+      ? 'Remaining uncertainty: none'
+      : `Remaining uncertainty:\n${uncertainties.map((uncertainty) => `- ${uncertainty}`).join('\n')}`);
   }
   for (const diagnostic of result.deliveryDiagnostics) writeLine(output, `Delivery diagnostic (${diagnostic.eventType}): ${diagnostic.message}`);
 }
