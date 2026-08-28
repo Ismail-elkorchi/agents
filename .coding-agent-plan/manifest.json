@@ -6,7 +6,7 @@
   "generatedSummary": ".coding-agent-implementation-plan.md",
   "architecture": ".coding-agent-plan/architecture.md",
   "reviewedHeads": {
-    "agents": "464279d9c9d2a13f8685e6f790c43e43445bf696",
+    "agents": "8a9d48070f195e76f003732da710eeb3ed448f99",
     "agent-core": "48b4a2ee5dfc25d31d5093f322378bfd10f33375",
     "terminal-ui": "01277f04674c5f021cbe93dccfe378bacec7b632",
     "sandbox": "e82ff3dd94a7c87b14bd25665b8898ae3b081767"
