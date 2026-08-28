@@ -1,5 +1,5 @@
 import { PrivateStateDirectory } from '../state/private-state.js';
-import { deleteVerificationBaseline } from './baseline-store.js';
+import { deleteRunWorkspaceBaseline } from '../changes/workspace-baseline-store.js';
 import { deleteVerificationMaterializations } from './candidate-materialization.js';
 
 export async function deleteVerificationRunState(input: {
@@ -8,5 +8,5 @@ export async function deleteVerificationRunState(input: {
   readonly runId: string;
 }): Promise<void> {
   await deleteVerificationMaterializations(input.runtimeDirectory, input.runId);
-  await deleteVerificationBaseline(input.state, input.runId);
+  await deleteRunWorkspaceBaseline(input.state, input.runId);
 }

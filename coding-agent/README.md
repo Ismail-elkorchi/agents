@@ -110,6 +110,8 @@ Deterministic checks inspect only their admitted candidate and evidence. In `dev
 - Failure before visible content: absent candidate.
 - Missing or unknown required check: inconclusive verification.
 
+For every ended run, Coding Agent compares the exact root-bound workspace state captured before runtime effects with the final state and reduces `apply_patch` ledger receipts into a bounded durable change report. The CLI prints changed paths and distinguishes structured mutations from external or concurrent changes. A path already reported by the initial Git observation remains marked as changed before the run; Coding Agent never assumes the workspace started clean. Binary, oversized, aliased, unreadable, or truncated evidence makes coverage explicitly partial. Model prose is candidate narrative, not authority for changed paths or verification status, and command effects are never described as undoable.
+
 Run `npm run verify:release` for the full repository gate.
 ## Complete CLI option reference
 

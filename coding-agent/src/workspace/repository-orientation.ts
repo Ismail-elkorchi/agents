@@ -85,7 +85,7 @@ export async function inspectRepositoryOrientation(
   gitObserver?: GitRepositoryObserver
 ): Promise<RepositoryOrientation> {
   const [versionControl, manifests] = await Promise.all([
-    inspectGit(workspace, gitObserver),
+    inspectRepositoryVersionControl(workspace, gitObserver),
     inspectManifests(workspace)
   ]);
   const proposedVerificationCommands = verificationCommandProposals(configuration, manifests);
@@ -130,7 +130,10 @@ export function repositoryOrientationContext(orientation: RepositoryOrientation)
   });
 }
 
-async function inspectGit(workspace: OpenCodingWorkspace, observer: GitRepositoryObserver | undefined): Promise<RepositoryVersionControl> {
+export async function inspectRepositoryVersionControl(
+  workspace: OpenCodingWorkspace,
+  observer: GitRepositoryObserver | undefined
+): Promise<RepositoryVersionControl> {
   const workspaceRoot = workspace.layout.workspaceRoot;
   let marker;
   try { marker = await lstat(path.join(workspaceRoot, '.git')); }

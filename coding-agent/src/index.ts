@@ -35,15 +35,16 @@ import {
 import { parseJsonValue } from '@agent-core/json';
 import { createTrustDecision } from './security/workspace-trust.js';
 import { loadRepositoryInstructions } from './instructions/repository-instructions.js';
-import { inspectRepositoryOrientation, repositoryOrientationContext } from './workspace/repository-orientation.js';
+import { inspectRepositoryOrientation, inspectRepositoryVersionControl, repositoryOrientationContext } from './workspace/repository-orientation.js';
 import { openSandboxExecutionRepository } from '@ismail-elkorchi/sandbox';
 import { SandboxGitRepositoryObserver } from './workspace/git/sandbox-git-observer.js';
 import { unavailableGitRepositoryObserver, type GitRepositoryObserver } from './workspace/git/repository-observer.js';
 import { createCodingCommandAuthority } from './execution/coding-command-authority.js';
 import { parseCodingPermissionMode, resolveCodingAuthority, type CodingApprovalKind, type CodingPermissionMode } from './security/permission-mode.js';
 import { configuredCheckProposals, createConfiguredChecks } from './verification/configured-checks.js';
-import { loadOrCaptureVerificationBaseline } from './verification/baseline-store.js';
-import { deleteVerificationRunState } from './verification/run-cleanup.js';
+import { loadOrCaptureRunWorkspaceBaseline } from './changes/workspace-baseline-store.js';
+import { RunChangeReportService } from './changes/run-change-report-service.js';
+import type { RunChangeReport } from './changes/run-change-report.js';
 
 export {
   loadCodingAgentConfiguration,
@@ -52,6 +53,7 @@ export {
 export type { CodingAgentCheckConfiguration, CodingAgentConfiguration, CodingAgentProviderId } from './configuration.js';
 export { describeWorkspace, loadWorkspace, openCodingWorkspace, type OpenCodingWorkspace, type WorkspaceLayout } from './workspace.js';
 export { resolveCodingAuthority, type CodingApprovalKind, type CodingAuthority, type CodingPermissionMode } from './security/permission-mode.js';
+export type { RunChangeReport, StructuredMutationReceipt, WorkspaceChange } from './changes/run-change-report.js';
 
 type CliProviderId = CodingAgentProviderId;
 type CliAuthProviderId = 'openai' | 'openai-codex';
@@ -110,6 +112,7 @@ interface CliRuntime {
   tuiDetails: CodingAgentTuiRuntimeDetails;
   localHost: LocalToolHost;
   gitObserver: GitRepositoryObserver;
+  changeReports: RunChangeReportService;
 }
 
 export async function main(argv: string[]): Promise<void> {
@@ -163,7 +166,8 @@ export async function main(argv: string[]): Promise<void> {
         const submission = await runtime.agent.submit({ task });
         if (submission.kind === 'rejected') throw new Error(`Task was rejected: ${submission.reason}.`);
         const result = await submission.completion;
-        printResult(result, progress);
+        const changeReport = result.state === 'ended' ? await runtime.changeReports.finalize(result.terminal.runId, result) : undefined;
+        printResult(result, progress, process.stdout, changeReport);
         printPersistenceLocations(runtime, result);
         process.exitCode = resultExitCode(result);
       } finally {
@@ -192,6 +196,7 @@ async function withCliRuntime<T>(options: CliOptions, workspace: OpenCodingWorks
   try { outcome = { kind: 'returned', value: await run(runtime) }; }
   catch (error) { outcome = { kind: 'failed', error }; }
   const cleanupFailures: unknown[] = [];
+  try { await runtime.changeReports.close(); } catch (error) { cleanupFailures.push(error); }
   try { await runtime.localHost.close(); } catch (error) { cleanupFailures.push(error); }
   try { await runtime.gitObserver.close(); } catch (error) { cleanupFailures.push(error); }
   if (outcome.kind === 'failed' && cleanupFailures.length > 0) throw new AggregateError([outcome.error, ...cleanupFailures], 'Coding Agent run and cleanup failed.', { cause: outcome.error });
@@ -282,6 +287,12 @@ async function createRuntime(
     if (checkProposals.length > 0 && !commandExecution) throw new Error('Configured verification requires the admitted Sandbox command authority.');
     const services = localHost.services;
     const configuredTools = localHost.tools;
+    const changeReports = new RunChangeReportService({
+      state: openedWorkspace.privateState,
+      runtimeDirectory: workspace.runtimeDir,
+      root: openedWorkspace.fileRoot,
+      events
+    });
     const agent = new AgentSession({
       descriptor: sessionBinding.session,
       repository: sessionBinding.repository,
@@ -294,16 +305,18 @@ async function createRuntime(
       },
       async createRuntime(configuration, onProgress, runtimeContext) {
         if (configuration.provider !== providerRuntime.providerId) throw new Error(`Provider ${configuration.provider} is not available in this session runtime.`);
+        const runBaseline = await loadOrCaptureRunWorkspaceBaseline({
+          state: openedWorkspace.privateState,
+          root: openedWorkspace.fileRoot,
+          runId: runtimeContext.runId,
+          resuming: runtimeContext.resuming,
+          observeVersionControl: () => inspectRepositoryVersionControl(openedWorkspace, gitObserver)
+        });
         const checks = commandExecution && checkProposals.length > 0
           ? createConfiguredChecks({
             proposals: checkProposals,
             root: openedWorkspace.fileRoot,
-            baseline: await loadOrCaptureVerificationBaseline({
-              state: openedWorkspace.privateState,
-              root: openedWorkspace.fileRoot,
-              runId: runtimeContext.runId,
-              resuming: runtimeContext.resuming
-            }),
+            baseline: runBaseline.workspace,
             runtimeDirectory: workspace.runtimeDir,
             createCommandExecution: ({ root, repositoryDirectory }) => createCodingCommandAuthority({
               repositoryDirectory,
@@ -364,7 +377,7 @@ async function createRuntime(
       summarizeConversation: request => summarizeConversation(providerRuntime.provider, request.configuration.model, request.conversation)
     });
     agent.subscribe((event) => event.type === 'run.completed' && event.result.state === 'ended'
-      ? deleteVerificationRunState({ state: openedWorkspace.privateState, runtimeDirectory: workspace.runtimeDir, runId: event.runId })
+      ? changeReports.finalize(event.runId, event.result).then(() => undefined)
       : undefined);
     if (options.branch) await agent.branchFrom(options.branch, 'cli branch');
     return {
@@ -382,7 +395,8 @@ async function createRuntime(
       permissions: authority.permissions
       },
       localHost,
-      gitObserver
+      gitObserver,
+      changeReports
     };
   } catch (error) {
     if (localHost) {
@@ -605,7 +619,8 @@ async function runApprovalCommand(args: string[]): Promise<void> {
       const unsubscribe = runtime.agent.subscribe((event) => { if (event.type === 'run.progress') { progress.handle(event.event); } });
       try {
         const result = await runtime.agent.resolveApproval({ runId, approvalId, fingerprint, decision: decisionValue });
-        printResult(result, progress);
+        const changeReport = result.state === 'ended' ? await runtime.changeReports.finalize(result.terminal.runId, result) : undefined;
+        printResult(result, progress, process.stdout, changeReport);
         printPersistenceLocations(runtime, result);
         process.exitCode = resultExitCode(result);
       } finally { unsubscribe(); }
@@ -796,7 +811,12 @@ function writeLine(output: Writable, text: string): void {
   output.write(`${text}\n`);
 }
 
-function printResult(result: AgentRunResult, progress?: CodingAgentProgressRenderer, output: Writable = process.stdout): void {
+function printResult(
+  result: AgentRunResult,
+  progress?: CodingAgentProgressRenderer,
+  output: Writable = process.stdout,
+  changeReport?: RunChangeReport
+): void {
   if (result.state === 'suspended') {
     if (result.reason !== 'approval_required') {
       writeLine(output, 'Execution: Waiting for recovery decision');
@@ -832,6 +852,15 @@ function printResult(result: AgentRunResult, progress?: CodingAgentProgressRende
   }
   const advisoryFailures = terminal.checkResults.filter((check) => check.requirement === 'advisory' && check.verdict !== 'passed').length;
   if (advisoryFailures > 0) writeLine(output, `Advisory checks: ${String(advisoryFailures)} failed or unknown`);
+  if (changeReport) {
+    writeLine(output, `Workspace changes: ${String(changeReport.totalChanges)} (${changeReport.coverage})`);
+    for (const change of changeReport.changes) {
+      const origin = change.attribution === 'structured_mutation' ? 'agent' : 'external/concurrent';
+      const baseline = change.versionControlBaseline === 'changed' ? ', changed before run' : '';
+      writeLine(output, `- ${change.kind} ${change.path} [${origin}${baseline}]`);
+    }
+    if (changeReport.omittedChanges > 0) writeLine(output, `- ${String(changeReport.omittedChanges)} additional changes omitted`);
+  }
   for (const diagnostic of result.deliveryDiagnostics) writeLine(output, `Delivery diagnostic (${diagnostic.eventType}): ${diagnostic.message}`);
 }
 

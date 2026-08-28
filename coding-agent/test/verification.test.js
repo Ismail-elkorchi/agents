@@ -6,7 +6,7 @@ import path from 'node:path';
 import { WorkspaceFileRoot } from '@agent-core/tools-local';
 import { ResourceLeaseCoordinator, adoptCommandExecution, createCommandExecutionPreparation } from '@agent-core/tools';
 import { configuredCheckProposals, createConfiguredChecks } from '../dist/verification/configured-checks.js';
-import { loadOrCaptureVerificationBaseline } from '../dist/verification/baseline-store.js';
+import { loadOrCaptureRunWorkspaceBaseline } from '../dist/changes/workspace-baseline-store.js';
 import { captureWorkspaceSnapshot, changedWorkspacePaths, verifierDefinitionPaths } from '../dist/verification/workspace-snapshot.js';
 import { PrivateStateDirectory } from '../dist/state/private-state.js';
 import { DEFAULT_CODING_CONTRACT } from '../dist/instructions/coding-contract.js';
@@ -25,6 +25,7 @@ test('verification snapshots bind exact root content and classify verifier defin
   try {
     const baseline = await captureWorkspaceSnapshot(root);
     assert.equal(baseline.coverage, 'complete');
+    assert.equal(baseline.entries.find((entry) => entry.path === 'src/index.js').content, 'text');
     await writeFile(path.join(directory, 'src', 'index.js'), 'export const value = 2;\n');
     await writeFile(path.join(directory, 'test', 'index.test.js'), 'assert(value === 2);\n');
     const candidate = await captureWorkspaceSnapshot(root);
@@ -58,15 +59,41 @@ test('one run keeps its original verification baseline across process restart', 
   await writeFile(path.join(directory, 'source.js'), 'before\n');
   const root = WorkspaceFileRoot.adopt(directory);
   const state = await PrivateStateDirectory.create(stateDirectory);
+  const observeVersionControl = async () => Object.freeze({ kind: 'none' });
   try {
-    const first = await loadOrCaptureVerificationBaseline({ state, root, runId: 'run-one', resuming: false });
+    const first = await loadOrCaptureRunWorkspaceBaseline({ state, root, runId: 'run-one', resuming: false, observeVersionControl });
     await writeFile(path.join(directory, 'source.js'), 'after\n');
-    const resumed = await loadOrCaptureVerificationBaseline({ state, root, runId: 'run-one', resuming: true });
-    assert.equal(resumed.digest, first.digest);
-    assert.deepEqual(resumed.entries, first.entries);
+    const resumed = await loadOrCaptureRunWorkspaceBaseline({ state, root, runId: 'run-one', resuming: true, observeVersionControl });
+    assert.equal(resumed.workspace.digest, first.workspace.digest);
+    assert.deepEqual(resumed.workspace.entries, first.workspace.entries);
     await assert.rejects(
-      loadOrCaptureVerificationBaseline({ state, root, runId: 'missing-run', resuming: true }),
+      loadOrCaptureRunWorkspaceBaseline({ state, root, runId: 'missing-run', resuming: true, observeVersionControl }),
       /baseline.*missing/iu
+    );
+  } finally {
+    root.close();
+    await rm(directory, { recursive: true, force: true });
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test('run baseline capture rejects a changing version-control observation', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'coding-agent-baseline-race-'));
+  const stateDirectory = await mkdtemp(path.join(tmpdir(), 'coding-agent-baseline-race-state-'));
+  await writeFile(path.join(directory, 'source.js'), 'content\n');
+  const root = WorkspaceFileRoot.adopt(directory);
+  const state = await PrivateStateDirectory.create(stateDirectory);
+  let calls = 0;
+  try {
+    await assert.rejects(
+      loadOrCaptureRunWorkspaceBaseline({
+        state,
+        root,
+        runId: 'racing-run',
+        resuming: false,
+        observeVersionControl: async () => calls++ === 0 ? { kind: 'none' } : { kind: 'unavailable', reason: 'changed' }
+      }),
+      /changed while.*baseline/iu
     );
   } finally {
     root.close();

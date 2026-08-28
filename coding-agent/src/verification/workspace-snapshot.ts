@@ -12,6 +12,7 @@ export interface WorkspaceSnapshotEntry {
   readonly mode?: number;
   readonly bytes?: number;
   readonly sha256?: string;
+  readonly content?: 'text' | 'binary';
 }
 
 export interface WorkspaceSnapshot {
@@ -81,7 +82,8 @@ export async function captureWorkspaceSnapshot(root: WorkspaceFileRoot, signal?:
           kind: 'file',
           mode: file.mode,
           bytes: content.byteLength,
-          sha256: createHash('sha256').update(content).digest('hex')
+          sha256: createHash('sha256').update(content).digest('hex'),
+          content: fileContentKind(content)
         }));
       } catch {
         if (signal?.aborted) throwIfAborted(signal);
@@ -136,4 +138,14 @@ function compareCodeUnits(left: string, right: string): number {
 function throwIfAborted(signal: AbortSignal | undefined): void {
   if (!signal?.aborted) return;
   throw signal.reason instanceof Error ? signal.reason : new Error(typeof signal.reason === 'string' ? signal.reason : 'Workspace snapshot aborted.');
+}
+
+function fileContentKind(content: Uint8Array): 'text' | 'binary' {
+  if (content.includes(0)) return 'binary';
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(content);
+    return 'text';
+  } catch {
+    return 'binary';
+  }
 }
