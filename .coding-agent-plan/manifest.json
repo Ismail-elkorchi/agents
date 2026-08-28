@@ -7,7 +7,7 @@
   "architecture": ".coding-agent-plan/architecture.md",
   "reviewedHeads": {
     "agents": "a4abd2d3ec342e83eae295355d9dcbce49b8fd39",
-    "agent-core": "8fbf015dd79156444aa8ad932bbae6a999c75042",
+    "agent-core": "6eeba19b86ba477859c7bb3b2747a93955d6bd9f",
     "terminal-ui": "d83d01432056470d17f42793bb83f6d7c93e595d",
     "sandbox": "d2b79bf82766bb5832ed20bd1c9bc653f90c30c2"
   },
@@ -210,8 +210,8 @@
         "E0"
       ],
       "wave": 3,
-      "status": "current",
-      "currentOwner": "codex/root",
+      "status": "done",
+      "currentOwner": null,
       "ownedPaths": [
         "agent-core:packages/tools/src/**"
       ],
@@ -220,7 +220,7 @@
         ".coding-agent-plan/decisions/adversarial-review.md"
       ],
       "evidence": ".coding-agent-plan/evidence/C1.md",
-      "lastVerifiedCommit": null
+      "lastVerifiedCommit": "6eeba19b86ba477859c7bb3b2747a93955d6bd9f"
     },
     {
       "id": "A2",
@@ -231,8 +231,8 @@
         "A1"
       ],
       "wave": 3,
-      "status": "not_started",
-      "currentOwner": null,
+      "status": "current",
+      "currentOwner": "codex/root",
       "ownedPaths": [
         "agents:coding-agent/src/workspace/**",
         "agents:coding-agent/src/instructions/**"
