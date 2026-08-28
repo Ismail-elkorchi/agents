@@ -7,9 +7,9 @@
   "architecture": ".coding-agent-plan/architecture.md",
   "reviewedHeads": {
     "agents": "8a9d48070f195e76f003732da710eeb3ed448f99",
-    "agent-core": "48b4a2ee5dfc25d31d5093f322378bfd10f33375",
+    "agent-core": "bfefe709fb544c3324b3aa61e328a4c2737fc94c",
     "terminal-ui": "01277f04674c5f021cbe93dccfe378bacec7b632",
-    "sandbox": "e82ff3dd94a7c87b14bd25665b8898ae3b081767"
+    "sandbox": "f323ee5da7518b80c98842fc1d877ef7c5010062"
   },
   "nodes": [
     {
@@ -564,9 +564,14 @@
       "status": "current",
       "currentOwner": "codex/root",
       "ownedPaths": [
+        "agent-core:packages/evidence/src/repositories.ts",
         "agent-core:packages/runtime/test/fault/**",
         "agent-core:packages/evidence/test/conformance/**",
-        "sandbox:test/**"
+        "agent-core:scripts/run-test-suite.mjs",
+        "agent-core:tests/test-discovery.test.js",
+        "sandbox:packages/sandbox/src/execution-record.ts",
+        "sandbox:packages/sandbox/src/execution-repository.ts",
+        "sandbox:packages/sandbox/test/**"
       ],
       "specification": ".coding-agent-plan/nodes/F0.md",
       "decisions": [
