@@ -6,8 +6,8 @@
   "generatedSummary": ".coding-agent-implementation-plan.md",
   "architecture": ".coding-agent-plan/architecture.md",
   "reviewedHeads": {
-    "agents": "5f53304abb36c2933ec2e55ebae0782b01818337",
-    "agent-core": "6eeba19b86ba477859c7bb3b2747a93955d6bd9f",
+    "agents": "1047da3446ffea25b89381ee3cbf326e31d9c88c",
+    "agent-core": "2cdc6f6298690814d4657c32943a300ede15e27c",
     "terminal-ui": "d83d01432056470d17f42793bb83f6d7c93e595d",
     "sandbox": "d2b79bf82766bb5832ed20bd1c9bc653f90c30c2"
   },
@@ -256,8 +256,8 @@
         "E0"
       ],
       "wave": 4,
-      "status": "current",
-      "currentOwner": "codex/root",
+      "status": "done",
+      "currentOwner": null,
       "ownedPaths": [
         "agent-core:packages/model/**",
         "agent-core:packages/providers/**",
@@ -268,7 +268,7 @@
         ".coding-agent-plan/decisions/adversarial-review.md"
       ],
       "evidence": ".coding-agent-plan/evidence/D1.md",
-      "lastVerifiedCommit": null
+      "lastVerifiedCommit": "2cdc6f6298690814d4657c32943a300ede15e27c"
     },
     {
       "id": "C2",
@@ -278,8 +278,8 @@
         "C1"
       ],
       "wave": 4,
-      "status": "not_started",
-      "currentOwner": null,
+      "status": "current",
+      "currentOwner": "codex/root",
       "ownedPaths": [
         "agent-core:packages/tools-local/src/process/**",
         "agent-core:packages/tools-local/src/core/process-manager.ts"
