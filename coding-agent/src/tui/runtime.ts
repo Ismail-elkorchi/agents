@@ -10,128 +10,62 @@ import { CodingAgentTuiEventSource } from './event-source.js';
 import type { CodingAgentTuiMessage } from './messages.js';
 import type { CodingAgentTuiState } from './state.js';
 import type { CodingAgentTuiRuntimeDetails } from './state.js';
+import type { CodingAgentTuiHydration } from './hydration.js';
+import type { RunChangeReport } from '../changes/run-change-report.js';
 
 export class CodingAgentTuiProgressRenderer {
-  private dispatch: ((message: CodingAgentTuiMessage) => void | Promise<void>) | undefined;
+  private readonly dispatchReady = deferred<(message: CodingAgentTuiMessage) => void | Promise<void>>();
   private queue: Promise<void> = Promise.resolve();
-  private readonly pendingStreamEvents: CodingAgentTuiStreamProgressEvent[] = [];
-  private streamFlushTimer: ReturnType<typeof setTimeout> | undefined;
-  private static readonly MAX_PENDING_STREAM_EVENTS = 1024;
+  private attached = false;
 
   attachDispatch(dispatch: (message: CodingAgentTuiMessage) => void | Promise<void>): void {
-    this.dispatch = dispatch;
+    if (this.attached) throw new Error('Coding Agent TUI progress renderer is already attached.');
+    this.attached = true;
+    this.dispatchReady.resolve(dispatch);
   }
 
-  handle(event: AgentProgressEvent): void {
-    if (isCoalescibleStreamEvent(event)) {
-      this.queueStreamEvent(event);
-      return;
-    }
-    this.flushPendingStreamEvents();
-    this.enqueue({ type: 'progress', event });
+  handle(event: AgentProgressEvent): Promise<void> {
+    return this.enqueue({ type: 'progress', event });
   }
 
   flush(): Promise<void> {
-    this.flushPendingStreamEvents();
     return this.queue;
   }
 
   async showResult(result: AgentEndedRunResult): Promise<void> {
-    this.flushPendingStreamEvents();
-    this.enqueue({ type: 'result', result });
-    await this.flush();
+    await this.enqueue({ type: 'result', result });
   }
 
   async showSuspension(suspension: Extract<AgentRunResult, { state: 'suspended' }>): Promise<void> {
-    this.flushPendingStreamEvents();
-    this.enqueue(suspension.reason === 'approval_required'
+    await this.enqueue(suspension.reason === 'approval_required'
       ? { type: 'approval.required', suspension }
       : { type: 'operation.suspended', suspension });
-    await this.flush();
   }
 
   async showFailure(message: string): Promise<void> {
-    this.flushPendingStreamEvents();
-    this.enqueue({ type: 'failure', message });
-    await this.flush();
+    await this.enqueue({ type: 'failure', message });
   }
 
-  private enqueue(message: CodingAgentTuiMessage): void {
-    const dispatch = this.dispatch;
-    if (dispatch === undefined) return;
-    this.queue = this.queue
-      .then(async () => { await dispatch(message); })
-      .catch(() => undefined);
+  async showSessionState(state: import('@agent-core/runtime').AgentSessionState): Promise<void> {
+    await this.enqueue({ type: 'session.updated', state });
   }
 
-  private queueStreamEvent(event: Extract<AgentProgressEvent, { type: 'assistant.delta' | 'assistant.reasoning' }>): void {
-    const last = this.pendingStreamEvents.at(-1);
-    if (last !== undefined && canMergeStreamEvents(last, event)) {
-      this.pendingStreamEvents[this.pendingStreamEvents.length - 1] = mergeStreamEvents(last, event);
-    } else {
-      if (this.pendingStreamEvents.length >= CodingAgentTuiProgressRenderer.MAX_PENDING_STREAM_EVENTS) this.pendingStreamEvents.shift();
-      this.pendingStreamEvents.push(event);
-    }
-    this.scheduleStreamFlush();
+  async showCompaction(compaction: import('@agent-core/runtime').SessionCompactionEntry): Promise<void> {
+    await this.enqueue({ type: 'session.compacted', compaction });
   }
 
-  private scheduleStreamFlush(): void {
-    if (this.streamFlushTimer !== undefined) return;
-    this.streamFlushTimer = setTimeout(() => {
-      this.streamFlushTimer = undefined;
-      this.flushPendingStreamEvents();
-    }, 80);
+  async showChangeReport(report: RunChangeReport): Promise<void> {
+    await this.enqueue({ type: 'change.reported', report });
   }
 
-  private flushPendingStreamEvents(): void {
-    if (this.streamFlushTimer !== undefined) {
-      clearTimeout(this.streamFlushTimer);
-      this.streamFlushTimer = undefined;
-    }
-    const events = this.pendingStreamEvents.splice(0);
-    for (const event of events) {
-      this.enqueue({ type: 'progress', event });
-    }
+  private enqueue(message: CodingAgentTuiMessage): Promise<void> {
+    const next = this.queue.then(async () => {
+      const dispatch = await this.dispatchReady.promise;
+      await dispatch(message);
+    });
+    this.queue = next;
+    return next;
   }
-}
-
-type CodingAgentTuiStreamProgressEvent = Extract<AgentProgressEvent, { type: 'assistant.delta' | 'assistant.reasoning' }>;
-
-function isCoalescibleStreamEvent(event: AgentProgressEvent): event is CodingAgentTuiStreamProgressEvent {
-  return event.type === 'assistant.delta' || event.type === 'assistant.reasoning';
-}
-
-function canMergeStreamEvents(left: CodingAgentTuiStreamProgressEvent, right: CodingAgentTuiStreamProgressEvent): boolean {
-  if (left.type !== right.type || left.turnIndex !== right.turnIndex) return false;
-  if (left.type === 'assistant.reasoning' && right.type === 'assistant.reasoning') {
-    return left.channel === right.channel;
-  }
-  return left.type === 'assistant.delta' && right.type === 'assistant.delta';
-}
-
-function mergeStreamEvents(left: CodingAgentTuiStreamProgressEvent, right: CodingAgentTuiStreamProgressEvent): CodingAgentTuiStreamProgressEvent {
-  if (left.type === 'assistant.delta' && right.type === 'assistant.delta') {
-    return {
-      type: 'assistant.delta',
-      turnIndex: right.turnIndex,
-      turnId: right.turnId,
-      requestAttempt: right.requestAttempt,
-      delta: `${left.delta}${right.delta}`,
-      accumulated: right.accumulated
-    };
-  }
-  if (left.type === 'assistant.reasoning' && right.type === 'assistant.reasoning') {
-    return {
-      type: 'assistant.reasoning',
-      turnIndex: right.turnIndex,
-      turnId: right.turnId,
-      requestAttempt: right.requestAttempt,
-      delta: `${left.delta}${right.delta}`,
-      accumulated: right.accumulated,
-      ...(right.channel === undefined ? {} : { channel: right.channel })
-    };
-  }
-  return right;
 }
 
 export interface CodingAgentTuiAppRunOptions {
@@ -140,6 +74,8 @@ export interface CodingAgentTuiAppRunOptions {
   readonly progress?: CodingAgentTuiProgressRenderer;
   readonly exitOnCompletion?: boolean;
   readonly runtimeDetails?: CodingAgentTuiRuntimeDetails;
+  readonly loadHydration?: () => Promise<CodingAgentTuiHydration>;
+  readonly loadChangeReport?: (runId: string) => Promise<RunChangeReport | undefined>;
 }
 
 export interface CodingAgentTuiAppRunResult {
@@ -158,65 +94,110 @@ export async function runCodingAgentTuiApp(
   let result: AgentRunResult | undefined;
   let failure: Error | undefined;
   const exitOnCompletion = options.exitOnCompletion === true;
-  const unsubscribe = session.subscribe(async (event) => {
-    if (event.type === 'run.progress') {
-      progress.handle(event.event);
-      return;
-    }
-    if (event.type === 'run.failed') {
-      await progress.showFailure(event.error.message);
-      if (exitOnCompletion) {
-        failure = event.error;
-        events.enqueue({ type: 'app.exit', reason: 'failed' });
-      }
-      return;
-    }
-    if (event.type !== 'run.completed') return;
-    result = event.result;
-    if (event.result.state === 'suspended') await progress.showSuspension(event.result);
-    else await progress.showResult(event.result);
-    if (exitOnCompletion && session.state().queuedInputs === 0) {
-      events.enqueue({ type: 'app.exit', reason: event.result.state === 'ended'
-        ? `${event.result.terminal.executionStatus}:${event.result.terminal.verificationStatus}:${event.result.terminal.terminationReason}`
-        : event.result.reason });
-    }
-  });
-  const app = createCodingAgentTuiApp(normalizeTaskInput(options.initialTask ?? ''), {
-    eventSource: events,
-    ...(options.runtimeDetails === undefined ? {} : { runtimeDetails: options.runtimeDetails }),
-    approvalHandler: async (suspension, decision) => {
-      const approval = suspension.pendingApprovals[0];
-      if (approval === undefined) throw new Error('Approval suspension contains no pending request.');
-      await session.resolveApproval({ runId: suspension.runId, approvalId: approval.approvalId, fingerprint: approval.fingerprint, decision });
-    },
-    commandHandler: {
-      execute(line) {
-        if (line === '/exit' || line === '/quit') {
-          return { message: 'Exiting.', exit: true };
-        }
-        if (!line.startsWith('/')) return session.submit({ task: line }).then(submissionMessage);
-        return executeInteractiveCommand(session, line);
-      }
-    }
-  });
-  const exit = runTui(app, { host });
-  progress.attachDispatch((message) => {
-    events.enqueue(message);
-  });
-  const initialTask = options.initialTask;
+  let unsubscribe: (() => void) | undefined;
+  let outcome!: Readonly<
+    | { readonly kind: 'returned'; readonly value: CodingAgentTuiAppRunResult }
+    | { readonly kind: 'failed'; readonly cause: unknown }
+  >;
+  const initialTask = options.initialTask === undefined
+    ? undefined
+    : normalizeTaskInput(options.initialTask);
   try {
     await session.restore();
-    if (initialTask !== undefined) await session.submit({ task: initialTask });
+    const hydration = await options.loadHydration?.();
+    unsubscribe = session.subscribe(async (event) => {
+      if (event.type === 'run.progress') {
+        await progress.handle(event.event);
+        return;
+      }
+      if (event.type === 'configuration.changed' || event.type === 'input.queued') {
+        await progress.showSessionState(session.state());
+        return;
+      }
+      if (event.type === 'compaction.completed') {
+        await progress.showCompaction(event.compaction);
+        await progress.showSessionState(session.state());
+        return;
+      }
+      if (event.type === 'run.failed') {
+        await progress.showFailure(event.error.message);
+        if (exitOnCompletion) {
+          failure = event.error;
+          await events.enqueue({ type: 'app.exit', reason: 'failed' });
+        }
+        return;
+      }
+      result = event.result;
+      if (event.result.state === 'suspended') await progress.showSuspension(event.result);
+      else {
+        await progress.showResult(event.result);
+        const report = await options.loadChangeReport?.(event.runId);
+        if (report !== undefined) await progress.showChangeReport(report);
+      }
+      await progress.showSessionState(session.state());
+      if (exitOnCompletion && session.state().queuedInputs === 0) {
+        await events.enqueue({ type: 'app.exit', reason: event.result.state === 'ended'
+          ? `${event.result.terminal.executionStatus}:${event.result.terminal.verificationStatus}:${event.result.terminal.terminationReason}`
+          : event.result.reason });
+      }
+    });
+    const app = createCodingAgentTuiApp(normalizeTaskInput(initialTask ?? ''), {
+      eventSource: events,
+      ...(options.runtimeDetails === undefined ? {} : { runtimeDetails: options.runtimeDetails }),
+      ...(hydration === undefined ? {} : { initialHydration: hydration }),
+      approvalHandler: async (suspension, decision) => {
+        const approval = suspension.pendingApprovals[0];
+        if (approval === undefined) throw new Error('Approval suspension contains no pending request.');
+        await session.resolveApproval({ runId: suspension.runId, approvalId: approval.approvalId, fingerprint: approval.fingerprint, decision });
+      },
+      commandHandler: {
+        execute(line) {
+          if (line === '/exit' || line === '/quit') {
+            return { message: 'Exiting.', exit: true };
+          }
+          if (!line.startsWith('/')) return session.submit({ task: line }).then(submissionMessage);
+          return executeInteractiveCommand(session, line);
+        }
+      }
+    });
+    const exit = runTui(app, { host });
+    progress.attachDispatch((message) => events.enqueue(message));
+    if (initialTask !== undefined && initialTask.length > 0) await session.submit({ task: initialTask });
+    else if (session.state().queuedInputs > 0) await session.resumePending();
     const exitResult = await exit;
+    unsubscribe();
+    unsubscribe = undefined;
+    const activeRunId = session.state().activeRunId;
+    if (activeRunId !== undefined && session.state().phase !== 'waiting_for_user') {
+      await session.abort('Coding Agent TUI closed.', activeRunId);
+    }
     await session.waitForIdle();
     if (failure !== undefined) throw failure;
-    return result === undefined ? { exit: exitResult } : { exit: exitResult, result };
-  } finally {
-    await progress.flush();
-    unsubscribe();
-    events.close();
-    if (ownsHost) await host.dispose();
+    outcome = {
+      kind: 'returned',
+      value: result === undefined ? { exit: exitResult } : { exit: exitResult, result }
+    };
+  } catch (cause) {
+    outcome = { kind: 'failed', cause };
   }
+  const cleanupFailures: unknown[] = [];
+  try { await progress.flush(); } catch (cause) { cleanupFailures.push(cause); }
+  try { unsubscribe?.(); } catch (cause) { cleanupFailures.push(cause); }
+  try { await events.close(); } catch (cause) { cleanupFailures.push(cause); }
+  if (ownsHost) {
+    try { await host.dispose(); } catch (cause) { cleanupFailures.push(cause); }
+  }
+  const uniqueFailures = [...new Set(cleanupFailures)];
+  if (outcome.kind === 'failed') {
+    if (uniqueFailures.length === 0) throw outcome.cause;
+    throw new AggregateError(
+      [outcome.cause, ...uniqueFailures],
+      'Coding Agent TUI run and cleanup failed.',
+      { cause: outcome.cause }
+    );
+  }
+  if (uniqueFailures.length > 0) throw new AggregateError(uniqueFailures, 'Coding Agent TUI cleanup failed.');
+  return outcome.value;
 }
 
 export async function runCodingAgentTuiTask(
@@ -248,4 +229,15 @@ function submissionMessage(result: AgentSessionSubmissionResult): { readonly mes
     case 'queued': return { message: 'Follow-up queued.' };
     case 'rejected': return { message: `Input rejected: ${result.reason}.` };
   }
+}
+
+interface Deferred<T> {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise; });
+  return { promise, resolve };
 }

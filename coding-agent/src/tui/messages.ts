@@ -1,4 +1,12 @@
-import type { AgentApprovalSuspension, AgentEndedRunResult, AgentOperationSuspension, AgentProgressEvent } from '@agent-core/runtime';
+import type {
+  AgentApprovalSuspension,
+  AgentEndedRunResult,
+  AgentOperationSuspension,
+  AgentProgressEvent,
+  AgentSessionState,
+  SessionCompactionEntry
+} from '@agent-core/runtime';
+import type { RunChangeReport } from '../changes/run-change-report.js';
 import type {
   ScrollTransition,
   SearchPickerAcceptEvent,
@@ -12,10 +20,15 @@ export type CodingAgentTuiMessage =
   | { readonly type: 'progress'; readonly event: AgentProgressEvent }
   | { readonly type: 'result'; readonly result: AgentEndedRunResult }
   | { readonly type: 'failure'; readonly message: string }
+  | { readonly type: 'delivery.failed'; readonly message: string }
+  | { readonly type: 'session.updated'; readonly state: AgentSessionState }
+  | { readonly type: 'session.compacted'; readonly compaction: SessionCompactionEntry }
+  | { readonly type: 'change.reported'; readonly report: RunChangeReport }
   | { readonly type: 'approval.required'; readonly suspension: AgentApprovalSuspension }
   | { readonly type: 'operation.suspended'; readonly suspension: AgentOperationSuspension }
   | { readonly type: 'approval.decide'; readonly decision: 'allow' | 'deny' }
   | { readonly type: 'composer.edit'; readonly transition: TextAreaTransition }
+  | { readonly type: 'composer.history'; readonly direction: 'previous' | 'next' }
   | { readonly type: 'composer.submit' }
   | { readonly type: 'command.completed'; readonly execution: CodingAgentTuiCommandExecution; readonly recordResult: boolean }
   | { readonly type: 'command.failed'; readonly message: string }

@@ -6,7 +6,7 @@ import {
 } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { SearchPickerIndex, TextAreaTransition } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { SearchEntry } from '@ismail-elkorchi/terminal-ui/components';
-import { textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
+import { textCaretAt, textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
 import { INTERACTIVE_COMMANDS } from './interactive-commands.js';
 import type { InteractiveCommandResult } from './interactive-commands.js';
 import { normalizeTaskInput } from './task-input.js';
@@ -46,9 +46,16 @@ export const COMMAND_ENTRIES: readonly SearchEntry[] = INTERACTIVE_COMMANDS.map(
 export const COMMAND_INDEX: SearchPickerIndex = createSearchPickerIndex(COMMAND_ENTRIES);
 
 export function editComposer(state: CodingAgentTuiState, transition: TextAreaTransition): CodingAgentTuiState {
+  const input = textAreaReducer(state.composer.input, transition).state;
+  const preserveHistoryPosition = transition.kind === 'pointer' || transition.kind === 'scroll';
   return {
     ...state,
-    composer: { ...state.composer, input: textAreaReducer(state.composer.input, transition).state }
+    composer: {
+      ...state.composer,
+      input,
+      historyIndex: preserveHistoryPosition ? state.composer.historyIndex : null,
+      historyDraft: preserveHistoryPosition ? state.composer.historyDraft : ''
+    }
   };
 }
 
@@ -57,7 +64,55 @@ export function setComposerText(state: CodingAgentTuiState, value: string): Codi
     ...state,
     composer: {
       ...state.composer,
-      input: createTextAreaState({ value, scroll: createScrollState({ followTail: true }) })
+      input: composerInput(value),
+      historyIndex: null,
+      historyDraft: ''
+    }
+  };
+}
+
+export function navigateComposerHistory(
+  state: CodingAgentTuiState,
+  direction: 'previous' | 'next'
+): CodingAgentTuiState {
+  const history = state.composer.history;
+  if (history.length === 0) return state;
+  const currentIndex = state.composer.historyIndex;
+  if (direction === 'previous') {
+    const historyIndex = currentIndex === null
+      ? history.length - 1
+      : Math.max(0, currentIndex - 1);
+    const value = history[historyIndex];
+    if (value === undefined) return state;
+    return {
+      ...state,
+      composer: {
+        ...state.composer,
+        input: composerInput(value),
+        historyIndex,
+        historyDraft: currentIndex === null
+          ? textDocumentText(state.composer.input.document)
+          : state.composer.historyDraft
+      }
+    };
+  }
+  if (currentIndex === null) return state;
+  if (currentIndex < history.length - 1) {
+    const historyIndex = currentIndex + 1;
+    const value = history[historyIndex];
+    if (value === undefined) return state;
+    return {
+      ...state,
+      composer: { ...state.composer, input: composerInput(value), historyIndex }
+    };
+  }
+  return {
+    ...state,
+    composer: {
+      ...state.composer,
+      input: composerInput(state.composer.historyDraft),
+      historyIndex: null,
+      historyDraft: ''
     }
   };
 }
@@ -69,8 +124,10 @@ export function submitComposer(state: CodingAgentTuiState): CodingAgentTuiComman
   const cleared: CodingAgentTuiState = {
     ...state,
     composer: {
-      input: createTextAreaState({ value: '', scroll: createScrollState({ followTail: true }) }),
+      input: composerInput(''),
       history: [...state.composer.history, value].slice(-COMPOSER_HISTORY_LIMIT),
+      historyIndex: null,
+      historyDraft: '',
       submissionCount: state.composer.submissionCount + 1
     }
   };
@@ -83,6 +140,14 @@ export function submitComposer(state: CodingAgentTuiState): CodingAgentTuiComman
       recordResult: slashCommand
     }
   };
+}
+
+function composerInput(value: string) {
+  return createTextAreaState({
+    value,
+    caret: textCaretAt(value.length),
+    scroll: createScrollState({ followTail: true })
+  });
 }
 
 export function applyCommandExecution(

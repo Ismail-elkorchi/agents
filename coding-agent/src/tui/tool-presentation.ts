@@ -5,12 +5,51 @@ import type { CodingAgentTuiActivityEntry } from './conversation-model.js';
 type ToolDisplayValue = ToolCall['input']['value'] | ToolObservation['output'];
 
 export function toolActivityId(identity: {
+  readonly runId: string;
   readonly turnId: string;
   readonly toolBatchId: string;
   readonly callIndex: number;
   readonly callId?: string;
 }): string {
-  return `tool:${identity.callId ?? `${identity.turnId}:${identity.toolBatchId}:${String(identity.callIndex)}`}`;
+  return `tool:${identity.runId}:${identity.callId ?? `${identity.turnId}:${identity.toolBatchId}:${String(identity.callIndex)}`}`;
+}
+
+export function completedSessionToolActivity(
+  current: CodingAgentTuiActivityEntry | undefined,
+  entry: import('@agent-core/runtime').SessionObservationEntry
+): CodingAgentTuiActivityEntry {
+  const details = [
+    current?.details,
+    entry.output === undefined ? undefined : `Output\n${formatValue(entry.output)}`,
+    entry.artifacts === undefined || entry.artifacts.length === 0
+      ? undefined
+      : `Artifacts\n${entry.artifacts.map((artifact) => artifact.artifactId).join('\n')}`,
+    entry.metadata === undefined ? undefined : `Metadata\n${formatValue(entry.metadata)}`
+  ].filter((part): part is string => part !== undefined && part.length > 0).join('\n\n');
+  return {
+    id: sessionObservationActivityId(entry),
+    kind: 'activity',
+    activity: 'tool',
+    label: current?.label ?? humanize(entry.toolName),
+    status: entry.ok ? 'success' : 'failed',
+    summary: compact(entry.summary),
+    ...(details.length === 0 ? {} : { details: bounded(details, 6_000) })
+  };
+}
+
+export function sessionObservationActivityId(
+  entry: import('@agent-core/runtime').SessionObservationEntry
+): string {
+  if (entry.callId !== undefined) return `tool:${entry.runId}:${entry.callId}`;
+  if (entry.toolBatchId !== undefined && entry.callIndex !== undefined) {
+    return toolActivityId({
+      runId: entry.runId,
+      turnId: entry.turnId,
+      toolBatchId: entry.toolBatchId,
+      callIndex: entry.callIndex
+    });
+  }
+  return `tool:${entry.runId}:observation:${entry.id}`;
 }
 
 export function pendingToolActivity(id: string, call: ToolCall): CodingAgentTuiActivityEntry {

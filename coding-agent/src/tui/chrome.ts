@@ -7,12 +7,32 @@ import { terminalPresentation } from './run-presentation.js';
 export function statusChrome(state: CodingAgentTuiState): Element {
   const presentation = runPresentation(state);
   const center = [state.runtimeDetails.modelId, permissionLabel(state)].filter((value): value is string => value !== undefined).join(' · ');
+  const runText = [presentation.text, queueLabel(state), driverLabel(state)]
+    .filter((value): value is string => value !== undefined)
+    .join(' · ');
   return statusBar({
     id: 'status',
     leading: [{ id: 'app', kind: 'text', text: 'Coding Agent' }],
     center: center.length === 0 ? [] : [{ id: 'model-and-authority', kind: 'text', text: center }],
-    trailing: [{ id: 'run', kind: 'status', text: presentation.text, status: presentation.status }]
+    trailing: [{ id: 'run', kind: 'status', text: runText, status: presentation.status }]
   });
+}
+
+function queueLabel(state: CodingAgentTuiState): string | undefined {
+  const queued = state.debug.session?.queuedInputs ?? 0;
+  return queued === 0 ? undefined : `${String(queued)} queued`;
+}
+
+function driverLabel(state: CodingAgentTuiState): string | undefined {
+  const activeRunId = state.debug.session?.activeRunId ?? state.debug.runId;
+  const operation = activeRunId === undefined
+    ? state.debug.operations.find((candidate) => candidate.state.phase.kind !== 'terminal')
+    : state.debug.operations.find((candidate) => candidate.state.runId === activeRunId);
+  if (operation === undefined) return undefined;
+  const control = operation.state.control;
+  if (control.status === 'detached') return 'driver detached';
+  if (control.status === 'abort_requested') return 'abort requested';
+  return `driver g${String(operation.state.driverGeneration)}`;
 }
 
 function permissionLabel(state: CodingAgentTuiState): string | undefined {

@@ -1,4 +1,11 @@
-import type { AgentEndedRunResult, AgentProgressEvent, AgentRunPhase } from '@agent-core/runtime';
+import type {
+  AgentCheckResult,
+  AgentEndedRunResult,
+  AgentProgressEvent,
+  AgentRunPhase,
+  AgentSessionState
+} from '@agent-core/runtime';
+import type { RunChangeReport } from '../changes/run-change-report.js';
 import type { CodingAgentTuiState } from './state.js';
 import type { CodingAgentTuiActivityEntry } from './conversation-model.js';
 import { appendNotice, upsertActivity, upsertAssistant, upsertReasoning } from './conversation.js';
@@ -97,7 +104,7 @@ function reduceReasoning(state: CodingAgentTuiState, event: ProgressEvent<'assis
 function reduceToolCall(state: CodingAgentTuiState, event: ProgressEvent<'tool.call.received'>): CodingAgentTuiState {
   return upsertActivity(
     withWorking(state, 'Preparing tool'),
-    pendingToolActivity(toolActivityId(event), event.toolCall)
+    pendingToolActivity(toolActivityId({ ...event, runId: currentRunId(state) }), event.toolCall)
   );
 }
 
@@ -119,12 +126,12 @@ function reduceModelFailed(state: CodingAgentTuiState, event: ProgressEvent<'mod
 function reduceToolStarted(state: CodingAgentTuiState, event: ProgressEvent<'tool.started'>): CodingAgentTuiState {
   return upsertActivity(
     withWorking(state, 'Running tool'),
-    runningToolActivity(toolActivityId(event), event.input, event.effects)
+    runningToolActivity(toolActivityId({ ...event, runId: currentRunId(state) }), event.input, event.effects)
   );
 }
 
 function reduceToolUpdated(state: CodingAgentTuiState, event: ProgressEvent<'tool.updated'>): CodingAgentTuiState {
-  const id = toolActivityId(event);
+  const id = toolActivityId({ ...event, runId: currentRunId(state) });
   const label = progressLabel(event.progress);
   return upsertActivity(
     withWorking(state, 'Running tool'),
@@ -141,7 +148,7 @@ function progressLabel(progress: import('@agent-core/tools').ToolProgress): stri
 }
 
 function reduceToolEnded(state: CodingAgentTuiState, event: ProgressEvent<'tool.ended'>): CodingAgentTuiState {
-  const id = toolActivityId(event);
+  const id = toolActivityId({ ...event, runId: currentRunId(state) });
   return upsertActivity(
     withWorking(state, event.observation.ok ? 'Working' : 'Tool failed'),
     completedToolActivity(activity(state, id), id, event.toolName, event.observation)
@@ -149,24 +156,81 @@ function reduceToolEnded(state: CodingAgentTuiState, event: ProgressEvent<'tool.
 }
 
 function reduceCheckEnded(state: CodingAgentTuiState, event: ProgressEvent<'check.ended'>): CodingAgentTuiState {
-  const status = event.result.verdict === 'passed'
+  return applyCheckResult(state, event.result, currentRunId(state));
+}
+
+export function applyCheckResult(
+  state: CodingAgentTuiState,
+  result: AgentCheckResult,
+  runId: string
+): CodingAgentTuiState {
+  const status = result.verdict === 'passed'
     ? 'success'
-    : event.result.verdict === 'failed' && event.result.requirement === 'required' ? 'failed' : 'warning';
+    : result.verdict === 'failed' && result.requirement === 'required' ? 'failed' : 'warning';
   const details = [
-    event.result.diagnostic?.message,
-    event.result.output === undefined ? undefined : JSON.stringify(event.result.output, null, 2),
-    event.result.artifacts === undefined || event.result.artifacts.length === 0
+    result.diagnostic?.message,
+    result.output === undefined ? undefined : JSON.stringify(result.output, null, 2),
+    result.artifacts === undefined || result.artifacts.length === 0
       ? undefined
-      : `Artifacts\n${event.result.artifacts.map((artifact) => artifact.artifactId).join('\n')}`
+      : `Artifacts\n${result.artifacts.map((artifact) => artifact.artifactId).join('\n')}`
   ].filter((part): part is string => part !== undefined && part.length > 0).join('\n\n');
   return upsertActivity(state, {
-    id: `check:${event.result.id}`,
+    id: `check:${runId}:${result.id}`,
     kind: 'activity',
     activity: 'check',
-    label: `Check ${event.result.id}`,
+    label: `Check ${result.id}`,
     status,
-    summary: compact(event.result.summary),
+    summary: compact(result.summary),
     ...(details.length === 0 ? {} : { details: details.length <= 6_000 ? details : `${details.slice(0, 5_999)}…` })
+  });
+}
+
+export function applySessionState(
+  state: CodingAgentTuiState,
+  session: AgentSessionState
+): CodingAgentTuiState {
+  const reasoning = session.configuration.reasoning;
+  return {
+    ...state,
+    runtimeDetails: {
+      ...state.runtimeDetails,
+      providerId: session.configuration.provider,
+      modelId: session.configuration.model,
+      ...(session.configuration.temperature === undefined ? {} : { temperature: session.configuration.temperature }),
+      ...(reasoning?.strategy === 'effort' ? { reasoningEffort: reasoning.effort } : {})
+    },
+    debug: { ...state.debug, session }
+  };
+}
+
+export function applyChangeReport(
+  state: CodingAgentTuiState,
+  report: RunChangeReport
+): CodingAgentTuiState {
+  const structured = report.changes.filter((change) => change.attribution === 'structured_mutation').length;
+  const external = report.changes.filter((change) => change.attribution === 'external_or_concurrent').length;
+  const summary = report.totalChanges === 0
+    ? 'No workspace changes'
+    : `${String(report.totalChanges)} changed path${report.totalChanges === 1 ? '' : 's'} · ${String(structured)} structured · ${String(external)} external/concurrent`;
+  const details = [
+    ...report.changes.map((change) => `${change.kind} ${change.path} · ${change.attribution}${change.conflicts.length === 0 ? '' : ` · ${change.conflicts.join(', ')}`}`),
+    ...(report.omittedChanges === 0 ? [] : [`${String(report.omittedChanges)} additional changes omitted`]),
+    ...(report.causes.length === 0 ? [] : ['', `Coverage causes\n${report.causes.join('\n')}`])
+  ].join('\n');
+  const reports = state.debug.changeReports.some((candidate) => candidate.runId === report.runId)
+    ? state.debug.changeReports.map((candidate) => candidate.runId === report.runId ? report : candidate)
+    : [...state.debug.changeReports, report];
+  return upsertActivity({
+    ...state,
+    debug: { ...state.debug, changeReports: reports }
+  }, {
+    id: `change:${report.runId}`,
+    kind: 'activity',
+    activity: 'change',
+    label: 'Workspace changes',
+    status: report.coverage === 'partial' ? 'warning' : 'success',
+    summary,
+    ...(details.length === 0 ? {} : { details })
   });
 }
 
@@ -184,11 +248,15 @@ function applyTerminal(
   deliveryDiagnostics: AgentEndedRunResult['deliveryDiagnostics']
 ): CodingAgentTuiState {
   const presentation = terminalPresentation(terminal);
-  let next: CodingAgentTuiState = {
-    ...state,
+  let next: CodingAgentTuiState = terminal.checkResults.reduce(
+    (current, check) => applyCheckResult(current, check, terminal.runId),
+    state
+  );
+  next = {
+    ...next,
     run: { kind: 'ended', terminal },
     debug: {
-      ...state.debug,
+      ...next.debug,
       phase: 'ended',
       budget: terminal.budget,
       terminal,
@@ -208,6 +276,13 @@ function applyTerminal(
   return next;
 }
 
+export function applyHydratedTerminal(
+  state: CodingAgentTuiState,
+  terminal: AgentEndedRunResult['terminal']
+): CodingAgentTuiState {
+  return applyTerminal(state, terminal, []);
+}
+
 function hasVisibleMessage(state: CodingAgentTuiState, message: string): boolean {
   const normalized = message.trim();
   return state.conversation.items.some((item) =>
@@ -222,6 +297,11 @@ function activity(state: CodingAgentTuiState, id: string): CodingAgentTuiActivit
 function withWorking(state: CodingAgentTuiState, label: string): CodingAgentTuiState {
   const phase = state.run.kind === 'working' ? state.run.phase : state.debug.phase;
   return { ...state, run: { kind: 'working', label, ...(phase === undefined ? {} : { phase }) } };
+}
+
+function currentRunId(state: CodingAgentTuiState): string {
+  if (state.debug.runId === undefined) throw new Error('Run progress arrived before its durable run identity.');
+  return state.debug.runId;
 }
 
 function phaseLabel(phase: AgentRunPhase): string {

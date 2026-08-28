@@ -2,6 +2,7 @@ import { createScrollState, createTextAreaState } from '@ismail-elkorchi/termina
 import type { ScrollState, TextAreaState, UnscrolledSearchPickerState } from '@ismail-elkorchi/terminal-ui/behavior';
 import type {
   AgentApprovalSuspension,
+  AgentOperationInspection,
   AgentOperationSuspension,
   AgentDeliveryDiagnostic,
   AgentProgressEvent,
@@ -10,8 +11,12 @@ import type {
   AgentRunBudgetState,
   AgentRunConfiguration,
   AgentRunPhase,
+  AgentSessionState,
+  SessionPendingSubmission,
+  SessionReplayState,
   AgentTerminalSnapshot
 } from '@agent-core/runtime';
+import type { RunChangeReport } from '../changes/run-change-report.js';
 import type { CodingAgentTuiConversationEntry } from './conversation-model.js';
 
 export interface CodingAgentTuiRuntimeDetails {
@@ -46,6 +51,11 @@ export interface CodingAgentTuiDebugState {
   readonly latestCheckpoint?: Extract<AgentProgressEvent, { readonly type: 'context.checkpoint.created' }>;
   readonly terminal?: AgentTerminalSnapshot;
   readonly deliveryDiagnostics: readonly AgentDeliveryDiagnostic[];
+  readonly session?: AgentSessionState;
+  readonly replayState?: SessionReplayState;
+  readonly pendingSubmissions: readonly SessionPendingSubmission[];
+  readonly operations: readonly AgentOperationInspection[];
+  readonly changeReports: readonly RunChangeReport[];
 }
 
 export type CodingAgentTuiRunState =
@@ -76,6 +86,8 @@ export interface CodingAgentTuiConversationState {
 export interface CodingAgentTuiComposerState {
   readonly input: TextAreaState;
   readonly history: readonly string[];
+  readonly historyIndex: number | null;
+  readonly historyDraft: string;
   readonly submissionCount: number;
 }
 
@@ -91,17 +103,12 @@ export interface CodingAgentTuiState {
 }
 
 export function createInitialCodingAgentTuiState(
-  task: string,
   runtimeDetails: CodingAgentTuiRuntimeDetails = {}
 ): CodingAgentTuiState {
-  const trimmed = task.trim();
-  const items: readonly CodingAgentTuiConversationEntry[] = trimmed.length === 0
-    ? []
-    : [{ id: 'user:initial', kind: 'user', text: trimmed }];
   return {
     run: { kind: 'idle' },
     conversation: {
-      items,
+      items: [],
       omittedEntries: 0,
       omittedBytes: 0,
       scroll: createScrollState({ followTail: true }),
@@ -110,6 +117,8 @@ export function createInitialCodingAgentTuiState(
     composer: {
       input: createTextAreaState({ value: '', scroll: createScrollState({ followTail: true }) }),
       history: [],
+      historyIndex: null,
+      historyDraft: '',
       submissionCount: 0
     },
     overlay: { kind: 'none' },
@@ -117,7 +126,10 @@ export function createInitialCodingAgentTuiState(
     runtimeDetails,
     debug: {
       ...(runtimeDetails.sessionLocation === undefined ? {} : { sessionLocation: runtimeDetails.sessionLocation }),
-      deliveryDiagnostics: []
+      deliveryDiagnostics: [],
+      pendingSubmissions: [],
+      operations: [],
+      changeReports: []
     },
     nextLocalId: 1
   };

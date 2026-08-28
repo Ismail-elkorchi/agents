@@ -55,6 +55,15 @@ export function upsertActivity(state: CodingAgentTuiState, entry: CodingAgentTui
   };
 }
 
+export function upsertConversationEntry(
+  state: CodingAgentTuiState,
+  entry: CodingAgentTuiConversationEntry
+): CodingAgentTuiState {
+  return state.conversation.items.some((item) => item.id === entry.id)
+    ? replaceEntry(state, entry)
+    : appendEntry(state, entry);
+}
+
 export function toggleActivity(state: CodingAgentTuiState, id: string): CodingAgentTuiState {
   const expanded = state.conversation.expandedIds.includes(id);
   return {

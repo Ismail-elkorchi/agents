@@ -2,6 +2,8 @@ import {
   reliableSourceMessage,
   replaceableSourceMessage
 } from '@ismail-elkorchi/terminal-ui/tui';
+import { ignoreMessage } from '@ismail-elkorchi/terminal-ui/interaction';
+import type { MessageResolution } from '@ismail-elkorchi/terminal-ui/interaction';
 import type {
   TuiEventSource,
   TuiSourceSink,
@@ -16,67 +18,74 @@ export class CodingAgentTuiEventSource implements TuiEventSource<CodingAgentTuiM
   readonly source = 'external';
   readonly channel = { capacity: 64 };
 
-  private readonly queued: CodingAgentTuiMessage[] = [];
-  private readonly waiters: ((message: CodingAgentTuiMessage | undefined) => void)[] = [];
-  private closed = false;
-  private static readonly MAX_QUEUED_MESSAGES = 1024;
+  private readonly attached = deferred<TuiSourceSink<CodingAgentTuiMessage>>();
+  private readonly completion = deferred<undefined>();
+  private admission: Promise<void> = Promise.resolve();
+  private accepting = true;
+  private running = false;
+  private cancelled = false;
+  private failed = false;
 
-  enqueue(message: CodingAgentTuiMessage): void {
-    if (this.closed) return;
-    const waiter = this.waiters.shift();
-    if (waiter !== undefined) {
-      waiter(message);
-      return;
-    }
-    if (this.queued.length >= CodingAgentTuiEventSource.MAX_QUEUED_MESSAGES) {
-      const disposable = this.queued.findIndex(isDisposableProgressMessage);
-      this.queued.splice(disposable >= 0 ? disposable : 0, 1);
-    }
-    this.queued.push(message);
+  enqueue(message: CodingAgentTuiMessage): Promise<void> {
+    if (!this.accepting) return Promise.reject(new Error('Coding Agent TUI event source is closed.'));
+    const admission = this.admission.then(async () => {
+      const sink = await this.attached.promise;
+      await sink.emit(sourceEmission(message));
+    });
+    this.admission = admission;
+    void admission.catch((cause: unknown) => {
+      this.failed = true;
+      this.completion.reject(cause);
+    });
+    return admission;
   }
 
   async run(
     context: TuiSubscriptionContext,
     sink: TuiSourceSink<CodingAgentTuiMessage>
   ): Promise<void> {
-    while (!this.closed && !context.signal.aborted) {
-      const next = await this.next(context.signal);
-      if (next === undefined) return;
-      await sink.emit(sourceEmission(next));
+    if (this.running) throw new Error('Coding Agent TUI event source is already running.');
+    this.running = true;
+    this.attached.resolve(sink);
+    await Promise.race([this.completion.promise, aborted(context.signal)]);
+    if (context.signal.aborted) {
+      this.accepting = false;
+      this.cancelled = true;
     }
   }
 
-  dispose(): void {
-    this.close();
+  onLifecycle(
+    event: import('@ismail-elkorchi/terminal-ui/tui').TuiSourceLifecycle
+  ): MessageResolution<CodingAgentTuiMessage> {
+    return event.kind === 'failed'
+      ? { type: 'delivery.failed', message: event.diagnostic.message }
+      : ignoreMessage();
   }
 
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    const waiters = this.waiters.splice(0);
-    this.queued.splice(0);
-    for (const waiter of waiters) {
-      waiter(undefined);
+  async dispose(): Promise<void> {
+    if (this.cancelled || this.failed) {
+      this.accepting = false;
+      await this.admission.catch(() => undefined);
+      return;
     }
+    return this.close();
   }
 
-  private next(signal: AbortSignal): Promise<CodingAgentTuiMessage | undefined> {
-    const queued = this.queued.shift();
-    if (queued !== undefined || this.closed) return Promise.resolve(queued);
-    if (signal.aborted) return Promise.resolve(undefined);
-    return new Promise((resolve) => {
-      const waiter = (message: CodingAgentTuiMessage | undefined): void => {
-        signal.removeEventListener('abort', abort);
-        resolve(message);
-      };
-      const abort = (): void => {
-        const index = this.waiters.indexOf(waiter);
-        if (index >= 0) this.waiters.splice(index, 1);
-        resolve(undefined);
-      };
-      signal.addEventListener('abort', abort, { once: true });
-      this.waiters.push(waiter);
-    });
+  async close(): Promise<void> {
+    if (this.cancelled) {
+      await this.admission.catch(() => undefined);
+      return;
+    }
+    if (!this.accepting) return this.admission;
+    this.accepting = false;
+    if (!this.running) this.attached.reject(new Error('Coding Agent TUI event source closed before attachment.'));
+    try {
+      await this.admission;
+      this.completion.resolve(undefined);
+    } catch (cause) {
+      this.completion.reject(cause);
+      throw cause;
+    }
   }
 }
 
@@ -103,11 +112,26 @@ function sourceEmission(message: CodingAgentTuiMessage): TuiSourceEmission<Codin
   }
 }
 
-function isDisposableProgressMessage(message: CodingAgentTuiMessage): boolean {
-  return message.type === 'progress' && (
-    message.event.type === 'assistant.delta'
-    || message.event.type === 'assistant.reasoning'
-    || message.event.type === 'assistant.status'
-    || message.event.type === 'tool.updated'
-  );
+interface Deferred<T> {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+  readonly reject: (cause: unknown) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (cause: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  void promise.catch(() => undefined);
+  return { promise, resolve, reject };
+}
+
+function aborted(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    signal.addEventListener('abort', () => { resolve(); }, { once: true });
+  });
 }

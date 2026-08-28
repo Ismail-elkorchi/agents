@@ -116,7 +116,10 @@ Deterministic checks inspect only their admitted candidate and evidence. In `dev
 
 For every ended run, Coding Agent compares the exact root-bound workspace state captured before runtime effects with the final state and reduces `apply_patch` ledger receipts into a bounded durable change report. The CLI prints changed paths and distinguishes structured mutations from external or concurrent changes. A path already reported by the initial Git observation remains marked as changed before the run; Coding Agent never assumes the workspace started clean. Binary, oversized, aliased, unreadable, or truncated evidence makes coverage explicitly partial. Model prose is candidate narrative, not authority for changed paths or verification status, and command effects are never described as undoable.
 
+The interactive TUI restores durable conversation, terminal checks and changes, queued work, driver control, approvals, and unknown-effect recovery before accepting live events. Its status line retains the active trust, sandbox, and permission boundary. Use Up and Down at the first or last composer line to browse sent messages; the current draft is restored when history browsing ends.
+
 Run `npm run verify:release` for the full repository gate.
+
 ## Complete CLI option reference
 
 Run `coding-agent [initial task] [options]` for the interactive TUI. Run `coding-agent exec <task|-> [options]` for one noninteractive task; `-` reads the task from standard input.

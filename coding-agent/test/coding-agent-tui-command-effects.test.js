@@ -23,7 +23,7 @@ test('delayed command effects preserve progress received while the effect is run
 
   await waitFor(() => host.frames().length > 0);
   host.input('/delayed\r');
-  events.enqueue({
+  await events.enqueue({
     type: 'progress',
     event: {
       type: 'assistant.ended',
@@ -39,7 +39,7 @@ test('delayed command effects preserve progress received while the effect is run
   await waitFor(() => host.frames().length > 3);
   host.input('/exit\r');
   const exit = await running;
-  events.close();
+  await events.close();
 
   assert.ok(exit.state.conversation.items.some((item) =>
     item.kind === 'assistant' && item.text === 'Progress received during command.'

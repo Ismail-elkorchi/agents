@@ -27,7 +27,7 @@ import {
 } from '@ismail-elkorchi/terminal-ui/components';
 import type { Element, InlineContent } from '@ismail-elkorchi/terminal-ui/components';
 import { column, grid, overlay, row, viewport } from '@ismail-elkorchi/terminal-ui/layout';
-import { wrapTextCells } from '@ismail-elkorchi/terminal-ui/text';
+import { textDocumentText, wrapTextCells } from '@ismail-elkorchi/terminal-ui/text';
 import { defineTui } from '@ismail-elkorchi/terminal-ui/tui';
 import type {
   TuiContext,
@@ -42,11 +42,20 @@ import {
   applyCommandExecution,
   applyCommandFailure,
   editComposer,
+  navigateComposerHistory,
   setComposerText,
   submitComposer
 } from './command-surface.js';
 import type { CodingAgentTuiCommandHandler } from './command-surface.js';
-import { applyFailure, applyProgress, applyResult } from './event-reducer.js';
+import {
+  applyChangeReport,
+  applyFailure,
+  applyProgress,
+  applyResult,
+  applySessionState
+} from './event-reducer.js';
+import { hydrateCodingAgentTuiState } from './hydration.js';
+import type { CodingAgentTuiHydration } from './hydration.js';
 import type { CodingAgentTuiMessage } from './messages.js';
 import { createInitialCodingAgentTuiState } from './state.js';
 import type {
@@ -55,13 +64,19 @@ import type {
   CodingAgentTuiState,
 } from './state.js';
 import type { CodingAgentTuiActivityEntry, CodingAgentTuiConversationEntry } from './conversation-model.js';
-import { conversationText, toggleActivity } from './conversation.js';
+import {
+  appendUser,
+  conversationText,
+  toggleActivity,
+  upsertConversationEntry
+} from './conversation.js';
 import { INTERACTIVE_COMMANDS } from './interactive-commands.js';
 
 export interface CodingAgentTuiAppOptions {
   readonly eventSource?: TuiEventSource<CodingAgentTuiMessage>;
   readonly commandHandler?: CodingAgentTuiCommandHandler;
   readonly runtimeDetails?: CodingAgentTuiRuntimeDetails;
+  readonly initialHydration?: CodingAgentTuiHydration;
   readonly approvalHandler?: (
     suspension: AgentApprovalSuspension,
     decision: 'allow' | 'deny'
@@ -73,7 +88,7 @@ export function createCodingAgentTuiApp(task: string, options: CodingAgentTuiApp
   return defineTui<CodingAgentTuiState, CodingAgentTuiMessage>({
     id: 'coding-agent',
     init: () => ({
-      state: createInitialCodingAgentTuiState(task, options.runtimeDetails),
+      state: initialState(task, options),
       focus: { kind: 'element', elementId: 'composer' }
     }),
     update: (state, message, context) => updateCodingAgentTui(state, message, context, options),
@@ -83,6 +98,8 @@ export function createCodingAgentTuiApp(task: string, options: CodingAgentTuiApp
       binding('help', 'f1', {}, { type: 'overlay.open', overlay: 'help' }, ({ state }) => canOpenOverlay(state)),
       binding('page-up', 'pageUp', {}, { type: 'conversation.scroll', transition: { kind: 'scrollPages', rows: -1 } }, ({ state }) => canScroll(state)),
       binding('page-down', 'pageDown', {}, { type: 'conversation.scroll', transition: { kind: 'scrollPages', rows: 1 } }, ({ state }) => canScroll(state)),
+      binding('composer-history-previous', 'arrowUp', {}, { type: 'composer.history', direction: 'previous' }, composerHistoryPreviousEnabled),
+      binding('composer-history-next', 'arrowDown', {}, { type: 'composer.history', direction: 'next' }, composerHistoryNextEnabled),
       binding('composer-submit', 'enter', {}, { type: 'composer.submit' }, composerBindingEnabled),
       binding(
         'composer-newline-shift-enter',
@@ -101,6 +118,15 @@ export function createCodingAgentTuiApp(task: string, options: CodingAgentTuiApp
   });
 }
 
+function initialState(task: string, options: CodingAgentTuiAppOptions): CodingAgentTuiState {
+  const initial = createInitialCodingAgentTuiState(options.runtimeDetails);
+  const hydrated = options.initialHydration === undefined
+    ? initial
+    : hydrateCodingAgentTuiState(initial, options.initialHydration);
+  const normalizedTask = task.trim();
+  return normalizedTask.length === 0 ? hydrated : appendUser(hydrated, normalizedTask);
+}
+
 function updateCodingAgentTui(
   state: CodingAgentTuiState,
   message: CodingAgentTuiMessage,
@@ -111,6 +137,18 @@ function updateCodingAgentTui(
     case 'progress': return updated(applyProgress(state, message.event), context);
     case 'result': return updated(applyResult(state, message.result), context);
     case 'failure': return updated(applyFailure(state, message.message), context);
+    case 'delivery.failed': return {
+      state: reconcileConversationLayout(applyFailure(state, message.message), context),
+      exit: { reason: 'event-delivery-failed' }
+    };
+    case 'session.updated': return updated(applySessionState(state, message.state), context);
+    case 'session.compacted': return updated(upsertConversationEntry(state, {
+      id: `session:${message.compaction.id}`,
+      kind: 'notice',
+      tone: 'info',
+      text: `Session compacted · ${message.compaction.provider}/${message.compaction.model}\n${message.compaction.summary}`
+    }), context);
+    case 'change.reported': return updated(applyChangeReport(state, message.report), context);
     case 'approval.required': return updated({
       ...state,
       run: { kind: 'waiting_for_approval', suspension: message.suspension },
@@ -130,6 +168,7 @@ function updateCodingAgentTui(
       };
     }
     case 'composer.edit': return updated(editComposer(state, message.transition), context);
+    case 'composer.history': return updated(navigateComposerHistory(state, message.direction), context);
     case 'composer.submit': return submit(state, context, options.commandHandler);
     case 'command.completed': {
       const result = applyCommandExecution(state, message.execution, message.recordResult);
@@ -417,8 +456,8 @@ function conversationEntryView(entry: CodingAgentTuiConversationEntry, state: Co
 }
 
 function overlayView(state: CodingAgentTuiState, context: TuiContext): Element<CodingAgentTuiMessage> | undefined {
-  const width = Math.max(30, Math.min(84, context.terminalSize.columns - 4));
-  const height = Math.max(8, Math.min(20, context.terminalSize.rows - 4));
+  const width = Math.max(5, Math.min(84, context.terminalSize.columns - 4));
+  const height = Math.max(4, Math.min(20, context.terminalSize.rows - 4));
   switch (state.overlay.kind) {
     case 'none': return undefined;
     case 'commands': return dialog({
@@ -459,7 +498,7 @@ function overlayView(state: CodingAgentTuiState, context: TuiContext): Element<C
       }
     });
     case 'help': return dialog({
-      ...modalOptions('help-dialog', 'Keyboard shortcuts', 'help-content', width, 13),
+      ...modalOptions('help-dialog', 'Keyboard shortcuts', 'help-content', width, Math.min(13, height)),
       slots: {
         content: richText({
           id: 'help-content',
@@ -467,6 +506,7 @@ function overlayView(state: CodingAgentTuiState, context: TuiContext): Element<C
             'Enter             Send message',
             'Shift+Enter       Insert newline (enhanced terminals)',
             'Ctrl+O            Insert newline',
+            'Up/Down           Browse sent messages',
             'Ctrl+P            Commands',
             'Ctrl+F            Find in conversation',
             'PageUp/PageDown   Scroll conversation',
@@ -494,7 +534,7 @@ function approvalDialog(state: CodingAgentTuiState, context: TuiContext): Elemen
   if (state.run.kind !== 'waiting_for_approval') return text({ content: '' });
   const suspension = state.run.suspension;
   const approval = suspension.pendingApprovals[0];
-  const width = Math.max(36, Math.min(88, context.terminalSize.columns - 4));
+  const width = Math.max(5, Math.min(88, context.terminalSize.columns - 4));
   const bodyElement = approval === undefined
     ? richText({ id: 'approval-missing', segments: errorText('The runtime suspended without an approval request.'), wrap: true })
     : approvalContent(approval, suspension.pendingApprovals.length, state);
@@ -513,7 +553,7 @@ function approvalDialog(state: CodingAgentTuiState, context: TuiContext): Elemen
       ], { id: 'approval-actions', gap: 2 })
     },
     width,
-    height: Math.max(12, Math.min(18, context.terminalSize.rows - 4)),
+    height: Math.max(4, Math.min(18, context.terminalSize.rows - 4)),
     padding: 1
   });
 }
@@ -746,7 +786,7 @@ function modalOptions(id: string, title: string, focusId: string, width: number,
 
 function binding(
   id: string,
-  key: 'p' | 'f' | 'f1' | 'pageUp' | 'pageDown' | 'enter' | 'o',
+  key: 'p' | 'f' | 'f1' | 'pageUp' | 'pageDown' | 'arrowUp' | 'arrowDown' | 'enter' | 'o',
   modifiers: { readonly ctrl?: boolean; readonly shift?: boolean },
   message: CodingAgentTuiMessage,
   enabled: (context: TuiInputBindingContext<CodingAgentTuiState>) => boolean
@@ -764,6 +804,19 @@ function composerBindingEnabled({ state, focusPath }: TuiInputBindingContext<Cod
   return state.overlay.kind === 'none'
     && state.run.kind !== 'waiting_for_approval'
     && focusPath?.includes('composer') === true;
+}
+
+function composerHistoryPreviousEnabled(context: TuiInputBindingContext<CodingAgentTuiState>): boolean {
+  if (!composerBindingEnabled(context) || context.state.composer.history.length === 0) return false;
+  if (context.state.composer.historyIndex !== null) return true;
+  const input = context.state.composer.input;
+  return !textDocumentText(input.document).slice(0, input.caret.position.offset).includes('\n');
+}
+
+function composerHistoryNextEnabled(context: TuiInputBindingContext<CodingAgentTuiState>): boolean {
+  if (!composerBindingEnabled(context) || context.state.composer.historyIndex === null) return false;
+  const input = context.state.composer.input;
+  return !textDocumentText(input.document).slice(input.caret.position.offset).includes('\n');
 }
 
 function composerNewlineMessage(): CodingAgentTuiMessage {

@@ -15,17 +15,18 @@ test('tool activity collapses success, expands failure, and keeps bounded eviden
   const running = runTui(app, { host });
   await waitFor(() => host.frames().length > 0);
 
-  events.enqueue({ type: 'progress', event: toolStarted('call-ok', 'echo ok') });
-  events.enqueue({ type: 'progress', event: toolEnded('call-ok', true, 'Command completed.') });
-  events.enqueue({ type: 'progress', event: toolStarted('call-failed', 'false') });
-  events.enqueue({ type: 'progress', event: toolEnded('call-failed', false, 'Command failed.') });
+  await events.enqueue({ type: 'progress', event: { type: 'turn.started', runId: 'run', turnIndex: 1, turnId: 'turn-1', requestAttempt: 1 } });
+  await events.enqueue({ type: 'progress', event: toolStarted('call-ok', 'echo ok') });
+  await events.enqueue({ type: 'progress', event: toolEnded('call-ok', true, 'Command completed.') });
+  await events.enqueue({ type: 'progress', event: toolStarted('call-failed', 'false') });
+  await events.enqueue({ type: 'progress', event: toolEnded('call-failed', false, 'Command failed.') });
   await waitFor(() => host.frames().length > 1);
   host.input('/exit\r');
   const exit = await running;
-  events.close();
+  await events.close();
 
-  const success = exit.state.conversation.items.find((item) => item.id === 'tool:call-ok');
-  const failure = exit.state.conversation.items.find((item) => item.id === 'tool:call-failed');
+  const success = exit.state.conversation.items.find((item) => item.id === 'tool:run:call-ok');
+  const failure = exit.state.conversation.items.find((item) => item.id === 'tool:run:call-failed');
   assert.equal(success.status, 'success');
   assert.equal(failure.status, 'failed');
   assert.ok(!exit.state.conversation.expandedIds.includes(success.id));

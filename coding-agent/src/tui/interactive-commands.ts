@@ -26,13 +26,8 @@ export type InteractiveCommandName =
 
 export interface InteractiveCommandResult {
   readonly message: string;
-  readonly effect?: InteractiveCommandEffect;
   readonly view?: 'debug';
 }
-
-export type InteractiveCommandEffect =
-  | { readonly type: 'follow-up-queued'; readonly task: string }
-  | { readonly type: 'abort-requested'; readonly reason: string };
 
 export const INTERACTIVE_COMMAND_REGISTRY = {
   '/exit': command('/exit', 'Exit the interactive surface.', false, () => ({ message: 'Exit requested.' })),
@@ -44,14 +39,14 @@ export const INTERACTIVE_COMMAND_REGISTRY = {
   '/follow': command('/follow', 'Queue a follow-up after current work.', true, async (session, value) => {
     const result = await session.submit({ task: value }, { delivery: 'follow_up' });
     return result.kind === 'queued'
-      ? { message: 'Follow-up queued.', effect: { type: 'follow-up-queued', task: value } }
+      ? { message: 'Follow-up queued.' }
       : { message: 'Run started.' };
   }),
   '/compact': command('/compact', 'Summarize stable session history for future turns.', false, async (session) => {
     const compaction = await session.compact();
     return { message: `Session compacted with ${compaction.provider}/${compaction.model}.` };
   }),
-  '/abort': command('/abort', 'Abort the active run.', false, async (session, value) => { if (!await session.abort(value || undefined, session.state().activeRunId)) throw new Error('No active run to abort.'); return { message: 'Abort requested.', effect: { type: 'abort-requested', reason: value || 'requested' } }; }),
+  '/abort': command('/abort', 'Abort the active run.', false, async (session, value) => { if (!await session.abort(value || undefined, session.state().activeRunId)) throw new Error('No active run to abort.'); return { message: 'Abort requested.' }; }),
   '/status': command('/status', 'Show the current session status.', false, session => ({ message: runtimeStatus(session.state()) })),
   '/debug': command('/debug', 'Inspect detailed session state.', false, session => ({ message: JSON.stringify(session.state(), null, 2), view: 'debug' }))
 } satisfies Record<InteractiveCommandName, InteractiveCommandSpec>;

@@ -106,6 +106,7 @@ interface PersistedModelSettings {
 
 interface CliRuntime {
   agent: AgentSession;
+  operations: AgentOperationCoordinator;
   events: JsonlEventRepository<AgentEvent>;
   sessions: JsonlSessionRepository;
   session: SessionDescriptor;
@@ -188,7 +189,25 @@ export async function main(argv: string[]): Promise<void> {
     await runCodingAgentTuiApp(runtime.agent, {
         ...(task.length > 0 ? { initialTask: task } : {}),
         progress,
-        runtimeDetails: runtime.tuiDetails
+        runtimeDetails: runtime.tuiDetails,
+        loadHydration: async () => {
+          const [replay, pendingSubmissions] = await Promise.all([
+            runtime.sessions.loadReplayState(runtime.session.id),
+            runtime.sessions.loadPendingSubmissions(runtime.session.id)
+          ]);
+          const [operations, reports] = await Promise.all([
+            Promise.all(pendingSubmissions.map((submission) => runtime.operations.inspect(submission.runId))),
+            Promise.all(replay.terminalProjections.map((projection) => runtime.changeReports.read(projection.runId)))
+          ]);
+          return {
+            session: runtime.agent.state(),
+            replay,
+            pendingSubmissions,
+            operations,
+            changeReports: reports.filter((report): report is RunChangeReport => report !== undefined)
+          };
+        },
+        loadChangeReport: (runId) => runtime.changeReports.read(runId)
       });
     console.error(`\nSession: ${runtime.sessions.location(runtime.session.id)}`);
   });
@@ -329,10 +348,11 @@ async function createRuntime(
       root: openedWorkspace.fileRoot,
       events
     });
+    const operations = new AgentOperationCoordinator(events);
     const agent = new AgentSession({
       descriptor: sessionBinding.session,
       repository: sessionBinding.repository,
-      operations: new AgentOperationCoordinator(events),
+      operations,
       configuration: {
         provider: providerRuntime.providerId,
         model: providerRuntime.model,
@@ -418,6 +438,7 @@ async function createRuntime(
     if (options.branch) await agent.branchFrom(options.branch, 'cli branch');
     return {
       agent,
+      operations,
       events,
       sessions: sessionBinding.repository,
       session: sessionBinding.session,

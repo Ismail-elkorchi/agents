@@ -2,6 +2,8 @@ export { CodingAgentTuiProgressRenderer, runCodingAgentTuiApp, runCodingAgentTui
 export type { CodingAgentTuiAppRunOptions, CodingAgentTuiAppRunResult } from './runtime.js';
 export { createCodingAgentTuiApp } from './app.js';
 export type { CodingAgentTuiAppOptions } from './app.js';
+export { hydrateCodingAgentTuiState } from './hydration.js';
+export type { CodingAgentTuiHydration } from './hydration.js';
 export { CodingAgentTuiEventSource } from './event-source.js';
 export type { CodingAgentTuiRuntimeDetails, CodingAgentTuiState } from './state.js';
 export {
@@ -11,7 +13,6 @@ export {
   parseInteractiveCommandLine
 } from './interactive-commands.js';
 export type {
-  InteractiveCommandEffect,
   InteractiveCommandEntry,
   InteractiveCommandName,
   InteractiveCommandResult

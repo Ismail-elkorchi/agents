@@ -14,18 +14,18 @@ test('TUI preserves terminal truth and does not duplicate the final answer', asy
   });
   const { host, events, running } = runProjectionApp();
   await waitFor(() => host.frames().length > 0);
-  events.enqueue({
+  await events.enqueue({
     type: 'progress',
     event: {
       type: 'assistant.ended', turnIndex: 1, turnId: 'turn-1', requestAttempt: 1,
       content: 'Answer.', candidate: { status: 'complete', message: 'Answer.', source: 'content', turnIndex: 1 }
     }
   });
-  events.enqueue({ type: 'result', result: { state: 'ended', terminal, deliveryDiagnostics: [] } });
+  await events.enqueue({ type: 'result', result: { state: 'ended', terminal, deliveryDiagnostics: [] } });
   await waitFor(() => host.frames().length > 2);
   host.input('/exit\r');
   const exit = await running;
-  events.close();
+  await events.close();
 
   assert.equal(exit.state.run.kind, 'ended');
   assert.equal(exit.state.run.terminal.verificationStatus, 'failed');
@@ -36,7 +36,11 @@ test('TUI preserves terminal truth and does not duplicate the final answer', asy
 test('advisory check failures remain visible without becoming required failures', async () => {
   const { host, events, running } = runProjectionApp();
   await waitFor(() => host.frames().length > 0);
-  events.enqueue({
+  await events.enqueue({
+    type: 'progress',
+    event: { type: 'turn.started', runId: 'run', turnIndex: 1, turnId: 'turn-1', requestAttempt: 1 }
+  });
+  await events.enqueue({
     type: 'progress',
     event: {
       type: 'check.ended', turnIndex: 1, turnId: 'turn-1', requestAttempt: 1,
@@ -46,9 +50,9 @@ test('advisory check failures remain visible without becoming required failures'
   await waitFor(() => host.frames().length > 1);
   host.input('/exit\r');
   const exit = await running;
-  events.close();
+  await events.close();
 
-  const check = exit.state.conversation.items.find((item) => item.id === 'check:style');
+  const check = exit.state.conversation.items.find((item) => item.id === 'check:run:style');
   assert.equal(check.status, 'warning');
   assert.equal(check.summary, 'Style issue');
 });
