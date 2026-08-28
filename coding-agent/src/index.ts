@@ -265,8 +265,8 @@ async function createRuntime(
     const artifactStore = localHost.artifactRepository;
     const estimator = new SimpleTokenEstimator();
     const localToolConfiguration = localHost.services.localToolConfiguration;
-    const processManager = localHost.processManager;
-    if (!processManager) throw new Error('Coding Agent requires the configured local process supervisor.');
+    const commandExecution = localHost.commandExecution;
+    if (!commandExecution) throw new Error('Coding Agent requires the configured local command authority.');
     const services = localHost.services;
     const configuredTools = localHost.tools;
     const agent = new AgentSession({
@@ -315,10 +315,10 @@ async function createRuntime(
           ...(authority.verificationCommands === 'ambient' ? { verification: { evidence: { read: () => Promise.resolve({ items: [], bytes: 0, truncated: false }), readArtifact: ref => artifactStore.readVerified(ref) }, runCommand: async (request, signal) => {
             const startedAt = Date.now();
             const outputTokenBudget = Math.max(64, Math.ceil((request.maxOutputBytes ?? 64_000) / 4));
-            let result = await processManager.start({
+            let result = await commandExecution.start({
               owner: request.owner,
               command: request.command,
-              cwd: workspace.workspaceRoot,
+              workspacePath: '.',
               pty: false,
               timeoutMs: request.timeoutMs ?? 60_000,
               yieldMs: localToolConfiguration.process.maxYieldMs,
@@ -329,7 +329,7 @@ async function createRuntime(
             let stderr = result.stderr.text;
             let cursor = result.cursorEnd;
             while (result.status === 'running') {
-              result = await processManager.poll(result.processId, outputTokenBudget, localToolConfiguration.process.maxYieldMs, cursor, request.owner);
+              result = await commandExecution.query(result.processId, outputTokenBudget, localToolConfiguration.process.maxYieldMs, cursor, request.owner);
               stdout += result.stdout.text;
               stderr += result.stderr.text;
               cursor = result.cursorEnd;
