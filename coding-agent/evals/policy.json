@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "runsPerTask": 3,
+  "mixedOutcomeExpansionRuns": 10,
+  "confidenceLevel": 0.95,
+  "regression": {
+    "minimumPassRateDecline": 0.15,
+    "requireNonOverlappingIntervals": true,
+    "dimensions": [
+      "providerRevision",
+      "modelRevision",
+      "promptRevision",
+      "toolContractRevision",
+      "policyRevision",
+      "sandboxRevision",
+      "repositoryCommit",
+      "taskVersion"
+    ]
+  },
+  "humanAudit": {
+    "minimumRuns": 8,
+    "minimumFraction": 0.2,
+    "stratifyBy": ["split", "outcome"],
+    "disagreementOutcome": "disputed",
+    "expandDisputedTaskToAllRuns": true
+  },
+  "holdout": {
+    "access": "campaign-runner-after-revisions-fixed",
+    "useForPromptIteration": false
+  }
+}
