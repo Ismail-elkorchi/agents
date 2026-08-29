@@ -51,9 +51,14 @@ jobs:
       - name: Build Agent Core
         working-directory: agent-core
         run: npm ci && npm run build
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Install Linux native target
+        if: runner.os == 'Linux'
+        run: rustup target add x86_64-unknown-linux-musl
       - name: Build Sandbox package
         working-directory: sandbox
-        run: npm ci && npm run build:ts
+        run: npm ci && npm run build
       - name: Enable native namespace conformance
         if: runner.os == 'Linux'
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
