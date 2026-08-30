@@ -3,7 +3,6 @@ import type {
   AgentEndedRunResult,
   AgentOperationSuspension,
   AgentProgressEvent,
-  AgentSessionState,
   SessionCompactionEntry
 } from '@agent-core/runtime';
 import type { RunChangeReport } from '../changes/run-change-report.js';
@@ -15,15 +14,19 @@ import type {
 } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { ScrollRequest } from '@ismail-elkorchi/terminal-ui/interaction';
 import type { CodingAgentTuiCommandExecution } from './command-surface.js';
+import type { CodingAgentInteractiveState } from './interactive-controller.js';
+import type { CodingAgentTuiHydration } from './hydration.js';
 
 export type CodingAgentTuiMessage =
   | { readonly type: 'progress'; readonly event: AgentProgressEvent }
   | { readonly type: 'result'; readonly result: AgentEndedRunResult }
   | { readonly type: 'failure'; readonly message: string }
   | { readonly type: 'delivery.failed'; readonly message: string }
-  | { readonly type: 'session.updated'; readonly state: AgentSessionState }
   | { readonly type: 'session.compacted'; readonly compaction: SessionCompactionEntry }
   | { readonly type: 'change.reported'; readonly report: RunChangeReport }
+  | { readonly type: 'interactive.state.changed'; readonly state: CodingAgentInteractiveState }
+  | { readonly type: 'interactive.notice'; readonly message: string; readonly tone?: 'info' | 'warning' | 'error' }
+  | { readonly type: 'session.hydrated'; readonly hydration: CodingAgentTuiHydration }
   | { readonly type: 'approval.required'; readonly suspension: AgentApprovalSuspension }
   | { readonly type: 'operation.suspended'; readonly suspension: AgentOperationSuspension }
   | { readonly type: 'approval.decide'; readonly decision: 'allow' | 'deny' }
@@ -40,6 +43,8 @@ export type CodingAgentTuiMessage =
   | { readonly type: 'modal.scrolled'; readonly offsetRow: number }
   | { readonly type: 'commands.transition'; readonly transition: SearchPickerControlTransition }
   | { readonly type: 'commands.accept'; readonly event: SearchPickerAcceptEvent }
+  | { readonly type: 'command-values.transition'; readonly transition: SearchPickerControlTransition }
+  | { readonly type: 'command-values.accept'; readonly event: SearchPickerAcceptEvent }
   | { readonly type: 'search.transition'; readonly transition: SearchPickerControlTransition }
   | { readonly type: 'search.accept'; readonly event: SearchPickerAcceptEvent }
   | { readonly type: 'terminal.resized' }

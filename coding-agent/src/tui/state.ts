@@ -19,6 +19,8 @@ import type {
 } from '@agent-core/runtime';
 import type { RunChangeReport } from '../changes/run-change-report.js';
 import type { CodingAgentTuiConversationEntry } from './conversation-model.js';
+import type { CodingAgentSetupRequirement } from './interactive-controller.js';
+import type { InteractiveCommandName } from './interactive-commands.js';
 
 export interface CodingAgentTuiRuntimeDetails {
   readonly providerId?: string;
@@ -27,6 +29,7 @@ export interface CodingAgentTuiRuntimeDetails {
   readonly reasoningEffort?: string;
   readonly showReasoning?: boolean;
   readonly sessionLocation?: string;
+  readonly workspaceTrust?: 'untrusted' | 'restricted' | 'trusted';
   readonly permissions?: {
     readonly mode: 'review' | 'edit' | 'develop';
     readonly trust: 'restricted' | 'trusted';
@@ -37,6 +40,11 @@ export interface CodingAgentTuiRuntimeDetails {
     readonly hostEscape: 'denied';
     readonly tools: readonly string[];
   };
+}
+
+export interface CodingAgentTuiSetupState {
+  readonly status: 'initializing' | 'setup_required' | 'ready';
+  readonly requirements: readonly CodingAgentSetupRequirement[];
 }
 
 export interface CodingAgentTuiDebugState {
@@ -71,6 +79,7 @@ export type CodingAgentTuiRunState =
 export type CodingAgentTuiOverlay =
   | { readonly kind: 'none' }
   | { readonly kind: 'commands'; readonly picker: CodingAgentTuiPickerState }
+  | { readonly kind: 'command_values'; readonly command: InteractiveCommandName; readonly picker: CodingAgentTuiPickerState }
   | { readonly kind: 'search'; readonly picker: CodingAgentTuiPickerState }
   | { readonly kind: 'help' }
   | { readonly kind: 'debug'; readonly text: string };
@@ -94,6 +103,7 @@ export interface CodingAgentTuiComposerState {
 }
 
 export interface CodingAgentTuiState {
+  readonly setup: CodingAgentTuiSetupState;
   readonly run: CodingAgentTuiRunState;
   readonly conversation: CodingAgentTuiConversationState;
   readonly composer: CodingAgentTuiComposerState;
@@ -105,9 +115,11 @@ export interface CodingAgentTuiState {
 }
 
 export function createInitialCodingAgentTuiState(
-  runtimeDetails: CodingAgentTuiRuntimeDetails = {}
+  runtimeDetails: CodingAgentTuiRuntimeDetails = {},
+  setup: CodingAgentTuiSetupState = { status: 'ready', requirements: [] }
 ): CodingAgentTuiState {
   return {
+    setup,
     run: { kind: 'idle' },
     conversation: {
       items: [],

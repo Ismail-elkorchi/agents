@@ -1,15 +1,18 @@
-import type { AgentSession, AgentEndedRunResult, AgentProgressEvent, AgentRunResult, AgentSessionSubmissionResult } from '@agent-core/runtime';
+import type { AgentEndedRunResult, AgentProgressEvent, AgentRunResult } from '@agent-core/runtime';
 import { createTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import type { TerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import { runTui } from '@ismail-elkorchi/terminal-ui/tui';
 import type { TuiExit } from '@ismail-elkorchi/terminal-ui/tui';
-import { executeInteractiveCommand } from './interactive-commands.js';
 import { normalizeTaskInput } from './task-input.js';
 import { createCodingAgentTuiApp } from './app.js';
 import { CodingAgentTuiEventSource } from './event-source.js';
 import type { CodingAgentTuiMessage } from './messages.js';
 import type { CodingAgentTuiState } from './state.js';
-import type { CodingAgentTuiRuntimeDetails } from './state.js';
+import type {
+  CodingAgentInteractiveController,
+  CodingAgentInteractiveEvent,
+  CodingAgentInteractiveState
+} from './interactive-controller.js';
 import type { CodingAgentTuiHydration } from './hydration.js';
 import type { RunChangeReport } from '../changes/run-change-report.js';
 
@@ -24,38 +27,27 @@ export class CodingAgentTuiProgressRenderer {
     this.dispatchReady.resolve(dispatch);
   }
 
-  handle(event: AgentProgressEvent): Promise<void> {
-    return this.enqueue({ type: 'progress', event });
-  }
-
-  flush(): Promise<void> {
-    return this.queue;
-  }
-
-  async showResult(result: AgentEndedRunResult): Promise<void> {
-    await this.enqueue({ type: 'result', result });
-  }
-
-  async showSuspension(suspension: Extract<AgentRunResult, { state: 'suspended' }>): Promise<void> {
-    await this.enqueue(suspension.reason === 'approval_required'
+  handle(event: AgentProgressEvent): Promise<void> { return this.enqueue({ type: 'progress', event }); }
+  flush(): Promise<void> { return this.queue; }
+  showResult(result: AgentEndedRunResult): Promise<void> { return this.enqueue({ type: 'result', result }); }
+  showSuspension(suspension: Extract<AgentRunResult, { state: 'suspended' }>): Promise<void> {
+    return this.enqueue(suspension.reason === 'approval_required'
       ? { type: 'approval.required', suspension }
       : { type: 'operation.suspended', suspension });
   }
-
-  async showFailure(message: string): Promise<void> {
-    await this.enqueue({ type: 'failure', message });
+  showFailure(message: string): Promise<void> { return this.enqueue({ type: 'failure', message }); }
+  showCompaction(compaction: import('@agent-core/runtime').SessionCompactionEntry): Promise<void> {
+    return this.enqueue({ type: 'session.compacted', compaction });
   }
-
-  async showSessionState(state: import('@agent-core/runtime').AgentSessionState): Promise<void> {
-    await this.enqueue({ type: 'session.updated', state });
+  showChangeReport(report: RunChangeReport): Promise<void> { return this.enqueue({ type: 'change.reported', report }); }
+  showInteractiveState(state: CodingAgentInteractiveState): Promise<void> {
+    return this.enqueue({ type: 'interactive.state.changed', state });
   }
-
-  async showCompaction(compaction: import('@agent-core/runtime').SessionCompactionEntry): Promise<void> {
-    await this.enqueue({ type: 'session.compacted', compaction });
+  showNotice(message: string, tone?: 'info' | 'warning' | 'error'): Promise<void> {
+    return this.enqueue({ type: 'interactive.notice', message, ...(tone === undefined ? {} : { tone }) });
   }
-
-  async showChangeReport(report: RunChangeReport): Promise<void> {
-    await this.enqueue({ type: 'change.reported', report });
+  showHydration(hydration: CodingAgentTuiHydration): Promise<void> {
+    return this.enqueue({ type: 'session.hydrated', hydration });
   }
 
   private enqueue(message: CodingAgentTuiMessage): Promise<void> {
@@ -72,10 +64,6 @@ export interface CodingAgentTuiAppRunOptions {
   readonly host?: TerminalHost;
   readonly initialTask?: string;
   readonly progress?: CodingAgentTuiProgressRenderer;
-  readonly exitOnCompletion?: boolean;
-  readonly runtimeDetails?: CodingAgentTuiRuntimeDetails;
-  readonly loadHydration?: () => Promise<CodingAgentTuiHydration>;
-  readonly loadChangeReport?: (runId: string) => Promise<RunChangeReport | undefined>;
 }
 
 export interface CodingAgentTuiAppRunResult {
@@ -84,95 +72,46 @@ export interface CodingAgentTuiAppRunResult {
 }
 
 export async function runCodingAgentTuiApp(
-  session: AgentSession,
+  controller: CodingAgentInteractiveController,
   options: CodingAgentTuiAppRunOptions = {}
 ): Promise<CodingAgentTuiAppRunResult> {
   const host = options.host ?? createTerminalHost({ runtime: 'node' });
   const ownsHost = options.host === undefined;
   const progress = options.progress ?? new CodingAgentTuiProgressRenderer();
   const events = new CodingAgentTuiEventSource();
+  const initialTask = normalizeTaskInput(options.initialTask ?? '');
   let result: AgentRunResult | undefined;
-  let failure: Error | undefined;
-  const exitOnCompletion = options.exitOnCompletion === true;
   let unsubscribe: (() => void) | undefined;
   let outcome!: Readonly<
     | { readonly kind: 'returned'; readonly value: CodingAgentTuiAppRunResult }
     | { readonly kind: 'failed'; readonly cause: unknown }
   >;
-  const initialTask = options.initialTask === undefined
-    ? undefined
-    : normalizeTaskInput(options.initialTask);
   try {
-    await session.restore();
-    const hydration = await options.loadHydration?.();
-    unsubscribe = session.subscribe(async (event) => {
-      if (event.type === 'run.progress') {
-        await progress.handle(event.event);
-        return;
-      }
-      if (event.type === 'configuration.changed' || event.type === 'input.queued') {
-        await progress.showSessionState(session.state());
-        return;
-      }
-      if (event.type === 'compaction.completed') {
-        await progress.showCompaction(event.compaction);
-        await progress.showSessionState(session.state());
-        return;
-      }
-      if (event.type === 'run.failed') {
-        await progress.showFailure(event.error.message);
-        if (exitOnCompletion) {
-          failure = event.error;
-          await events.enqueue({ type: 'app.exit', reason: 'failed' });
-        }
-        return;
-      }
-      result = event.result;
-      if (event.result.state === 'suspended') await progress.showSuspension(event.result);
-      else {
-        await progress.showResult(event.result);
-        const report = await options.loadChangeReport?.(event.runId);
-        if (report !== undefined) await progress.showChangeReport(report);
-      }
-      await progress.showSessionState(session.state());
-      if (exitOnCompletion && session.state().queuedInputs === 0) {
-        await events.enqueue({ type: 'app.exit', reason: event.result.state === 'ended'
-          ? `${event.result.terminal.executionStatus}:${event.result.terminal.verificationStatus}:${event.result.terminal.terminationReason}`
-          : event.result.reason });
-      }
-    });
-    const app = createCodingAgentTuiApp(normalizeTaskInput(initialTask ?? ''), {
+    const initial = controller.state();
+    const app = createCodingAgentTuiApp(initialTask, {
       eventSource: events,
-      ...(options.runtimeDetails === undefined ? {} : { runtimeDetails: options.runtimeDetails }),
-      ...(hydration === undefined ? {} : { initialHydration: hydration }),
-      approvalHandler: async (suspension, decision) => {
-        const approval = suspension.pendingApprovals[0];
-        if (approval === undefined) throw new Error('Approval suspension contains no pending request.');
-        await session.resolveApproval({ runId: suspension.runId, approvalId: approval.approvalId, fingerprint: approval.fingerprint, decision });
-      },
+      runtimeDetails: initial.runtimeDetails,
+      setup: { status: initial.status, requirements: initial.requirements },
+      approvalHandler: (suspension, decision) => controller.resolveApproval(suspension, decision),
       commandHandler: {
         execute(line) {
-          if (line === '/exit' || line === '/quit') {
-            return { message: 'Exiting.', exit: true };
-          }
-          if (!line.startsWith('/')) return session.submit({ task: line }).then(submissionMessage);
-          return executeInteractiveCommand(session, line);
+          if (line === '/exit' || line === '/quit') return { message: 'Exiting.', exit: true };
+          return line.startsWith('/') ? controller.execute(line) : controller.submit(line);
         }
       }
     });
     const exit = runTui(app, { host });
     progress.attachDispatch((message) => events.enqueue(message));
-    if (initialTask !== undefined && initialTask.length > 0) await session.submit({ task: initialTask });
-    else if (session.state().queuedInputs > 0) await session.resumePending();
+    unsubscribe = controller.subscribe(async (event) => {
+      result = await presentControllerEvent(event, progress, result);
+    });
+    try { await controller.start(); }
+    catch (error) { await progress.showFailure(errorMessage(error)); }
+    if (initialTask.length > 0) await controller.submit(initialTask);
     const exitResult = await exit;
     unsubscribe();
     unsubscribe = undefined;
-    const activeRunId = session.state().activeRunId;
-    if (activeRunId !== undefined && session.state().phase !== 'waiting_for_user') {
-      await session.abort('Coding Agent TUI closed.', activeRunId);
-    }
-    await session.waitForIdle();
-    if (failure !== undefined) throw failure;
+    await controller.close();
     outcome = {
       kind: 'returned',
       value: result === undefined ? { exit: exitResult } : { exit: exitResult, result }
@@ -181,8 +120,9 @@ export async function runCodingAgentTuiApp(
     outcome = { kind: 'failed', cause };
   }
   const cleanupFailures: unknown[] = [];
-  try { await progress.flush(); } catch (cause) { cleanupFailures.push(cause); }
   try { unsubscribe?.(); } catch (cause) { cleanupFailures.push(cause); }
+  try { await controller.close(); } catch (cause) { cleanupFailures.push(cause); }
+  try { await progress.flush(); } catch (cause) { cleanupFailures.push(cause); }
   try { await events.close(); } catch (cause) { cleanupFailures.push(cause); }
   if (ownsHost) {
     try { await host.dispose(); } catch (cause) { cleanupFailures.push(cause); }
@@ -190,45 +130,36 @@ export async function runCodingAgentTuiApp(
   const uniqueFailures = [...new Set(cleanupFailures)];
   if (outcome.kind === 'failed') {
     if (uniqueFailures.length === 0) throw outcome.cause;
-    throw new AggregateError(
-      [outcome.cause, ...uniqueFailures],
-      'Coding Agent TUI run and cleanup failed.',
-      { cause: outcome.cause }
-    );
+    throw new AggregateError([outcome.cause, ...uniqueFailures], 'Coding Agent TUI run and cleanup failed.', { cause: outcome.cause });
   }
   if (uniqueFailures.length > 0) throw new AggregateError(uniqueFailures, 'Coding Agent TUI cleanup failed.');
   return outcome.value;
 }
 
-export async function runCodingAgentTuiTask(
-  session: AgentSession,
-  task: string,
+async function presentControllerEvent(
+  event: CodingAgentInteractiveEvent,
   progress: CodingAgentTuiProgressRenderer,
-  options: {
-    readonly host?: TerminalHost;
-    readonly runtimeDetails?: CodingAgentTuiRuntimeDetails;
-  } = {}
-): Promise<AgentRunResult> {
-  const appResult = await runCodingAgentTuiApp(session, {
-    initialTask: task,
-    progress,
-    exitOnCompletion: true,
-    ...(options.host === undefined ? {} : { host: options.host }),
-    ...(options.runtimeDetails === undefined ? {} : { runtimeDetails: options.runtimeDetails })
-  });
-  if (appResult.result === undefined) {
-    throw new Error('Agent TUI task ended without a run result.');
+  currentResult: AgentRunResult | undefined
+): Promise<AgentRunResult | undefined> {
+  switch (event.type) {
+    case 'interactive.state.changed': await progress.showInteractiveState(event.state); return currentResult;
+    case 'interactive.notice': await progress.showNotice(event.message, event.tone); return currentResult;
+    case 'session.hydrated': await progress.showHydration(event.hydration); return currentResult;
+    case 'change.reported': await progress.showChangeReport(event.report); return currentResult;
+    case 'run.progress': await progress.handle(event.event); return currentResult;
+    case 'configuration.changed': return currentResult;
+    case 'input.queued': return currentResult;
+    case 'compaction.completed': await progress.showCompaction(event.compaction); return currentResult;
+    case 'run.failed': await progress.showFailure(event.error.message); return currentResult;
+    case 'run.completed':
+      if (event.result.state === 'suspended') await progress.showSuspension(event.result);
+      else await progress.showResult(event.result);
+      return event.result;
   }
-  return appResult.result;
 }
 
-function submissionMessage(result: AgentSessionSubmissionResult): { readonly message: string } {
-  switch (result.kind) {
-    case 'started': return { message: 'Run started.' };
-    case 'steered': return { message: 'Steering accepted.' };
-    case 'queued': return { message: 'Follow-up queued.' };
-    case 'rejected': return { message: `Input rejected: ${result.reason}.` };
-  }
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 interface Deferred<T> {

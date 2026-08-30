@@ -4,7 +4,7 @@ Coding Agent is pre-alpha and intentionally uses breaking contracts. Import docu
 
 ## Workspace trust and private state
 
-A new workspace is inspection-only until the user records a trust decision:
+A new workspace is inspection-only until the user records a trust decision. The interactive TUI opens before that decision and offers `/trust restricted` and `/trust trusted`; the equivalent standalone commands are:
 
 ```bash
 coding-agent trust status --root .
@@ -15,7 +15,7 @@ coding-agent trust revoke --root .
 
 Restricted workspaces may send bounded, screened context to the configured provider, but every mutation or command requires exact approval and repository execution policy remains inactive. Trusted workspaces may activate project proposals within the user-provided CLI authority. Repository files never grant trust or tool authority.
 
-Runs, sessions, artifacts, journals, and trust records live under the platform user-state directory, keyed by the adopted physical workspace identity. `--state-root` selects another dedicated Coding Agent state root. A state root must be outside the workspace and is adopted only when empty or already marked as Coding Agent state. No `.coding-agent` directory is created or read as private state.
+Runs, sessions, artifacts, journals, trust records, and the user-selected provider/model live under the platform user-state directory. Workspace records are keyed by the adopted physical workspace identity; the provider/model selection is a user default for new interactive sessions. `--state-root` selects another dedicated Coding Agent state root. A state root must be outside the workspace and is adopted only when empty or already marked as Coding Agent state. No `.coding-agent` directory is created or read as private state.
 
 ## CLI
 
@@ -37,7 +37,9 @@ coding-agent exec --resume
 coding-agent exec --session SESSION_ID
 ```
 
-Session selection is not part of project configuration. A resumed session restores its latest provider and model unless explicitly overridden. Resolution order is explicit CLI options, resumed-session settings, trusted project configuration, then environment values. There is no hidden provider or model fallback.
+Interactive startup does not require provider, model, permission, or trust flags. It renders first, restores any available settings, and reports the exact missing setup. Use `/provider`, `/model`, `/permissions`, `/trust`, and `/login` inside the TUI. A message submitted before setup is complete is retained and starts automatically after setup. `coding-agent exec` remains noninteractive and fails immediately when trust or a complete model selection cannot be resolved.
+
+Session selection is not part of project configuration. A resumed session restores its latest provider and model unless explicitly overridden. Interactive model resolution order is explicit CLI options, resumed-session settings, trusted project configuration, the stored user selection, then environment values. Noninteractive execution does not consume the interactive user default. There is no provider or model fallback chosen by the application.
 
 Select one permission ceiling with `--permissions`: `review` exposes root-bound reads, `edit` adds structured patch mutation, and `develop` adds sandboxed commands and verification. Project configuration can only narrow that ceiling and exact tool set. Coding Agent never falls back to ambient command execution; if Sandbox cannot establish the declared boundary, commands are unavailable.
 
@@ -116,7 +118,7 @@ Deterministic checks inspect only their admitted candidate and evidence. In `dev
 
 For every ended run, Coding Agent compares the exact root-bound workspace state captured before runtime effects with the final state and reduces `apply_patch` ledger receipts into a bounded durable change report. The CLI prints changed paths and distinguishes structured mutations from external or concurrent changes. A path already reported by the initial Git observation remains marked as changed before the run; Coding Agent never assumes the workspace started clean. Binary, oversized, aliased, unreadable, or truncated evidence makes coverage explicitly partial. Model prose is candidate narrative, not authority for changed paths or verification status, and command effects are never described as undoable.
 
-The interactive TUI restores durable conversation, terminal checks and changes, queued work, driver control, approvals, and unknown-effect recovery before accepting live events. Its status line retains the active trust, sandbox, and permission boundary. Use Up and Down at the first or last composer line to browse sent messages; the current draft is restored when history browsing ends.
+The interactive TUI renders before runtime activation, then restores durable conversation, terminal checks and changes, queued work, driver control, approvals, and unknown-effect recovery. Its status line retains the active provider, model, trust, sandbox, and permission boundary. Provider, model, permission mode, and trust changes are admitted only while the session is idle with no queued submissions. Use Ctrl+P for commands. Use Up and Down at the first or last composer line to browse sent messages; the current draft is restored when history browsing ends.
 
 Run `npm run verify:release` for the full repository gate.
 
@@ -142,7 +144,7 @@ Run `coding-agent [initial task] [options]` for the interactive TUI. Run `coding
 | `--session <id>` | Select an existing session by exact ID. In taskless `exec` mode, drive its unfinished accepted operation without creating another submission. |
 | `--branch <entry-id>` | Branch the selected existing session from an entry. Requires `--resume` or `--session`. |
 
-Runtime-setting precedence is explicit CLI option, resumed-session setting, matching trusted project configuration, then environment. Provider-specific project settings are meaningful only for their configured provider. A provider and model must be selected explicitly through one of those sources.
+For interactive sessions, model-selection precedence is explicit CLI option, resumed-session setting, matching trusted project configuration, stored user selection, then environment. For `exec`, precedence is explicit CLI option, resumed-session setting, matching trusted project configuration, then environment. Provider-specific project settings are meaningful only for their configured provider. A provider and model must be selected explicitly through one of those sources or through the interactive `/provider` and `/model` commands.
 
 Provider environment variables are `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `OPENROUTER_APP_URL`, and `OPENROUTER_APP_TITLE`. Runtime defaults can be supplied with `CODING_AGENT_PROVIDER`, `CODING_AGENT_MODEL`, `CODING_AGENT_PROVIDER_ENDPOINT`, and `CODING_AGENT_REASONING_EFFORT`.
 

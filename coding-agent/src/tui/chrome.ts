@@ -6,7 +6,7 @@ import { terminalPresentation } from './run-presentation.js';
 
 export function statusChrome(state: CodingAgentTuiState): Element {
   const presentation = runPresentation(state);
-  const center = [state.runtimeDetails.modelId, permissionLabel(state)].filter((value): value is string => value !== undefined).join(' · ');
+  const center = [modelSelectionLabel(state), permissionLabel(state)].filter((value): value is string => value !== undefined).join(' · ');
   const runText = [presentation.text, queueLabel(state), driverLabel(state)]
     .filter((value): value is string => value !== undefined)
     .join(' · ');
@@ -16,6 +16,13 @@ export function statusChrome(state: CodingAgentTuiState): Element {
     center: center.length === 0 ? [] : [{ id: 'model-and-authority', kind: 'text', text: center }],
     trailing: [{ id: 'run', kind: 'status', text: runText, status: presentation.status }]
   });
+}
+
+function modelSelectionLabel(state: CodingAgentTuiState): string | undefined {
+  const provider = state.runtimeDetails.providerId;
+  const model = state.runtimeDetails.modelId;
+  if (provider !== undefined && model !== undefined) return `${provider}/${model}`;
+  return provider ?? model;
 }
 
 function queueLabel(state: CodingAgentTuiState): string | undefined {
@@ -53,6 +60,8 @@ export function hintBar(state: CodingAgentTuiState, columns: number): Element<Co
 }
 
 function runPresentation(state: CodingAgentTuiState): { readonly text: string; readonly status: StatusBarStatus } {
+  if (state.setup.status === 'initializing') return { text: 'Initializing', status: 'running' };
+  if (state.setup.status === 'setup_required') return { text: 'Setup required', status: 'warning' };
   switch (state.run.kind) {
     case 'idle': return { text: 'Idle', status: 'idle' };
     case 'working': return { text: state.run.label, status: 'running' };

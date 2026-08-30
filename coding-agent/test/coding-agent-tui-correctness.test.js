@@ -225,32 +225,30 @@ test('application exit unsubscribes delivery before cancelling an active session
   const host = createMemoryTerminalHost({ terminalSize: { columns: 70, rows: 12 } });
   let subscribed = false;
   let aborted;
-  let sessionState = {
+  const sessionState = {
     sessionId: 'session-1', phase: 'running', activeRunId: 'run-1', queuedInputs: 0,
     configuration: { provider: 'test-provider', model: 'test-model' }
   };
-  const session = {
-    state: () => sessionState,
-    async restore() {},
+  const controller = {
+    state: () => ({
+      status: 'ready', requirements: [],
+      runtimeDetails: { providerId: 'test-provider', modelId: 'test-model' },
+      session: sessionState
+    }),
     subscribe() {
       subscribed = true;
       return () => { subscribed = false; };
     },
-    async abort(reason, runId) {
-      assert.equal(subscribed, false);
-      aborted = { reason, runId };
-      sessionState = {
-        sessionId: 'session-1', phase: 'idle', queuedInputs: 0,
-        configuration: { provider: 'test-provider', model: 'test-model' }
-      };
-      return true;
-    },
-    async waitForIdle() { assert.equal(sessionState.phase, 'idle'); },
-    async resumePending() {},
+    async start() {},
     async submit() { throw new Error('unexpected submission'); },
-    async resolveApproval() { throw new Error('unexpected approval'); }
+    async execute() { throw new Error('unexpected command'); },
+    async resolveApproval() { throw new Error('unexpected approval'); },
+    async close() {
+      assert.equal(subscribed, false);
+      aborted = { reason: 'Coding Agent TUI closed.', runId: sessionState.activeRunId };
+    }
   };
-  const running = runCodingAgentTuiApp(session, { host });
+  const running = runCodingAgentTuiApp(controller, { host });
   await waitFor(() => host.frames().length > 0);
   host.input('/exit\r');
   const result = await running;

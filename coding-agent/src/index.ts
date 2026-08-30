@@ -4,7 +4,7 @@ import path from 'node:path';
 import type { Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { FileCredentialStore } from '@agent-core/auth';
-import { AgentOperationCoordinator, AgentRuntime, AgentSession, agentEventCodec, type AgentEvent, type AgentProgressEvent, type AgentRunResult, type SessionConversationItem, type SessionDescriptor } from '@agent-core/runtime';
+import { AgentOperationCoordinator, AgentRuntime, AgentSession, agentEventCodec, type AgentEvent, type AgentProgressEvent, type AgentRunResult, type AgentSessionSubmissionResult, type SessionConversationItem, type SessionDescriptor } from '@agent-core/runtime';
 import { JsonlSessionRepository } from '@agent-core/runtime/node';
 import { JsonlEventRepository, LocalArtifactRepository } from '@agent-core/evidence/node';
 import { type ModelProvider, type ModelReasoningEffort, type ModelReasoningRequest, SimpleTokenEstimator } from '@agent-core/model';
@@ -28,8 +28,12 @@ import {
 import {
   CodingAgentTuiProgressRenderer,
   normalizeTaskInput,
+  parseInteractiveCommandLine,
   parseReasoningEffort,
   runCodingAgentTuiApp,
+  type CodingAgentInteractiveController as CodingAgentInteractiveControllerContract,
+  type CodingAgentInteractiveEvent,
+  type CodingAgentInteractiveState,
   type CodingAgentTuiRuntimeDetails
 } from './tui/index.js';
 import { parseJsonValue } from '@agent-core/json';
@@ -47,6 +51,7 @@ import { loadOrCaptureRunWorkspaceBaseline } from './changes/workspace-baseline-
 import { RunChangeReportService } from './changes/run-change-report-service.js';
 import type { RunChangeReport } from './changes/run-change-report.js';
 import { codingRunUncertainties } from './presentation/run-summary.js';
+import { ModelSelectionStore, type CodingAgentModelSelection } from './state/model-selection-store.js';
 
 export {
   loadCodingAgentConfiguration,
@@ -84,15 +89,24 @@ interface CliOptions {
   configurationSource?: { readonly sourceUri: string; readonly sha256: string; readonly trustLevel: 'restricted' | 'trusted' };
 }
 
-interface CliProviderRuntime {
+interface ModelProviderBinding {
   provider: ModelProvider;
   providerId: CliProviderId;
   model: string;
 }
 
-interface ResolvedRuntimeSettings {
+interface ResolvedSessionSettings {
   readonly provider: CliProviderId;
   readonly model: string;
+  readonly providerEndpoint?: string;
+  readonly codexTransport?: OpenAICodexTransport;
+  readonly temperature?: number;
+  readonly reasoning?: ModelReasoningRequest;
+}
+
+interface RuntimeSettingsCandidate {
+  readonly provider?: CliProviderId;
+  readonly model?: string;
   readonly providerEndpoint?: string;
   readonly codexTransport?: OpenAICodexTransport;
   readonly temperature?: number;
@@ -106,7 +120,7 @@ interface PersistedModelSettings {
   readonly reasoningEffort?: string;
 }
 
-interface CliRuntime {
+interface CodingAgentRuntimeComposition {
   agent: AgentSession;
   operations: AgentOperationCoordinator;
   events: JsonlEventRepository<AgentEvent>;
@@ -149,72 +163,604 @@ export async function main(argv: string[]): Promise<void> {
   if (!exec && !process.stdin.isTTY) throw new Error('Interactive mode requires a terminal. Use coding-agent exec with piped input.');
   const root = path.resolve(parsed.options.root);
   const workspace = await openCodingWorkspace(root, parsed.options.stateRoot ? { stateRoot: parsed.options.stateRoot } : {});
-  if (workspace.security.trustLevel === 'untrusted') {
-    workspace.fileRoot.close();
-    throw new Error(`Workspace is untrusted. Inspect it locally, then run "coding-agent trust restricted --root ${JSON.stringify(root)}" or "coding-agent trust trusted --root ${JSON.stringify(root)}" before provider use.`);
-  }
-  let configuration: CodingAgentConfiguration | undefined;
-  try {
-    const proposal = await loadProjectConfiguration(workspace, parsed.options.config);
-    configuration = proposal?.value;
-    if (proposal) parsed.options.configurationSource = Object.freeze({ sourceUri: proposal.provenance.sourceUri, sha256: proposal.provenance.sha256, trustLevel: workspace.security.trustLevel });
-  } catch (error) { workspace.fileRoot.close(); throw error; }
-  const options: CliOptions = { ...parsed.options, ...(configuration ? { configuration } : {}) };
-
   if (exec) {
+    if (workspace.security.trustLevel === 'untrusted') {
+      workspace.fileRoot.close();
+      throw new Error(`Workspace is untrusted. Inspect it locally, then run "coding-agent trust restricted --root ${JSON.stringify(root)}" or "coding-agent trust trusted --root ${JSON.stringify(root)}" before provider use.`);
+    }
+    let configuration: CodingAgentConfiguration | undefined;
+    try {
+      const proposal = await loadProjectConfiguration(workspace, parsed.options.config);
+      configuration = proposal?.value;
+      if (proposal) parsed.options.configurationSource = Object.freeze({ sourceUri: proposal.provenance.sourceUri, sha256: proposal.provenance.sha256, trustLevel: workspace.security.trustLevel });
+    } catch (error) { workspace.fileRoot.close(); throw error; }
+    const options: CliOptions = { ...parsed.options, ...(configuration ? { configuration } : {}) };
     const progress = new CodingAgentProgressRenderer({ showReasoning: options.showReasoning });
-    await withCliRuntime(options, workspace, async (runtime) => {
-      let resumedResult: AgentRunResult | undefined;
-      let resumedFailure: Error | undefined;
-      const unsubscribe = runtime.agent.subscribe((event) => {
-        if (event.type === 'run.progress') progress.handle(event.event);
-        else if (event.type === 'run.completed') resumedResult = event.result;
-        else if (event.type === 'run.failed') resumedFailure = event.error;
-      });
-      try {
-        const result = resumeOnly
-          ? await resumeAcceptedOperation(runtime.agent, () => resumedResult, () => resumedFailure)
-          : await submitTask(runtime.agent, task);
-        const changeReport = result.state === 'ended' ? await runtime.changeReports.finalize(result.terminal.runId, result) : undefined;
-        printResult(result, progress, process.stdout, changeReport);
-        printPersistenceLocations(runtime, result);
-        process.exitCode = resultExitCode(result);
-      } finally {
-        unsubscribe();
-      }
-    }, undefined, resumeOnly);
+    try {
+      await withRuntimeComposition(options, workspace, async (runtime) => {
+        let resumedResult: AgentRunResult | undefined;
+        let resumedFailure: Error | undefined;
+        const unsubscribe = runtime.agent.subscribe((event) => {
+          if (event.type === 'run.progress') progress.handle(event.event);
+          else if (event.type === 'run.completed') resumedResult = event.result;
+          else if (event.type === 'run.failed') resumedFailure = event.error;
+        });
+        try {
+          const result = resumeOnly
+            ? await resumeAcceptedOperation(runtime.agent, () => resumedResult, () => resumedFailure)
+            : await submitTask(runtime.agent, task);
+          const changeReport = result.state === 'ended' ? await runtime.changeReports.finalize(result.terminal.runId, result) : undefined;
+          printResult(result, progress, process.stdout, changeReport);
+          printPersistenceLocations(runtime, result);
+          process.exitCode = resultExitCode(result);
+        } finally {
+          unsubscribe();
+        }
+      }, undefined, resumeOnly);
+    } finally { workspace.fileRoot.close(); }
     return;
   }
 
   const progress = new CodingAgentTuiProgressRenderer();
-  await withCliRuntime(options, workspace, async (runtime) => {
-    await runCodingAgentTuiApp(runtime.agent, {
-        ...(task.length > 0 ? { initialTask: task } : {}),
-        progress,
-        runtimeDetails: runtime.tuiDetails,
-        loadHydration: async () => {
-          const [replay, pendingSubmissions, branchPoints] = await Promise.all([
-            runtime.sessions.loadReplayState(runtime.session.id),
-            runtime.sessions.loadPendingSubmissions(runtime.session.id),
-            runtime.sessions.listBranchPoints(runtime.session.id)
-          ]);
-          const [operations, reports] = await Promise.all([
-            Promise.all(pendingSubmissions.map((submission) => runtime.operations.inspect(submission.runId))),
-            Promise.all(replay.terminalProjections.map((projection) => runtime.changeReports.read(projection.runId)))
-          ]);
-          return {
-            session: runtime.agent.state(),
-            replay,
-            branchPoints,
-            pendingSubmissions,
-            operations,
-            changeReports: reports.filter((report): report is RunChangeReport => report !== undefined)
-          };
-        },
-        loadChangeReport: (runId) => runtime.changeReports.read(runId)
-      });
-    console.error(`\nSession: ${runtime.sessions.location(runtime.session.id)}`);
+  const controller = new CodingAgentInteractiveController(parsed.options, workspace);
+  await runCodingAgentTuiApp(controller, {
+    ...(task.length > 0 ? { initialTask: task } : {}),
+    progress
   });
+}
+
+class CodingAgentInteractiveController implements CodingAgentInteractiveControllerContract {
+  private readonly listeners = new Set<(event: CodingAgentInteractiveEvent) => void | Promise<void>>();
+  private readonly pendingTasks: string[] = [];
+  private operation: Promise<void> = Promise.resolve();
+  private eventDelivery: Promise<void> = Promise.resolve();
+  private workspace: OpenCodingWorkspace;
+  private runtime: CodingAgentRuntimeComposition | undefined;
+  private runtimeUnsubscribe: (() => void) | undefined;
+  private selectedSessionId: string | undefined;
+  private resolvedSettings: RuntimeSettingsCandidate = {};
+  private configurationLoaded = false;
+  private started = false;
+  private closed = false;
+  private interactiveState: CodingAgentInteractiveState;
+
+  constructor(private readonly options: CliOptions, workspace: OpenCodingWorkspace) {
+    this.workspace = workspace;
+    this.interactiveState = Object.freeze({
+      status: 'initializing',
+      requirements: Object.freeze([]),
+      runtimeDetails: Object.freeze({ workspaceTrust: workspace.security.trustLevel })
+    });
+  }
+
+  state(): CodingAgentInteractiveState { return this.interactiveState; }
+
+  subscribe(listener: (event: CodingAgentInteractiveEvent) => void | Promise<void>): () => void {
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
+  }
+
+  start(): Promise<void> {
+    return this.serial(async () => {
+      if (this.started) return;
+      this.started = true;
+      await this.refreshAndActivate();
+    });
+  }
+
+  submit(task: string) {
+    return this.serial(async () => {
+      const normalized = normalizeTaskInput(task);
+      if (normalized.length === 0) throw new Error('Interactive input must not be empty.');
+      if (this.runtime === undefined) {
+        this.pendingTasks.push(normalized);
+        await this.refreshAndActivate();
+        if (this.interactiveState.status !== 'ready') {
+          return { message: `Message retained. ${setupGuidance(this.interactiveState.requirements)}` };
+        }
+        await this.drainPendingTasks();
+        return { message: 'Run started.' };
+      }
+      return submissionMessage(await this.runtime.agent.submit({ task: normalized }));
+    });
+  }
+
+  execute(commandLine: string) {
+    return this.serial(async () => {
+      const parsed = parseInteractiveCommandLine(commandLine);
+      switch (parsed.command) {
+        case '/exit':
+        case '/quit': return { message: 'Exit requested.' };
+        case '/provider': return this.selectProvider(parsed.value);
+        case '/model': return this.selectModel(parsed.value);
+        case '/permissions': return this.selectPermissionMode(parsed.value);
+        case '/trust': return this.selectWorkspaceTrust(parsed.value);
+        case '/login': return this.login(parsed.value);
+        case '/temperature': return this.selectTemperature(parsed.value);
+        case '/reasoning-effort': return this.selectReasoningEffort(parsed.value);
+        case '/steer': return this.steer(parsed.value);
+        case '/follow': return this.follow(parsed.value);
+        case '/compact': return this.compact();
+        case '/abort': return this.abort(parsed.value);
+        case '/status': return { message: interactiveStatus(this.interactiveState) };
+        case '/debug': return { message: JSON.stringify(this.interactiveState, null, 2), view: 'debug' as const };
+      }
+    });
+  }
+
+  async resolveApproval(
+    suspension: import('@agent-core/runtime').AgentApprovalSuspension,
+    decision: 'allow' | 'deny'
+  ): Promise<void> {
+    const runtime = this.requireRuntime();
+    const approval = suspension.pendingApprovals[0];
+    if (approval === undefined) throw new Error('Approval suspension contains no pending request.');
+    await runtime.agent.resolveApproval({
+      runId: suspension.runId,
+      approvalId: approval.approvalId,
+      fingerprint: approval.fingerprint,
+      decision
+    });
+  }
+
+  async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    await this.operation.catch(() => undefined);
+    const runtime = this.runtime;
+    this.runtime = undefined;
+    this.runtimeUnsubscribe?.();
+    this.runtimeUnsubscribe = undefined;
+    const failures: unknown[] = [];
+    if (runtime !== undefined) {
+      const state = runtime.agent.state();
+      if (state.activeRunId !== undefined && state.phase !== 'waiting_for_user') {
+        try { await runtime.agent.abort('Coding Agent TUI closed.', state.activeRunId); }
+        catch (error) { failures.push(error); }
+      }
+      try { await runtime.agent.waitForIdle(); } catch (error) { failures.push(error); }
+      try { await closeRuntimeComposition(runtime); } catch (error) { failures.push(error); }
+    }
+    try { this.workspace.fileRoot.close(); } catch (error) { failures.push(error); }
+    try { await this.eventDelivery; } catch (error) { failures.push(error); }
+    if (failures.length > 0) throw new AggregateError(failures, 'Interactive controller cleanup failed.');
+  }
+
+  private async refreshAndActivate(): Promise<void> {
+    this.assertOpen();
+    if (!this.configurationLoaded) await this.loadConfiguration();
+    this.resolvedSettings = await this.resolveSettings();
+    const requirements = setupRequirements(this.workspace, this.resolvedSettings);
+    if (requirements.length > 0) {
+      await this.publishState('setup_required', requirements);
+      return;
+    }
+    if (this.runtime === undefined) await this.activateRuntime();
+    await this.publishState('ready', []);
+    await this.drainPendingTasks();
+  }
+
+  private async loadConfiguration(): Promise<void> {
+    delete this.options.configuration;
+    delete this.options.configurationSource;
+    if (this.workspace.security.trustLevel !== 'untrusted') {
+      const proposal = await loadProjectConfiguration(this.workspace, this.options.config);
+      if (proposal) {
+        this.options.configuration = proposal.value;
+        this.options.configurationSource = Object.freeze({
+          sourceUri: proposal.provenance.sourceUri,
+          sha256: proposal.provenance.sha256,
+          trustLevel: this.workspace.security.trustLevel
+        });
+      }
+    }
+    this.configurationLoaded = true;
+  }
+
+  private async resolveSettings(): Promise<RuntimeSettingsCandidate> {
+    const sessions = new JsonlSessionRepository({ rootDir: this.workspace.layout.sessionsDir });
+    const session = await selectSession(this.options, sessions, this.selectedSessionId);
+    const persisted = session === undefined ? undefined : await persistedModelSettings(sessions, session);
+    const stored = await new ModelSelectionStore(this.workspace.privateState).read();
+    return resolveRuntimeSettingsCandidate(
+      this.options,
+      persisted,
+      this.workspace.security.decide('project_execution_policy').kind === 'allowed',
+      stored
+    );
+  }
+
+  private async activateRuntime(): Promise<void> {
+    const provider = this.resolvedSettings.provider;
+    const model = this.resolvedSettings.model;
+    if (provider === undefined || model === undefined) throw new Error('Interactive runtime activation requires a complete model selection.');
+    const activationOptions: CliOptions = {
+      ...this.options,
+      provider,
+      model,
+      ...(this.resolvedSettings.temperature === undefined ? {} : { temperature: this.resolvedSettings.temperature }),
+      ...(this.resolvedSettings.reasoning === undefined ? {} : { reasoning: this.resolvedSettings.reasoning })
+    };
+    const runtime = await createRuntime(activationOptions, this.workspace, this.selectedSessionId);
+    this.runtime = runtime;
+    this.selectedSessionId = runtime.session.id;
+    delete this.options.branch;
+    this.runtimeUnsubscribe = runtime.agent.subscribe((event) => this.onSessionEvent(runtime, event));
+    await runtime.agent.restore();
+    await this.emit({ type: 'session.hydrated', hydration: await loadRuntimeHydration(runtime) });
+    if (runtime.agent.state().queuedInputs > 0) await runtime.agent.resumePending();
+  }
+
+  private async deactivateRuntime(): Promise<void> {
+    const runtime = this.runtime;
+    if (runtime === undefined) return;
+    requireIdleSession(runtime.agent);
+    this.runtime = undefined;
+    this.runtimeUnsubscribe?.();
+    this.runtimeUnsubscribe = undefined;
+    await closeRuntimeComposition(runtime);
+  }
+
+  private async onSessionEvent(runtime: CodingAgentRuntimeComposition, event: import('@agent-core/runtime').AgentSessionEvent): Promise<void> {
+    if (this.runtime !== runtime) return;
+    await this.emit(event);
+    if (event.type === 'run.completed' && event.result.state === 'ended') {
+      const report = await runtime.changeReports.finalize(event.runId, event.result);
+      await this.emit({ type: 'change.reported', report });
+    }
+    await this.publishState('ready', []);
+  }
+
+  private async selectProvider(value: string) {
+    const provider = parseProviderId(value);
+    await this.prepareReconfiguration();
+    this.options.provider = provider;
+    delete this.options.model;
+    await new ModelSelectionStore(this.workspace.privateState).write({ provider });
+    await this.refreshAndActivate();
+    return { message: `Provider: ${provider}. Select a model with /model <model-id>.` };
+  }
+
+  private async selectModel(value: string) {
+    const model = value.trim();
+    if (model.length === 0) throw new Error('/model requires a model ID.');
+    const provider = this.options.provider ?? this.resolvedSettings.provider;
+    if (provider === undefined) throw new Error('Select a provider before selecting a model.');
+    await this.prepareReconfiguration();
+    this.options.provider = provider;
+    this.options.model = model;
+    await new ModelSelectionStore(this.workspace.privateState).write({ provider, model });
+    await this.refreshAndActivate();
+    return { message: `Model: ${provider}/${model}` };
+  }
+
+  private async selectPermissionMode(value: string) {
+    const permissionMode = parseCodingPermissionMode(value, '/permissions');
+    await this.prepareReconfiguration();
+    this.options.permissionMode = permissionMode;
+    await this.refreshAndActivate();
+    const admitted = this.interactiveState.runtimeDetails.permissions?.mode ?? permissionMode;
+    return { message: `Permission mode: ${admitted}` };
+  }
+
+  private async selectWorkspaceTrust(value: string) {
+    if (value !== 'restricted' && value !== 'trusted') throw new Error('/trust requires restricted or trusted.');
+    await this.prepareReconfiguration();
+    const decision = createTrustDecision({
+      workspace: this.workspace.layout.identity,
+      level: value,
+      actorKind: 'user',
+      actor: 'local-user'
+    });
+    await this.workspace.trustStore.write(decision);
+    this.workspace.fileRoot.close();
+    this.workspace = await openCodingWorkspace(
+      this.workspace.layout.workspaceRoot,
+      this.options.stateRoot ? { stateRoot: this.options.stateRoot } : {}
+    );
+    this.configurationLoaded = false;
+    await this.refreshAndActivate();
+    return { message: `Workspace trust: ${value}` };
+  }
+
+  private async login(value: string) {
+    const provider = value.length === 0
+      ? this.resolvedSettings.provider
+      : parseProviderId(value);
+    if (provider === undefined) throw new Error('Select a provider or pass one to /login.');
+    if (provider === 'ollama') return { message: 'Ollama does not require Coding Agent credentials.' };
+    if (provider === 'openrouter') {
+      return { message: process.env.OPENROUTER_API_KEY?.trim()
+        ? 'OpenRouter API key is available from OPENROUTER_API_KEY.'
+        : 'Set OPENROUTER_API_KEY in the environment, then restart Coding Agent.' };
+    }
+    if (provider === 'openai') {
+      return { message: process.env.OPENAI_API_KEY?.trim()
+        ? 'OpenAI API key is available from OPENAI_API_KEY.'
+        : 'Set OPENAI_API_KEY in the environment, then restart Coding Agent.' };
+    }
+    const store = new FileCredentialStore();
+    let deviceCodeDelivery: Promise<void> | undefined;
+    await loginOpenAICodexDeviceCode({
+      store,
+      key: provider,
+      onDeviceCode: (info) => {
+        deviceCodeDelivery = this.emit({
+          type: 'interactive.notice',
+          message: `OpenAI Codex device login\nOpen: ${info.verificationUri}\nCode: ${info.userCode}\nExpires in: ${String(Math.round(info.expiresInSeconds / 60))} minutes`
+        });
+      }
+    });
+    await deviceCodeDelivery;
+    return { message: 'OpenAI Codex credentials stored.' };
+  }
+
+  private async selectTemperature(value: string) {
+    const temperature = Number(value);
+    if (!Number.isFinite(temperature)) throw new Error('/temperature requires a number.');
+    await this.prepareReconfiguration();
+    this.options.temperature = temperature;
+    await this.refreshAndActivate();
+    return { message: `Temperature: ${String(temperature)}` };
+  }
+
+  private async selectReasoningEffort(value: string) {
+    const effort = parseReasoningEffort(value, '/reasoning-effort');
+    await this.prepareReconfiguration();
+    this.options.reasoning = effort === 'none'
+      ? { strategy: 'disabled' }
+      : { strategy: 'effort', effort };
+    await this.refreshAndActivate();
+    return { message: `Reasoning effort: ${effort}` };
+  }
+
+  private async steer(value: string) {
+    const runtime = this.requireRuntime();
+    const activeRunId = runtime.agent.state().activeRunId;
+    const result = await runtime.agent.submit(
+      { task: value },
+      { delivery: 'steer', ...(activeRunId === undefined ? {} : { expectedRunId: activeRunId }) }
+    );
+    if (result.kind === 'rejected') throw new Error('No matching active run can accept steering.');
+    return { message: 'Steering accepted.' };
+  }
+
+  private async follow(value: string) {
+    const result = await this.requireRuntime().agent.submit({ task: value }, { delivery: 'follow_up' });
+    return result.kind === 'queued' ? { message: 'Follow-up queued.' } : { message: 'Run started.' };
+  }
+
+  private async compact() {
+    const compaction = await this.requireRuntime().agent.compact();
+    return { message: `Session compacted with ${compaction.provider}/${compaction.model}.` };
+  }
+
+  private async abort(reason: string) {
+    const agent = this.requireRuntime().agent;
+    if (!await agent.abort(reason || undefined, agent.state().activeRunId)) throw new Error('No active run to abort.');
+    return { message: 'Abort requested.' };
+  }
+
+  private async prepareReconfiguration(): Promise<void> {
+    if (this.runtime !== undefined) requireIdleSession(this.runtime.agent);
+    await this.publishState('initializing', []);
+    await this.deactivateRuntime();
+  }
+
+  private async drainPendingTasks(): Promise<void> {
+    const runtime = this.runtime;
+    if (runtime === undefined) return;
+    while (this.pendingTasks.length > 0) {
+      const task = this.pendingTasks.shift();
+      if (task !== undefined) await runtime.agent.submit({ task });
+    }
+  }
+
+  private requireRuntime(): CodingAgentRuntimeComposition {
+    if (this.runtime === undefined) throw new Error(setupGuidance(this.interactiveState.requirements));
+    return this.runtime;
+  }
+
+  private async publishState(
+    status: CodingAgentInteractiveState['status'],
+    requirements: readonly CodingAgentInteractiveState['requirements'][number][]
+  ): Promise<void> {
+    const runtime = this.runtime;
+    const session = runtime?.agent.state();
+    const projectExecutionPolicy = this.workspace.security.decide('project_execution_policy').kind === 'allowed';
+    const activeConfiguration = projectExecutionPolicy ? this.options.configuration : undefined;
+    const permissions = runtime?.tuiDetails.permissions ?? (this.workspace.security.trustLevel === 'untrusted'
+      ? undefined
+      : resolveCodingAuthority({
+          requestedMode: this.options.permissionMode,
+          trust: admittedTrustLevel(this.workspace.security.trustLevel),
+          ...(activeConfiguration ? {
+            project: {
+              permissions: activeConfiguration.permissions,
+              enabledTools: activeConfiguration.tools.enabled
+            }
+          } : {}),
+          hasVerificationChecks: configuredCheckProposals(activeConfiguration).length > 0
+        }).permissions);
+    const runtimeDetails: CodingAgentTuiRuntimeDetails = Object.freeze({
+      ...(runtime?.tuiDetails ?? {}),
+      ...(this.resolvedSettings.provider === undefined ? {} : { providerId: this.resolvedSettings.provider }),
+      ...(this.resolvedSettings.model === undefined ? {} : { modelId: this.resolvedSettings.model }),
+      ...(this.resolvedSettings.temperature === undefined ? {} : { temperature: this.resolvedSettings.temperature }),
+      ...(this.resolvedSettings.reasoning?.strategy === 'effort' ? { reasoningEffort: this.resolvedSettings.reasoning.effort } : {}),
+      showReasoning: this.options.showReasoning,
+      workspaceTrust: this.workspace.security.trustLevel,
+      ...(permissions === undefined ? {} : { permissions })
+    });
+    this.interactiveState = Object.freeze({
+      status,
+      requirements: Object.freeze([...requirements]),
+      runtimeDetails,
+      ...(session === undefined ? {} : { session })
+    });
+    await this.emit({ type: 'interactive.state.changed', state: this.interactiveState });
+  }
+
+  private emit(event: CodingAgentInteractiveEvent): Promise<void> {
+    const delivery = this.eventDelivery.then(async () => {
+      for (const listener of [...this.listeners]) await listener(event);
+    });
+    this.eventDelivery = delivery;
+    return delivery;
+  }
+
+  private serial<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.operation.then(() => {
+      this.assertOpen();
+      return operation();
+    });
+    this.operation = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  private assertOpen(): void {
+    if (this.closed) throw new Error('Interactive controller is closed.');
+  }
+}
+
+async function persistedModelSettings(
+  repository: JsonlSessionRepository,
+  session: SessionDescriptor
+): Promise<PersistedModelSettings> {
+  const replay = await repository.loadReplayState(session.id);
+  const latest = [...replay.branch].reverse().find((entry) => entry.type === 'model_settings');
+  return latest ?? {
+    ...(session.header.provider ? { provider: session.header.provider } : {}),
+    ...(session.header.model ? { model: session.header.model } : {})
+  };
+}
+
+function resolveRuntimeSettingsCandidate(
+  options: CliOptions,
+  persisted: PersistedModelSettings | undefined,
+  projectExecutionPolicy: boolean,
+  stored?: CodingAgentModelSelection
+): RuntimeSettingsCandidate {
+  const persistedProvider = persisted?.provider;
+  const projectConfiguration = projectExecutionPolicy ? options.configuration : undefined;
+  const provider = options.provider
+    ?? (persistedProvider ? parseProviderId(persistedProvider) : undefined)
+    ?? projectConfiguration?.provider
+    ?? stored?.provider
+    ?? (process.env.CODING_AGENT_PROVIDER ? parseProviderId(process.env.CODING_AGENT_PROVIDER) : undefined);
+  const persistedMatches = provider !== undefined && persistedProvider === provider;
+  const storedMatches = provider !== undefined && stored?.provider === provider;
+  const projectMatches = projectConfiguration !== undefined && projectConfiguration.provider === provider;
+  const model = options.model
+    ?? (persistedMatches ? persisted?.model : undefined)
+    ?? (projectMatches ? projectConfiguration.model : undefined)
+    ?? (storedMatches ? stored.model : undefined)
+    ?? process.env.CODING_AGENT_MODEL;
+  const normalizedModel = model?.trim();
+  const persistedSettingsMatch = persistedMatches && persisted?.model === normalizedModel;
+  const configurationSettingsMatch = projectMatches && projectConfiguration.model === normalizedModel;
+  const persistedReasoning = persistedSettingsMatch && persisted?.reasoningEffort
+    ? reasoningFromEffort(parseReasoningEffort(persisted.reasoningEffort, 'persisted session reasoning effort'))
+    : undefined;
+  const providerEndpoint = options.providerEndpoint ?? process.env.CODING_AGENT_PROVIDER_ENDPOINT;
+  const temperature = options.temperature ?? (persistedSettingsMatch ? persisted?.temperature : undefined);
+  const reasoning = options.reasoning
+    ?? persistedReasoning
+    ?? (configurationSettingsMatch ? projectConfiguration.reasoning : undefined)
+    ?? (process.env.CODING_AGENT_REASONING_EFFORT
+      ? reasoningFromEffort(parseReasoningEffort(process.env.CODING_AGENT_REASONING_EFFORT, 'CODING_AGENT_REASONING_EFFORT'))
+      : undefined);
+  if (options.codexTransport !== undefined && provider !== undefined && provider !== 'openai-codex') {
+    throw new Error('--codex-transport requires provider openai-codex.');
+  }
+  return Object.freeze({
+    ...(provider === undefined ? {} : { provider }),
+    ...(normalizedModel === undefined || normalizedModel.length === 0 ? {} : { model: normalizedModel }),
+    ...(providerEndpoint === undefined ? {} : { providerEndpoint }),
+    ...(options.codexTransport === undefined ? {} : { codexTransport: options.codexTransport }),
+    ...(temperature === undefined ? {} : { temperature }),
+    ...(reasoning === undefined ? {} : { reasoning })
+  });
+}
+
+function setupRequirements(
+  workspace: OpenCodingWorkspace,
+  settings: RuntimeSettingsCandidate
+): readonly CodingAgentInteractiveState['requirements'][number][] {
+  const requirements: CodingAgentInteractiveState['requirements'][number][] = [];
+  if (workspace.security.trustLevel === 'untrusted') requirements.push('workspace_trust');
+  if (settings.provider === undefined) requirements.push('provider');
+  if (settings.model === undefined) requirements.push('model');
+  return Object.freeze(requirements);
+}
+
+function setupGuidance(requirements: CodingAgentInteractiveState['requirements']): string {
+  if (requirements.length === 0) return 'The interactive runtime is not available.';
+  return `Complete setup with ${requirements.map((requirement) => {
+    switch (requirement) {
+      case 'workspace_trust': return '/trust restricted or /trust trusted';
+      case 'provider': return '/provider <provider-id>';
+      case 'model': return '/model <model-id>';
+    }
+  }).join(', ')}.`;
+}
+
+function interactiveStatus(state: CodingAgentInteractiveState): string {
+  if (state.status === 'initializing') return 'Initializing workspace and session state.';
+  if (state.status === 'setup_required') return setupGuidance(state.requirements);
+  const session = state.session;
+  const sessionStatus = session === undefined
+    ? 'Ready'
+    : session.phase === 'running'
+      ? 'Running'
+      : session.phase === 'waiting_for_user'
+        ? session.suspensionReason === 'approval_required' ? 'Waiting for approval' : 'Waiting for recovery decision'
+        : session.phase === 'compacting' ? 'Compacting' : 'Idle';
+  return `${sessionStatus} · ${state.runtimeDetails.providerId ?? 'provider'}/${state.runtimeDetails.modelId ?? 'model'}${session?.queuedInputs ? ` · ${String(session.queuedInputs)} queued` : ''}`;
+}
+
+function submissionMessage(result: AgentSessionSubmissionResult) {
+  switch (result.kind) {
+    case 'started': return { message: 'Run started.' };
+    case 'steered': return { message: 'Steering accepted.' };
+    case 'queued': return { message: 'Follow-up queued.' };
+    case 'rejected': return { message: `Input rejected: ${result.reason}.` };
+  }
+}
+
+function requireIdleSession(agent: AgentSession): void {
+  const state = agent.state();
+  if (state.phase !== 'idle' || state.queuedInputs > 0) {
+    throw new Error('Provider, model, permission mode, and workspace trust can change only when the session is idle with no queued submissions.');
+  }
+}
+
+async function loadRuntimeHydration(runtime: CodingAgentRuntimeComposition) {
+  const [replay, pendingSubmissions, branchPoints] = await Promise.all([
+    runtime.sessions.loadReplayState(runtime.session.id),
+    runtime.sessions.loadPendingSubmissions(runtime.session.id),
+    runtime.sessions.listBranchPoints(runtime.session.id)
+  ]);
+  const [operations, reports] = await Promise.all([
+    Promise.all(pendingSubmissions.map((submission) => runtime.operations.inspect(submission.runId))),
+    Promise.all(replay.terminalProjections.map((projection) => runtime.changeReports.read(projection.runId)))
+  ]);
+  return {
+    session: runtime.agent.state(),
+    replay,
+    branchPoints,
+    pendingSubmissions,
+    operations,
+    changeReports: reports.filter((report): report is RunChangeReport => report !== undefined)
+  };
+}
+
+async function closeRuntimeComposition(runtime: CodingAgentRuntimeComposition): Promise<void> {
+  const failures: unknown[] = [];
+  try { await runtime.changeReports.close(); } catch (error) { failures.push(error); }
+  try { await runtime.localHost.close(); } catch (error) { failures.push(error); }
+  try { await runtime.gitObserver.close(); } catch (error) { failures.push(error); }
+  if (failures.length > 0) throw new AggregateError(failures, 'Coding Agent runtime cleanup failed.');
 }
 
 async function submitTask(agent: AgentSession, task: string): Promise<AgentRunResult> {
@@ -245,17 +791,13 @@ async function resumeAcceptedOperation(
   return completed;
 }
 
-async function withCliRuntime<T>(options: CliOptions, workspace: OpenCodingWorkspace, run: (runtime: CliRuntime) => Promise<T>, persistedSessionId?: string, requireExistingSession = false): Promise<T> {
-  let runtime: CliRuntime;
-  try { runtime = await createRuntime(options, workspace, persistedSessionId, requireExistingSession); }
-  catch (error) { workspace.fileRoot.close(); throw error; }
+async function withRuntimeComposition<T>(options: CliOptions, workspace: OpenCodingWorkspace, run: (runtime: CodingAgentRuntimeComposition) => Promise<T>, persistedSessionId?: string, requireExistingSession = false): Promise<T> {
+  const runtime = await createRuntime(options, workspace, persistedSessionId, requireExistingSession);
   let outcome: { readonly kind: 'returned'; readonly value: T } | { readonly kind: 'failed'; readonly error: unknown };
   try { outcome = { kind: 'returned', value: await run(runtime) }; }
   catch (error) { outcome = { kind: 'failed', error }; }
   const cleanupFailures: unknown[] = [];
-  try { await runtime.changeReports.close(); } catch (error) { cleanupFailures.push(error); }
-  try { await runtime.localHost.close(); } catch (error) { cleanupFailures.push(error); }
-  try { await runtime.gitObserver.close(); } catch (error) { cleanupFailures.push(error); }
+  try { await closeRuntimeComposition(runtime); } catch (error) { cleanupFailures.push(error); }
   if (outcome.kind === 'failed' && cleanupFailures.length > 0) throw new AggregateError([outcome.error, ...cleanupFailures], 'Coding Agent run and cleanup failed.', { cause: outcome.error });
   if (outcome.kind === 'failed') throw outcome.error;
   if (cleanupFailures.length > 0) throw new AggregateError(cleanupFailures, 'Coding Agent runtime cleanup failed.');
@@ -267,21 +809,16 @@ async function createRuntime(
   openedWorkspace: OpenCodingWorkspace,
   persistedSessionId?: string,
   requireExistingSession = false
-): Promise<CliRuntime> {
+): Promise<CodingAgentRuntimeComposition> {
   const workspace = openedWorkspace.layout;
   const sessions = new JsonlSessionRepository({ rootDir: workspace.sessionsDir });
   let session = await selectSession(options, sessions, persistedSessionId);
   if (!session && requireExistingSession) throw new Error('The selected workspace has no existing session to resume.');
-  const replay = session ? await sessions.loadReplayState(session.id) : undefined;
-  const latestSettings = replay ? [...replay.branch].reverse().find((entry) => entry.type === 'model_settings') : undefined;
-  const persistedSettings: PersistedModelSettings | undefined = latestSettings ?? (session ? {
-    ...(session.header.provider ? { provider: session.header.provider } : {}),
-    ...(session.header.model ? { model: session.header.model } : {})
-  } : undefined);
+  const persistedSettings = session ? await persistedModelSettings(sessions, session) : undefined;
   const projectExecutionPolicy = openedWorkspace.security.decide('project_execution_policy').kind === 'allowed';
   const settings = resolveRuntimeSettings(options, persistedSettings, projectExecutionPolicy);
   const rawProviderRuntime = createProviderRuntime(settings);
-  const providerRuntime: CliProviderRuntime = Object.freeze({
+  const providerRuntime: ModelProviderBinding = Object.freeze({
     ...rawProviderRuntime,
     provider: openedWorkspace.security.protectProvider(rawProviderRuntime.provider)
   });
@@ -596,7 +1133,7 @@ function setSessionSelection(options: CliOptions, selection: SessionSelection, o
   options.sessionSelection = selection;
 }
 
-function createProviderRuntime(options: ResolvedRuntimeSettings): CliProviderRuntime {
+function createProviderRuntime(options: ResolvedSessionSettings): ModelProviderBinding {
   const model = options.model;
   switch (options.provider) {
     case 'ollama':
@@ -677,7 +1214,7 @@ async function runApprovalCommand(args: string[]): Promise<void> {
     if (!configured || !startedTurn?.sessionId) throw new Error(`Run ${runId} does not contain enough persisted runtime/session identity to resolve an approval.`);
     options = { ...options, provider: parseProviderId(configured.configuration.provider.id), model: configured.configuration.model.id };
     const progress = new CodingAgentProgressRenderer({ showReasoning: options.showReasoning });
-    await withCliRuntime(options, workspace, async (runtime) => {
+    await withRuntimeComposition(options, workspace, async (runtime) => {
       const unsubscribe = runtime.agent.subscribe((event) => { if (event.type === 'run.progress') { progress.handle(event.event); } });
       try {
         const result = await runtime.agent.resolveApproval({ runId, approvalId, fingerprint, decision: decisionValue });
@@ -832,40 +1369,19 @@ async function selectSession(options: CliOptions, repository: JsonlSessionReposi
   return session;
 }
 
-function resolveRuntimeSettings(options: CliOptions, persisted: PersistedModelSettings | undefined, projectExecutionPolicy: boolean): ResolvedRuntimeSettings {
-  const persistedProvider = persisted?.provider;
-  const provider = options.provider
-    ?? (persistedProvider ? parseProviderId(persistedProvider) : undefined)
-    ?? (projectExecutionPolicy ? options.configuration?.provider : undefined)
-    ?? (process.env.CODING_AGENT_PROVIDER ? parseProviderId(process.env.CODING_AGENT_PROVIDER) : undefined);
+function resolveRuntimeSettings(options: CliOptions, persisted: PersistedModelSettings | undefined, projectExecutionPolicy: boolean): ResolvedSessionSettings {
+  const candidate = resolveRuntimeSettingsCandidate(options, persisted, projectExecutionPolicy);
+  const provider = candidate.provider;
   if (provider === undefined) throw new Error('No model provider is configured. Use --provider, resume a configured session, set CODING_AGENT_PROVIDER, or trust a project configuration.');
-  const persistedMatches = persistedProvider === provider;
-  const model = options.model
-    ?? (persistedMatches ? persisted?.model : undefined)
-    ?? (projectExecutionPolicy && options.configuration?.provider === provider ? options.configuration.model : undefined)
-    ?? process.env.CODING_AGENT_MODEL;
-  if (model === undefined || model.trim().length === 0) throw new Error('No model is configured. Use --model, resume a configured session, set CODING_AGENT_MODEL, or trust a project configuration.');
-  const persistedSettingsMatch = persistedMatches && persisted?.model === model;
-  const configurationSettingsMatch = projectExecutionPolicy && options.configuration?.provider === provider && options.configuration.model === model;
-  const persistedReasoning = persistedSettingsMatch && persisted.reasoningEffort
-    ? reasoningFromEffort(parseReasoningEffort(persisted.reasoningEffort, 'persisted session reasoning effort'))
-    : undefined;
-  const providerEndpoint = options.providerEndpoint ?? process.env.CODING_AGENT_PROVIDER_ENDPOINT;
-  const temperature = options.temperature ?? (persistedSettingsMatch ? persisted.temperature : undefined);
-  const reasoning = options.reasoning
-    ?? persistedReasoning
-    ?? (configurationSettingsMatch ? options.configuration?.reasoning : undefined)
-    ?? (process.env.CODING_AGENT_REASONING_EFFORT
-      ? reasoningFromEffort(parseReasoningEffort(process.env.CODING_AGENT_REASONING_EFFORT, 'CODING_AGENT_REASONING_EFFORT'))
-      : undefined);
-  if (options.codexTransport !== undefined && provider !== 'openai-codex') throw new Error('--codex-transport requires --provider openai-codex.');
+  const model = candidate.model;
+  if (model === undefined) throw new Error('No model is configured. Use --model, resume a configured session, set CODING_AGENT_MODEL, or trust a project configuration.');
   return Object.freeze({
     provider,
     model,
-    ...(providerEndpoint === undefined ? {} : { providerEndpoint }),
-    ...(options.codexTransport === undefined ? {} : { codexTransport: options.codexTransport }),
-    ...(temperature === undefined ? {} : { temperature }),
-    ...(reasoning === undefined ? {} : { reasoning })
+    ...(candidate.providerEndpoint === undefined ? {} : { providerEndpoint: candidate.providerEndpoint }),
+    ...(candidate.codexTransport === undefined ? {} : { codexTransport: candidate.codexTransport }),
+    ...(candidate.temperature === undefined ? {} : { temperature: candidate.temperature }),
+    ...(candidate.reasoning === undefined ? {} : { reasoning: candidate.reasoning })
   });
 }
 
@@ -942,7 +1458,7 @@ export function resultExitCode(result: AgentRunResult): number {
 
 function title(value: string): string { return value.length === 0 ? value : `${value[0]?.toUpperCase() ?? ''}${value.slice(1)}`; }
 
-function printPersistenceLocations(runtime: CliRuntime, result: AgentRunResult): void {
+function printPersistenceLocations(runtime: CodingAgentRuntimeComposition, result: AgentRunResult): void {
   console.error(`\nLedger: ${runtime.events.location(runIdOf(result))}`);
   console.error(`Session: ${runtime.sessions.location(runtime.session.id)}`);
 }
@@ -1265,6 +1781,12 @@ Common options:
   --resume               Select the latest session; taskless exec drives only its unfinished operation.
   --session <id>         Open an existing session by ID.
   --branch <entry-id>    Branch the active session from a prior entry before running.
+
+Interactive setup:
+  The TUI opens before workspace trust or model selection is complete.
+  Use /trust, /provider, /model, /permissions, and /login from the command picker.
+  Messages submitted during setup are retained until the runtime is ready.
+  coding-agent exec remains strict and never prompts for missing setup.
 
 OpenRouter:
   Set OPENROUTER_API_KEY before using --provider openrouter.

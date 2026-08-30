@@ -61,21 +61,25 @@ import { createInitialCodingAgentTuiState } from './state.js';
 import type {
   CodingAgentTuiConversationState,
   CodingAgentTuiRuntimeDetails,
+  CodingAgentTuiSetupState,
   CodingAgentTuiState,
 } from './state.js';
 import type { CodingAgentTuiActivityEntry, CodingAgentTuiConversationEntry } from './conversation-model.js';
 import {
+  appendNotice,
   appendUser,
   conversationText,
   toggleActivity,
   upsertConversationEntry
 } from './conversation.js';
 import { INTERACTIVE_COMMANDS } from './interactive-commands.js';
+import type { CodingAgentInteractiveState } from './interactive-controller.js';
 
 export interface CodingAgentTuiAppOptions {
   readonly eventSource?: TuiEventSource<CodingAgentTuiMessage>;
   readonly commandHandler?: CodingAgentTuiCommandHandler;
   readonly runtimeDetails?: CodingAgentTuiRuntimeDetails;
+  readonly setup?: CodingAgentTuiSetupState;
   readonly initialHydration?: CodingAgentTuiHydration;
   readonly approvalHandler?: (
     suspension: AgentApprovalSuspension,
@@ -119,7 +123,7 @@ export function createCodingAgentTuiApp(task: string, options: CodingAgentTuiApp
 }
 
 function initialState(task: string, options: CodingAgentTuiAppOptions): CodingAgentTuiState {
-  const initial = createInitialCodingAgentTuiState(options.runtimeDetails);
+  const initial = createInitialCodingAgentTuiState(options.runtimeDetails, options.setup);
   const hydrated = options.initialHydration === undefined
     ? initial
     : hydrateCodingAgentTuiState(initial, options.initialHydration);
@@ -141,7 +145,6 @@ function updateCodingAgentTui(
       state: reconcileConversationLayout(applyFailure(state, message.message), context),
       exit: { reason: 'event-delivery-failed' }
     };
-    case 'session.updated': return updated(applySessionState(state, message.state), context);
     case 'session.compacted': return updated(upsertConversationEntry(state, {
       id: `session:${message.compaction.id}`,
       kind: 'notice',
@@ -149,6 +152,9 @@ function updateCodingAgentTui(
       text: `Session compacted · ${message.compaction.provider}/${message.compaction.model}\n${message.compaction.summary}`
     }), context);
     case 'change.reported': return updated(applyChangeReport(state, message.report), context);
+    case 'interactive.state.changed': return updated(applyInteractiveState(state, message.state), context);
+    case 'interactive.notice': return updated(appendNotice(state, message.message, message.tone ?? 'info'), context);
+    case 'session.hydrated': return updated(hydrateCodingAgentTuiState(state, message.hydration), context);
     case 'approval.required': return updated({
       ...state,
       run: { kind: 'waiting_for_approval', suspension: message.suspension },
@@ -209,6 +215,8 @@ function updateCodingAgentTui(
     case 'modal.scrolled': return { state: { ...state, modalOffsetRow: message.offsetRow } };
     case 'commands.transition': return transitionCommands(state, message.transition);
     case 'commands.accept': return acceptCommand(state, message.event.id, context, options.commandHandler);
+    case 'command-values.transition': return transitionCommandValues(state, message.transition);
+    case 'command-values.accept': return acceptCommandValue(state, message.event.id, context, options.commandHandler);
     case 'search.transition': return transitionSearch(state, message.transition);
     case 'search.accept': return acceptSearchResult(state, message.event.id, context);
     case 'terminal.resized': return updated(state, context);
@@ -232,6 +240,60 @@ function submit(
         state: reconcileConversationLayout(submission.state, context),
         effects: [commandEffect(submission.request, handler)]
       };
+}
+
+function applyInteractiveState(
+  state: CodingAgentTuiState,
+  interactive: CodingAgentInteractiveState
+): CodingAgentTuiState {
+  let next: CodingAgentTuiState = {
+    ...state,
+    setup: {
+      status: interactive.status,
+      requirements: interactive.requirements
+    },
+    runtimeDetails: interactive.runtimeDetails,
+    debug: {
+      ...state.debug,
+      ...(interactive.runtimeDetails.sessionLocation === undefined
+        ? {}
+        : { sessionLocation: interactive.runtimeDetails.sessionLocation }),
+      ...(interactive.session === undefined ? {} : {
+        sessionId: interactive.session.sessionId,
+        session: interactive.session
+      })
+    }
+  };
+  if (interactive.status === 'initializing') {
+    return upsertConversationEntry(next, {
+      id: 'interactive:setup',
+      kind: 'notice',
+      tone: 'info',
+      text: 'Initializing workspace and session state…'
+    });
+  }
+  if (interactive.status === 'setup_required') {
+    const commands = interactive.requirements.map((requirement) => {
+      switch (requirement) {
+        case 'workspace_trust': return '/trust restricted or /trust trusted';
+        case 'provider': return '/provider <ollama|openrouter|openai|openai-codex>';
+        case 'model': return '/model <model-id>';
+      }
+    });
+    return upsertConversationEntry(next, {
+      id: 'interactive:setup',
+      kind: 'notice',
+      tone: 'warning',
+      text: `Setup required. Configure ${interactive.requirements.map((item) => item.replaceAll('_', ' ')).join(', ')}.\n${commands.join('\n')}\nMessages are retained until setup is complete.`
+    });
+  }
+  next = upsertConversationEntry(next, {
+    id: 'interactive:setup',
+    kind: 'notice',
+    tone: 'info',
+    text: `Ready · ${interactive.runtimeDetails.providerId ?? 'provider'}/${interactive.runtimeDetails.modelId ?? 'model'}`
+  });
+  return interactive.session === undefined ? next : applySessionState(next, interactive.session);
 }
 
 function transitionCommands(
@@ -263,12 +325,67 @@ function acceptCommand(
   if (state.overlay.kind !== 'commands') return { state };
   const command = INTERACTIVE_COMMANDS.find((candidate) => candidate.name === id);
   if (command === undefined) return { state };
-  if (command.requiresValue) {
+  if (command.choices !== undefined) {
+    const picker = createSearchPickerState(
+      { query: { text: '', mode: 'fuzzy' } },
+      commandValueIndex(command)
+    );
+    return updated({
+      ...state,
+      overlay: { kind: 'command_values', command: command.name, picker },
+      modalOffsetRow: 0
+    }, context, { kind: 'element', elementId: 'command-value-picker' });
+  }
+  if (command.value === 'required') {
     return updated(setComposerText({ ...state, overlay: { kind: 'none' } }, `${command.name} `), context, {
       kind: 'element', elementId: 'composer'
     });
   }
   return submit(setComposerText({ ...state, overlay: { kind: 'none' } }, command.name), context, handler);
+}
+
+function transitionCommandValues(
+  state: CodingAgentTuiState,
+  transition: Extract<CodingAgentTuiMessage, { type: 'command-values.transition' }>['transition']
+): TuiUpdateResult<CodingAgentTuiState, CodingAgentTuiMessage> {
+  if (state.overlay.kind !== 'command_values') return { state };
+  const commandOverlay = state.overlay;
+  const commandEntry = INTERACTIVE_COMMANDS.find((candidate) => candidate.name === commandOverlay.command);
+  if (commandEntry?.choices === undefined) return { state };
+  return {
+    state: {
+      ...state,
+      overlay: {
+        ...commandOverlay,
+        picker: searchPickerReducer(commandOverlay.picker, transition, {
+          searchPickerIndex: commandValueIndex(commandEntry)
+        })
+      }
+    }
+  };
+}
+
+function acceptCommandValue(
+  state: CodingAgentTuiState,
+  value: string,
+  context: TuiContext,
+  handler: CodingAgentTuiCommandHandler | undefined
+): TuiUpdateResult<CodingAgentTuiState, CodingAgentTuiMessage> {
+  if (state.overlay.kind !== 'command_values') return { state };
+  const commandOverlay = state.overlay;
+  const commandEntry = INTERACTIVE_COMMANDS.find((candidate) => candidate.name === commandOverlay.command);
+  if (commandEntry?.choices?.some((choice) => choice.value === value) !== true) return { state };
+  return submit(setComposerText({ ...state, overlay: { kind: 'none' } }, `${commandEntry.name} ${value}`), context, handler);
+}
+
+function commandValueIndex(commandEntry: (typeof INTERACTIVE_COMMANDS)[number]): SearchPickerIndex {
+  return createSearchPickerIndex((commandEntry.choices ?? []).map((choice) => ({
+    id: choice.value,
+    label: choice.value,
+    value: choice.value,
+    description: choice.description,
+    keywords: [choice.value, choice.description]
+  })));
 }
 
 function transitionSearch(
@@ -388,7 +505,9 @@ function agentTuiView(state: CodingAgentTuiState, context: TuiContext): Element<
 }
 
 function composerView(state: CodingAgentTuiState): Element<CodingAgentTuiMessage> {
-  const placeholder = state.run.kind === 'working' ? 'Queue a follow-up' : 'Send a message';
+  const placeholder = state.setup.status === 'setup_required'
+    ? 'Send a message or open commands to finish setup'
+    : state.run.kind === 'working' ? 'Queue a follow-up' : 'Send a message';
   return textArea({
     id: 'composer',
     meta: { accessibleName: 'Message composer' },
@@ -478,6 +597,26 @@ function overlayView(state: CodingAgentTuiState, context: TuiContext): Element<C
         })
       }
     });
+    case 'command_values': {
+      const commandOverlay = state.overlay;
+      const commandEntry = INTERACTIVE_COMMANDS.find((candidate) => candidate.name === commandOverlay.command);
+      const index: SearchPickerIndex = commandEntry === undefined ? createSearchPickerIndex([]) : commandValueIndex(commandEntry);
+      return dialog({
+        ...modalOptions('command-value-dialog', commandEntry?.name ?? 'Command value', 'command-value-picker', width, height),
+        slots: {
+          content: searchPicker<string, CodingAgentTuiMessage, CodingAgentTuiMessage>({
+            id: 'command-value-picker',
+            title: commandEntry?.description ?? 'Choose a value',
+            view: searchPickerView(commandOverlay.picker),
+            searchPickerIndex: index,
+            maxVisible: Math.max(3, height - 5),
+            helpText: 'Enter choose · Esc close',
+            onTransition: (transition): CodingAgentTuiMessage => ({ type: 'command-values.transition', transition }),
+            onAccept: (event): CodingAgentTuiMessage => ({ type: 'command-values.accept', event })
+          })
+        }
+      });
+    }
     case 'search': return dialog({
       ...modalOptions('search-dialog', 'Find', 'conversation-search', width, height),
       slots: {
