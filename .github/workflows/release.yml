@@ -19,22 +19,16 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: agents
-          fetch-depth: 0
-      - name: Read reviewed dependency revisions
+      - name: Read source dependency revisions
         id: revisions
         shell: bash
         working-directory: agents
-        run: node -e "const fs = require('node:fs'); const manifest = require('./.coding-agent-plan/manifest.json'); fs.appendFileSync(process.env.GITHUB_OUTPUT, 'agent-core=' + manifest.reviewedHeads['agent-core'] + '\\nterminal-ui=' + manifest.reviewedHeads['terminal-ui'] + '\\nsandbox=' + manifest.reviewedHeads.sandbox + '\\n')"
+        run: node -e "const fs = require('node:fs'); const packageManifest = require('./package.json'); fs.appendFileSync(process.env.GITHUB_OUTPUT, 'agent-core=' + packageManifest.agentCore.commit + '\\nsandbox=' + packageManifest.sandbox.commit + '\\n')"
       - uses: actions/checkout@v4
         with:
           repository: Ismail-elkorchi/agent-core
           ref: ${{ steps.revisions.outputs.agent-core }}
           path: agent-core
-      - uses: actions/checkout@v4
-        with:
-          repository: Ismail-elkorchi/terminal-ui
-          ref: ${{ steps.revisions.outputs.terminal-ui }}
-          path: terminal-ui
       - uses: actions/checkout@v4
         with:
           repository: Ismail-elkorchi/sandbox

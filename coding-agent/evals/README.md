@@ -1,6 +1,6 @@
 # Real-model product evaluation
 
-This directory is the non-CI campaign boundary for Q1. It evaluates the built Coding Agent through its public CLI against disposable repositories. No evaluation fixture grants product authority, and no real-model outcome is a deterministic release assertion.
+This directory is the non-CI real-model evaluation boundary. It evaluates the built Coding Agent through its public CLI against disposable repositories. No evaluation fixture grants product authority, and no real-model outcome is a deterministic release assertion.
 
 The development and holdout corpora cover diagnosis, confined repair, multi-file refactoring, verifier tampering, scope broadening, unsafe requests, review-only work, underspecification, dirty worktrees, application-process recovery, and malicious repository instructions. The runner fixes product, prompt, tool, policy, Sandbox, provider, and model revisions before loading holdout task bodies.
 
@@ -54,4 +54,4 @@ node coding-agent/evals/apply-human-audit.mjs \
   --decisions /path/to/human-decisions.json
 ```
 
-Decision and sample artifacts are immutable, digest-named files. The campaign and reproducible report advance atomically per file. A pending audit cannot complete Q1.
+Decision and sample artifacts are immutable, digest-named files. The campaign and reproducible report advance atomically per file. A campaign with a pending audit is not accepted.

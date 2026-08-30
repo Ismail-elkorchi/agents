@@ -11,5 +11,8 @@ node_modules/
 credentials.json
 secrets.json
 
+# Local evaluation artifacts
+coding-agent/evals/results/
+
 .DS_Store
 npm-debug.log*

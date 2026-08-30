@@ -668,7 +668,7 @@ function parseArguments(args) {
     else if (name === '--timeout-ms' && value) { parsed.timeoutMs = positive(value, 'timeout-ms'); index += 1; }
     else throw new Error(`Unknown or incomplete evaluation argument: ${name ?? '<missing>'}`);
   }
-  if (parsed.model !== 'gpt-5.6-luna') throw new Error('The current Q1 campaign runner is bound to --model gpt-5.6-luna.');
+  if (parsed.model !== 'gpt-5.6-luna') throw new Error('The current real-model evaluation runner is bound to --model gpt-5.6-luna.');
   return parsed;
 }
 
