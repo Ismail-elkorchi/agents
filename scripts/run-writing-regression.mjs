@@ -15,7 +15,11 @@ const tasks = writingEvaluationTasks('regression');
 if (tasks.length === 0 || tasks.some((task) => task.set !== 'regression')) throw new Error('Writing regression discovery did not remain a distinct task set.');
 if (tasks.some((task) => task.graders.every((grader) => grader.requirement !== 'required'))) throw new Error('Every writing regression task requires at least one required grader.');
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const execution = spawnSync(process.execPath, ['--test', 'writing-agent/test/writing-agent.test.js'], { cwd: repositoryRoot, stdio: 'inherit' });
-if (execution.error !== undefined) throw execution.error;
-if (execution.status !== 0) throw new Error(`Writing regression behavior suite failed with status ${String(execution.status)}.`);
-process.stdout.write(`writing regression corpus executed: ${String(tasks.length)} tasks, sha256 ${writingRegressionCorpusSha256()} (lock ${WRITING_REGRESSION_LOCK_SHA256})\n`);
+if (process.platform === 'linux') {
+  const execution = spawnSync(process.execPath, ['--test', 'writing-agent/test/writing-agent.test.js'], { cwd: repositoryRoot, stdio: 'inherit' });
+  if (execution.error !== undefined) throw execution.error;
+  if (execution.status !== 0) throw new Error(`Writing regression behavior suite failed with status ${String(execution.status)}.`);
+} else {
+  process.stdout.write(`writing regression behavior suite skipped on ${process.platform}: secure root authority is Linux-only\n`);
+}
+process.stdout.write(`writing regression corpus validated: ${String(tasks.length)} tasks, sha256 ${writingRegressionCorpusSha256()} (lock ${WRITING_REGRESSION_LOCK_SHA256})\n`);
