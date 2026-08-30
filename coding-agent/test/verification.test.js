@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { access, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { WorkspaceFileRoot } from '@agent-core/tools-local';
+import { RootedFileAuthority } from '@agent-core/tools-local';
 import { ResourceLeaseCoordinator, adoptCommandExecution, createCommandExecutionPreparation } from '@agent-core/tools';
 import { configuredCheckProposals, createConfiguredChecks } from '../dist/verification/configured-checks.js';
 import { loadOrCaptureRunWorkspaceBaseline } from '../dist/changes/workspace-baseline-store.js';
@@ -23,7 +23,7 @@ test('verification snapshots bind exact root content and classify verifier defin
   await mkdir(path.join(directory, 'test'));
   await writeFile(path.join(directory, 'src', 'index.js'), 'export const value = 1;\n');
   await writeFile(path.join(directory, 'test', 'index.test.js'), 'assert(value === 1);\n');
-  const root = WorkspaceFileRoot.adopt(directory);
+  const root = RootedFileAuthority.adopt(directory);
   try {
     const baseline = await captureWorkspaceSnapshot(root);
     assert.equal(baseline.coverage, 'complete');
@@ -59,7 +59,7 @@ test('one run keeps its original verification baseline across process restart', 
   const directory = await mkdtemp(path.join(tmpdir(), 'coding-agent-baseline-'));
   const stateDirectory = await mkdtemp(path.join(tmpdir(), 'coding-agent-baseline-state-'));
   await writeFile(path.join(directory, 'source.js'), 'before\n');
-  const root = WorkspaceFileRoot.adopt(directory);
+  const root = RootedFileAuthority.adopt(directory);
   const state = await PrivateStateDirectory.create(stateDirectory);
   const observeVersionControl = async () => Object.freeze({ kind: 'none' });
   try {
@@ -83,7 +83,7 @@ test('run baseline capture rejects a changing version-control observation', asyn
   const directory = await mkdtemp(path.join(tmpdir(), 'coding-agent-baseline-race-'));
   const stateDirectory = await mkdtemp(path.join(tmpdir(), 'coding-agent-baseline-race-state-'));
   await writeFile(path.join(directory, 'source.js'), 'content\n');
-  const root = WorkspaceFileRoot.adopt(directory);
+  const root = RootedFileAuthority.adopt(directory);
   const state = await PrivateStateDirectory.create(stateDirectory);
   let calls = 0;
   try {
@@ -110,7 +110,7 @@ test('configured checks reject changed or mutating verification oracles', async 
   await mkdir(path.join(directory, 'test'));
   await writeFile(path.join(directory, 'source.js'), 'export const value = 1;\n');
   await writeFile(path.join(directory, 'test', 'source.test.js'), 'assert(value === 1);\n');
-  const root = WorkspaceFileRoot.adopt(directory);
+  const root = RootedFileAuthority.adopt(directory);
   try {
     const baseline = await captureWorkspaceSnapshot(root);
     const proposals = configuredCheckProposals(configuration('node test/source.test.js'));
@@ -156,7 +156,7 @@ test('workspace aliases make verification coverage explicitly partial', async ()
   const directory = await mkdtemp(path.join(tmpdir(), 'coding-agent-oracle-alias-'));
   await writeFile(path.join(directory, 'source.js'), 'content\n');
   await symlink('source.js', path.join(directory, 'alias.js'));
-  const root = WorkspaceFileRoot.adopt(directory);
+  const root = RootedFileAuthority.adopt(directory);
   try {
     const snapshot = await captureWorkspaceSnapshot(root);
     assert.equal(snapshot.coverage, 'partial');
@@ -171,7 +171,7 @@ test('verification results distinguish coverage, failed checks, and unavailable 
   const directory = await mkdtemp(path.join(tmpdir(), 'coding-agent-result-'));
   const runtimeDirectory = await mkdtemp(path.join(tmpdir(), 'coding-agent-result-runtime-'));
   await writeFile(path.join(directory, 'source.js'), 'content\n');
-  const root = WorkspaceFileRoot.adopt(directory);
+  const root = RootedFileAuthority.adopt(directory);
   try {
     const baseline = await captureWorkspaceSnapshot(root);
     const observe = async (coverage, result) => {

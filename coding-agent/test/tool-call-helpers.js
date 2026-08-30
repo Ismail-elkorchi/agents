@@ -26,7 +26,7 @@ export async function invokeToolCall(call, tools, context) {
     signal: context.signal ?? controller.signal,
     boundary: context.boundary ?? {
       authorizationPolicyId: 'tests/tool-policy@1',
-      executionTargetId: String(context.services?.workspaceFileRoot?.displayPath ?? 'tests')
+      executionTargetId: String(context.services?.rootedFileAuthority?.displayPath ?? 'tests')
     }
   };
   const preparation = await prepareToolCall(ownedCall, tools, preparationContext);
@@ -82,7 +82,7 @@ export async function presentToolObservation(tool, call, observation, context, m
     signal: context.signal ?? controller.signal,
     boundary: context.boundary ?? {
       authorizationPolicyId: 'tests/tool-policy@1',
-      executionTargetId: String(context.services?.workspaceFileRoot?.displayPath ?? 'tests')
+      executionTargetId: String(context.services?.rootedFileAuthority?.displayPath ?? 'tests')
     }
   };
   const preparation = await prepareToolCall(ownedCall, [tool], preparationContext);

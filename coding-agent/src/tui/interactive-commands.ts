@@ -23,6 +23,7 @@ export type InteractiveCommandName =
   | '/steer'
   | '/follow'
   | '/compact'
+  | '/resume'
   | '/abort'
   | '/status'
   | '/debug';
@@ -61,6 +62,7 @@ export const INTERACTIVE_COMMAND_REGISTRY = {
   '/steer': command('/steer', 'Steer the active run.', 'required'),
   '/follow': command('/follow', 'Queue a follow-up after current work.', 'required'),
   '/compact': command('/compact', 'Summarize stable session history for future turns.', 'none'),
+  '/resume': command('/resume', 'Reconcile an external outcome or resume an available implementation.', 'none'),
   '/abort': command('/abort', 'Abort the active run.', 'optional'),
   '/status': command('/status', 'Show interactive setup and session status.', 'none'),
   '/debug': command('/debug', 'Inspect detailed interactive and session state.', 'none'),

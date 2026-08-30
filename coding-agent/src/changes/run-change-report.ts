@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { EventRepository } from '@agent-core/evidence';
 import type { AgentEvent, AgentRunResult, AgentVerificationStatus } from '@agent-core/runtime';
 import { applyPatchOutputSchema, type ApplyPatchOutput } from '@agent-core/tools-local';
-import type { WorkspaceFileRoot } from '@agent-core/tools-local';
+import type { RootedFileAuthority } from '@agent-core/tools-local';
 import { PrivateStateDirectory } from '../state/private-state.js';
 import { captureWorkspaceSnapshot, type WorkspaceSnapshot, type WorkspaceSnapshotEntry } from '../verification/workspace-snapshot.js';
 import { loadRunWorkspaceBaseline, type RunWorkspaceBaseline } from './workspace-baseline-store.js';
@@ -22,7 +22,7 @@ export interface StructuredMutationReceipt {
   readonly patchSha256: string;
   readonly operationStatus: ApplyPatchOutput['operationStatus'];
   readonly transactionOutcome?: ApplyPatchOutput['transactionOutcome'];
-  readonly workspaceState: ApplyPatchOutput['workspaceState'];
+  readonly rootState: ApplyPatchOutput['rootState'];
 }
 
 interface DecodedMutationReceipt extends StructuredMutationReceipt {
@@ -85,7 +85,7 @@ export interface RunChangeReport {
 /** Derives one bounded coding-domain report from the run ledger and exact workspace states. */
 export async function createRunChangeReport(input: {
   readonly runId: string;
-  readonly root: WorkspaceFileRoot;
+  readonly root: RootedFileAuthority;
   readonly state: PrivateStateDirectory;
   readonly events: EventRepository<AgentEvent>;
   readonly result?: AgentRunResult;
@@ -255,14 +255,14 @@ function decodeWorkspaceChange(value: unknown): WorkspaceChange {
 
 function decodeMutationReceipt(value: unknown): StructuredMutationReceipt {
   if (!record(value)
-    || Object.keys(value).some((key) => !['eventId', 'sequence', 'turnId', 'toolBatchId', 'callIndex', 'callId', 'toolAttempt', 'fingerprint', 'patchSha256', 'operationStatus', 'transactionOutcome', 'workspaceState'].includes(key))
+    || Object.keys(value).some((key) => !['eventId', 'sequence', 'turnId', 'toolBatchId', 'callIndex', 'callId', 'toolAttempt', 'fingerprint', 'patchSha256', 'operationStatus', 'transactionOutcome', 'rootState'].includes(key))
     || typeof value.eventId !== 'string' || !nonNegativeInteger(value.sequence)
     || typeof value.turnId !== 'string' || typeof value.toolBatchId !== 'string'
     || !nonNegativeInteger(value.callIndex) || (value.callId !== undefined && typeof value.callId !== 'string')
     || !nonNegativeInteger(value.toolAttempt) || typeof value.fingerprint !== 'string' || !sha256(value.patchSha256)
     || !operationStatus(value.operationStatus)
     || (value.transactionOutcome !== undefined && !transactionOutcome(value.transactionOutcome))
-    || (value.workspaceState !== 'known' && value.workspaceState !== 'uncertain')) throw new Error('Persisted structured mutation receipt is invalid.');
+    || (value.rootState !== 'known' && value.rootState !== 'uncertain')) throw new Error('Persisted structured mutation receipt is invalid.');
   return Object.freeze({
     eventId: value.eventId,
     sequence: value.sequence,
@@ -275,7 +275,7 @@ function decodeMutationReceipt(value: unknown): StructuredMutationReceipt {
     patchSha256: value.patchSha256,
     operationStatus: value.operationStatus,
     ...(transactionOutcome(value.transactionOutcome) ? { transactionOutcome: value.transactionOutcome } : {}),
-    workspaceState: value.workspaceState
+    rootState: value.rootState
   });
 }
 
@@ -323,7 +323,7 @@ async function readMutationReceipts(
       patchSha256: createHash('sha256').update(patch).digest('hex'),
       operationStatus: parsed.data.operationStatus,
       ...(parsed.data.transactionOutcome ? { transactionOutcome: parsed.data.transactionOutcome } : {}),
-      workspaceState: parsed.data.workspaceState,
+      rootState: parsed.data.rootState,
       files: Object.freeze(parsed.data.files.map((file): MutationFileReceipt => Object.freeze({
         path: file.path,
         operation: file.operation,
@@ -342,7 +342,7 @@ async function readMutationReceipts(
       })))
     }));
     if (parsed.data.transactionOutcome === 'committed_with_residue') causes.add('journal_residue');
-    if (parsed.data.workspaceState === 'uncertain' || parsed.data.transactionOutcome === 'rollback_failed') causes.add('uncertain_workspace_state');
+    if (parsed.data.rootState === 'uncertain' || parsed.data.transactionOutcome === 'rollback_failed') causes.add('uncertain_workspace_state');
   }
   if (starts.size > 0) causes.add('unsettled_structured_mutation');
   return Object.freeze({ receipts: Object.freeze(receipts), causes: Object.freeze([...causes].sort(compareCodeUnits)) });
@@ -358,7 +358,7 @@ function applyReceipt(
   conflicts: Map<string, Set<string>>,
   touched: Set<string>
 ): void {
-  if (receipt.workspaceState !== 'known' || (receipt.transactionOutcome !== 'committed' && receipt.transactionOutcome !== 'committed_with_residue')) {
+  if (receipt.rootState !== 'known' || (receipt.transactionOutcome !== 'committed' && receipt.transactionOutcome !== 'committed_with_residue')) {
     for (const file of receipt.files) for (const path of operationPaths(file)) addConflict(conflicts, path, 'mutation_outcome_not_known_committed');
     return;
   }
@@ -485,7 +485,7 @@ function publicReceipt(receipt: DecodedMutationReceipt): StructuredMutationRecei
     patchSha256: receipt.patchSha256,
     operationStatus: receipt.operationStatus,
     ...(receipt.transactionOutcome ? { transactionOutcome: receipt.transactionOutcome } : {}),
-    workspaceState: receipt.workspaceState
+    rootState: receipt.rootState
   });
 }
 

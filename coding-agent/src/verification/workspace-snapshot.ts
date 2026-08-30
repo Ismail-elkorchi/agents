@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { workspaceFileIdentitiesEqual, type WorkspaceFileRoot } from '@agent-core/tools-local';
+import { rootedFileIdentitiesEqual, type RootedFileAuthority } from '@agent-core/tools-local';
 
 const MAX_ENTRIES = 20_000;
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
@@ -25,7 +25,7 @@ export interface WorkspaceSnapshot {
 }
 
 /** Captures the exact root-bound file state admitted for verification, excluding authority metadata reserved by the root. */
-export async function captureWorkspaceSnapshot(root: WorkspaceFileRoot, signal?: AbortSignal): Promise<WorkspaceSnapshot> {
+export async function captureWorkspaceSnapshot(root: RootedFileAuthority, signal?: AbortSignal): Promise<WorkspaceSnapshot> {
   const entries: WorkspaceSnapshotEntry[] = [];
   const causes = new Set<string>();
   let totalBytes = 0;
@@ -71,8 +71,8 @@ export async function captureWorkspaceSnapshot(root: WorkspaceFileRoot, signal?:
         }
         const identity = file.identity;
         const content = await file.readAll(MAX_FILE_BYTES);
-        if (!workspaceFileIdentitiesEqual(identity, await file.identityNow())
-          || !workspaceFileIdentitiesEqual(identity, await root.fileIdentity(childPath))) {
+        if (!rootedFileIdentitiesEqual(identity, await file.identityNow())
+          || !rootedFileIdentitiesEqual(identity, await root.fileIdentity(childPath))) {
           causes.add('concurrent_change');
           continue;
         }

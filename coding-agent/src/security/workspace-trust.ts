@@ -63,7 +63,7 @@ export function isSensitiveWorkspacePath(workspacePath: string): boolean {
 }
 
 function isSensitiveWorkspaceScope(scope: string): boolean {
-  const prefix = 'workspace/files/';
+  const prefix = 'files/';
   return scope.startsWith(prefix) && isSensitiveWorkspacePath(scope.slice(prefix.length));
 }
 

@@ -17,7 +17,7 @@ import {
   type PrepareCommandRequest,
   type StartPreparedCommandOptions
 } from '@agent-core/tools';
-import type { WorkspaceFileRoot } from '@agent-core/tools-local';
+import type { RootedFileAuthority } from '@agent-core/tools-local';
 import { parseJsonObject, type JsonObject } from '@agent-core/json';
 import type {
   SandboxDetachedRunOptions,
@@ -51,7 +51,7 @@ export type SandboxCommandRecovery =
 
 export interface SandboxCommandExecutionOptions {
   readonly repository: SandboxExecutionRepository;
-  readonly workspaceFileRoot: WorkspaceFileRoot;
+  readonly rootedFileAuthority: RootedFileAuthority;
   readonly state: PrivateStateDirectory;
   readonly createRun: (
     request: PrepareCommandRequest,
@@ -103,7 +103,7 @@ export class SandboxCommandExecution implements CommandExecution {
   readonly descriptor: CommandExecutionDescriptor;
   readonly resourceLeases = new ResourceLeaseCoordinator();
   readonly #recovered = new Map<string, CommandExecutionReport>();
-  readonly #unresolved = new Map<string, { workspace: string; diagnostic: string }>();
+  readonly #unresolved = new Map<string, { rootPath: string; diagnostic: string }>();
   readonly #abortListeners = new Map<string, { signal: AbortSignal; listener: () => void }>();
   readonly #preparations = new WeakMap<CommandExecutionPreparation, SandboxCommandPreparation>();
   #closed = false;
@@ -111,7 +111,7 @@ export class SandboxCommandExecution implements CommandExecution {
   private constructor(private readonly options: SandboxCommandExecutionOptions) {
     this.descriptor = Object.freeze({
       implementationId: 'coding-agent.sandbox-command-execution@1',
-      recoveryIdentity: `${options.repository.identity}:${createHash('sha256').update(options.workspaceFileRoot.identity.canonicalPath).digest('hex')}`,
+      recoveryIdentity: `${options.repository.identity}:${createHash('sha256').update(options.rootedFileAuthority.identity.canonicalPath).digest('hex')}`,
       capabilities: Object.freeze(['sandbox-process', 'caller-process-recovery', 'prepared-authorization']),
       supportsPty: false
     });
@@ -133,10 +133,10 @@ export class SandboxCommandExecution implements CommandExecution {
     const processId = processIdentity(request.owner, this.descriptor.recoveryIdentity);
     await this.#bindOwner({ schemaVersion: 1, processId, owner: ownOwner(request.owner) });
     const run = await this.options.createRun(request, {
-      hostWorkspaceRoot: this.options.workspaceFileRoot.identity.canonicalPath,
-      workspacePath: request.workspacePath
+      hostWorkspaceRoot: this.options.rootedFileAuthority.identity.canonicalPath,
+      workspacePath: request.rootedDirectory
     });
-    validateWorkspaceGrant(run, this.options.workspaceFileRoot.identity.canonicalPath);
+    validateWorkspaceGrant(run, this.options.rootedFileAuthority.identity.canonicalPath);
     const prepared = await this.options.repository.prepare({ executionId: processId, run }, {
       maxBytes: this.options.maxRetainedOutputBytes,
       waitMs: Math.max(1, Math.min(request.timeoutMs, 30_000))
@@ -315,7 +315,7 @@ export class SandboxCommandExecution implements CommandExecution {
       const stored = await this.#storedOwner(observation.executionId);
       assertRequestBinding(stored, observation);
       this.#unresolved.set(observation.executionId, {
-        workspace: this.options.workspaceFileRoot.identity.canonicalPath,
+        rootPath: this.options.rootedFileAuthority.identity.canonicalPath,
         diagnostic: unresolvedDiagnostic(observation)
       });
     }

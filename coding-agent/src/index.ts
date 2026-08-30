@@ -4,12 +4,12 @@ import path from 'node:path';
 import type { Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { FileCredentialStore } from '@agent-core/auth';
-import { AgentOperationCoordinator, AgentRuntime, AgentSession, agentEventCodec, type AgentEvent, type AgentProgressEvent, type AgentRunResult, type AgentSessionSubmissionResult, type SessionConversationItem, type SessionDescriptor } from '@agent-core/runtime';
+import { AgentOperationCoordinator, AgentRuntime, AgentSession, agentEventCodec, type AgentEvent, type AgentProgressEvent, type AgentRunResult, type AgentSessionSubmissionResult, type SessionBindingInput, type SessionConversationItem, type SessionDescriptor } from '@agent-core/runtime';
 import { JsonlSessionRepository } from '@agent-core/runtime/node';
 import { JsonlEventRepository, LocalArtifactRepository } from '@agent-core/evidence/node';
 import { type ModelProvider, type ModelReasoningEffort, type ModelReasoningRequest, SimpleTokenEstimator } from '@agent-core/model';
 import { isCodingAgentProviderId, loadCodingAgentConfiguration, type CodingAgentConfiguration, type CodingAgentProviderId } from './configuration.js';
-import { openCodingWorkspace, type OpenCodingWorkspace } from './workspace.js';
+import { codingWorkspaceSessionBinding, openCodingWorkspace, type OpenCodingWorkspace } from './workspace.js';
 import { OllamaProvider } from '@agent-core/provider-ollama';
 import { OpenAICodexProvider, loginOpenAICodexDeviceCode, type OpenAICodexTransport } from '@agent-core/provider-openai-codex';
 import { OpenAIProvider } from '@agent-core/provider-openai';
@@ -58,7 +58,7 @@ export {
   parseCodingAgentConfiguration,
 } from './configuration.js';
 export type { CodingAgentCheckConfiguration, CodingAgentConfiguration, CodingAgentProviderId } from './configuration.js';
-export { describeWorkspace, loadWorkspace, openCodingWorkspace, type OpenCodingWorkspace, type WorkspaceLayout } from './workspace.js';
+export { codingWorkspaceSessionBinding, describeWorkspace, loadWorkspace, openCodingWorkspace, type OpenCodingWorkspace, type WorkspaceLayout } from './workspace.js';
 export { resolveCodingAuthority, type CodingApprovalKind, type CodingAuthority, type CodingPermissionMode } from './security/permission-mode.js';
 export type { RunChangeReport, StructuredMutationReceipt, WorkspaceChange } from './changes/run-change-report.js';
 
@@ -281,6 +281,7 @@ class CodingAgentInteractiveController implements CodingAgentInteractiveControll
         case '/steer': return this.steer(parsed.value);
         case '/follow': return this.follow(parsed.value);
         case '/compact': return this.compact();
+        case '/resume': return this.resumeSuspension();
         case '/abort': return this.abort(parsed.value);
         case '/status': return { message: interactiveStatus(this.interactiveState) };
         case '/debug': return { message: JSON.stringify(this.interactiveState, null, 2), view: 'debug' as const };
@@ -314,7 +315,7 @@ class CodingAgentInteractiveController implements CodingAgentInteractiveControll
     const failures: unknown[] = [];
     if (runtime !== undefined) {
       const state = runtime.agent.state();
-      if (state.activeRunId !== undefined && state.phase !== 'waiting_for_user') {
+      if (state.activeRunId !== undefined && state.phase === 'running') {
         try { await runtime.agent.abort('Coding Agent TUI closed.', state.activeRunId); }
         catch (error) { failures.push(error); }
       }
@@ -359,7 +360,7 @@ class CodingAgentInteractiveController implements CodingAgentInteractiveControll
 
   private async resolveSettings(): Promise<RuntimeSettingsCandidate> {
     const sessions = new JsonlSessionRepository({ rootDir: this.workspace.layout.sessionsDir });
-    const session = await selectSession(this.options, sessions, this.selectedSessionId);
+    const session = await selectSession(this.options, sessions, codingWorkspaceSessionBinding(this.workspace.layout.identity), this.selectedSessionId);
     const persisted = session === undefined ? undefined : await persistedModelSettings(sessions, session);
     const stored = await new ModelSelectionStore(this.workspace.privateState).read();
     return resolveRuntimeSettingsCandidate(
@@ -388,7 +389,7 @@ class CodingAgentInteractiveController implements CodingAgentInteractiveControll
     this.runtimeUnsubscribe = runtime.agent.subscribe((event) => this.onSessionEvent(runtime, event));
     await runtime.agent.restore();
     await this.emit({ type: 'session.hydrated', hydration: await loadRuntimeHydration(runtime) });
-    if (runtime.agent.state().queuedInputs > 0) await runtime.agent.resumePending();
+    if (runtime.agent.state().queuedInputs > 0) await runtime.agent.waitForIdle();
   }
 
   private async deactivateRuntime(): Promise<void> {
@@ -541,6 +542,17 @@ class CodingAgentInteractiveController implements CodingAgentInteractiveControll
     return { message: 'Abort requested.' };
   }
 
+  private async resumeSuspension() {
+    const agent = this.requireRuntime().agent;
+    await agent.restore();
+    const suspension = agent.inspectSuspension();
+    if (suspension === undefined) throw new Error('The selected session is not suspended.');
+    if (suspension.category === 'external_recovery') await agent.reconcileExternal(suspension.runId);
+    else if (suspension.category === 'implementation') await agent.resumeImplementation(suspension.runId);
+    else throw new Error(`Suspension ${suspension.reason} does not advertise a resume action.`);
+    return { message: `Processed ${suspension.actions[0] ?? 'recovery'} for run ${suspension.runId}.` };
+  }
+
   private async prepareReconfiguration(): Promise<void> {
     if (this.runtime !== undefined) requireIdleSession(this.runtime.agent);
     await this.publishState('initializing', []);
@@ -627,7 +639,7 @@ async function persistedModelSettings(
   repository: JsonlSessionRepository,
   session: SessionDescriptor
 ): Promise<PersistedModelSettings> {
-  const replay = await repository.loadReplayState(session.id);
+  const replay = await repository.loadReplayState(session);
   const latest = [...replay.branch].reverse().find((entry) => entry.type === 'model_settings');
   return latest ?? {
     ...(session.header.provider ? { provider: session.header.provider } : {}),
@@ -713,8 +725,8 @@ function interactiveStatus(state: CodingAgentInteractiveState): string {
     ? 'Ready'
     : session.phase === 'running'
       ? 'Running'
-      : session.phase === 'waiting_for_user'
-        ? session.suspensionReason === 'approval_required' ? 'Waiting for approval' : 'Waiting for recovery decision'
+      : session.phase === 'suspended'
+        ? session.suspension?.category === 'approval' ? 'Waiting for approval' : 'Waiting for recovery decision'
         : session.phase === 'compacting' ? 'Compacting' : 'Idle';
   return `${sessionStatus} · ${state.runtimeDetails.providerId ?? 'provider'}/${state.runtimeDetails.modelId ?? 'model'}${session?.queuedInputs ? ` · ${String(session.queuedInputs)} queued` : ''}`;
 }
@@ -737,9 +749,9 @@ function requireIdleSession(agent: AgentSession): void {
 
 async function loadRuntimeHydration(runtime: CodingAgentRuntimeComposition) {
   const [replay, pendingSubmissions, branchPoints] = await Promise.all([
-    runtime.sessions.loadReplayState(runtime.session.id),
-    runtime.sessions.loadPendingSubmissions(runtime.session.id),
-    runtime.sessions.listBranchPoints(runtime.session.id)
+    runtime.sessions.loadReplayState(runtime.session),
+    runtime.sessions.loadPendingSubmissions(runtime.session),
+    runtime.sessions.listBranchPoints(runtime.session)
   ]);
   const [operations, reports] = await Promise.all([
     Promise.all(pendingSubmissions.map((submission) => runtime.operations.inspect(submission.runId))),
@@ -776,13 +788,16 @@ async function resumeAcceptedOperation(
 ): Promise<AgentRunResult> {
   await agent.restore();
   const restored = agent.state();
-  if (restored.phase === 'waiting_for_user') {
-    throw new Error(`The selected session is waiting for ${restored.suspensionReason?.replaceAll('_', ' ') ?? 'an explicit recovery decision'}; resolve that suspension explicitly.`);
+  if (restored.phase === 'suspended') {
+    const suspension = restored.suspension;
+    if (suspension === undefined) throw new Error('The selected session is suspended without a durable descriptor.');
+    if (suspension.category === 'external_recovery') return agent.reconcileExternal(suspension.runId);
+    if (suspension.category === 'implementation') return agent.resumeImplementation(suspension.runId);
+    throw new Error(`The selected session is waiting for ${suspension.reason.replaceAll('_', ' ')}; use its explicit ${suspension.actions.join(' or ')} action.`);
   }
   if (restored.phase === 'idle' && restored.queuedInputs === 0) {
     throw new Error('The selected session has no unfinished operation to resume. Supply a new task to continue the session.');
   }
-  await agent.resumePending();
   await agent.waitForIdle();
   const failed = failure();
   if (failed) throw failed;
@@ -812,7 +827,8 @@ async function createRuntime(
 ): Promise<CodingAgentRuntimeComposition> {
   const workspace = openedWorkspace.layout;
   const sessions = new JsonlSessionRepository({ rootDir: workspace.sessionsDir });
-  let session = await selectSession(options, sessions, persistedSessionId);
+  const binding = codingWorkspaceSessionBinding(workspace.identity);
+  let session = await selectSession(options, sessions, binding, persistedSessionId);
   if (!session && requireExistingSession) throw new Error('The selected workspace has no existing session to resume.');
   const persistedSettings = session ? await persistedModelSettings(sessions, session) : undefined;
   const projectExecutionPolicy = openedWorkspace.security.decide('project_execution_policy').kind === 'allowed';
@@ -822,8 +838,8 @@ async function createRuntime(
     ...rawProviderRuntime,
     provider: openedWorkspace.security.protectProvider(rawProviderRuntime.provider)
   });
-  session ??= await sessions.create({ provider: providerRuntime.providerId, model: providerRuntime.model });
-  const sessionBinding = { repository: sessions, session };
+  session ??= await sessions.create({ binding, provider: providerRuntime.providerId, model: providerRuntime.model });
+  const sessionBinding = { repository: sessions, descriptor: session };
   const events = new JsonlEventRepository<AgentEvent>({ rootDir: workspace.runsDir, codec: agentEventCodec });
   const existingRunIds = new Set(await events.listRunIds());
   const activeConfiguration = projectExecutionPolicy ? options.configuration : undefined;
@@ -847,12 +863,12 @@ async function createRuntime(
     const commandExecution = commandEnabled
       ? await createCodingCommandAuthority({
         repositoryDirectory: path.join(workspace.runtimeDir, 'sandbox-commands'),
-        workspaceFileRoot: openedWorkspace.fileRoot,
+        rootedFileAuthority: openedWorkspace.fileRoot,
         state: openedWorkspace.privateState
       })
       : undefined;
     localHost = createLocalToolHost({
-      workspaceFileRoot: openedWorkspace.fileRoot,
+      rootedFileAuthority: openedWorkspace.fileRoot,
       artifactRepository: new LocalArtifactRepository({ rootDir: workspace.artifactsDir }),
       ...(commandExecution ? { commandExecution } : {}),
       ...(patchEnabled ? { patchJournal: TextPatchJournal.adopt(patchJournalPath) } : {}),
@@ -891,7 +907,8 @@ async function createRuntime(
     });
     const operations = new AgentOperationCoordinator(events);
     const agent = new AgentSession({
-      descriptor: sessionBinding.session,
+      descriptor: sessionBinding.descriptor,
+      expectedBinding: binding,
       repository: sessionBinding.repository,
       operations,
       configuration: {
@@ -917,7 +934,7 @@ async function createRuntime(
             runtimeDirectory: workspace.runtimeDir,
             createCommandExecution: ({ root, repositoryDirectory }) => createCodingCommandAuthority({
               repositoryDirectory,
-              workspaceFileRoot: root,
+              rootedFileAuthority: root,
               state: openedWorkspace.privateState
             }),
             commandYieldMs: localToolConfiguration.process.maxYieldMs
@@ -932,7 +949,7 @@ async function createRuntime(
           },
           repositories: {
             events,
-            session: { repository: sessionBinding.repository, sessionId: sessionBinding.session.id },
+            session: sessionBinding,
             artifacts: artifactStore
           },
           estimator,
@@ -983,14 +1000,14 @@ async function createRuntime(
       operations,
       events,
       sessions: sessionBinding.repository,
-      session: sessionBinding.session,
+      session: sessionBinding.descriptor,
       tuiDetails: {
       providerId: providerRuntime.providerId,
       modelId: providerRuntime.model,
       ...(settings.temperature === undefined ? {} : { temperature: settings.temperature }),
       ...(settings.reasoning?.strategy === 'effort' ? { reasoningEffort: settings.reasoning.effort } : {}),
       showReasoning: options.showReasoning,
-      sessionLocation: sessionBinding.repository.location(sessionBinding.session.id),
+      sessionLocation: sessionBinding.repository.location(sessionBinding.descriptor.id),
       permissions: authority.permissions
       },
       localHost,
@@ -1355,15 +1372,15 @@ async function loginAuth(provider: CliAuthProviderId): Promise<void> {
   console.log(`Stored credentials for ${provider}.`);
 }
 
-async function selectSession(options: CliOptions, repository: JsonlSessionRepository, persistedSessionId?: string): Promise<SessionDescriptor | undefined> {
+async function selectSession(options: CliOptions, repository: JsonlSessionRepository, binding: SessionBindingInput, persistedSessionId?: string): Promise<SessionDescriptor | undefined> {
   let session: SessionDescriptor | undefined;
   if (persistedSessionId !== undefined) {
-    session = await repository.open(persistedSessionId);
+    session = await repository.open(persistedSessionId, binding);
   } else if (options.sessionSelection.kind === 'existing') {
-    session = await repository.open(options.sessionSelection.id);
+    session = await repository.open(options.sessionSelection.id, binding);
   } else if (options.sessionSelection.kind === 'latest') {
     const latest = (await repository.list())[0];
-    if (latest) session = await repository.open(latest.id);
+    if (latest) session = await repository.open(latest.id, binding);
   }
   if (!session && options.branch) throw new Error('--branch requires an existing session.');
   return session;

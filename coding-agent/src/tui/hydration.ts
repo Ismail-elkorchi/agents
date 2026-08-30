@@ -160,10 +160,13 @@ function projectSessionRunState(
 ): CodingAgentTuiState {
   const session = hydration.session;
   const operation = selectedOperation(hydration);
-  if (session.phase === 'waiting_for_user') {
+  if (session.phase === 'suspended') {
     if (operation === undefined) throw new Error('Restored suspended session has no durable operation.');
+    if (session.suspension?.runId !== operation.state.runId) {
+      throw new Error('Restored session suspension has no matching durable descriptor.');
+    }
     const suspension = operationSuspension(operation.state);
-    if (suspension.reason !== session.suspensionReason) {
+    if (suspension.reason !== session.suspension.reason) {
       throw new Error('Restored session suspension contradicts its durable operation.');
     }
     if (suspension.reason === 'approval_required') {

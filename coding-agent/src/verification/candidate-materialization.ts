@@ -2,18 +2,18 @@ import { createHash, randomUUID } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { chmod, mkdir, open, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
-import { WorkspaceFileRoot } from '@agent-core/tools-local';
+import { RootedFileAuthority } from '@agent-core/tools-local';
 import type { WorkspaceSnapshot } from './workspace-snapshot.js';
 
 export interface CandidateMaterialization {
   readonly directory: string;
-  readonly workspaceRoot: WorkspaceFileRoot;
+  readonly workspaceRoot: RootedFileAuthority;
   readonly executionRepositoryDirectory: string;
 }
 
 /** Materializes one exact, private verifier copy. Existing copies are retained for effect reconciliation. */
 export async function materializeVerificationCandidate(input: {
-  readonly source: WorkspaceFileRoot;
+  readonly source: RootedFileAuthority;
   readonly snapshot: WorkspaceSnapshot;
   readonly runtimeDirectory: string;
   readonly runId: string;
@@ -33,7 +33,7 @@ export async function materializeVerificationCandidate(input: {
   await mkdir(executionRepositoryDirectory, { recursive: true, mode: 0o700 });
   return Object.freeze({
     directory,
-    workspaceRoot: WorkspaceFileRoot.adopt(workspaceDirectory),
+    workspaceRoot: RootedFileAuthority.adopt(workspaceDirectory),
     executionRepositoryDirectory
   });
 }
@@ -42,7 +42,7 @@ export async function deleteVerificationMaterializations(runtimeDirectory: strin
   await rm(path.join(runtimeDirectory, 'verification', identity(runId)), { recursive: true, force: true });
 }
 
-async function publishWorkspaceCopy(source: WorkspaceFileRoot, snapshot: WorkspaceSnapshot, destination: string): Promise<void> {
+async function publishWorkspaceCopy(source: RootedFileAuthority, snapshot: WorkspaceSnapshot, destination: string): Promise<void> {
   const parent = path.dirname(destination);
   await mkdir(parent, { recursive: true, mode: 0o700 });
   const staging = path.join(parent, `.workspace.${randomUUID()}.tmp`);

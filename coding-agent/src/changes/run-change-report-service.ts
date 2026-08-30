@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { EventRepository } from '@agent-core/evidence';
 import type { AgentEndedRunResult, AgentEvent } from '@agent-core/runtime';
-import type { WorkspaceFileRoot } from '@agent-core/tools-local';
+import type { RootedFileAuthority } from '@agent-core/tools-local';
 import { PrivateStateDirectory } from '../state/private-state.js';
 import { deleteVerificationRunState } from '../verification/run-cleanup.js';
 import { createRunChangeReport, decodeRunChangeReport, type RunChangeReport } from './run-change-report.js';
@@ -11,7 +11,7 @@ const MAX_PERSISTED_REPORT_BYTES = 4 * 1024 * 1024;
 export class RunChangeReportService {
   readonly #state: PrivateStateDirectory;
   readonly #runtimeDirectory: string;
-  readonly #root: WorkspaceFileRoot;
+  readonly #root: RootedFileAuthority;
   readonly #events: EventRepository<AgentEvent>;
   readonly #pending = new Map<string, Promise<RunChangeReport>>();
   readonly #failures = new Map<string, unknown>();
@@ -19,7 +19,7 @@ export class RunChangeReportService {
   constructor(input: {
     readonly state: PrivateStateDirectory;
     readonly runtimeDirectory: string;
-    readonly root: WorkspaceFileRoot;
+    readonly root: RootedFileAuthority;
     readonly events: EventRepository<AgentEvent>;
   }) {
     this.#state = input.state;

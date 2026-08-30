@@ -12,10 +12,15 @@
   "engines": { "node": ">=24.8.0" },
   "dependencies": {
     "@agent-core/evidence": "0.2.0",
+    "@agent-core/json": "0.2.0",
     "@agent-core/model": "0.2.0",
+    "@agent-core/provider-ollama": "0.2.0",
+    "@agent-core/provider-openai": "0.2.0",
     "@agent-core/provider-openai-codex": "0.2.0",
+    "@agent-core/provider-openrouter": "0.2.0",
     "@agent-core/runtime": "0.2.0",
     "@agent-core/tools": "0.2.0",
-    "@agent-core/tools-local": "0.2.0"
+    "@agent-core/tools-local": "0.2.0",
+    "zod": "4.4.3"
   }
 }

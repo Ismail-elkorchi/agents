@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { WorkspaceRootIdentity } from '@agent-core/tools-local';
+import type { RootIdentity } from '@agent-core/tools-local';
 
 export interface CodingWorkspaceIdentity {
   readonly id: string;
@@ -10,7 +10,7 @@ export interface CodingWorkspaceIdentity {
   readonly mountId: string;
 }
 
-export function identifyCodingWorkspace(root: WorkspaceRootIdentity, platform: NodeJS.Platform = process.platform): CodingWorkspaceIdentity {
+export function identifyCodingWorkspace(root: RootIdentity, platform: NodeJS.Platform = process.platform): CodingWorkspaceIdentity {
   const material = JSON.stringify([platform, root.canonicalPath, root.device, root.inode, root.mountId]);
   return Object.freeze({
     id: `workspace-${createHash('sha256').update(material).digest('hex')}`,

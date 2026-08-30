@@ -98,7 +98,7 @@ function receipt(sequence, files) {
     patchSha256: hash('9'),
     operationStatus: 'applied',
     transactionOutcome: 'committed',
-    workspaceState: 'known',
+    rootState: 'known',
     files
   };
 }

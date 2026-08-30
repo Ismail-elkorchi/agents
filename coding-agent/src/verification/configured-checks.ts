@@ -8,7 +8,7 @@ import {
   type CommandExecutionResult,
   type PreparedCommandExecution
 } from '@agent-core/tools';
-import type { WorkspaceFileRoot } from '@agent-core/tools-local';
+import type { RootedFileAuthority } from '@agent-core/tools-local';
 import type { CodingAgentCheckConfiguration, CodingAgentConfiguration } from '../configuration.js';
 import type { SandboxCommandExecution } from '../execution/sandbox-command-execution.js';
 import { materializeVerificationCandidate } from './candidate-materialization.js';
@@ -32,11 +32,11 @@ export function configuredCheckProposals(configuration: CodingAgentConfiguration
 
 export function createConfiguredChecks(input: {
   readonly proposals: ReturnType<typeof configuredCheckProposals>;
-  readonly root: WorkspaceFileRoot;
+  readonly root: RootedFileAuthority;
   readonly baseline: WorkspaceSnapshot;
   readonly runtimeDirectory: string;
   readonly createCommandExecution: (input: {
-    readonly root: WorkspaceFileRoot;
+    readonly root: RootedFileAuthority;
     readonly repositoryDirectory: string;
   }) => Promise<SandboxCommandExecution>;
   readonly commandYieldMs: number;
@@ -90,7 +90,7 @@ function configuredCommandCheck(
         prepared = await prepareCommandExecution(commandExecution, {
           owner,
           command: check.command,
-          workspacePath: '.',
+          rootedDirectory: '.',
           pty: false,
           timeoutMs: check.timeoutMs ?? 60_000,
           yieldMs: input.commandYieldMs,

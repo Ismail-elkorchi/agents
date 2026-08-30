@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { realpath } from 'node:fs/promises';
-import { WorkspaceFileRoot } from '@agent-core/tools-local';
+import type { SessionBindingInput } from '@agent-core/runtime';
+import { RootedFileAuthority } from '@agent-core/tools-local';
 import { identifyCodingWorkspace, type CodingWorkspaceIdentity } from './security/workspace-identity.js';
 import { WorkspaceSecurityBoundary } from './security/workspace-security-boundary.js';
 import type { WorkspaceTrustDecision, WorkspaceTrustLevel } from './security/workspace-trust.js';
@@ -20,7 +21,7 @@ export interface WorkspaceLayout {
 
 export interface OpenCodingWorkspace {
   readonly layout: WorkspaceLayout;
-  readonly fileRoot: WorkspaceFileRoot;
+  readonly fileRoot: RootedFileAuthority;
   readonly privateState: PrivateStateDirectory;
   readonly trustStore: WorkspaceTrustStore;
   readonly trustDecision?: WorkspaceTrustDecision;
@@ -30,7 +31,7 @@ export interface OpenCodingWorkspace {
 export interface OpenWorkspaceOptions { readonly stateRoot?: string }
 
 export async function openCodingWorkspace(rootPath: string, options: OpenWorkspaceOptions = {}): Promise<OpenCodingWorkspace> {
-  const fileRoot = WorkspaceFileRoot.adopt(rootPath, { additionalDeniedEntries: ['.coding-agent'] });
+  const fileRoot = RootedFileAuthority.adopt(rootPath, { additionalDeniedEntries: ['.git', '.coding-agent'] });
   try {
     const identity = identifyCodingWorkspace(fileRoot.identity);
     const requestedStatePath = path.resolve(options.stateRoot ?? defaultCodingAgentStateRoot());
@@ -55,6 +56,17 @@ export async function openCodingWorkspace(rootPath: string, options: OpenWorkspa
       security: new WorkspaceSecurityBoundary(identity, trustLevel)
     });
   } catch (error) { fileRoot.close(); throw error; }
+}
+
+export function codingWorkspaceSessionBinding(identity: CodingWorkspaceIdentity): SessionBindingInput {
+  return Object.freeze({
+    schemaId: 'coding-agent/workspace',
+    schemaVersion: 1,
+    subject: Object.freeze({
+      workspaceId: identity.id,
+      rootIdentity: Object.freeze({ device: identity.device, inode: identity.inode, mountId: identity.mountId })
+    })
+  });
 }
 
 export async function loadWorkspace(rootPath: string, options: OpenWorkspaceOptions = {}): Promise<WorkspaceLayout> {

@@ -3,8 +3,8 @@ import { createHash } from 'node:crypto';
 import type { AgentInstruction } from '@agent-core/runtime';
 import {
   DEFAULT_LOCAL_TOOL_CONFIGURATION,
-  WorkspaceFileSelector,
-  workspaceFileIdentitiesEqual
+  RootedFileSelector,
+  rootedFileIdentitiesEqual
 } from '@agent-core/tools-local';
 import type { OpenCodingWorkspace } from '../workspace.js';
 import { DEFAULT_CODING_CONTRACT } from './coding-contract.js';
@@ -42,7 +42,7 @@ export async function loadRepositoryInstructions(
   workspace: OpenCodingWorkspace,
   configuredPaths: readonly string[] = []
 ): Promise<RepositoryInstructionSet> {
-  const selector = new WorkspaceFileSelector(workspace.fileRoot, DEFAULT_LOCAL_TOOL_CONFIGURATION.fileSelection);
+  const selector = new RootedFileSelector(workspace.fileRoot, DEFAULT_LOCAL_TOOL_CONFIGURATION.fileSelection);
   const discovery = await selector.select({
     startPath: '.',
     patterns: Object.freeze([INSTRUCTION_NAME, `**/${INSTRUCTION_NAME}`]),
@@ -124,7 +124,7 @@ async function readInstruction(workspace: OpenCodingWorkspace, candidatePath: st
     if (file.size > MAX_INSTRUCTION_BYTES) throw new OversizedInstructionError(candidatePath);
     const bytes = await file.readAll(MAX_INSTRUCTION_BYTES);
     const currentIdentity = await file.identityNow();
-    if (!workspaceFileIdentitiesEqual(file.identity, currentIdentity)) throw new Error(`Repository instruction changed while it was read: ${candidatePath}.`);
+    if (!rootedFileIdentitiesEqual(file.identity, currentIdentity)) throw new Error(`Repository instruction changed while it was read: ${candidatePath}.`);
     const content = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
     const scope = path.posix.dirname(candidatePath);
     const adopted = workspace.security.adoptContent({

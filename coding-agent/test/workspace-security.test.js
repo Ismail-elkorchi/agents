@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { access, lstat, mkdir, mkdtemp, readFile, rename, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { WorkspaceFileRoot } from '@agent-core/tools-local';
+import { RootedFileAuthority } from '@agent-core/tools-local';
+import { createSessionBinding } from '@agent-core/runtime';
 import { adoptWorkspaceContent } from '../dist/security/content-provenance.js';
 import { classifyImplicitExecution, implicitExecutionSurfaces } from '../dist/security/implicit-execution.js';
 import { protectProviderEgress, redactSensitiveText } from '../dist/security/provider-egress.js';
@@ -13,11 +14,11 @@ import { WorkspaceSecurityBoundary } from '../dist/security/workspace-security-b
 import { narrowRiskCeiling } from '../dist/config/project-proposal.js';
 import { PrivateStateDirectory } from '../dist/state/private-state.js';
 import { WorkspaceTrustStore } from '../dist/state/workspace-trust-store.js';
-import { openCodingWorkspace } from '../dist/workspace.js';
+import { codingWorkspaceSessionBinding, openCodingWorkspace } from '../dist/workspace.js';
 
 test('workspace file authority fails closed where secure root adoption is unavailable', { skip: process.platform === 'linux' }, () => {
   assert.throws(
-    () => WorkspaceFileRoot.adopt(process.cwd()),
+    () => RootedFileAuthority.adopt(process.cwd()),
     new RegExp(`Root-bound host file access is unavailable on ${process.platform}`, 'u')
   );
 });
@@ -26,15 +27,33 @@ test('workspace identity binds the canonical path and exact adopted physical roo
   const parent = await mkdtemp(path.join(tmpdir(), 'coding-agent-identity-'));
   const rootPath = path.join(parent, 'workspace');
   await mkdir(rootPath);
-  const firstRoot = WorkspaceFileRoot.adopt(rootPath);
+  const firstRoot = RootedFileAuthority.adopt(rootPath);
   const first = identifyCodingWorkspace(firstRoot.identity);
   await rename(rootPath, `${rootPath}-moved`);
   await mkdir(rootPath);
-  const replacementRoot = WorkspaceFileRoot.adopt(rootPath);
+  const replacementRoot = RootedFileAuthority.adopt(rootPath);
   const replacement = identifyCodingWorkspace(replacementRoot.identity);
   assert.notEqual(first.id, replacement.id);
   assert.equal(first.canonicalPath, replacement.canonicalPath);
   firstRoot.close(); replacementRoot.close();
+});
+
+test('coding session binding contains only stable workspace and physical-root identity', { skip: process.platform !== 'linux' }, async () => {
+  const parent = await mkdtemp(path.join(tmpdir(), 'coding-agent-session-binding-'));
+  const firstPath = path.join(parent, 'first');
+  const secondPath = path.join(parent, 'second');
+  await mkdir(firstPath); await mkdir(secondPath);
+  const firstRoot = RootedFileAuthority.adopt(firstPath);
+  const secondRoot = RootedFileAuthority.adopt(secondPath);
+  try {
+    const first = createSessionBinding(codingWorkspaceSessionBinding(identifyCodingWorkspace(firstRoot.identity)));
+    const second = createSessionBinding(codingWorkspaceSessionBinding(identifyCodingWorkspace(secondRoot.identity)));
+    assert.equal(first.schemaId, 'coding-agent/workspace');
+    assert.deepEqual(Object.keys(first.subject).sort(), ['rootIdentity', 'workspaceId']);
+    assert.notEqual(first.bindingSha256, second.bindingSha256);
+    assert.equal(JSON.stringify(first).includes('provider'), false);
+    assert.equal(JSON.stringify(first).includes('permission'), false);
+  } finally { firstRoot.close(); secondRoot.close(); }
 });
 
 test('private state aliases into the workspace are rejected before state mutation', { skip: process.platform !== 'linux' }, async () => {
@@ -92,8 +111,8 @@ test('trust action decisions keep authority distinct from workspace content', ()
   assert.equal(decideWorkspaceAction('restricted', 'workspace_mutation').kind, 'approval_required');
   assert.equal(decideWorkspaceAction('restricted', 'project_execution_policy').kind, 'blocked');
   assert.equal(decideWorkspaceAction('trusted', 'command_execution').kind, 'allowed');
-  assert.equal(decideToolEffects('trusted', { accesses: [{ mode: 'read', scope: 'workspace/files/.env.local' }], lockScopes: [], recovery: { kind: 'unknown' } }).kind, 'blocked');
-  assert.equal(decideToolEffects('restricted', { accesses: [{ mode: 'write', scope: 'workspace/files/src/a.ts' }], lockScopes: [], recovery: { kind: 'unknown' } }).kind, 'approval_required');
+  assert.equal(decideToolEffects('trusted', { accesses: [{ mode: 'read', scope: 'files/.env.local' }], lockScopes: [], recovery: { kind: 'unknown' } }).kind, 'blocked');
+  assert.equal(decideToolEffects('restricted', { accesses: [{ mode: 'write', scope: 'files/src/a.ts' }], lockScopes: [], recovery: { kind: 'unknown' } }).kind, 'approval_required');
   for (const candidate of ['.env', 'nested/.env.production', '.ssh/id_ed25519', 'keys/private-key.pem', '.npmrc']) assert.equal(isSensitiveWorkspacePath(candidate), true, candidate);
   assert.equal(isSensitiveWorkspacePath('src/environment.ts'), false);
   assert.deepEqual(narrowRiskCeiling(['read', 'write'], ['read']), ['read']);

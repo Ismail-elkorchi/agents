@@ -1,6 +1,6 @@
 import path from 'node:path';
 import type { PrepareCommandRequest } from '@agent-core/tools';
-import type { WorkspaceFileRoot } from '@agent-core/tools-local';
+import type { RootedFileAuthority } from '@agent-core/tools-local';
 import {
   LINUX_PROCESS_BASELINE_REQUIREMENTS,
   createSandbox,
@@ -17,7 +17,7 @@ const MAX_PROCESSES = 128;
 
 export async function createCodingCommandAuthority(input: {
   readonly repositoryDirectory: string;
-  readonly workspaceFileRoot: WorkspaceFileRoot;
+  readonly rootedFileAuthority: RootedFileAuthority;
   readonly state: PrivateStateDirectory;
 }): Promise<SandboxCommandExecution> {
   const sandbox = await createSandbox();
@@ -35,7 +35,7 @@ export async function createCodingCommandAuthority(input: {
   try {
     return await SandboxCommandExecution.create({
       repository,
-      workspaceFileRoot: input.workspaceFileRoot,
+      rootedFileAuthority: input.rootedFileAuthority,
       state: input.state,
       maxRetainedOutputBytes: MAX_RETAINED_OUTPUT_BYTES,
       createRun: (request, context) => commandRun(request, context.hostWorkspaceRoot),
@@ -77,7 +77,7 @@ function commandRun(request: PrepareCommandRequest, hostWorkspaceRoot: string): 
     process: {
       executable: '/bin/sh',
       args: ['-c', request.command],
-      cwd: targetDirectory(request.workspacePath),
+      cwd: targetDirectory(request.rootedDirectory),
       environment: {
         base: 'empty',
         set: { PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', CI: '1' }
@@ -102,7 +102,7 @@ function validatePrepared(prepared: SandboxPreparedCommand): void {
     || summary.execution.args.length !== 2
     || summary.execution.args[0] !== '-c'
     || summary.execution.args[1] !== request.command
-    || summary.execution.cwd !== targetDirectory(request.workspacePath)) {
+    || summary.execution.cwd !== targetDirectory(request.rootedDirectory)) {
     throw new Error('Sandbox command preparation does not match the requested command identity.');
   }
   if (summary.execution.sensitiveEnvironmentNames.length !== 0
@@ -117,11 +117,11 @@ function validatePrepared(prepared: SandboxPreparedCommand): void {
   }
 }
 
-function targetDirectory(workspacePath: string): string {
-  if (workspacePath === '' || workspacePath === '.') return TARGET_WORKSPACE;
-  const parts = workspacePath.split('/');
+function targetDirectory(rootedDirectory: string): string {
+  if (rootedDirectory === '' || rootedDirectory === '.') return TARGET_WORKSPACE;
+  const parts = rootedDirectory.split('/');
   if (parts.some((part) => part.length === 0 || part === '.' || part === '..' || part.includes('\\'))) {
-    throw new Error(`Invalid command workspace path: ${workspacePath}`);
+    throw new Error(`Invalid command rooted directory: ${rootedDirectory}`);
   }
   return path.posix.join(TARGET_WORKSPACE, ...parts);
 }

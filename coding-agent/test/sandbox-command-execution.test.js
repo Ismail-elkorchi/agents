@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { isCommandExecution } from '@agent-core/tools';
-import { WorkspaceFileRoot } from '@agent-core/tools-local';
+import { RootedFileAuthority } from '@agent-core/tools-local';
 import { SandboxCommandExecution } from '../dist/execution/sandbox-command-execution.js';
 import { PrivateStateDirectory } from '../dist/state/private-state.js';
 import { createSandbox, LINUX_PROCESS_BASELINE_REQUIREMENTS, openSandboxExecutionRepository } from '@ismail-elkorchi/sandbox';
@@ -24,7 +24,7 @@ test('sandbox command adapter authorizes exact preparation and preserves cursor 
     const prepared = [];
     const execution = await SandboxCommandExecution.create({
       repository: fixture.repository,
-      workspaceFileRoot: fixture.root,
+      rootedFileAuthority: fixture.root,
       state: fixture.state,
       maxRetainedOutputBytes: 1024,
       createRun: request => run(fixture.workspace, request.command),
@@ -52,7 +52,7 @@ test('sandbox activation readiness is independent of the target wall-time limit'
   try {
     const execution = await SandboxCommandExecution.create({
       repository: fixture.repository,
-      workspaceFileRoot: fixture.root,
+      rootedFileAuthority: fixture.root,
       state: fixture.state,
       maxRetainedOutputBytes: 1024,
       createRun: requestValue => run(fixture.workspace, requestValue.command),
@@ -73,7 +73,7 @@ test('sandbox command adapter cancels an invalid preparation without activation'
   try {
     const execution = await SandboxCommandExecution.create({
       repository: fixture.repository,
-      workspaceFileRoot: fixture.root,
+      rootedFileAuthority: fixture.root,
       state: fixture.state,
       maxRetainedOutputBytes: 1024,
       createRun: request => run(fixture.workspace, request.command),
@@ -94,7 +94,7 @@ test('released command preparation can be recreated with fresh time-bound author
   try {
     const execution = await SandboxCommandExecution.create({
       repository: fixture.repository,
-      workspaceFileRoot: fixture.root,
+      rootedFileAuthority: fixture.root,
       state: fixture.state,
       maxRetainedOutputBytes: 1024,
       createRun: requestValue => run(fixture.workspace, requestValue.command),
@@ -122,7 +122,7 @@ test('sandbox command adapter blocks new effects until unknown recovery is ackno
   try {
     const execution = await SandboxCommandExecution.create({
       repository: fixture.repository,
-      workspaceFileRoot: fixture.root,
+      rootedFileAuthority: fixture.root,
       state: fixture.state,
       maxRetainedOutputBytes: 1024,
       createRun: request => run(fixture.workspace, request.command),
@@ -145,7 +145,7 @@ test('sandbox command adapter rejects plans that do not bind the adopted workspa
   try {
     const execution = await SandboxCommandExecution.create({
       repository: fixture.repository,
-      workspaceFileRoot: fixture.root,
+      rootedFileAuthority: fixture.root,
       state: fixture.state,
       maxRetainedOutputBytes: 1024,
       createRun: request => run('/different/root', request.command),
@@ -165,7 +165,7 @@ test('sandbox command adapter rejects a receipt that conflicts with its durable 
   try {
     const execution = await SandboxCommandExecution.create({
       repository: fixture.repository,
-      workspaceFileRoot: fixture.root,
+      rootedFileAuthority: fixture.root,
       state: fixture.state,
       maxRetainedOutputBytes: 1024,
       createRun: requestValue => run(fixture.workspace, requestValue.command),
@@ -180,7 +180,7 @@ test('sandbox command adapter rejects a receipt that conflicts with its durable 
     await assert.rejects(
       SandboxCommandExecution.create({
         repository: fixture.repository,
-        workspaceFileRoot: fixture.root,
+        rootedFileAuthority: fixture.root,
         state: fixture.state,
         maxRetainedOutputBytes: 1024,
         createRun: requestValue => run(fixture.workspace, requestValue.command),
@@ -200,7 +200,7 @@ test('sandbox command adapter decodes progress across byte-chunk boundaries', as
     const progress = [];
     const execution = await SandboxCommandExecution.create({
       repository: fixture.repository,
-      workspaceFileRoot: fixture.root,
+      rootedFileAuthority: fixture.root,
       state: fixture.state,
       maxRetainedOutputBytes: 1024,
       createRun: requestValue => run(fixture.workspace, requestValue.command),
@@ -222,7 +222,7 @@ test('sandbox command adapter preserves native runtime failure diagnostics', asy
   try {
     const execution = await SandboxCommandExecution.create({
       repository: fixture.repository,
-      workspaceFileRoot: fixture.root,
+      rootedFileAuthority: fixture.root,
       state: fixture.state,
       maxRetainedOutputBytes: 1024,
       createRun: requestValue => run(fixture.workspace, requestValue.command),
@@ -244,7 +244,7 @@ test('sandbox adapter satisfies start, output, ownership, terminal receipt, and 
   const repositoryPath = path.join(parent, 'executions');
   const { mkdir } = await import('node:fs/promises');
   await mkdir(workspace);
-  const root = WorkspaceFileRoot.adopt(workspace);
+  const root = RootedFileAuthority.adopt(workspace);
   const state = await PrivateStateDirectory.create(path.join(parent, 'state'));
   const createRun = request => ({
     isolation: { kind: 'process' },
@@ -258,7 +258,7 @@ test('sandbox adapter satisfies start, output, ownership, terminal receipt, and 
   });
   try {
     const firstRepository = await openSandboxExecutionRepository({ directory: repositoryPath, maxRetainedOutputBytes: 1024 * 1024 });
-    const first = await SandboxCommandExecution.create({ repository: firstRepository, workspaceFileRoot: root, state, maxRetainedOutputBytes: 1024 * 1024, createRun, validatePrepared: () => undefined });
+    const first = await SandboxCommandExecution.create({ repository: firstRepository, rootedFileAuthority: root, state, maxRetainedOutputBytes: 1024 * 1024, createRun, validatePrepared: () => undefined });
     const result = await startCommand(first, { ...request(), command: 'printf durable-sandbox' });
     assert.equal(result.status, 'exited', result.diagnostic);
     assert.equal(result.stdout.text, 'durable-sandbox');
@@ -266,7 +266,7 @@ test('sandbox adapter satisfies start, output, ownership, terminal receipt, and 
     await first.close();
 
     const secondRepository = await openSandboxExecutionRepository({ directory: repositoryPath, maxRetainedOutputBytes: 1024 * 1024 });
-    const second = await SandboxCommandExecution.create({ repository: secondRepository, workspaceFileRoot: root, state, maxRetainedOutputBytes: 1024 * 1024, createRun, validatePrepared: () => undefined });
+    const second = await SandboxCommandExecution.create({ repository: secondRepository, rootedFileAuthority: root, state, maxRetainedOutputBytes: 1024 * 1024, createRun, validatePrepared: () => undefined });
     const reports = second.recoveredTerminalReports();
     assert.equal(reports.length, 1);
     assert.equal(reports[0].result.processId, result.processId);
@@ -283,7 +283,7 @@ test('sandbox adapter satisfies start, output, ownership, terminal receipt, and 
 function request() {
   return {
     command: 'printf sandboxed',
-    workspacePath: '.',
+    rootedDirectory: '.',
     pty: false,
     timeoutMs: 1_000,
     yieldMs: 10,
@@ -322,7 +322,7 @@ async function createFixture(options = {}) {
   const workspace = path.join(parent, 'workspace');
   const { mkdir } = await import('node:fs/promises');
   await mkdir(workspace);
-  const root = WorkspaceFileRoot.adopt(workspace);
+  const root = RootedFileAuthority.adopt(workspace);
   const state = await PrivateStateDirectory.create(path.join(parent, 'state'));
   const repository = new FakeSandboxExecutionRepository(
     options.initialUnknown === true,

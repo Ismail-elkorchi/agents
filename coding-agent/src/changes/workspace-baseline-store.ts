@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { WorkspaceFileRoot } from '@agent-core/tools-local';
+import type { RootedFileAuthority } from '@agent-core/tools-local';
 import { PrivateStateDirectory } from '../state/private-state.js';
 import type { ContentHazard } from '../security/content-provenance.js';
 import type { RepositoryVersionControl } from '../workspace/repository-orientation.js';
@@ -33,7 +33,7 @@ export interface RunWorkspaceBaseline {
 /** Returns the immutable pre-effect workspace state owned by one accepted run. */
 export async function loadOrCaptureRunWorkspaceBaseline(input: {
   readonly state: PrivateStateDirectory;
-  readonly root: WorkspaceFileRoot;
+  readonly root: RootedFileAuthority;
   readonly runId: string;
   readonly resuming: boolean;
   readonly observeVersionControl: () => Promise<RepositoryVersionControl>;

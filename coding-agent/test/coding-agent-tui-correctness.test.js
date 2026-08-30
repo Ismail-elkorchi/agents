@@ -277,7 +277,10 @@ function runningHydration() {
 }
 
 function approvalHydration() {
-  return baseHydration({ phase: 'waiting_for_user', activeRunId: 'run-1', queuedInputs: 0, suspensionReason: 'approval_required' }, {
+  return baseHydration({
+    phase: 'suspended', activeRunId: 'run-1', queuedInputs: 0,
+    suspension: { runId: 'run-1', submissionId: 'submission-1', category: 'approval', reason: 'approval_required', actions: ['approval', 'abort'] }
+  }, {
     pendingState: 'suspended',
     control: { status: 'detached' },
     phase: { kind: 'approval', approval: approvalRequest() },
@@ -286,7 +289,10 @@ function approvalHydration() {
 }
 
 function recoveryHydration() {
-  return baseHydration({ phase: 'waiting_for_user', activeRunId: 'run-1', queuedInputs: 0, suspensionReason: 'tool_outcome_unknown' }, {
+  return baseHydration({
+    phase: 'suspended', activeRunId: 'run-1', queuedInputs: 0,
+    suspension: { runId: 'run-1', submissionId: 'submission-1', category: 'external_recovery', reason: 'tool_outcome_unknown', effectId: 'effect-unknown', actions: ['reconcile', 'abort'] }
+  }, {
     pendingState: 'suspended',
     control: { status: 'detached' },
     phase: { kind: 'suspended', reason: 'tool_outcome_unknown', effectId: 'effect-unknown' },

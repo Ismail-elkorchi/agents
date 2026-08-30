@@ -3,7 +3,7 @@ import { constants as fsConstants } from 'node:fs';
 import { lstat, open, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import type { ContextItemInput } from '@agent-core/runtime';
-import { workspaceFileIdentitiesEqual } from '@agent-core/tools-local';
+import { rootedFileIdentitiesEqual } from '@agent-core/tools-local';
 import type { CodingAgentConfiguration } from '../configuration.js';
 import type { RepositoryInstructionSet } from '../instructions/repository-instructions.js';
 import type { OpenCodingWorkspace } from '../workspace.js';
@@ -265,7 +265,7 @@ async function inspectManifests(workspace: OpenCodingWorkspace): Promise<Reposit
       const file = await workspace.fileRoot.openFile(candidate);
       try {
         const bytes = await file.readAll(MAX_MANIFEST_BYTES);
-        if (!workspaceFileIdentitiesEqual(file.identity, await file.identityNow())) continue;
+        if (!rootedFileIdentitiesEqual(file.identity, await file.identityNow())) continue;
         const common = { path: candidate, sha256: createHash('sha256').update(bytes).digest('hex'), bytes: bytes.length };
         if (candidate !== 'package.json') { manifests.push(Object.freeze(common)); continue; }
         const details = packageManifestDetails(bytes);

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { WorkspaceFileRoot } from '@agent-core/tools-local';
+import { RootedFileAuthority } from '@agent-core/tools-local';
 import { describeWorkspace, loadCodingAgentConfiguration, loadWorkspace, parseCodingAgentConfiguration } from '@ismail-elkorchi/coding-agent';
 import { WorkspaceSecurityBoundary } from '../dist/security/workspace-security-boundary.js';
 import { identifyCodingWorkspace } from '../dist/security/workspace-identity.js';
@@ -47,7 +47,7 @@ test('workspace configuration validates first-party policy, checks, and exact li
     limits: { modelTurns: 3, candidateRevisions: 0, knownCost: { amount: 10, currency: 'USD' } }
   };
   await writeFile(path.join(dir, 'coding-agent.config.json'), JSON.stringify(configuration));
-  const root = WorkspaceFileRoot.adopt(dir);
+  const root = RootedFileAuthority.adopt(dir);
   const security = new WorkspaceSecurityBoundary(identifyCodingWorkspace(root.identity), 'restricted');
   assert.deepEqual((await loadCodingAgentConfiguration(root, security)).value, configuration);
   const snapshot = parseCodingAgentConfiguration(configuration);
@@ -86,7 +86,7 @@ test('workspace configuration cannot escape through a symlink', async () => {
   const outside = path.join(container, 'outside.json');
   await writeFile(outside, '{}');
   await symlink(outside, path.join(root, 'linked.json'));
-  const workspaceRoot = WorkspaceFileRoot.adopt(root);
+  const workspaceRoot = RootedFileAuthority.adopt(root);
   const security = new WorkspaceSecurityBoundary(identifyCodingWorkspace(workspaceRoot.identity), 'restricted');
   await assert.rejects(() => loadCodingAgentConfiguration(workspaceRoot, security, 'linked.json'), /symbolic|alias/iu);
   workspaceRoot.close();
