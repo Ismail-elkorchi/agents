@@ -273,12 +273,12 @@ test('a failed required check drives a bounded repair without weakening the veri
     assert.equal(output.code, 0, `${output.stdout}\n${output.stderr}`);
     assert.equal(await readFile(path.join(fixture.root, 'src/note.txt'), 'utf8'), 'beta\n');
     assert.match(output.stdout, /Verification: Passed/u);
-    assert.match(output.stdout, /- note-value: required\/passed/u);
+    assert.match(output.stdout, /- note-value:candidate: required\/passed/u);
     assert.match(output.stdout, /Remaining uncertainty: none/u);
     assert.equal(provider.chatRequests.length, 5);
     const revisionRequest = JSON.stringify(provider.chatRequests[3]);
-    assert.match(revisionRequest, /Required verification failed for the exact candidate/u);
-    assert.match(revisionRequest, /repair the underlying defect without weakening or bypassing the verifier/u);
+    assert.match(revisionRequest, /Required baseline-aware verification proves that this candidate introduced or changed a failure/u);
+    assert.match(revisionRequest, /repair the underlying defect without weakening the admitted verifier/u);
     assert.match(revisionRequest, /note-value/u);
   } finally {
     await provider.close();

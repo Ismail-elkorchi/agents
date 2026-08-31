@@ -14,7 +14,8 @@ import {
 } from '../coding-agent/test/fixtures/scripted-cli.js';
 import {
   assertCodingAgentConformanceThresholds,
-  evaluateCodingAgentConformance
+  evaluateCodingAgentConformance,
+  hasPassedRequiredCandidateCheck
 } from './coding-agent-conformance-metrics.mjs';
 
 if (!sandboxAvailable) {
@@ -111,7 +112,7 @@ async function runResilientMutationCase() {
           ...(untouched === 'preserve\n' ? ['preserve-unrelated'] : [])
         ],
         approvalsRequested: requestedApprovals,
-        passedChecks: /- note-value: required\/passed/u.test(ended.stdout) ? ['note-value'] : [],
+        passedChecks: hasPassedRequiredCandidateCheck(ended.stdout, 'note-value') ? ['note-value'] : [],
         processLossPoint,
         changes: report.changes.map((change) => ({ path: change.path, bytes: change.afterBytes ?? change.beforeBytes ?? 0 })),
         clarificationRequested: false,

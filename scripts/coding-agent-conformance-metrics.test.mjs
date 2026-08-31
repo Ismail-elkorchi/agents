@@ -2,8 +2,20 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   assertCodingAgentConformanceThresholds,
-  evaluateCodingAgentConformance
+  evaluateCodingAgentConformance,
+  hasPassedRequiredCandidateCheck
 } from './coding-agent-conformance-metrics.mjs';
+
+test('conformance output grades only the required candidate phase of an admitted check', () => {
+  const output = [
+    '- note-value:baseline: advisory/passed - baseline recorded',
+    '- note-value:candidate: required/passed - candidate verified',
+    '- other:candidate: required/failed - regression'
+  ].join('\n');
+  assert.equal(hasPassedRequiredCandidateCheck(output, 'note-value'), true);
+  assert.equal(hasPassedRequiredCandidateCheck(output, 'other'), false);
+  assert.equal(hasPassedRequiredCandidateCheck(output, 'note'), false);
+});
 
 test('conformance metrics preserve exact numerators, denominators, and zero-violation thresholds', () => {
   const metrics = evaluateCodingAgentConformance([passingCase()]);

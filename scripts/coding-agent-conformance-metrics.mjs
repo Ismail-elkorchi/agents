@@ -6,6 +6,12 @@ function ratio(numerator, denominator) {
   });
 }
 
+export function hasPassedRequiredCandidateCheck(output, checkId) {
+  if (typeof output !== 'string' || typeof checkId !== 'string' || checkId.length === 0) return false;
+  const prefix = `- ${checkId}:candidate: required/passed`;
+  return output.split(/\r?\n/u).some((line) => line === prefix || line.startsWith(`${prefix} - `));
+}
+
 export function evaluateCodingAgentConformance(cases) {
   if (!Array.isArray(cases) || cases.length === 0) throw new Error('Coding Agent conformance requires at least one case.');
   let applicableInstructions = 0;
