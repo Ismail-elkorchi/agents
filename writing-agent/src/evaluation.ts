@@ -98,8 +98,8 @@ export type HumanAuditProtocol = z.infer<typeof humanAuditProtocolSchema>;
 export type EvaluationTrialRecord = z.infer<typeof evaluationTrialRecordSchema>;
 
 export const WRITING_EVALUATION_TASK_SET_ID = 'writing-agent/evaluation-corpus';
-export const WRITING_EVALUATION_TASK_SET_VERSION = 1;
-export const WRITING_REGRESSION_LOCK_SHA256 = '081599c71b45b51199eb0687c073926a3483561addbe65848e54375cd0e45a92';
+export const WRITING_EVALUATION_TASK_SET_VERSION = 2;
+export const WRITING_REGRESSION_LOCK_SHA256 = '0ba5180aa6eedc25ff260139022947dd6e1ae0493e6d23f6bd90adaa07f2c76a';
 
 export function writingEvaluationTasks(set?: z.infer<typeof writingEvaluationSetSchema>): readonly WritingEvaluationTask[] {
   const tasks = WRITING_EVALUATION_TASKS.map((task) => writingEvaluationTaskSchema.parse(task));

@@ -2,6 +2,7 @@ import * as z from 'zod';
 import { canonicalSha256, contentId, nowTimestamp, textSha256 } from './canonical.js';
 import {
   authorshipProvenanceSchema,
+  criterionCoverageSchema,
   deterministicCheckSchema,
   documentNodeSchema,
   editorialFindingSchema,
@@ -10,8 +11,10 @@ import {
   semanticPreservationFindingSchema,
   type AuthorshipProvenance,
   type ContextReceipt,
+  type CriterionCoverage,
   type DeterministicCheck,
   type EditorialFinding,
+  type HumanCriterionDecision,
   type LocalizedTextEdit,
   type PreservationContract,
   type ProjectSnapshot,
@@ -55,6 +58,7 @@ export interface PreparedProposalQuality {
   readonly deterministicChecks: readonly DeterministicCheck[];
   readonly semanticPreservationFindings: readonly SemanticPreservationFinding[];
   readonly editorialFindings: readonly EditorialFinding[];
+  readonly criterionCoverage: readonly CriterionCoverage[];
   readonly proposedAuthorshipProvenance: readonly AuthorshipProvenance[];
   readonly candidateRevisionId: string;
 }
@@ -93,16 +97,16 @@ export async function prepareProposalQuality(input: {
     if (resourceEdits.has(request.resourceId)) throw new Error(`Proposal repeats a resource edit group: ${request.resourceId}`);
     const resource = base.resources.find((candidate) => candidate.resourceId === request.resourceId);
     if (resource === undefined) throw new Error(`Proposal targets an unknown resource: ${request.resourceId}`);
-    if (request.expectedSha256 !== resource.currentSha256) throw new Error(`Proposal expected hash is stale for resource: ${request.resourceId}`);
+    if (request.baseSha256 !== resource.currentSha256) throw new Error(`Proposal base hash is stale for resource: ${request.resourceId}`);
     const currentContent = baseText.get(request.resourceId);
-    if (currentContent === undefined || textSha256(currentContent) !== request.expectedSha256) throw new Error(`Proposal preimage changed for resource: ${request.resourceId}`);
+    if (currentContent === undefined || textSha256(currentContent) !== request.baseSha256) throw new Error(`Proposal preimage changed for resource: ${request.resourceId}`);
     assertProtectedRanges(currentContent, resource.protectedRanges, request, input.operation);
     const applied = applyLocalizedTextEdits(currentContent, request);
     candidateText.set(request.resourceId, applied.content);
     resourceEdits.set(request.resourceId, request);
     for (const offset of applied.offsets) {
       proposedAuthorship.push(authorshipProvenanceSchema.parse({
-        provenanceId: contentId('provenance', { proposalId: input.proposalId, resourceId: request.resourceId, rangeId: offset.rangeId }),
+        provenanceId: contentId('provenance', { proposalId: input.proposalId, resourceId: request.resourceId, anchorId: offset.anchorId }),
         projectRevisionId: base.revision.revisionId,
         resourceId: request.resourceId,
         range: rangeFromOffsets(applied.content, offset.adjustedStart, offset.replacementEnd),
@@ -178,12 +182,14 @@ export async function prepareProposalQuality(input: {
     evaluationInputSha256,
     ...(input.editorialChecker === undefined ? {} : { checker: input.editorialChecker })
   });
+  const criterionCoverage = acceptanceCriterionCoverage(base, deterministicChecks, editorial.editorialFindings);
   return Object.freeze({
     candidateText,
     preservationContract,
     deterministicChecks,
     semanticPreservationFindings: Object.freeze([...editorial.semanticPreservationFindings]),
     editorialFindings: Object.freeze([...editorial.editorialFindings]),
+    criterionCoverage,
     proposedAuthorshipProvenance: Object.freeze(proposedAuthorship),
     candidateRevisionId
   });
@@ -193,7 +199,10 @@ export function proposalCanApply(proposal: {
   readonly deterministicChecks: readonly DeterministicCheck[];
   readonly semanticPreservationFindings: readonly SemanticPreservationFinding[];
   readonly editorialFindings: readonly EditorialFinding[];
-}): { readonly allowed: boolean; readonly reasons: readonly string[] } {
+  readonly criterionCoverage: readonly CriterionCoverage[];
+}, humanCriterionDecisions: readonly HumanCriterionDecision[] = []): { readonly allowed: boolean; readonly reasons: readonly string[] } {
+  const decisions = new Map(humanCriterionDecisions.map((decision) => [decision.criterionId, decision]));
+  if (decisions.size !== humanCriterionDecisions.length) throw new Error('Human acceptance criterion decisions must be unique.');
   const reasons: string[] = [];
   for (const check of proposal.deterministicChecks) {
     if (check.requirement === 'required' && check.verdict !== 'passed') reasons.push(`check:${check.checkId}:${check.verdict}`);
@@ -203,6 +212,15 @@ export function proposalCanApply(proposal: {
   }
   for (const finding of proposal.editorialFindings) {
     if (finding.severity === 'required' && (finding.verdict !== 'passed' || finding.coverage !== 'complete')) reasons.push(`editorial:${finding.findingId}:${finding.verdict}/${finding.coverage}`);
+  }
+  for (const coverage of proposal.criterionCoverage) {
+    if (coverage.requirement !== 'required') continue;
+    if (coverage.verificationKind === 'human') {
+      const decision = decisions.get(coverage.criterionId);
+      if (decision?.verdict !== 'passed') reasons.push(`criterion:${coverage.criterionId}:${decision?.verdict ?? 'missing'}/human`);
+    } else if (coverage.verdict !== 'passed' || coverage.coverage !== 'complete') {
+      reasons.push(`criterion:${coverage.criterionId}:${coverage.verdict}/${coverage.coverage}`);
+    }
   }
   return Object.freeze({ allowed: reasons.length === 0, reasons: Object.freeze(reasons) });
 }
@@ -229,7 +247,7 @@ function derivePreservationContract(
   return preservationContractSchema.parse({
     allowedResourceIds: [...operation.targetResourceIds],
     allowedNodeIds: [...operation.targetNodeIds],
-    allowedRangeIds: textEdits.flatMap((request) => request.edits.map((edit) => edit.rangeId)),
+    allowedRangeIds: textEdits.flatMap((request) => request.edits.map((edit) => edit.anchorId)),
     allowedStructuralObjectIds: structuralChanges.map((change) => change.changeId),
     protectedResourceHashes: Object.fromEntries(base.resources.filter((resource) => !operation.targetResourceIds.includes(resource.resourceId)).map((resource) => [resource.resourceId, resource.currentSha256])),
     protectedRangeIds: base.resources.flatMap((resource) => resource.protectedRanges.map((range) => range.rangeId)),
@@ -242,7 +260,7 @@ function derivePreservationContract(
     allowedSemanticScopes: operation.intents.map((intent) => intent.instruction),
     stableSemanticScopes: ['all content outside admitted intent targets', 'prior accepted claims, evidence relations, and editorial decisions'],
     comparisonBaselineRevisionIds: [...new Set([...acceptedRevisionIds, base.revision.revisionId])].sort(),
-    requiredRevalidations: ['project-base', 'resource-base', 'mutation-confinement', 'protected-ranges', 'semantic-declaration', 'prior-decisions', 'provenance-coverage']
+    requiredRevalidations: ['project-base', 'resource-base', 'mutation-confinement', 'protected-ranges', 'semantic-declaration', 'prior-decisions', 'provenance-graph']
   });
 }
 
@@ -258,12 +276,12 @@ function deterministicProposalChecks(input: {
 }): readonly DeterministicCheck[] {
   const digest = canonicalSha256({ operationId: input.operation.operationId, baseRevisionId: input.base.revision.revisionId, textEdits: input.textEdits, structuralChanges: input.structuralChanges, declaration: input.declaration });
   const checks: DeterministicCheck[] = [];
-  const add = (checkId: string, requirement: 'required' | 'advisory', verdict: 'passed' | 'failed' | 'unknown', summary: string, evidence: readonly string[] = []) => {
-    checks.push(deterministicCheckSchema.parse({ checkId, implementationId: `writing-agent.check.${checkId}@1`, requirement, verdict, summary, evidence, inputSha256: digest }));
+  const add = (checkId: string, requirement: 'required' | 'advisory', verdict: 'passed' | 'failed' | 'unknown', summary: string, evidence: readonly string[] = [], criterionIds: readonly string[] = []) => {
+    checks.push(deterministicCheckSchema.parse({ checkId, implementationId: `writing-agent.check.${checkId}@2`, criterionIds, requirement, verdict, summary, evidence, inputSha256: digest }));
   };
   add('project-base', 'required', input.operation.baseProjectRevisionId === input.base.revision.revisionId ? 'passed' : 'failed', 'Proposal derives from the expected project revision.');
-  const hashesValid = input.textEdits.every((request) => input.base.resources.find((resource) => resource.resourceId === request.resourceId)?.currentSha256 === request.expectedSha256);
-  add('resource-base', 'required', hashesValid ? 'passed' : 'failed', 'Every localized edit binds the current managed-resource hash.');
+  const hashesValid = input.textEdits.every((request) => input.base.resources.find((resource) => resource.resourceId === request.resourceId)?.currentSha256 === request.baseSha256);
+  add('resource-base', 'required', hashesValid ? 'passed' : 'failed', 'Every localized edit received its current managed-resource hash from application-owned target control.');
   const confined = input.textEdits.every((request) => input.operation.targetResourceIds.includes(request.resourceId)) && input.structuralChanges.every((change) => change.kind === 'create' || change.targetIds.every((id) => input.operation.targetNodeIds.includes(id)));
   add('mutation-confinement', 'required', confined ? 'passed' : 'failed', 'Candidate changes remain inside the admitted target union.');
   add('protected-ranges', 'required', 'passed', 'Protected exact ranges were checked against localized edits before proposal creation.');
@@ -272,9 +290,34 @@ function deterministicProposalChecks(input: {
   add('source-record-integrity', 'required', sourceRecordIntegrity(input.base, input.baseText) ? 'passed' : 'failed', 'Local source identity, excerpt ranges, quotation hashes, and supplied verifier bindings are internally consistent.');
   add('prior-decisions', 'required', 'passed', 'Protected prior decisions and out-of-scope resources remain in the preservation contract.');
   add('provenance-graph', 'required', provenanceIntegrity(input.base, input.baseText) ? 'passed' : 'failed', 'Authorship-provenance targets and exact range coverage are valid for current resources and structural nodes.');
-  const combined = [...input.candidateText.values()].join('\n');
-  const lengthResults = input.base.brief.lengthConstraints.map((constraint) => lengthValue(combined, constraint.unit) >= (constraint.minimum ?? 0) && lengthValue(combined, constraint.unit) <= (constraint.maximum ?? Number.MAX_SAFE_INTEGER));
-  add('length-bounds', 'advisory', lengthResults.length === 0 ? 'passed' : lengthResults.every(Boolean) ? 'passed' : 'failed', 'Supported project length constraints were evaluated against affected candidate text.');
+  for (const constraint of input.operation.effectiveConstraints.lengthConstraints) {
+    const candidate = constraintText(input.candidateText, constraint.targetResourceIds);
+    const actual = lengthValue(candidate, constraint.unit);
+    const passed = actual >= (constraint.minimum ?? 0) && actual <= (constraint.maximum ?? Number.MAX_SAFE_INTEGER);
+    add(`length-${constraint.constraintId}`, constraint.requirement, passed ? 'passed' : 'failed', 'The effective operation length intersection was evaluated against candidate text.', [
+      `actual=${String(actual)} ${constraint.unit}`,
+      `minimum=${constraint.minimum === undefined ? 'unbounded' : String(constraint.minimum)}`,
+      `maximum=${constraint.maximum === undefined ? 'unbounded' : String(constraint.maximum)}`,
+      `sources=${constraint.sourceConstraintIds.join(',')}`,
+      `targets=${constraint.targetResourceIds.join(',')}`
+    ], constraint.criterionIds);
+  }
+  for (const constraint of input.operation.effectiveConstraints.exactConstraints) {
+    const candidate = constraintText(input.candidateText, constraint.targetResourceIds);
+    const baseline = constraintText(input.baseText, constraint.targetResourceIds);
+    const candidateValues = extractExactValues(candidate, constraint.matcher);
+    const allowed = new Set(constraint.allowedValues.map((value) => normalizeExactValue(value, constraint.matcher)));
+    if (constraint.baselinePolicy === 'include') for (const value of extractExactValues(baseline, constraint.matcher)) allowed.add(value);
+    const unexpected = candidateValues.filter((value) => !allowed.has(value));
+    add(`exact-${constraint.constraintId}`, constraint.requirement, unexpected.length === 0 ? 'passed' : 'failed', `The ${constraint.matcher} closed world was checked against its explicit allowlist and baseline policy.`, [
+      `allowed=${[...allowed].sort().join(' | ') || '(empty)'}`,
+      `unexpected=${unexpected.join(' | ') || '(none)'}`,
+      `baselinePolicy=${constraint.baselinePolicy}`,
+      `sources=${constraint.sourceConstraintIds.join(',')}`,
+      `targets=${constraint.targetResourceIds.join(',')}`
+    ], constraint.criterionIds);
+  }
+  const combined = constraintText(input.candidateText, input.operation.targetResourceIds);
   const exclusionResults = input.base.brief.excludedContent.map((constraint) => !combined.includes(constraint.statement));
   add('excluded-content', 'advisory', exclusionResults.length === 0 ? 'passed' : exclusionResults.every(Boolean) ? 'passed' : 'failed', 'Literal excluded-content constraints were checked.');
   const terminology = terminologyVerdict(combined, input.base);
@@ -285,6 +328,58 @@ function deterministicProposalChecks(input: {
   add('duplicate-passages', 'advisory', duplicatePassageVerdict(combined), 'Exact duplicate passages above 240 characters were checked.');
   add('syntax', 'advisory', syntaxVerdict(input.base, input.candidateText), 'Supported Markdown fence syntax was checked.');
   return Object.freeze(checks);
+}
+
+function acceptanceCriterionCoverage(
+  base: ProjectSnapshot,
+  checks: readonly DeterministicCheck[],
+  editorialFindings: readonly EditorialFinding[]
+): readonly CriterionCoverage[] {
+  return Object.freeze(base.brief.acceptanceCriteria.map((criterion) => {
+    if (criterion.verificationKind === 'human') {
+      return criterionCoverageSchema.parse({
+        criterionId: criterion.criterionId,
+        requirement: criterion.requirement,
+        verificationKind: criterion.verificationKind,
+        verdict: 'unknown',
+        coverage: 'none',
+        evaluatorIds: [],
+        evidenceIds: [],
+        explanation: 'This criterion requires an explicit direct-human decision at proposal acceptance.'
+      });
+    }
+    if (criterion.verificationKind === 'deterministic') {
+      const selected = checks.filter((check) => check.criterionIds.includes(criterion.criterionId));
+      return criterionCoverageSchema.parse({
+        criterionId: criterion.criterionId,
+        requirement: criterion.requirement,
+        verificationKind: criterion.verificationKind,
+        verdict: aggregateVerdict(selected.map((check) => check.verdict)),
+        coverage: selected.length === 0 ? 'none' : 'complete',
+        evaluatorIds: [...new Set(selected.map((check) => check.implementationId))].sort(),
+        evidenceIds: selected.map((check) => check.checkId).sort(),
+        explanation: selected.length === 0 ? 'No deterministic checker declared coverage of this criterion.' : 'Coverage is derived only from deterministic checks that explicitly bind this criterion ID.'
+      });
+    }
+    const selected = editorialFindings.filter((finding) => finding.criterionId === criterion.criterionId);
+    const coverage = selected.length === 0 ? 'none' : selected.every((finding) => finding.coverage === 'complete') ? 'complete' : 'partial';
+    return criterionCoverageSchema.parse({
+      criterionId: criterion.criterionId,
+      requirement: criterion.requirement,
+      verificationKind: criterion.verificationKind,
+      verdict: aggregateVerdict(selected.map((finding) => finding.verdict)),
+      coverage,
+      evaluatorIds: [...new Set(selected.map((finding) => finding.evaluatorId))].sort(),
+      evidenceIds: selected.map((finding) => finding.findingId).sort(),
+      explanation: selected.length === 0 ? 'No calibrated editorial finding declared coverage of this criterion.' : 'Coverage is derived only from editorial findings that explicitly bind this criterion ID.'
+    });
+  }));
+}
+
+function aggregateVerdict(verdicts: readonly ('passed' | 'failed' | 'unknown')[]): 'passed' | 'failed' | 'unknown' {
+  if (verdicts.some((verdict) => verdict === 'failed')) return 'failed';
+  if (verdicts.length === 0 || verdicts.some((verdict) => verdict === 'unknown')) return 'unknown';
+  return 'passed';
 }
 
 function defaultEditorialFindings(
@@ -516,6 +611,39 @@ function lengthValue(content: string, unit: 'words' | 'characters' | 'lines'): n
   if (unit === 'characters') return Array.from(content).length;
   if (unit === 'lines') return content.length === 0 ? 0 : content.split(/\r\n|\r|\n/u).length;
   return content.trim().length === 0 ? 0 : content.trim().split(/\s+/u).length;
+}
+
+function constraintText(contentByResource: ReadonlyMap<string, string>, targetResourceIds: readonly string[]): string {
+  return [...targetResourceIds].sort().map((resourceId) => {
+    const content = contentByResource.get(resourceId);
+    if (content === undefined) throw new Error(`Effective constraint targets unavailable resource text: ${resourceId}`);
+    return content;
+  }).join('\n');
+}
+
+function extractExactValues(content: string, matcher: 'number' | 'citation' | 'named-entity'): readonly string[] {
+  let values: readonly string[];
+  if (matcher === 'number') {
+    values = content.match(/(?<![\p{L}\p{N}_])(?:[$€£]\s*)?[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?(?![\p{L}\p{N}_])/gu) ?? [];
+  } else if (matcher === 'citation') {
+    values = [
+      ...(content.match(/https?:\/\/[^\s)>\]}]+/gu) ?? []),
+      ...(content.match(/\[source:[A-Za-z0-9._:/@-]+\]/gu) ?? []),
+      ...(content.match(/\[\^[A-Za-z0-9._:/@-]+\]/gu) ?? [])
+    ];
+  } else {
+    values = content.match(/\b\p{Lu}[\p{L}\p{M}'’-]*(?:[\t ]+\p{Lu}[\p{L}\p{M}'’-]*)+\b/gu) ?? [];
+  }
+  return Object.freeze([...new Set(values.map((value) => normalizeExactValue(value, matcher)))].sort());
+}
+
+function normalizeExactValue(value: string, matcher: 'number' | 'citation' | 'named-entity'): string {
+  const compact = value.trim().replace(/\s+/gu, ' ');
+  if (matcher === 'number') return compact.replace(/[\s,]/gu, '');
+  if (matcher === 'citation' && /^https?:\/\//iu.test(compact)) {
+    try { return new URL(compact).toString(); } catch { return compact; }
+  }
+  return compact.normalize('NFC');
 }
 
 function terminologyVerdict(content: string, base: ProjectSnapshot): 'passed' | 'failed' | 'unknown' {

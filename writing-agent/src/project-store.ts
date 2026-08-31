@@ -3,6 +3,7 @@ import path from 'node:path';
 import * as z from 'zod';
 import type { RootIdentity } from '@agent-core/tools-local';
 import { adoptSchema, canonicalSha256, contentId, deepFreeze, nowTimestamp, randomId, textSha256 } from './canonical.js';
+import { assertBriefIntegrity } from './brief.js';
 import {
   authorshipProvenanceSchema,
   claimEvidenceRelationSchema,
@@ -84,7 +85,7 @@ const mutationSettlementSchema = z.strictObject({
   operationId: identifierSchema,
   transactionId: identifierSchema,
   outcome: z.enum(['committed', 'committed_with_residue', 'rolled_back', 'rollback_failed']),
-  oldAndNewHashes: z.array(z.strictObject({ resourceId: identifierSchema, path: z.string().trim().min(1).max(4_096), oldSha256: sha256Schema.optional(), newSha256: sha256Schema.optional(), changedRangeIds: z.array(identifierSchema) })),
+  oldAndNewHashes: z.array(z.strictObject({ resourceId: identifierSchema, path: z.string().trim().min(1).max(4_096), oldSha256: sha256Schema.optional(), newSha256: sha256Schema.optional(), changedAnchorIds: z.array(identifierSchema) })),
   changedPaths: z.array(z.string().trim().min(1).max(4_096)),
   addedPaths: z.array(z.string().trim().min(1).max(4_096)),
   deletedPaths: z.array(z.string().trim().min(1).max(4_096)),
@@ -547,6 +548,10 @@ export function createProjectRevision(input: Omit<z.input<typeof projectSnapshot
   readonly editorialFindingIds?: readonly string[];
   readonly timestamp?: string;
 }): ProjectSnapshot {
+  const brief = writingBriefRevisionSchema.parse(input.brief);
+  assertBriefIntegrity(brief);
+  if (input.briefRevisionId !== brief.briefRevisionId) throw new Error('Project revision brief binding does not match the embedded writing brief.');
+  assertManagedResourceStructure(input.resources);
   assertDocumentStructure(input.nodes, input.relations, input.resources.map((resource) => resource.resourceId));
   const documentTreeSha256 = canonicalSha256(input.nodes);
   const relationGraphSha256 = canonicalSha256(input.relations);
@@ -583,6 +588,22 @@ export function createProjectRevision(input: Omit<z.input<typeof projectSnapshot
     editorialFindings: input.editorialFindings,
     editorialDecisions: input.editorialDecisions
   });
+}
+
+function assertManagedResourceStructure(resources: readonly z.input<typeof projectSnapshotSchema>['resources'][number][]): void {
+  const resourceIds = new Set<string>();
+  const relativePaths = new Set<string>();
+  const protectedRangeIds = new Set<string>();
+  for (const resource of resources) {
+    if (resourceIds.has(resource.resourceId)) throw new Error(`Managed resources contain duplicate resource ID: ${resource.resourceId}`);
+    if (relativePaths.has(resource.relativePath)) throw new Error(`Managed resources contain duplicate relative path: ${resource.relativePath}`);
+    resourceIds.add(resource.resourceId);
+    relativePaths.add(resource.relativePath);
+    for (const protectedRange of resource.protectedRanges) {
+      if (protectedRangeIds.has(protectedRange.rangeId)) throw new Error(`Managed resources contain duplicate protected range ID: ${protectedRange.rangeId}`);
+      protectedRangeIds.add(protectedRange.rangeId);
+    }
+  }
 }
 
 function assertDocumentStructure(
@@ -631,6 +652,10 @@ function assertDocumentStructure(
 }
 
 function assertRevisionIdentity(snapshot: ProjectSnapshot): void {
+  assertBriefIntegrity(snapshot.brief);
+  if (snapshot.revision.briefRevisionId !== snapshot.brief.briefRevisionId) throw new Error(`Project revision brief binding is invalid: ${snapshot.revision.revisionId}`);
+  assertManagedResourceStructure(snapshot.resources);
+  assertDocumentStructure(snapshot.nodes, snapshot.relations, snapshot.resources.map((resource) => resource.resourceId));
   const revision = snapshot.revision;
   const expected = contentId('revision', {
     parentRevisionIds: revision.parentRevisionIds,

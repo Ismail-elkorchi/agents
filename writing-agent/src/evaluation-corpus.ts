@@ -4,7 +4,8 @@ export const WRITING_EVALUATION_COVERAGE = Object.freeze([
   'terminology', 'source-only-drafting', 'claim-evidence-preservation', 'semantic-evidence-verdicts', 'contradiction-omission',
   'voice-preservation', 'provenance-transformations', 'rhetorical-variety', 'multilingual-preservation', 'prompt-injection',
   'suggest-apply-authority', 'session-binding', 'suspension-recovery', 'proposal-recovery', 'private-state-boundary',
-  'context-determinism', 'evaluation-reproducibility'
+  'context-determinism', 'evaluation-reproducibility', 'proposal-control-data', 'edit-anchors',
+  'operation-constraint-compilation', 'closed-world-constraints', 'criterion-coverage'
 ] as const);
 
 const deterministic = (graderId: string) => ({ graderId, kind: 'deterministic' as const, implementationId: `writing-agent.eval.${graderId}@1`, verificationPolicyId: `writing-agent.eval-policy.${graderId}@1`, requirement: 'required' as const });
@@ -40,6 +41,9 @@ export const WRITING_EVALUATION_TASKS = Object.freeze([
   task('regression-private-state-isolation', 'regression', ['private-state-boundary', 'prompt-injection'], ['Model tools cannot discover or access private project state, .git, or .writing-agent.', 'Proposal observations expose no private path or ledger content.']),
   task('regression-context-receipt-determinism', 'regression', ['context-determinism', 'context-after-compaction'], ['Identical operation inputs select an identical context receipt.', 'Omissions and stale or partial coverage remain explicit after compaction.']),
   task('regression-structured-target-confinement', 'regression', ['structured-multi-intent'], ['Unknown criteria, claims, relations, decisions, resources, and ranges are rejected.', 'Structural creation and relation identities cannot replace admitted targets.']),
+  task('regression-application-owned-proposal-control', 'regression', ['proposal-control-data', 'edit-anchors', 'suggest-apply-authority'], ['The model proposal schema contains no hashes, paths, source preimages, or ranges.', 'Application-owned target descriptors resolve stable content-addressed anchors against the admitted base.']),
+  task('regression-effective-operation-constraints', 'regression', ['operation-constraint-compilation', 'closed-world-constraints', 'brief-constraints'], ['Project and operation length bounds compile to their strict intersection.', 'Required numeric, citation, and named-entity closed worlds fail on unadmitted values.']),
+  task('regression-criterion-coverage', 'regression', ['criterion-coverage', 'evaluation-reproducibility'], ['Every acceptance criterion reports verifier identity, evidence IDs, verdict, and complete, partial, or absent coverage.', 'Required uncovered machine criteria and missing human decisions block acceptance.']),
   task('regression-human-audit-record-completeness', 'regression', ['evaluation-reproducibility'], ['Human-audit trials require the complete versioned protocol.', 'Trial index, first-attempt status, exact bindings, and task-set kind cannot contradict one another.']),
 
   task('holdout-multilingual-rhetoric', 'holdout', ['multilingual-preservation', 'rhetorical-variety'], ['Meaning, viewpoint, locale, and genre constraints are evaluated without imposing uniform structure.'], [deterministic('contract'), editorial('multilingual-rhetoric')]),

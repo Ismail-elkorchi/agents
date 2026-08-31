@@ -5,22 +5,23 @@ type ManagedProtectedRange = ManagedTextResource['protectedRanges'][number];
 
 export interface AppliedLocalizedTextEdit {
   readonly content: string;
-  readonly offsets: readonly { readonly rangeId: string; readonly start: number; readonly end: number; readonly adjustedStart: number; readonly replacementEnd: number }[];
+  readonly offsets: readonly { readonly anchorId: string; readonly start: number; readonly end: number; readonly adjustedStart: number; readonly replacementEnd: number }[];
 }
 
 export function applyLocalizedTextEdits(content: string, request: LocalizedTextEdit): AppliedLocalizedTextEdit {
   const lines = lineIndex(content);
-  const replacements: { rangeId: string; start: number; end: number; replacement: string }[] = [];
+  const replacements: { anchorId: string; start: number; end: number; replacement: string }[] = [];
   let previousEnd = -1;
   for (const edit of request.edits) {
     const start = positionOffset(content, lines, edit.range.start.line, edit.range.start.column);
     const end = positionOffset(content, lines, edit.range.end.line, edit.range.end.column);
-    if (end < start) throw new Error(`Text edit range is reversed: ${edit.rangeId}`);
-    if (start < previousEnd) throw new Error(`Text edits overlap or are unordered: ${edit.rangeId}`);
-    if (content.slice(start, end) !== edit.expectedText) throw new Error(`Text edit expected text does not match: ${edit.rangeId}`);
-    assertWellFormedUnicode(edit.expectedText, edit.rangeId);
-    assertWellFormedUnicode(edit.replacementText, edit.rangeId);
-    replacements.push({ rangeId: edit.rangeId, start, end, replacement: edit.replacementText });
+    if (end < start) throw new Error(`Text edit range is reversed: ${edit.anchorId}`);
+    if (start < previousEnd) throw new Error(`Text edits overlap or are unordered: ${edit.anchorId}`);
+    const preimage = content.slice(start, end);
+    if (textSha256(preimage) !== edit.expectedTextSha256) throw new Error(`Text edit anchor preimage is stale: ${edit.anchorId}`);
+    assertWellFormedUnicode(preimage, edit.anchorId);
+    assertWellFormedUnicode(edit.replacementText, edit.anchorId);
+    replacements.push({ anchorId: edit.anchorId, start, end, replacement: edit.replacementText });
     previousEnd = end;
   }
   let output = '';
@@ -32,7 +33,7 @@ export function applyLocalizedTextEdits(content: string, request: LocalizedTextE
     output += replacement.replacement;
     const adjustedStart = replacement.start + delta;
     const replacementEnd = adjustedStart + replacement.replacement.length;
-    offsets.push({ rangeId: replacement.rangeId, start: replacement.start, end: replacement.end, adjustedStart, replacementEnd });
+    offsets.push({ anchorId: replacement.anchorId, start: replacement.start, end: replacement.end, adjustedStart, replacementEnd });
     delta += replacement.replacement.length - (replacement.end - replacement.start);
     cursor = replacement.end;
   }

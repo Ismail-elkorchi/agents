@@ -16,3 +16,4 @@ coding-agent/evals/results/
 
 .DS_Store
 npm-debug.log*
+writing-evaluation-artifacts/

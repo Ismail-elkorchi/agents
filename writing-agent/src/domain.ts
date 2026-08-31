@@ -34,11 +34,24 @@ export const lengthConstraintSchema = z.strictObject({
   unit: z.enum(['words', 'characters', 'lines']),
   minimum: z.int().nonnegative().optional(),
   maximum: z.int().nonnegative().optional(),
+  requirement: z.enum(['required', 'advisory']),
+  criterionIds: z.array(identifierSchema),
   origin: originSchema,
   sourceId: identifierSchema.optional()
 }).superRefine((value, context) => {
   if (value.minimum === undefined && value.maximum === undefined) context.addIssue({ code: 'custom', message: 'A length constraint requires a minimum or maximum.' });
   if (value.minimum !== undefined && value.maximum !== undefined && value.minimum > value.maximum) context.addIssue({ code: 'custom', message: 'Length minimum exceeds maximum.' });
+});
+
+export const exactConstraintSchema = z.strictObject({
+  constraintId: identifierSchema,
+  matcher: z.enum(['number', 'citation', 'named-entity']),
+  allowedValues: z.array(z.string().trim().min(1).max(10_000)),
+  baselinePolicy: z.enum(['exclude', 'include']),
+  requirement: z.enum(['required', 'advisory']),
+  criterionIds: z.array(identifierSchema),
+  origin: originSchema,
+  sourceId: identifierSchema.optional()
 });
 
 export const assumptionSchema = z.strictObject({
@@ -78,6 +91,7 @@ export const writingBriefRevisionSchema = z.strictObject({
     locale: originatedTextSchema.optional()
   }),
   lengthConstraints: z.array(lengthConstraintSchema),
+  exactConstraints: z.array(exactConstraintSchema),
   contentConstraints: z.array(constraintSchema),
   excludedContent: z.array(constraintSchema),
   structuralConstraints: z.array(constraintSchema),
@@ -107,7 +121,39 @@ export const writingIntentSchema = z.strictObject({
   affectedClaimIds: z.array(identifierSchema),
   affectedRelationIds: z.array(identifierSchema),
   affectedEditorialDecisionIds: z.array(identifierSchema),
-  preservationRequirements: z.array(constraintSchema)
+  preservationRequirements: z.array(constraintSchema),
+  lengthConstraints: z.array(lengthConstraintSchema),
+  exactConstraints: z.array(exactConstraintSchema)
+});
+
+export const effectiveLengthConstraintSchema = z.strictObject({
+  constraintId: identifierSchema,
+  unit: z.enum(['words', 'characters', 'lines']),
+  minimum: z.int().nonnegative().optional(),
+  maximum: z.int().nonnegative().optional(),
+  requirement: z.enum(['required', 'advisory']),
+  criterionIds: z.array(identifierSchema),
+  sourceConstraintIds: z.array(identifierSchema).min(1),
+  targetResourceIds: z.array(identifierSchema).min(1)
+}).superRefine((value, context) => {
+  if (value.minimum === undefined && value.maximum === undefined) context.addIssue({ code: 'custom', message: 'An effective length constraint requires a minimum or maximum.' });
+  if (value.minimum !== undefined && value.maximum !== undefined && value.minimum > value.maximum) context.addIssue({ code: 'custom', message: 'Effective length constraints do not intersect.' });
+});
+
+export const effectiveExactConstraintSchema = z.strictObject({
+  constraintId: identifierSchema,
+  matcher: z.enum(['number', 'citation', 'named-entity']),
+  allowedValues: z.array(z.string().trim().min(1).max(10_000)),
+  baselinePolicy: z.enum(['exclude', 'include']),
+  requirement: z.enum(['required', 'advisory']),
+  criterionIds: z.array(identifierSchema),
+  sourceConstraintIds: z.array(identifierSchema).min(1),
+  targetResourceIds: z.array(identifierSchema).min(1)
+});
+
+export const effectiveConstraintSetSchema = z.strictObject({
+  lengthConstraints: z.array(effectiveLengthConstraintSchema),
+  exactConstraints: z.array(effectiveExactConstraintSchema)
 });
 
 export const operationSnapshotSchema = z.strictObject({
@@ -133,6 +179,7 @@ export const writingOperationSchema = z.strictObject({
   intents: z.array(writingIntentSchema).min(1),
   targetNodeIds: z.array(identifierSchema),
   targetResourceIds: z.array(identifierSchema),
+  effectiveConstraints: effectiveConstraintSetSchema,
   baseProjectRevisionId: identifierSchema,
   mode: writingOperationModeSchema,
   sessionId: identifierSchema,
@@ -281,11 +328,11 @@ export const authorshipProvenanceSchema = z.strictObject({
 
 export const localizedTextEditSchema = z.strictObject({
   resourceId: identifierSchema,
-  expectedSha256: sha256Schema,
+  baseSha256: sha256Schema,
   edits: z.array(z.strictObject({
-    rangeId: identifierSchema,
+    anchorId: identifierSchema,
     range: textRangeSchema,
-    expectedText: z.string(),
+    expectedTextSha256: sha256Schema,
     replacementText: z.string()
   })).min(1)
 });
@@ -314,12 +361,29 @@ export const semanticChangeDeclarationSchema = z.discriminatedUnion('kind', [
 export const deterministicCheckSchema = z.strictObject({
   checkId: identifierSchema,
   implementationId: identifierSchema,
-  criterionId: identifierSchema.optional(),
+  criterionIds: z.array(identifierSchema),
   requirement: z.enum(['required', 'advisory']),
   verdict: z.enum(['passed', 'failed', 'unknown']),
   summary: z.string().trim().min(1).max(100_000),
   evidence: z.array(z.string().max(100_000)),
   inputSha256: sha256Schema
+});
+
+export const criterionCoverageSchema = z.strictObject({
+  criterionId: identifierSchema,
+  requirement: z.enum(['required', 'advisory']),
+  verificationKind: z.enum(['deterministic', 'editorial', 'human']),
+  verdict: z.enum(['passed', 'failed', 'unknown']),
+  coverage: z.enum(['complete', 'partial', 'none']),
+  evaluatorIds: z.array(identifierSchema),
+  evidenceIds: z.array(identifierSchema),
+  explanation: z.string().trim().min(1).max(100_000)
+});
+
+export const humanCriterionDecisionSchema = z.strictObject({
+  criterionId: identifierSchema,
+  verdict: z.enum(['passed', 'failed']),
+  explanation: z.string().trim().min(1).max(100_000)
 });
 
 export const editorialFindingSchema = z.strictObject({
@@ -386,6 +450,20 @@ export const contextReceiptSchema = z.strictObject({
   selectedIntentIds: z.array(identifierSchema),
   intentCoverage: z.record(identifierSchema, z.enum(['complete', 'partial', 'none'])),
   tokenBudget: z.int().min(1),
+  targetDescriptors: z.array(z.strictObject({
+    resourceId: identifierSchema,
+    relativePath: z.string().trim().min(1).max(4_096),
+    baseSha256: sha256Schema,
+    mediaType: z.string().trim().min(1).max(256),
+    anchors: z.array(z.strictObject({
+      anchorId: identifierSchema,
+      kind: z.enum(['document', 'paragraph', 'protected-range']),
+      targetRangeId: identifierSchema.optional(),
+      range: textRangeSchema,
+      textSha256: sha256Schema,
+      label: z.string().trim().min(1).max(1_000)
+    }))
+  })),
   items: z.array(z.strictObject({
     itemId: identifierSchema,
     kind: identifierSchema,
@@ -417,6 +495,7 @@ export const revisionProposalSchema = z.strictObject({
   proposedAuthorshipProvenance: z.array(authorshipProvenanceSchema),
   deterministicChecks: z.array(deterministicCheckSchema),
   editorialFindings: z.array(editorialFindingSchema),
+  criterionCoverage: z.array(criterionCoverageSchema),
   contextReceiptId: identifierSchema,
   status: z.literal('proposed'),
   boundedRationale: z.string().max(10_000),
@@ -428,6 +507,7 @@ export const editorialDecisionSchema = z.strictObject({
   projectRevisionId: identifierSchema,
   proposalId: identifierSchema.optional(),
   findingIds: z.array(identifierSchema),
+  criterionDecisions: z.array(humanCriterionDecisionSchema),
   decision: z.enum(['accepted', 'rejected', 'override']),
   explanation: z.string().trim().min(1).max(100_000),
   actor: z.enum(['human', 'application']),
@@ -480,6 +560,7 @@ export interface WritingOperationResult {
   readonly semanticChangeDeclaration?: SemanticChangeDeclaration;
   readonly semanticPreservationFindings: readonly SemanticPreservationFinding[];
   readonly checkResults: readonly DeterministicCheck[];
+  readonly criterionCoverage?: readonly CriterionCoverage[];
   readonly disposition: 'valid' | 'invalid' | 'inconclusive';
   readonly editorialFindings: readonly EditorialFinding[];
   readonly reviewStatus: 'not-requested' | 'pending' | 'accepted' | 'rejected';
@@ -495,7 +576,7 @@ export interface WritingFileChange {
   readonly path: string;
   readonly oldSha256?: string;
   readonly newSha256?: string;
-  readonly changedRangeIds: readonly string[];
+  readonly changedAnchorIds: readonly string[];
 }
 
 export interface WritingTransactionSettlement {
@@ -505,6 +586,8 @@ export interface WritingTransactionSettlement {
 }
 
 export type WritingBriefRevision = z.infer<typeof writingBriefRevisionSchema>;
+export type ExactConstraint = z.infer<typeof exactConstraintSchema>;
+export type EffectiveConstraintSet = z.infer<typeof effectiveConstraintSetSchema>;
 export type WritingIntent = z.infer<typeof writingIntentSchema>;
 export type WritingOperation = z.infer<typeof writingOperationSchema>;
 export type WritingOperationKind = z.infer<typeof writingOperationKindSchema>;
@@ -522,6 +605,8 @@ export type StructuralChange = z.infer<typeof structuralChangeSchema>;
 export type SemanticChangeDeclaration = z.infer<typeof semanticChangeDeclarationSchema>;
 export type SemanticPreservationFinding = z.infer<typeof semanticPreservationFindingSchema>;
 export type DeterministicCheck = z.infer<typeof deterministicCheckSchema>;
+export type CriterionCoverage = z.infer<typeof criterionCoverageSchema>;
+export type HumanCriterionDecision = z.infer<typeof humanCriterionDecisionSchema>;
 export type EditorialFinding = z.infer<typeof editorialFindingSchema>;
 export type EditorialDecision = z.infer<typeof editorialDecisionSchema>;
 export type PreservationContract = z.infer<typeof preservationContractSchema>;

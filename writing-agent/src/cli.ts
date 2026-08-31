@@ -1,10 +1,11 @@
 import { realpathSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { ModelReasoningEffort } from '@agent-core/model';
 import { randomId } from './canonical.js';
 import { createSingleIntent } from './operations.js';
 import { amendProjectBriefInstruction, createManagedTextResource, createWritingProject, openWritingProject, type WritingProject } from './project.js';
-import { createWritingProvider, parseWritingProviderId, type WritingProviderConfiguration } from './provider.js';
+import { createWritingProvider, createWritingReasoningRequest, parseWritingProviderId, type WritingProviderConfiguration } from './provider.js';
 import { abortWritingOperation, decideWritingSuspension, inspectWritingSuspension, resolveWritingApproval, resumeWritingSuspension, runTransientWriting, runWritingOperation } from './runtime.js';
 import { acceptRevisionProposal, applyRevisionProposal, rejectRevisionProposal, undoWritingRevision } from './revisions.js';
 import { addManualSource } from './sources.js';
@@ -16,6 +17,14 @@ interface CliOptions {
   readonly provider?: string;
   readonly model?: string;
   readonly endpoint?: string;
+  readonly reasoningEffort?: ModelReasoningEffort;
+  readonly minimumWords?: number;
+  readonly maximumWords?: number;
+  readonly allowedNumbers: readonly string[];
+  readonly allowedEntities: readonly string[];
+  readonly humanCriterionIds: readonly string[];
+  readonly preserveExistingNumbers: boolean;
+  readonly forbidNewCitations: boolean;
   readonly positionals: readonly string[];
 }
 
@@ -26,7 +35,7 @@ export async function main(argv: readonly string[]): Promise<void> {
   if (command === 'write') {
     const brief = await requiredInput([subcommand, ...rest].filter((value): value is string => value !== undefined));
     const runtime = providerRuntime(options);
-    printAgentResult(await runTransientWriting({ brief, provider: runtime.provider, model: runtime.model }));
+    printAgentResult(await runTransientWriting({ brief, provider: runtime.provider, model: runtime.model, ...(runtime.reasoning === undefined ? {} : { reasoning: runtime.reasoning }) }));
     return;
   }
   if (command === 'init') {
@@ -71,8 +80,20 @@ async function runProjectCommand(project: WritingProject, command: string | unde
   if (command === 'apply') {
     const proposalId = requiredArgument(subcommand, 'apply requires a proposal ID');
     const explanation = rest.join(' ').trim() || 'Direct user requested application of this exact proposal.';
-    const status = (await project.store.view()).proposals.get(proposalId)?.status;
-    if (status === 'proposed') await acceptRevisionProposal(project, proposalId, explanation);
+    const proposalView = (await project.store.view()).proposals.get(proposalId);
+    if (proposalView?.status === 'proposed') {
+      const humanCriterionIds = new Set(proposalView.proposal.criterionCoverage
+        .filter((criterion) => criterion.verificationKind === 'human')
+        .map((criterion) => criterion.criterionId));
+      const invalidCriterionIds = options.humanCriterionIds.filter((criterionId) => !humanCriterionIds.has(criterionId));
+      if (invalidCriterionIds.length > 0) throw new Error(`--human-criterion must identify a human-verified criterion on this proposal: ${invalidCriterionIds.join(', ')}.`);
+      await acceptRevisionProposal(project, {
+        proposalId,
+        explanation,
+        humanCriterionDecisions: options.humanCriterionIds
+          .map((criterionId) => ({ criterionId, verdict: 'passed' as const, explanation }))
+      });
+    }
     print(await applyRevisionProposal(project, { proposalId })); return;
   }
   if (command === 'reject') {
@@ -125,21 +146,23 @@ async function runModelCommand(project: WritingProject, command: 'plan' | 'draft
   const instruction = instructionParts.join(' ').trim() || `${command} the selected writing target according to the current brief.`;
   let intent;
   if (command === 'plan') {
+    if (hasTextOperationConstraints(options)) throw new Error('Plan does not accept text operation constraints.');
     const root = view.current.nodes.find((node) => node.parentId === null && node.status !== 'removed');
     if (root === undefined) throw new Error('Writing project has no active document root.');
     intent = createSingleIntent({ intentId: randomId('intent'), kind: 'structure.purpose', instruction, targetNodeIds: [root.nodeId] });
   } else {
+    const operationConstraints = cliOperationConstraints(options);
     const targetId = requiredArgument(target, `${command} requires a node or resource ID`);
     let resource = view.current.resources.find((candidate) => candidate.resourceId === targetId);
     const node = view.current.nodes.find((candidate) => candidate.nodeId === targetId && candidate.status !== 'removed');
     if (command === 'draft' && node !== undefined && node.resourceId === undefined) {
       resource = await createManagedTextResource(project, { relativePath: `${node.nodeId}.md`, initialContent: '<!-- draft target -->\n', mediaType: 'text/markdown', role: 'draft', nodeId: node.nodeId });
     } else if (node?.resourceId !== undefined) resource = view.current.resources.find((candidate) => candidate.resourceId === node.resourceId);
-    if (command !== 'review' && resource === undefined) throw new Error(`${command} target has no managed text resource: ${targetId}`);
+    if (resource === undefined) throw new Error(`${command} target has no managed text resource: ${targetId}`);
     const intentKind = command === 'draft' ? 'text.draft' : command === 'revise' ? 'text.revise' : 'review.editorial';
-    intent = createSingleIntent({ intentId: randomId('intent'), kind: intentKind, instruction, targetNodeIds: node === undefined ? [] : [node.nodeId], targetResourceIds: resource === undefined ? [] : [resource.resourceId] });
+    intent = createSingleIntent({ intentId: randomId('intent'), kind: intentKind, instruction, targetNodeIds: node === undefined ? [] : [node.nodeId], targetResourceIds: [resource.resourceId], ...operationConstraints });
   }
-  print(await runWritingOperation({ project, provider: runtime.provider, model: runtime.model, kind: command, instruction, intents: [intent], ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }) }));
+  print(await runWritingOperation({ project, provider: runtime.provider, model: runtime.model, kind: command, instruction, intents: [intent], ...(runtime.reasoning === undefined ? {} : { reasoning: runtime.reasoning }), ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }) }));
 }
 
 function providerRuntime(options: CliOptions) {
@@ -147,20 +170,67 @@ function providerRuntime(options: CliOptions) {
   const model = (options.model ?? process.env.WRITING_AGENT_MODEL ?? '').trim();
   if (model.length === 0) throw new Error('Select a model with --model or WRITING_AGENT_MODEL.');
   const configuration: WritingProviderConfiguration = { provider, model, ...(options.endpoint === undefined ? {} : { endpoint: options.endpoint }) };
-  return createWritingProvider(configuration);
+  const binding = createWritingProvider(configuration);
+  const effort = options.reasoningEffort ?? parseReasoningEffort(process.env.WRITING_AGENT_REASONING_EFFORT);
+  const reasoning = createWritingReasoningRequest(effort);
+  return { ...binding, ...(reasoning === undefined ? {} : { reasoning }) };
 }
 
 function parseOptions(argv: readonly string[]): CliOptions {
-  let root = process.cwd(); let stateRoot: string | undefined; let sessionId: string | undefined; let provider: string | undefined; let model: string | undefined; let endpoint: string | undefined;
+  let root = process.cwd(); let stateRoot: string | undefined; let sessionId: string | undefined; let provider: string | undefined; let model: string | undefined; let endpoint: string | undefined; let reasoningEffort: ModelReasoningEffort | undefined; let minimumWords: number | undefined; let maximumWords: number | undefined;
+  const allowedNumbers: string[] = []; const allowedEntities: string[] = []; const humanCriterionIds: string[] = [];
+  let preserveExistingNumbers = false; let forbidNewCitations = false;
   const positionals: string[] = [];
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index]; if (value === undefined) continue;
-    if (value === '--root' || value === '--state-root' || value === '--session' || value === '--provider' || value === '--model' || value === '--endpoint') {
+    if (value === '--preserve-existing-numbers') { preserveExistingNumbers = true; continue; }
+    if (value === '--forbid-new-citations') { forbidNewCitations = true; continue; }
+    if (value === '--root' || value === '--state-root' || value === '--session' || value === '--provider' || value === '--model' || value === '--endpoint' || value === '--reasoning-effort' || value === '--min-words' || value === '--max-words' || value === '--allow-number' || value === '--allow-entity' || value === '--human-criterion') {
       const selected = argv[++index]; if (selected === undefined || selected.startsWith('--')) throw new Error(`${value} requires a value.`);
-      if (value === '--root') root = path.resolve(selected); else if (value === '--state-root') stateRoot = path.resolve(selected); else if (value === '--session') sessionId = selected; else if (value === '--provider') provider = selected; else if (value === '--model') model = selected; else endpoint = selected;
+      if (value === '--root') root = path.resolve(selected); else if (value === '--state-root') stateRoot = path.resolve(selected); else if (value === '--session') sessionId = selected; else if (value === '--provider') provider = selected; else if (value === '--model') model = selected; else if (value === '--reasoning-effort') reasoningEffort = parseReasoningEffort(selected); else if (value === '--min-words') minimumWords = positiveInteger(selected, 'minimum words'); else if (value === '--max-words') maximumWords = positiveInteger(selected, 'maximum words'); else if (value === '--allow-number') allowedNumbers.push(selected); else if (value === '--allow-entity') allowedEntities.push(selected); else if (value === '--human-criterion') humanCriterionIds.push(selected); else endpoint = selected;
     } else if (value.startsWith('--')) throw new Error(`Unknown option: ${value}`); else positionals.push(value);
   }
-  return { root, ...(stateRoot === undefined ? {} : { stateRoot }), ...(sessionId === undefined ? {} : { sessionId }), ...(provider === undefined ? {} : { provider }), ...(model === undefined ? {} : { model }), ...(endpoint === undefined ? {} : { endpoint }), positionals };
+  if (minimumWords !== undefined && maximumWords !== undefined && minimumWords > maximumWords) throw new Error('Minimum words cannot exceed maximum words.');
+  if (new Set(humanCriterionIds).size !== humanCriterionIds.length) throw new Error('Human criterion IDs must be unique.');
+  return { root, ...(stateRoot === undefined ? {} : { stateRoot }), ...(sessionId === undefined ? {} : { sessionId }), ...(provider === undefined ? {} : { provider }), ...(model === undefined ? {} : { model }), ...(endpoint === undefined ? {} : { endpoint }), ...(reasoningEffort === undefined ? {} : { reasoningEffort }), ...(minimumWords === undefined ? {} : { minimumWords }), ...(maximumWords === undefined ? {} : { maximumWords }), allowedNumbers, allowedEntities, humanCriterionIds, preserveExistingNumbers, forbidNewCitations, positionals };
+}
+
+function cliOperationConstraints(options: CliOptions): Pick<Parameters<typeof createSingleIntent>[0], 'lengthConstraints' | 'exactConstraints'> {
+  const lengthConstraints = options.minimumWords === undefined && options.maximumWords === undefined ? [] : [{
+    constraintId: randomId('operation-length'),
+    unit: 'words' as const,
+    ...(options.minimumWords === undefined ? {} : { minimum: options.minimumWords }),
+    ...(options.maximumWords === undefined ? {} : { maximum: options.maximumWords }),
+    requirement: 'required' as const,
+    criterionIds: [],
+    origin: 'user' as const
+  }];
+  const exactConstraints = [];
+  if (options.allowedNumbers.length > 0 || options.preserveExistingNumbers) exactConstraints.push({
+    constraintId: randomId('operation-numbers'), matcher: 'number' as const, allowedValues: [...options.allowedNumbers],
+    baselinePolicy: options.preserveExistingNumbers ? 'include' as const : 'exclude' as const, requirement: 'required' as const, criterionIds: [], origin: 'user' as const
+  });
+  if (options.forbidNewCitations) exactConstraints.push({
+    constraintId: randomId('operation-citations'), matcher: 'citation' as const, allowedValues: [], baselinePolicy: 'include' as const,
+    requirement: 'required' as const, criterionIds: [], origin: 'user' as const
+  });
+  if (options.allowedEntities.length > 0) exactConstraints.push({
+    constraintId: randomId('operation-entities'), matcher: 'named-entity' as const, allowedValues: [...options.allowedEntities], baselinePolicy: 'exclude' as const,
+    requirement: 'required' as const, criterionIds: [], origin: 'user' as const
+  });
+  return { lengthConstraints, exactConstraints };
+}
+
+function hasTextOperationConstraints(options: CliOptions): boolean {
+  return options.minimumWords !== undefined || options.maximumWords !== undefined || options.allowedNumbers.length > 0
+    || options.allowedEntities.length > 0 || options.preserveExistingNumbers || options.forbidNewCitations;
+}
+
+function parseReasoningEffort(value: string | undefined): ModelReasoningEffort | undefined {
+  if (value === undefined || value.trim().length === 0) return undefined;
+  const effort = value.trim();
+  if (['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(effort)) return effort as ModelReasoningEffort;
+  throw new Error(`Unsupported reasoning effort: ${effort}. Expected none, minimal, low, medium, high, xhigh, or max.`);
 }
 
 function exactFlags(values: readonly string[], names: readonly string[]): Record<string, string> {
@@ -183,7 +253,7 @@ function print(value: unknown): void { process.stdout.write(`${JSON.stringify(va
 function printAgentResult(result: import('@agent-core/runtime').AgentRunResult): void { if (result.state === 'suspended') { print(result); process.exitCode = 2; return; } const candidate = result.terminal.candidate; process.stdout.write(`${candidate.status === 'absent' ? result.terminal.errorMessage ?? 'Writing run ended without output.' : candidate.message}\n`); if (result.terminal.executionStatus !== 'completed') process.exitCode = 1; }
 
 function printHelp(): void {
-  process.stdout.write(`Writing Agent\n\nCommands:\n  write <brief>\n  init <brief>\n  status\n  brief show\n  brief amend <instruction>\n  plan [instruction]\n  draft <node> [instruction]\n  revise <node-or-resource> [instruction]\n  review <node-or-resource> [instruction]\n  diff [proposal-or-revision]\n  apply <proposal> [explanation]\n  reject <proposal> [explanation]\n  undo [revision] [explanation]\n  suspension\n  resume\n  decide <request> <choice> --run-id <id> --fingerprint <hash> --operation-revision <n>\n  approval <id> <allow|deny> --run-id <id> --fingerprint <hash>\n  abort <run-id> [reason]\n  source add <resource-id> [title]\n  source list\n\nGlobal options: --root <dir> --state-root <dir> --session <id> --provider <id> --model <id> --endpoint <url>\n`);
+  process.stdout.write(`Writing Agent\n\nCommands:\n  write <brief>\n  init <brief>\n  status\n  brief show\n  brief amend <instruction>\n  plan [instruction]\n  draft <node> [instruction]\n  revise <node-or-resource> [instruction]\n  review <node-or-resource> [instruction]\n  diff [proposal-or-revision]\n  apply <proposal> [explanation]\n  reject <proposal> [explanation]\n  undo [revision] [explanation]\n  suspension\n  resume\n  decide <request> <choice> --run-id <id> --fingerprint <hash> --operation-revision <n>\n  approval <id> <allow|deny> --run-id <id> --fingerprint <hash>\n  abort <run-id> [reason]\n  source add <resource-id> [title]\n  source list\n\nGlobal options: --root <dir> --state-root <dir> --session <id> --provider <id> --model <id> --endpoint <url> --reasoning-effort <level>\nAcceptance options: --human-criterion <criterion-id> (repeat for every criterion explicitly passed)\nOperation constraints: --min-words <n> --max-words <n> --allow-number <value> --preserve-existing-numbers --forbid-new-citations --allow-entity <value>\n`);
 }
 
 export function isDirectRun(moduleUrl: string, argvEntry = process.argv[1]): boolean {

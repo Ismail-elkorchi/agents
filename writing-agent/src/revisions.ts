@@ -9,24 +9,25 @@ import {
   editTextRecoveryPayloadSchema,
   type TextTransactionResult
 } from '@agent-core/tools-local';
-import { canonicalSha256, contentId, nowTimestamp, textSha256 } from './canonical.js';
+import { contentId, nowTimestamp, textSha256 } from './canonical.js';
 import {
   authorshipProvenanceSchema,
   documentNodeSchema,
   editorialDecisionSchema,
+  humanCriterionDecisionSchema,
   relationEdgeSchema,
   type AuthorshipProvenance,
   type EditorialDecision,
+  type HumanCriterionDecision,
   type LocalizedTextEdit,
   type ProjectSnapshot,
-  type RevisionProposal,
   type StructuralChange
 } from './domain.js';
 import type { WritingProject } from './project.js';
 import { completeTextRange, readRootedText, snapshotParts } from './project.js';
 import { createProjectRevision, type ProjectMutationSettlement } from './project-store.js';
-import { prepareProposalQuality, proposalCanApply, type WritingEditorialChecker } from './quality.js';
-import { applyLocalizedTextEdits, rebaseProtectedRanges } from './text-ranges.js';
+import { proposalCanApply } from './quality.js';
+import { applyLocalizedTextEdits, offsetRange, rebaseProtectedRanges } from './text-ranges.js';
 
 export interface AppliedWritingRevision {
   readonly proposalId: string;
@@ -46,25 +47,42 @@ export interface UndoWritingRevision {
   readonly recoveredFinalization: boolean;
 }
 
-export async function acceptRevisionProposal(project: WritingProject, proposalId: string, explanation: string, clock: () => Date = () => new Date()): Promise<EditorialDecision> {
+export async function acceptRevisionProposal(project: WritingProject, input: {
+  readonly proposalId: string;
+  readonly explanation: string;
+  readonly humanCriterionDecisions: readonly HumanCriterionDecision[];
+  readonly clock?: () => Date;
+}): Promise<EditorialDecision> {
+  const clock = input.clock ?? (() => new Date());
   const view = await project.store.view();
-  const proposalView = view.proposals.get(proposalId);
-  if (proposalView === undefined) throw new Error(`Unknown writing proposal: ${proposalId}`);
-  if (proposalView.status !== 'proposed') throw new Error(`Writing proposal is already ${proposalView.status}: ${proposalId}`);
-  const applicability = proposalCanApply(proposalView.proposal);
+  const proposalView = view.proposals.get(input.proposalId);
+  if (proposalView === undefined) throw new Error(`Unknown writing proposal: ${input.proposalId}`);
+  if (proposalView.status !== 'proposed') throw new Error(`Writing proposal is already ${proposalView.status}: ${input.proposalId}`);
+  const proposal = proposalView.proposal;
+  const operation = view.operations.get(proposal.operationId);
+  if (operation === undefined) throw new Error(`Writing proposal operation is unavailable: ${proposal.operationId}`);
+  if (proposal.baseProjectRevisionId !== view.current.revision.revisionId) throw new Error(`Writing proposal base is stale: ${proposal.proposalId}`);
+  if (operation.briefRevisionId !== view.current.brief.briefRevisionId) throw new Error(`Writing proposal brief is stale: ${proposal.proposalId}`);
+  const humanCriteria = new Set(proposal.criterionCoverage.filter((criterion) => criterion.verificationKind === 'human').map((criterion) => criterion.criterionId));
+  const criterionDecisions = input.humanCriterionDecisions.map((decision) => humanCriterionDecisionSchema.parse(decision));
+  for (const decision of criterionDecisions) if (!humanCriteria.has(decision.criterionId)) throw new Error(`Human decision targets a criterion that is not human-verified: ${decision.criterionId}`);
+  const applicability = proposalCanApply(proposalView.proposal, criterionDecisions);
   if (!applicability.allowed) throw new Error(`Writing proposal cannot be accepted while required verification is non-passing: ${applicability.reasons.join(', ')}.`);
+  const explanation = input.explanation.trim();
+  if (explanation.length === 0) throw new Error('Writing proposal acceptance requires a direct-human explanation.');
   const decision = editorialDecisionSchema.parse({
-    decisionId: contentId('decision', { proposalId, decision: 'accepted', explanation }),
+    decisionId: contentId('decision', { proposalId: input.proposalId, decision: 'accepted', explanation, criterionDecisions }),
     projectRevisionId: view.current.revision.revisionId,
-    proposalId,
+    proposalId: input.proposalId,
     findingIds: [...proposalView.proposal.semanticPreservationFindings.map((finding) => finding.findingId), ...proposalView.proposal.editorialFindings.map((finding) => finding.findingId)],
+    criterionDecisions,
     decision: 'accepted',
     explanation,
     actor: 'human',
     createdAt: nowTimestamp(clock)
   });
   await project.store.appendProposalDecision({
-    lifecycle: { proposalId, expectedStatus: 'proposed', status: 'accepted', decisionId: decision.decisionId, explanation },
+    lifecycle: { proposalId: input.proposalId, expectedStatus: 'proposed', status: 'accepted', decisionId: decision.decisionId, explanation },
     decision,
     expectedRevisionId: view.current.revision.revisionId
   });
@@ -81,6 +99,7 @@ export async function rejectRevisionProposal(project: WritingProject, proposalId
     projectRevisionId: view.current.revision.revisionId,
     proposalId,
     findingIds: [...proposalView.proposal.semanticPreservationFindings.map((finding) => finding.findingId), ...proposalView.proposal.editorialFindings.map((finding) => finding.findingId)],
+    criterionDecisions: [],
     decision: 'rejected',
     explanation,
     actor: 'human',
@@ -96,8 +115,6 @@ export async function rejectRevisionProposal(project: WritingProject, proposalId
 
 export async function applyRevisionProposal(project: WritingProject, input: {
   readonly proposalId: string;
-  readonly modifiedTextEdits?: readonly LocalizedTextEdit[];
-  readonly editorialChecker?: WritingEditorialChecker;
   readonly clock?: () => Date;
 }): Promise<AppliedWritingRevision> {
   const clock = input.clock ?? (() => new Date());
@@ -116,28 +133,8 @@ export async function applyRevisionProposal(project: WritingProject, input: {
   const operation = view.operations.get(proposal.operationId);
   if (operation === undefined) throw new Error(`Writing proposal operation is unavailable: ${proposal.operationId}`);
   if (operation.briefRevisionId !== view.current.brief.briefRevisionId) throw new Error(`Writing proposal brief is stale: ${proposal.proposalId}`);
-  const textEdits = input.modifiedTextEdits === undefined ? proposal.textEdits : validateUserModifiedEdits(proposal, input.modifiedTextEdits);
-  const contextReceipt = view.contexts.get(proposal.contextReceiptId);
-  if (contextReceipt === undefined) throw new Error(`Writing proposal context receipt is unavailable: ${proposal.contextReceiptId}`);
-  const quality = input.modifiedTextEdits === undefined ? undefined : await prepareProposalQuality({
-    project,
-    operation,
-    proposalId: proposal.proposalId,
-    textEdits,
-    structuralChanges: proposal.structuralChanges,
-    declaration: proposal.semanticChangeDeclaration,
-    contextReceipt,
-    ...(input.editorialChecker === undefined ? {} : { editorialChecker: input.editorialChecker }),
-    clock
-  });
-  if (quality !== undefined) {
-    const modifiedApplicability = proposalCanApply({
-      deterministicChecks: quality.deterministicChecks,
-      semanticPreservationFindings: quality.semanticPreservationFindings,
-      editorialFindings: quality.editorialFindings
-    });
-    if (!modifiedApplicability.allowed) throw new Error(`User-modified proposal fails required verification: ${modifiedApplicability.reasons.join(', ')}.`);
-  }
+  const acceptanceDecision = requireProposalDecision(view.records, proposal.proposalId, 'accepted');
+  const textEdits = proposal.textEdits;
   const plan = await prepareTextPlan(project, view.current, textEdits);
   const transactionId = contentId('writing-edit', { proposalId: proposal.proposalId, textEdits });
   const journalDirectory = path.join(project.state.projectDirectory(project.store.identity.projectId), 'transactions');
@@ -156,8 +153,8 @@ export async function applyRevisionProposal(project: WritingProject, input: {
       const observation = await editText({
         files: textEdits.map((request) => ({
           path: requireResource(view.current, request.resourceId).relativePath,
-          expectedSha256: request.expectedSha256,
-          edits: request.edits.map((edit) => ({ range: edit.range, expectedText: edit.expectedText, replacementText: edit.replacementText }))
+          expectedSha256: request.baseSha256,
+          edits: request.edits.map((edit) => ({ range: edit.range, expectedText: expectedAnchorText(plan, request.resourceId, edit), replacementText: edit.replacementText }))
         })),
         dryRun: false,
         transactionId,
@@ -194,19 +191,17 @@ export async function applyRevisionProposal(project: WritingProject, input: {
     return { ...resource, currentSha256: item.newSha256, protectedRanges: rebaseProtectedRanges(item.oldContent, request, resource.protectedRanges) };
   });
   const structural = applyStructuralChanges(view.current, proposal.structuralChanges);
-  const acceptanceDecision = requireProposalDecision(view.records, proposal.proposalId, 'accepted');
-  const qualityProvenance = quality?.proposedAuthorshipProvenance ?? proposal.proposedAuthorshipProvenance;
-  const proposedRecords = qualityProvenance.map((record) => authorshipProvenanceSchema.parse(record));
+  const proposedRecords = proposal.proposedAuthorshipProvenance.map((record) => authorshipProvenanceSchema.parse(record));
   const acceptedRecords = proposedRecords.filter((record) => record.classification === 'model-suggested').map((record) => authorshipProvenanceSchema.parse({
     ...record,
-    provenanceId: contentId('provenance', { proposalId: proposal.proposalId, accepted: record.provenanceId, modified: input.modifiedTextEdits !== undefined }),
-    classification: input.modifiedTextEdits === undefined ? 'user-accepted-unchanged' : 'user-modified',
+    provenanceId: contentId('provenance', { proposalId: proposal.proposalId, accepted: record.provenanceId }),
+    classification: 'user-accepted-unchanged',
     supersedesProvenanceIds: [record.provenanceId],
     createdAt: nowTimestamp(clock)
   }));
   const allNewProvenance = [...proposedRecords, ...acceptedRecords];
-  const findings = quality?.editorialFindings ?? proposal.editorialFindings;
-  const checks = quality?.deterministicChecks ?? proposal.deterministicChecks;
+  const findings = proposal.editorialFindings;
+  const checks = proposal.deterministicChecks;
   const provisional = createProjectRevision({
     ...snapshotParts(view.current),
     parentRevisionIds: [view.current.revision.revisionId],
@@ -240,7 +235,7 @@ export async function applyRevisionProposal(project: WritingProject, input: {
     path: item.path,
     oldSha256: item.oldSha256,
     newSha256: item.newSha256,
-    changedRangeIds: textEdits.find((request) => request.resourceId === resourceId)?.edits.map((edit) => edit.rangeId) ?? []
+    changedAnchorIds: textEdits.find((request) => request.resourceId === resourceId)?.edits.map((edit) => edit.anchorId) ?? []
   }));
   const settlement: ProjectMutationSettlement = {
     mutationId: proposal.proposalId,
@@ -368,6 +363,7 @@ export async function undoWritingRevision(project: WritingProject, input: {
     decisionId,
     projectRevisionId: refreshed.current.revision.revisionId,
     findingIds: [],
+    criterionDecisions: [],
     decision: 'override',
     explanation,
     actor: 'human',
@@ -411,7 +407,7 @@ export async function undoWritingRevision(project: WritingProject, input: {
     path: item.path,
     oldSha256: item.oldSha256,
     newSha256: item.newSha256,
-    changedRangeIds: [`undo-${resourceId}`]
+    changedAnchorIds: [`undo-${resourceId}`]
   }));
   const settlement: ProjectMutationSettlement = {
     mutationId,
@@ -440,12 +436,13 @@ async function prepareTextPlan(project: WritingProject, base: ProjectSnapshot, e
   const plan = new Map<string, { path: string; oldContent: string; newContent: string; oldSha256: string; newSha256: string }>();
   for (const request of edits) {
     const resource = requireResource(base, request.resourceId);
-    if (resource.currentSha256 !== request.expectedSha256) throw new Error(`Proposal resource hash is stale: ${request.resourceId}`);
+    if (resource.currentSha256 !== request.baseSha256) throw new Error(`Proposal resource hash is stale: ${request.resourceId}`);
     const file = await readRootedText(project.authority, resource.relativePath, 64 * 1024 * 1024);
-    if (file.sha256 !== request.expectedSha256) {
-      const newContent = applyLocalizedTextEdits(await project.store.readObject(request.expectedSha256), request).content;
+    if (file.sha256 !== request.baseSha256) {
+      const oldContent = await project.store.readObject(request.baseSha256);
+      const newContent = applyLocalizedTextEdits(oldContent, request).content;
       if (file.sha256 === textSha256(newContent)) {
-        plan.set(request.resourceId, { path: resource.relativePath, oldContent: await project.store.readObject(request.expectedSha256), newContent, oldSha256: request.expectedSha256, newSha256: file.sha256 });
+        plan.set(request.resourceId, { path: resource.relativePath, oldContent, newContent, oldSha256: request.baseSha256, newSha256: file.sha256 });
         continue;
       }
       throw new Error(`Proposal file preimage is stale: ${request.resourceId}`);
@@ -477,17 +474,17 @@ async function assertCommittedFiles(project: WritingProject, plan: ReadonlyMap<s
   }
 }
 
-function validateUserModifiedEdits(proposal: RevisionProposal, edits: readonly LocalizedTextEdit[]): readonly LocalizedTextEdit[] {
-  if (edits.length !== proposal.textEdits.length) throw new Error('User-modified application must retain the proposal resource-edit groups.');
-  for (const original of proposal.textEdits) {
-    const modified = edits.find((candidate) => candidate.resourceId === original.resourceId);
-    if (modified?.expectedSha256 !== original.expectedSha256 || modified.edits.length !== original.edits.length) throw new Error(`User-modified application changed proposal scope: ${original.resourceId}`);
-    for (const originalEdit of original.edits) {
-      const changed = modified.edits.find((candidate) => candidate.rangeId === originalEdit.rangeId);
-      if (changed === undefined || canonicalSha256(changed.range) !== canonicalSha256(originalEdit.range) || changed.expectedText !== originalEdit.expectedText) throw new Error(`User-modified application changed proposal range authority: ${originalEdit.rangeId}`);
-    }
-  }
-  return Object.freeze([...edits]);
+function expectedAnchorText(
+  plan: ReadonlyMap<string, { readonly oldContent: string }>,
+  resourceId: string,
+  edit: LocalizedTextEdit['edits'][number]
+): string {
+  const content = plan.get(resourceId)?.oldContent;
+  if (content === undefined) throw new Error(`Prepared text plan lacks anchor preimage content: ${resourceId}`);
+  const offsets = offsetRange(content, edit.range);
+  const expectedText = content.slice(offsets.start, offsets.end);
+  if (textSha256(expectedText) !== edit.expectedTextSha256) throw new Error(`Prepared text plan anchor preimage is stale: ${edit.anchorId}`);
+  return expectedText;
 }
 
 function applyStructuralChanges(base: ProjectSnapshot, changes: readonly StructuralChange[]): { readonly nodes: ProjectSnapshot['nodes']; readonly relations: ProjectSnapshot['relations'] } {

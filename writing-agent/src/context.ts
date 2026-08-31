@@ -1,12 +1,13 @@
-import { canonicalSha256, contentId, deepFreeze } from './canonical.js';
+import { canonicalSha256, contentId, deepFreeze, textSha256 } from './canonical.js';
 import type { ContextItemInput } from '@agent-core/runtime';
 import { contextReceiptSchema, type ContextReceipt, type ProjectSnapshot, type WritingOperation } from './domain.js';
 import type { WritingProject } from './project.js';
 import { completeTextRange, readRootedText } from './project.js';
+import { offsetRange, rangeFromOffsets } from './text-ranges.js';
 
 export const WRITING_CONTEXT_POLICY_ID = 'writing-agent/context-selection';
-export const WRITING_CONTEXT_POLICY_VERSION = 1;
-export const WRITING_CONTEXT_POLICY_IMPLEMENTATION_ID = 'writing-agent.context-selection@1';
+export const WRITING_CONTEXT_POLICY_VERSION = 2;
+export const WRITING_CONTEXT_POLICY_IMPLEMENTATION_ID = 'writing-agent.context-selection@2';
 
 export async function selectWritingContext(input: {
   readonly project: WritingProject;
@@ -17,7 +18,8 @@ export async function selectWritingContext(input: {
   if (input.operation.baseProjectRevisionId !== snapshot.revision.revisionId) throw new Error('Cannot select context for a stale writing operation.');
   const tokenBudget = input.tokenBudget ?? 24_000;
   if (!Number.isSafeInteger(tokenBudget) || tokenBudget < 256) throw new Error('Writing context token budget must be at least 256.');
-  const candidates = await contextCandidates(input.project, input.operation, snapshot);
+  const selection = await contextCandidates(input.project, input.operation, snapshot);
+  const candidates = [...selection.items].sort((left, right) => contextPriority(left.kind) - contextPriority(right.kind));
   let remaining = tokenBudget;
   let truncated = false;
   const items: ContextReceipt['items'][number][] = [];
@@ -29,6 +31,7 @@ export async function selectWritingContext(input: {
       remaining -= cost;
       continue;
     }
+    if (candidate.kind === 'operation-target-descriptor') throw new Error(`Writing context budget cannot carry required target control descriptor: ${candidate.itemId}`);
     if (candidate.kind === 'target-text' && remaining >= 128) {
       const content = truncateToTokens(candidate.content, remaining);
       items.push({ ...candidate, content, range: completeTextRange(content) });
@@ -52,6 +55,7 @@ export async function selectWritingContext(input: {
     selectedIntentIds,
     intentCoverage,
     tokenBudget,
+    targetDescriptors: selection.targetDescriptors,
     items,
     omittedCounts,
     truncated,
@@ -77,8 +81,12 @@ export function contextItemsForRuntime(receipt: ContextReceipt): readonly Contex
   }));
 }
 
-async function contextCandidates(project: WritingProject, operation: WritingOperation, snapshot: ProjectSnapshot): Promise<ContextReceipt['items'][number][]> {
+async function contextCandidates(project: WritingProject, operation: WritingOperation, snapshot: ProjectSnapshot): Promise<{
+  readonly items: ContextReceipt['items'][number][];
+  readonly targetDescriptors: ContextReceipt['targetDescriptors'];
+}> {
   const candidates: ContextReceipt['items'][number][] = [];
+  const targetDescriptors: ContextReceipt['targetDescriptors'][number][] = [];
   candidates.push(item({
     itemId: snapshot.brief.briefRevisionId,
     kind: 'writing-brief',
@@ -117,6 +125,17 @@ async function contextCandidates(project: WritingProject, operation: WritingOper
   for (const resource of targetResources.sort((left, right) => left.resourceId.localeCompare(right.resourceId))) {
     const file = await readRootedText(project.authority, resource.relativePath, 16 * 1024 * 1024);
     if (file.sha256 !== resource.currentSha256) throw new Error(`Managed resource changed before context selection: ${resource.resourceId}`);
+    const descriptor = targetDescriptor(resource, file.content);
+    targetDescriptors.push(descriptor);
+    candidates.push(item({
+      itemId: contentId('target-descriptor-item', { operationId: operation.operationId, resourceId: resource.resourceId }),
+      kind: 'operation-target-descriptor',
+      versionOrSha256: canonicalSha256(descriptor),
+      trust: 'trusted-control',
+      provenanceId: operation.operationId,
+      reasonCodes: ['application-owned-target', 'edit-anchor-authority'],
+      content: JSON.stringify(descriptor)
+    }));
     candidates.push(item({
       itemId: resource.resourceId,
       kind: 'target-text',
@@ -173,11 +192,68 @@ async function contextCandidates(project: WritingProject, operation: WritingOper
       content: JSON.stringify(decision)
     }));
   }
-  return candidates;
+  return { items: candidates, targetDescriptors };
+}
+
+function targetDescriptor(
+  resource: ProjectSnapshot['resources'][number],
+  content: string
+): ContextReceipt['targetDescriptors'][number] {
+  const anchors: ContextReceipt['targetDescriptors'][number]['anchors'][number][] = [];
+  const add = (kind: 'document' | 'paragraph' | 'protected-range', range: ContextReceipt['targetDescriptors'][number]['anchors'][number]['range'], label: string, targetRangeId?: string) => {
+    const offsets = offsetRange(content, range);
+    const textHash = textSha256(content.slice(offsets.start, offsets.end));
+    anchors.push({
+      anchorId: contentId('edit-anchor', { resourceId: resource.resourceId, baseSha256: resource.currentSha256, kind, targetRangeId: targetRangeId ?? null, range, textHash }),
+      kind,
+      ...(targetRangeId === undefined ? {} : { targetRangeId }),
+      range,
+      textSha256: textHash,
+      label
+    });
+  };
+  add('document', completeTextRange(content), 'Complete admitted document');
+  for (const protectedRange of resource.protectedRanges) add('protected-range', protectedRange.range, `Protected range ${protectedRange.rangeId}`, protectedRange.rangeId);
+  for (const [index, offsets] of paragraphOffsets(content).slice(0, 512).entries()) {
+    add('paragraph', rangeFromOffsets(content, offsets.start, offsets.end), `Paragraph ${String(index + 1)}`);
+  }
+  return {
+    resourceId: resource.resourceId,
+    relativePath: resource.relativePath,
+    baseSha256: resource.currentSha256,
+    mediaType: resource.mediaType,
+    anchors
+  };
+}
+
+function paragraphOffsets(content: string): readonly { readonly start: number; readonly end: number }[] {
+  const ranges: { start: number; end: number }[] = [];
+  const separator = /(?:\r\n|\r|\n)[\t ]*(?:\r\n|\r|\n)+/gu;
+  let start = 0;
+  for (const match of content.matchAll(separator)) {
+    const end = trimTrailingNewlines(content, start, match.index);
+    if (end > start && content.slice(start, end).trim().length > 0) ranges.push({ start, end });
+    start = end + match[0].length;
+  }
+  const finalEnd = trimTrailingNewlines(content, start, content.length);
+  if (start < finalEnd && content.slice(start, finalEnd).trim().length > 0) ranges.push({ start, end: finalEnd });
+  return Object.freeze(ranges);
+}
+
+function trimTrailingNewlines(content: string, start: number, end: number): number {
+  let selected = end;
+  while (selected > start && (content[selected - 1] === '\n' || content[selected - 1] === '\r')) selected -= 1;
+  return selected;
 }
 
 function item(value: ContextReceipt['items'][number]): ContextReceipt['items'][number] {
   return value;
+}
+
+function contextPriority(kind: string): number {
+  if (kind === 'writing-brief') return 0;
+  if (kind === 'operation-target-descriptor') return 1;
+  return 2;
 }
 
 function estimateTokens(value: string): number {

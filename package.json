@@ -14,6 +14,7 @@
     "test": "npm run build && npm run test:unit",
     "test:unit": "node scripts/run-test-suite.mjs",
     "test:writing-regression": "node scripts/run-writing-regression.mjs",
+    "eval:writing:live": "npm run build && node scripts/run-writing-live-evaluation.mjs",
     "package": "node scripts/test-packed-consumer.mjs",
     "verify": "npm run clean && npm run build && npm run lint && npm run check:conformance && npm run test:unit && npm run test:writing-regression",
     "verify:release": "npm run verify && npm run package",

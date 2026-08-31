@@ -1,4 +1,4 @@
-import type { ModelProvider, ModelReasoningRequest } from '@agent-core/model';
+import type { ModelProvider, ModelReasoningEffort, ModelReasoningRequest } from '@agent-core/model';
 import { OllamaProvider } from '@agent-core/provider-ollama';
 import { OpenAIProvider } from '@agent-core/provider-openai';
 import { OpenAICodexProvider, type OpenAICodexTransport } from '@agent-core/provider-openai-codex';
@@ -12,8 +12,6 @@ export interface WritingProviderConfiguration {
   readonly model: string;
   readonly endpoint?: string;
   readonly codexTransport?: OpenAICodexTransport;
-  readonly temperature?: number;
-  readonly reasoning?: ModelReasoningRequest;
 }
 
 export interface WritingProviderBinding {
@@ -64,4 +62,9 @@ export function createWritingProvider(configuration: WritingProviderConfiguratio
       })
     });
   }
+}
+
+export function createWritingReasoningRequest(effort: ModelReasoningEffort | undefined): ModelReasoningRequest | undefined {
+  if (effort === undefined) return undefined;
+  return effort === 'none' ? { strategy: 'disabled' } : { strategy: 'effort', effort, summary: 'auto' };
 }

@@ -247,6 +247,7 @@ export async function recordEvidenceOverride(project: WritingProject, input: {
     decisionId: contentId('decision', input),
     projectRevisionId: view.current.revision.revisionId,
     findingIds: [input.relationId],
+    criterionDecisions: [],
     decision: input.decision,
     explanation: input.explanation,
     actor: 'human',
