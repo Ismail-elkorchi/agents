@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createHash } from 'node:crypto';
 import { realpathSync, promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { Writable } from 'node:stream';
@@ -22,8 +23,10 @@ import {
 } from '@agent-core/tools';
 import {
   createLocalToolHost,
-  TextPatchJournal,
-  type LocalToolHost
+  DEFAULT_LOCAL_TOOL_CONFIGURATION,
+  LocalCandidateWorkspace,
+  RootedFileAuthority,
+  TextPatchJournal
 } from '@agent-core/tools-local';
 import {
   CodingAgentTuiProgressRenderer,
@@ -45,8 +48,9 @@ import { SandboxGitRepositoryObserver } from './workspace/git/sandbox-git-observ
 import { unavailableGitRepositoryObserver, type GitRepositoryObserver } from './workspace/git/repository-observer.js';
 import { createCodingCommandAuthority } from './execution/coding-command-authority.js';
 import { parseCodingPermissionMode, resolveCodingAuthority, type CodingApprovalKind, type CodingPermissionMode } from './security/permission-mode.js';
-import { configuredCheckProposals, createConfiguredChecks } from './verification/configured-checks.js';
-import { CODING_AGENT_DISPOSITION } from './verification/coding-disposition.js';
+import { createAuthoritativeChecks, deriveAdmittedCheckPlan } from './verification/configured-checks.js';
+import { createCodingDisposition } from './verification/coding-disposition.js';
+import { loadOrAdmitCheckPlan } from './verification/check-plan-store.js';
 import { loadOrCaptureRunWorkspaceBaseline } from './changes/workspace-baseline-store.js';
 import { RunChangeReportService } from './changes/run-change-report-service.js';
 import type { RunChangeReport } from './changes/run-change-report.js';
@@ -127,7 +131,6 @@ interface CodingAgentRuntimeComposition {
   sessions: JsonlSessionRepository;
   session: SessionDescriptor;
   tuiDetails: CodingAgentTuiRuntimeDetails;
-  localHost: LocalToolHost;
   gitObserver: GitRepositoryObserver;
   changeReports: RunChangeReportService;
 }
@@ -592,7 +595,7 @@ class CodingAgentInteractiveController implements CodingAgentInteractiveControll
               enabledTools: activeConfiguration.tools.enabled
             }
           } : {}),
-          hasVerificationChecks: configuredCheckProposals(activeConfiguration).length > 0
+          hasVerificationChecks: deriveAdmittedCheckPlan(activeConfiguration, []).checks.length > 0
         }).permissions);
     const runtimeDetails: CodingAgentTuiRuntimeDetails = Object.freeze({
       ...(runtime?.tuiDetails ?? {}),
@@ -770,7 +773,6 @@ async function loadRuntimeHydration(runtime: CodingAgentRuntimeComposition) {
 async function closeRuntimeComposition(runtime: CodingAgentRuntimeComposition): Promise<void> {
   const failures: unknown[] = [];
   try { await runtime.changeReports.close(); } catch (error) { failures.push(error); }
-  try { await runtime.localHost.close(); } catch (error) { failures.push(error); }
   try { await runtime.gitObserver.close(); } catch (error) { failures.push(error); }
   if (failures.length > 0) throw new AggregateError(failures, 'Coding Agent runtime cleanup failed.');
 }
@@ -843,62 +845,20 @@ async function createRuntime(
   const events = new JsonlEventRepository<AgentEvent>({ rootDir: workspace.runsDir, codec: agentEventCodec });
   const existingRunIds = new Set(await events.listRunIds());
   const activeConfiguration = projectExecutionPolicy ? options.configuration : undefined;
-  const checkProposals = configuredCheckProposals(activeConfiguration);
+  const instructionSet = await loadRepositoryInstructions(openedWorkspace, options.configuration?.instructions.map((instruction) => instruction.path));
+  const gitObserver = await createGitObserver(workspace.runtimeDir);
+  const orientation = await inspectRepositoryOrientation(openedWorkspace, instructionSet, options.configuration, gitObserver);
+  const checkPlan = deriveAdmittedCheckPlan(activeConfiguration, orientation.proposedVerificationCommands);
   const authority = resolveCodingAuthority({
     requestedMode: options.permissionMode,
     trust: admittedTrustLevel(openedWorkspace.security.trustLevel),
     ...(activeConfiguration ? { project: { permissions: activeConfiguration.permissions, enabledTools: activeConfiguration.tools.enabled } } : {}),
-    hasVerificationChecks: checkProposals.length > 0
+    hasVerificationChecks: checkPlan.checks.length > 0
   });
-  const instructionSet = await loadRepositoryInstructions(openedWorkspace, options.configuration?.instructions.map((instruction) => instruction.path));
-  const gitObserver = await createGitObserver(workspace.runtimeDir);
-  const orientation = await inspectRepositoryOrientation(openedWorkspace, instructionSet, options.configuration, gitObserver);
-  let localHost: LocalToolHost | undefined;
   try {
     await fs.mkdir(workspace.artifactsDir, { recursive: true, mode: 0o700 });
-    const patchEnabled = authority.enabledTools.includes('apply_patch');
-    const commandEnabled = authority.permissions.commandExecution === 'sandboxed';
-    const patchJournalPath = path.join(workspace.runtimeDir, 'transactions', 'patch');
-    if (patchEnabled) await fs.mkdir(patchJournalPath, { recursive: true, mode: 0o700 });
-    const commandExecution = commandEnabled
-      ? await createCodingCommandAuthority({
-        repositoryDirectory: path.join(workspace.runtimeDir, 'sandbox-commands'),
-        rootedFileAuthority: openedWorkspace.fileRoot,
-        state: openedWorkspace.privateState
-      })
-      : undefined;
-    localHost = createLocalToolHost({
-      rootedFileAuthority: openedWorkspace.fileRoot,
-      artifactRepository: new LocalArtifactRepository({ rootDir: workspace.artifactsDir }),
-      ...(commandExecution ? { commandExecution } : {}),
-      ...(patchEnabled ? { patchJournal: TextPatchJournal.adopt(patchJournalPath) } : {}),
-      enabledTools: authority.enabledTools,
-      async deliverRecoveredTerminalReport(report) {
-        const runId = report.result.owner.runId;
-        if (!existingRunIds.has(runId)) return false;
-        await events.append(runId, {
-          type: 'process.ended',
-          runId,
-          processId: report.result.processId,
-          status: report.result.status,
-          result: parseJsonValue(report)
-        }, { idempotencyKey: `${runId}:process:${report.result.processId}:ended` });
-        const terminal = await events.latestOfType(runId, 'run.ended');
-        return terminal?.event.type === 'run.ended';
-      }
-    });
-    await localHost.ready();
-    const reconciliation = await localHost.reconciliation();
-    if (reconciliation.unresolved.length > 0) {
-      throw new Error('Unresolved sandbox command execution blocks this workspace: ' + reconciliation.unresolved.map((item) => `${item.processId}: ${item.diagnostic}`).join('; '));
-    }
-    const artifactStore = localHost.artifactRepository;
+    const artifactStore = new LocalArtifactRepository({ rootDir: workspace.artifactsDir });
     const estimator = new SimpleTokenEstimator();
-    const localToolConfiguration = localHost.services.localToolConfiguration;
-    const activeCommandExecution = localHost.commandExecution;
-    if (checkProposals.length > 0 && !commandExecution) throw new Error('Configured verification requires the admitted Sandbox command authority.');
-    const services = localHost.services;
-    const configuredTools = localHost.tools;
     const changeReports = new RunChangeReportService({
       state: openedWorkspace.privateState,
       runtimeDirectory: workspace.runtimeDir,
@@ -919,6 +879,7 @@ async function createRuntime(
       },
       async createRuntime(configuration, onProgress, runtimeContext) {
         if (configuration.provider !== providerRuntime.providerId) throw new Error(`Provider ${configuration.provider} is not available in this session runtime.`);
+        existingRunIds.add(runtimeContext.runId);
         const runBaseline = await loadOrCaptureRunWorkspaceBaseline({
           state: openedWorkspace.privateState,
           root: openedWorkspace.fileRoot,
@@ -926,68 +887,120 @@ async function createRuntime(
           resuming: runtimeContext.resuming,
           observeVersionControl: () => inspectRepositoryVersionControl(openedWorkspace, gitObserver)
         });
-        const checks = commandExecution && checkProposals.length > 0
-          ? createConfiguredChecks({
-            proposals: checkProposals,
-            root: openedWorkspace.fileRoot,
-            baseline: runBaseline.workspace,
-            runtimeDirectory: workspace.runtimeDir,
-            createCommandExecution: ({ root, repositoryDirectory }) => createCodingCommandAuthority({
-              repositoryDirectory,
-              rootedFileAuthority: root,
-              state: openedWorkspace.privateState
-            }),
-            commandYieldMs: localToolConfiguration.process.maxYieldMs
-          })
-          : Object.freeze([]);
-        return new AgentRuntime({
-          provider: providerRuntime.provider,
-          model: configuration.model,
-          toolBoundary: {
-            authorizationPolicyId: `coding-agent/${authority.mode}/${openedWorkspace.security.trustLevel}@1`,
-            executionTargetId: activeCommandExecution?.descriptor.recoveryIdentity ?? `${workspace.identity.id}:no-command-authority`
-          },
-          repositories: {
-            events,
-            session: sessionBinding,
-            artifacts: artifactStore
-          },
-          estimator,
-          ...(options.maxOutputTokens !== undefined ? { maxOutputTokens: options.maxOutputTokens } : {}),
-          tools: configuredTools,
-          toolContext: {
-          services
-          },
-          toolPolicy: authority.toolPolicy,
-          toolAuthorizer: request => {
-            const trustDecision = openedWorkspace.security.authorizeTool(request);
-            if (trustDecision.decision !== 'allow') return trustDecision;
-            const approvalKinds = request.effects.accesses.map((access) => approvalKind(accessRisk(access.mode)))
-              .filter((kind): kind is CodingApprovalKind => kind !== undefined && authority.requiredApprovals.includes(kind));
-            return approvalKinds.length > 0
-              ? { decision: 'require_approval' as const, reason: `The active permission boundary requires approval for ${[...new Set(approvalKinds)].join(', ')}.` }
-              : { decision: 'allow' as const, reason: 'Allowed by workspace policy.' };
-          },
-          instructions: instructionSet.instructions,
-          contextItems: Object.freeze([repositoryOrientationContext(orientation)]),
-          ...(checks.length > 0 ? { checks } : {}),
-          disposition: CODING_AGENT_DISPOSITION,
-          ...(projectExecutionPolicy && options.configuration?.limits ? { limits: options.configuration.limits } : {}),
-          metadata: {
-            workspaceId: workspace.identity.id,
-            workspaceName: workspace.workspaceName,
-            workspaceTrust: openedWorkspace.security.trustLevel,
-            ...(options.configurationSource ? {
-              projectConfigurationSource: options.configurationSource.sourceUri,
-              projectConfigurationSha256: options.configurationSource.sha256,
-              projectConfigurationTrust: options.configurationSource.trustLevel
-            } : {})
-          },
-          ...(configuration.temperature !== undefined ? { temperature: configuration.temperature } : {}),
-          ...(configuration.reasoning !== undefined ? { reasoning: configuration.reasoning } : {}),
-          ...(configuration.responseFormat !== undefined ? { responseFormat: configuration.responseFormat } : {}),
-          onProgress
+        const runCheckPlan = await loadOrAdmitCheckPlan({
+          state: openedWorkspace.privateState,
+          runId: runtimeContext.runId,
+          resuming: runtimeContext.resuming,
+          proposed: checkPlan
         });
+        const mutable = authority.mode !== 'review';
+        const candidateWorkspace = mutable
+          ? await LocalCandidateWorkspace.open({ source: openedWorkspace.fileRoot, baseline: runBaseline.workspace, runtimeDirectory: workspace.runtimeDir, runId: runtimeContext.runId })
+          : undefined;
+        const runRoot = candidateWorkspace?.root ?? RootedFileAuthority.adopt(openedWorkspace.fileRoot.identity.canonicalPath, { additionalDeniedEntries: ['.git', '.coding-agent'] });
+        const runIdentity = createHash('sha256').update(runtimeContext.runId).digest('hex');
+        const patchEnabled = authority.enabledTools.includes('apply_patch');
+        const commandEnabled = authority.permissions.commandExecution === 'sandboxed';
+        const patchJournalPath = path.join(workspace.runtimeDir, 'run-tools', runIdentity, 'patch-transactions');
+        if (patchEnabled) await fs.mkdir(patchJournalPath, { recursive: true, mode: 0o700 });
+        let localHost: ReturnType<typeof createLocalToolHost> | undefined;
+        try {
+          const commandExecution = commandEnabled
+            ? await createCodingCommandAuthority({
+              repositoryDirectory: path.join(workspace.runtimeDir, 'run-tools', runIdentity, 'sandbox-commands'),
+              rootedFileAuthority: runRoot,
+              state: openedWorkspace.privateState
+            })
+            : undefined;
+          localHost = createLocalToolHost({
+            rootedFileAuthority: runRoot,
+            artifactRepository: artifactStore,
+            ...(commandExecution ? { commandExecution } : {}),
+            ...(patchEnabled ? { patchJournal: TextPatchJournal.adopt(patchJournalPath) } : {}),
+            enabledTools: authority.enabledTools,
+            async deliverRecoveredTerminalReport(report) {
+              const runId = report.result.owner.runId;
+              if (!existingRunIds.has(runId)) return false;
+              await events.append(runId, {
+                type: 'process.ended', runId, processId: report.result.processId,
+                status: report.result.status, result: parseJsonValue(report)
+              }, { idempotencyKey: `${runId}:process:${report.result.processId}:ended` });
+              const terminal = await events.latestOfType(runId, 'run.ended');
+              return terminal?.event.type === 'run.ended';
+            }
+          });
+          await localHost.ready();
+          const reconciliation = await localHost.reconciliation();
+          if (reconciliation.unresolved.length > 0) {
+            throw new Error('Unresolved sandbox command execution blocks this run: ' + reconciliation.unresolved.map((item) => `${item.processId}: ${item.diagnostic}`).join('; '));
+          }
+          const checks = !mutable
+            ? Object.freeze([])
+            : createAuthoritativeChecks({
+                plan: runCheckPlan,
+                sourceRoot: openedWorkspace.fileRoot,
+                candidateRoot: runRoot,
+                baseline: runBaseline.workspace,
+                runtimeDirectory: workspace.runtimeDir,
+                events,
+                createCommandExecution: ({ root, repositoryDirectory }) => createCodingCommandAuthority({ repositoryDirectory, rootedFileAuthority: root, state: openedWorkspace.privateState }),
+                commandYieldMs: DEFAULT_LOCAL_TOOL_CONFIGURATION.process.maxYieldMs
+              });
+          const host = localHost;
+          return new AgentRuntime({
+            provider: providerRuntime.provider,
+            model: configuration.model,
+            toolBoundary: {
+              authorizationPolicyId: `coding-agent/${authority.mode}/${openedWorkspace.security.trustLevel}@2`,
+              executionTargetId: commandExecution?.descriptor.recoveryIdentity ?? candidateWorkspace?.descriptor.workspaceId ?? `${workspace.identity.id}:review-only`
+            },
+            repositories: { events, session: sessionBinding, artifacts: artifactStore },
+            estimator,
+            ...(options.maxOutputTokens !== undefined ? { maxOutputTokens: options.maxOutputTokens } : {}),
+            tools: host.tools,
+            toolContext: { services: host.services },
+            toolPolicy: authority.toolPolicy,
+            toolAuthorizer: request => {
+              const trustDecision = openedWorkspace.security.authorizeTool(request);
+              if (trustDecision.decision !== 'allow') return trustDecision;
+              const approvalKinds = request.effects.accesses.map((access) => approvalKind(accessRisk(access.mode)))
+                .filter((kind): kind is CodingApprovalKind => kind !== undefined && authority.requiredApprovals.includes(kind));
+              return approvalKinds.length > 0
+                ? { decision: 'require_approval' as const, reason: `The active permission boundary requires approval for ${[...new Set(approvalKinds)].join(', ')}.` }
+                : { decision: 'allow' as const, reason: 'Allowed by workspace policy.' };
+            },
+            instructions: instructionSet.instructions,
+            contextItems: Object.freeze([repositoryOrientationContext(orientation)]),
+            ...(checks.length > 0 ? { checks } : {}),
+            disposition: createCodingDisposition({ ...(candidateWorkspace ? { candidateWorkspace } : {}), mutable }),
+            ...(projectExecutionPolicy && options.configuration?.limits ? { limits: options.configuration.limits } : {}),
+            metadata: {
+              workspaceId: workspace.identity.id,
+              workspaceName: workspace.workspaceName,
+              workspaceTrust: openedWorkspace.security.trustLevel,
+              checkPlanImplementationId: runCheckPlan.implementationId,
+              checkPlanRequiredCoverage: runCheckPlan.requiredCoverage,
+              ...(options.configurationSource ? {
+                projectConfigurationSource: options.configurationSource.sourceUri,
+                projectConfigurationSha256: options.configurationSource.sha256,
+                projectConfigurationTrust: options.configurationSource.trustLevel
+              } : {})
+            },
+            ...(configuration.temperature !== undefined ? { temperature: configuration.temperature } : {}),
+            ...(configuration.reasoning !== undefined ? { reasoning: configuration.reasoning } : {}),
+            ...(configuration.responseFormat !== undefined ? { responseFormat: configuration.responseFormat } : {}),
+            onProgress,
+            release: async () => {
+              try { await host.close(); }
+              finally { await candidateWorkspace?.release(); }
+            }
+          });
+        } catch (error) {
+          if (localHost) await localHost.close().catch(() => undefined);
+          else runRoot.close();
+          await candidateWorkspace?.release().catch(() => undefined);
+          throw error;
+        }
       },
       summarizeConversation: request => summarizeConversation(providerRuntime.provider, request.configuration.model, request.conversation)
     });
@@ -1010,18 +1023,10 @@ async function createRuntime(
       sessionLocation: sessionBinding.repository.location(sessionBinding.descriptor.id),
       permissions: authority.permissions
       },
-      localHost,
       gitObserver,
       changeReports
     };
   } catch (error) {
-    if (localHost) {
-      try { await localHost.close(); }
-      catch (closeError) {
-        await gitObserver.close().catch(() => undefined);
-        throw new AggregateError([error, closeError], 'CLI runtime initialization and cleanup both failed.', { cause: closeError });
-      }
-    }
     await gitObserver.close().catch(() => undefined);
     throw error;
   }

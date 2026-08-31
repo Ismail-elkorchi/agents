@@ -1,14 +1,14 @@
 import { createHash } from 'node:crypto';
-import type { RootedFileAuthority } from '@agent-core/tools-local';
+import {
+  captureWorkspaceSnapshot,
+  type RootedFileAuthority,
+  type WorkspaceSnapshot,
+  type WorkspaceSnapshotEntry
+} from '@agent-core/tools-local';
 import { PrivateStateDirectory } from '../state/private-state.js';
 import type { ContentHazard } from '../security/content-provenance.js';
 import type { RepositoryVersionControl } from '../workspace/repository-orientation.js';
 import type { GitObservationReceipt } from '../workspace/git/repository-observer.js';
-import {
-  captureWorkspaceSnapshot,
-  type WorkspaceSnapshot,
-  type WorkspaceSnapshotEntry
-} from '../verification/workspace-snapshot.js';
 
 const ENTRIES_PER_CHUNK = 1_000;
 

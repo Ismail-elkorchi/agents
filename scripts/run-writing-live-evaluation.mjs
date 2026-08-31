@@ -120,6 +120,7 @@ try {
     const operation = await runWritingOperation({ project, provider, model, reasoning, kind: 'draft', instruction, intents: [intent] });
     const operationView = await project.store.view();
     const proposal = operation.proposalId === undefined ? undefined : operationView.proposals.get(operation.proposalId)?.proposal;
+    const evaluation = operation.proposalId === undefined ? undefined : operationView.qualityEvaluations.get(operation.proposalId);
     let candidate;
     if (proposal !== undefined) {
       const edit = proposal.textEdits.find((item) => item.resourceId === resource.resourceId);
@@ -145,9 +146,9 @@ try {
         contextPolicyId: WRITING_CONTEXT_POLICY_ID,
         toolImplementationIds: operationView.operations.get(operation.operationId)?.snapshot.toolImplementationIds ?? [],
         checkImplementationIds: operationView.operations.get(operation.operationId)?.snapshot.checkImplementationIds ?? [],
-        verifierImplementationIds: proposal?.semanticPreservationFindings.map((finding) => finding.evaluatorId) ?? [],
-        calibrationIds: proposal?.semanticPreservationFindings.flatMap((finding) => finding.calibrationId === undefined ? [] : [finding.calibrationId]) ?? [],
-        dispositionImplementationId: 'writing-agent.disposition.proposal@2',
+        verifierImplementationIds: evaluation?.semanticPreservationFindings.map((finding) => finding.evaluatorId) ?? [],
+        calibrationIds: evaluation?.semanticPreservationFindings.flatMap((finding) => finding.calibrationId === undefined ? [] : [finding.calibrationId]) ?? [],
+        dispositionImplementationId: operationView.operations.get(operation.operationId)?.snapshot.dispositionImplementationId ?? 'unavailable',
         providerId: provider.id,
         providerImplementationId: provider.implementationId,
         modelId: model
@@ -170,9 +171,9 @@ try {
       ...(proposal === undefined ? {} : {
         proposalId: proposal.proposalId,
         canonicalProposalSha256: proposal.canonicalProposalSha256,
-        deterministicChecks: proposal.deterministicChecks,
-        criterionCoverage: proposal.criterionCoverage,
-        semanticPreservationFindings: proposal.semanticPreservationFindings
+        deterministicChecks: evaluation?.deterministicChecks ?? [],
+        criterionCoverage: evaluation?.criterionCoverage ?? [],
+        semanticPreservationFindings: evaluation?.semanticPreservationFindings ?? []
       })
     };
   });

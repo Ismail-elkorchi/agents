@@ -63,10 +63,17 @@ export async function acceptRevisionProposal(project: WritingProject, input: {
   if (operation === undefined) throw new Error(`Writing proposal operation is unavailable: ${proposal.operationId}`);
   if (proposal.baseProjectRevisionId !== view.current.revision.revisionId) throw new Error(`Writing proposal base is stale: ${proposal.proposalId}`);
   if (operation.briefRevisionId !== view.current.brief.briefRevisionId) throw new Error(`Writing proposal brief is stale: ${proposal.proposalId}`);
-  const humanCriteria = new Set(proposal.criterionCoverage.filter((criterion) => criterion.verificationKind === 'human').map((criterion) => criterion.criterionId));
+  const evaluation = view.qualityEvaluations.get(proposal.proposalId);
+  if (evaluation === undefined) throw new Error(`Writing proposal has no durable Agent Core quality evaluation: ${proposal.proposalId}`);
+  const humanCriteria = new Set(evaluation.criterionCoverage.filter((criterion) => criterion.verificationKind === 'human').map((criterion) => criterion.criterionId));
   const criterionDecisions = input.humanCriterionDecisions.map((decision) => humanCriterionDecisionSchema.parse(decision));
   for (const decision of criterionDecisions) if (!humanCriteria.has(decision.criterionId)) throw new Error(`Human decision targets a criterion that is not human-verified: ${decision.criterionId}`);
-  const applicability = proposalCanApply(proposalView.proposal, criterionDecisions);
+  const applicability = proposalCanApply({
+    deterministicChecks: evaluation.deterministicChecks,
+    semanticPreservationFindings: evaluation.semanticPreservationFindings,
+    editorialFindings: evaluation.editorialFindings,
+    criterionCoverage: evaluation.criterionCoverage
+  }, criterionDecisions);
   if (!applicability.allowed) throw new Error(`Writing proposal cannot be accepted while required verification is non-passing: ${applicability.reasons.join(', ')}.`);
   const explanation = input.explanation.trim();
   if (explanation.length === 0) throw new Error('Writing proposal acceptance requires a direct-human explanation.');
@@ -74,7 +81,7 @@ export async function acceptRevisionProposal(project: WritingProject, input: {
     decisionId: contentId('decision', { proposalId: input.proposalId, decision: 'accepted', explanation, criterionDecisions }),
     projectRevisionId: view.current.revision.revisionId,
     proposalId: input.proposalId,
-    findingIds: [...proposalView.proposal.semanticPreservationFindings.map((finding) => finding.findingId), ...proposalView.proposal.editorialFindings.map((finding) => finding.findingId)],
+    findingIds: [...evaluation.semanticPreservationFindings.map((finding) => finding.findingId), ...evaluation.editorialFindings.map((finding) => finding.findingId)],
     criterionDecisions,
     decision: 'accepted',
     explanation,
@@ -94,11 +101,12 @@ export async function rejectRevisionProposal(project: WritingProject, proposalId
   const proposalView = view.proposals.get(proposalId);
   if (proposalView === undefined) throw new Error(`Unknown writing proposal: ${proposalId}`);
   if (proposalView.status !== 'proposed') throw new Error(`Writing proposal is already ${proposalView.status}: ${proposalId}`);
+  const evaluation = view.qualityEvaluations.get(proposalId);
   const decision = editorialDecisionSchema.parse({
     decisionId: contentId('decision', { proposalId, decision: 'rejected', explanation }),
     projectRevisionId: view.current.revision.revisionId,
     proposalId,
-    findingIds: [...proposalView.proposal.semanticPreservationFindings.map((finding) => finding.findingId), ...proposalView.proposal.editorialFindings.map((finding) => finding.findingId)],
+    findingIds: evaluation === undefined ? [] : [...evaluation.semanticPreservationFindings.map((finding) => finding.findingId), ...evaluation.editorialFindings.map((finding) => finding.findingId)],
     criterionDecisions: [],
     decision: 'rejected',
     explanation,
@@ -133,6 +141,8 @@ export async function applyRevisionProposal(project: WritingProject, input: {
   const operation = view.operations.get(proposal.operationId);
   if (operation === undefined) throw new Error(`Writing proposal operation is unavailable: ${proposal.operationId}`);
   if (operation.briefRevisionId !== view.current.brief.briefRevisionId) throw new Error(`Writing proposal brief is stale: ${proposal.proposalId}`);
+  const evaluation = view.qualityEvaluations.get(proposal.proposalId);
+  if (evaluation === undefined) throw new Error(`Writing proposal quality evaluation is unavailable: ${proposal.proposalId}`);
   const acceptanceDecision = requireProposalDecision(view.records, proposal.proposalId, 'accepted');
   const textEdits = proposal.textEdits;
   const plan = await prepareTextPlan(project, view.current, textEdits);
@@ -200,8 +210,8 @@ export async function applyRevisionProposal(project: WritingProject, input: {
     createdAt: nowTimestamp(clock)
   }));
   const allNewProvenance = [...proposedRecords, ...acceptedRecords];
-  const findings = proposal.editorialFindings;
-  const checks = proposal.deterministicChecks;
+  const findings = evaluation.editorialFindings;
+  const checks = evaluation.deterministicChecks;
   const provisional = createProjectRevision({
     ...snapshotParts(view.current),
     parentRevisionIds: [view.current.revision.revisionId],

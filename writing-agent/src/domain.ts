@@ -107,6 +107,19 @@ export const writingBriefRevisionSchema = z.strictObject({
 export const writingOperationKindSchema = z.enum(['plan', 'draft', 'continue', 'revise', 'review', 'transform', 'translate']);
 export const writingOperationModeSchema = z.enum(['suggest', 'apply']);
 
+export const humanCriterionDecisionSchema = z.strictObject({
+  criterionId: identifierSchema,
+  verdict: z.enum(['passed', 'failed']),
+  explanation: z.string().trim().min(1).max(100_000)
+});
+
+export const writingApplicationAuthorizationSchema = z.strictObject({
+  channel: z.literal('direct-user'),
+  decision: z.literal('accept-and-apply'),
+  explanation: z.string().trim().min(1).max(100_000),
+  humanCriterionDecisions: z.array(humanCriterionDecisionSchema)
+});
+
 export const writingIntentSchema = z.strictObject({
   intentId: identifierSchema,
   schemaId: identifierSchema,
@@ -182,11 +195,16 @@ export const writingOperationSchema = z.strictObject({
   effectiveConstraints: effectiveConstraintSetSchema,
   baseProjectRevisionId: identifierSchema,
   mode: writingOperationModeSchema,
+  applicationAuthorization: writingApplicationAuthorizationSchema.optional(),
   sessionId: identifierSchema,
   runId: identifierSchema,
   lifecycleState: z.literal('admitted'),
   snapshot: operationSnapshotSchema,
   admittedAt: timestampSchema
+}).superRefine((operation, context) => {
+  if ((operation.mode === 'apply') !== (operation.applicationAuthorization !== undefined)) {
+    context.addIssue({ code: 'custom', message: 'Apply operations require durable direct-user application authorization, and suggest operations must not carry it.' });
+  }
 });
 
 export const documentNodeSchema = z.strictObject({
@@ -380,12 +398,6 @@ export const criterionCoverageSchema = z.strictObject({
   explanation: z.string().trim().min(1).max(100_000)
 });
 
-export const humanCriterionDecisionSchema = z.strictObject({
-  criterionId: identifierSchema,
-  verdict: z.enum(['passed', 'failed']),
-  explanation: z.string().trim().min(1).max(100_000)
-});
-
 export const editorialFindingSchema = z.strictObject({
   findingId: identifierSchema,
   criterionId: identifierSchema,
@@ -491,15 +503,28 @@ export const revisionProposalSchema = z.strictObject({
   expectedBaseHashes: z.record(identifierSchema, sha256Schema),
   preservationContract: preservationContractSchema,
   semanticChangeDeclaration: semanticChangeDeclarationSchema,
-  semanticPreservationFindings: z.array(semanticPreservationFindingSchema),
   proposedAuthorshipProvenance: z.array(authorshipProvenanceSchema),
-  deterministicChecks: z.array(deterministicCheckSchema),
-  editorialFindings: z.array(editorialFindingSchema),
-  criterionCoverage: z.array(criterionCoverageSchema),
   contextReceiptId: identifierSchema,
   status: z.literal('proposed'),
   boundedRationale: z.string().max(10_000),
   createdAt: timestampSchema
+});
+
+export const proposalQualityEvaluationSchema = z.strictObject({
+  evaluationId: identifierSchema,
+  proposalId: identifierSchema,
+  operationId: identifierSchema,
+  baseProjectRevisionId: identifierSchema,
+  candidateRevisionId: identifierSchema,
+  evaluationInputSha256: sha256Schema,
+  evaluatorImplementationId: identifierSchema,
+  verificationPolicyId: identifierSchema,
+  calibrationId: identifierSchema.optional(),
+  deterministicChecks: z.array(deterministicCheckSchema),
+  semanticPreservationFindings: z.array(semanticPreservationFindingSchema),
+  editorialFindings: z.array(editorialFindingSchema),
+  criterionCoverage: z.array(criterionCoverageSchema),
+  evaluatedAt: timestampSchema
 });
 
 export const editorialDecisionSchema = z.strictObject({
@@ -592,6 +617,7 @@ export type WritingIntent = z.infer<typeof writingIntentSchema>;
 export type WritingOperation = z.infer<typeof writingOperationSchema>;
 export type WritingOperationKind = z.infer<typeof writingOperationKindSchema>;
 export type WritingOperationMode = z.infer<typeof writingOperationModeSchema>;
+export type WritingApplicationAuthorization = z.infer<typeof writingApplicationAuthorizationSchema>;
 export type DocumentNode = z.infer<typeof documentNodeSchema>;
 export type RelationEdge = z.infer<typeof relationEdgeSchema>;
 export type ManagedTextResource = z.infer<typeof managedTextResourceSchema>;
@@ -612,5 +638,6 @@ export type EditorialDecision = z.infer<typeof editorialDecisionSchema>;
 export type PreservationContract = z.infer<typeof preservationContractSchema>;
 export type ContextReceipt = z.infer<typeof contextReceiptSchema>;
 export type RevisionProposal = z.infer<typeof revisionProposalSchema>;
+export type ProposalQualityEvaluation = z.infer<typeof proposalQualityEvaluationSchema>;
 export type ProjectRevision = z.infer<typeof projectRevisionSchema>;
 export type ProjectSnapshot = z.infer<typeof projectSnapshotSchema>;

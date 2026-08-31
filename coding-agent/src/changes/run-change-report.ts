@@ -1,10 +1,15 @@
 import { createHash } from 'node:crypto';
 import type { EventRepository } from '@agent-core/evidence';
 import type { AgentEvent, AgentRunResult, AgentVerificationStatus } from '@agent-core/runtime';
-import { applyPatchOutputSchema, type ApplyPatchOutput } from '@agent-core/tools-local';
-import type { RootedFileAuthority } from '@agent-core/tools-local';
+import {
+  applyPatchOutputSchema,
+  captureWorkspaceSnapshot,
+  type ApplyPatchOutput,
+  type RootedFileAuthority,
+  type WorkspaceSnapshot,
+  type WorkspaceSnapshotEntry
+} from '@agent-core/tools-local';
 import { PrivateStateDirectory } from '../state/private-state.js';
-import { captureWorkspaceSnapshot, type WorkspaceSnapshot, type WorkspaceSnapshotEntry } from '../verification/workspace-snapshot.js';
 import { loadRunWorkspaceBaseline, type RunWorkspaceBaseline } from './workspace-baseline-store.js';
 
 const MAX_REPORT_CHANGES = 200;

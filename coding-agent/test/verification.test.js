@@ -1,13 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { access, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { RootedFileAuthority } from '@agent-core/tools-local';
+import { InMemoryEventRepository } from '@agent-core/evidence';
+import { agentEventCodec } from '@agent-core/runtime';
 import { ResourceLeaseCoordinator, adoptCommandExecution, createCommandExecutionPreparation } from '@agent-core/tools';
-import { configuredCheckProposals, createConfiguredChecks } from '../dist/verification/configured-checks.js';
+import { RootedFileAuthority, captureWorkspaceSnapshot, changedWorkspacePaths, materializeWorkspaceSnapshot } from '@agent-core/tools-local';
+import { deriveAdmittedCheckPlan, createAuthoritativeChecks, verifierDefinitionPaths } from '../dist/verification/configured-checks.js';
 import { loadOrCaptureRunWorkspaceBaseline } from '../dist/changes/workspace-baseline-store.js';
-import { captureWorkspaceSnapshot, changedWorkspacePaths, verifierDefinitionPaths } from '../dist/verification/workspace-snapshot.js';
 import { PrivateStateDirectory } from '../dist/state/private-state.js';
 import { DEFAULT_CODING_CONTRACT } from '../dist/instructions/coding-contract.js';
 
@@ -26,32 +27,17 @@ test('verification snapshots bind exact root content and classify verifier defin
   const root = RootedFileAuthority.adopt(directory);
   try {
     const baseline = await captureWorkspaceSnapshot(root);
-    assert.equal(baseline.coverage, 'complete');
-    assert.equal(baseline.entries.find((entry) => entry.path === 'src/index.js').content, 'text');
     await writeFile(path.join(directory, 'src', 'index.js'), 'export const value = 2;\n');
     await writeFile(path.join(directory, 'test', 'index.test.js'), 'assert(value === 2);\n');
     const candidate = await captureWorkspaceSnapshot(root);
-    assert.notEqual(candidate.digest, baseline.digest);
     const changes = changedWorkspacePaths(baseline, candidate);
     assert.deepEqual(changes, ['src/index.js', 'test/index.test.js']);
     assert.deepEqual(verifierDefinitionPaths(changes), ['test/index.test.js']);
-  } finally {
-    root.close();
-    await rm(directory, { recursive: true, force: true });
-  }
+  } finally { root.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test('verification definition classification covers commands, compilers, dependencies, CI, and tests', () => {
-  const paths = [
-    '.github/workflows/verify.yml',
-    'package.json',
-    'package-lock.json',
-    'tsconfig.build.json',
-    'vitest.config.ts',
-    'tests/behavior.js',
-    'src/behavior.spec.ts',
-    'src/implementation.ts'
-  ];
+  const paths = ['coding-agent.config.json', '.github/workflows/verify.yml', 'package.json', 'package-lock.json', 'tsconfig.build.json', 'vitest.config.ts', 'tests/behavior.js', 'src/behavior.spec.ts', 'src/implementation.ts'];
   assert.deepEqual(verifierDefinitionPaths(paths), paths.slice(0, -1));
 });
 
@@ -67,16 +53,8 @@ test('one run keeps its original verification baseline across process restart', 
     await writeFile(path.join(directory, 'source.js'), 'after\n');
     const resumed = await loadOrCaptureRunWorkspaceBaseline({ state, root, runId: 'run-one', resuming: true, observeVersionControl });
     assert.equal(resumed.workspace.digest, first.workspace.digest);
-    assert.deepEqual(resumed.workspace.entries, first.workspace.entries);
-    await assert.rejects(
-      loadOrCaptureRunWorkspaceBaseline({ state, root, runId: 'missing-run', resuming: true, observeVersionControl }),
-      /baseline.*missing/iu
-    );
-  } finally {
-    root.close();
-    await rm(directory, { recursive: true, force: true });
-    await rm(stateDirectory, { recursive: true, force: true });
-  }
+    await assert.rejects(loadOrCaptureRunWorkspaceBaseline({ state, root, runId: 'missing-run', resuming: true, observeVersionControl }), /baseline.*missing/iu);
+  } finally { root.close(); await rm(directory, { recursive: true, force: true }); await rm(stateDirectory, { recursive: true, force: true }); }
 });
 
 test('run baseline capture rejects a changing version-control observation', async () => {
@@ -87,68 +65,67 @@ test('run baseline capture rejects a changing version-control observation', asyn
   const state = await PrivateStateDirectory.create(stateDirectory);
   let calls = 0;
   try {
-    await assert.rejects(
-      loadOrCaptureRunWorkspaceBaseline({
-        state,
-        root,
-        runId: 'racing-run',
-        resuming: false,
-        observeVersionControl: async () => calls++ === 0 ? { kind: 'none' } : { kind: 'unavailable', reason: 'changed' }
-      }),
-      /changed while.*baseline/iu
-    );
-  } finally {
-    root.close();
-    await rm(directory, { recursive: true, force: true });
-    await rm(stateDirectory, { recursive: true, force: true });
-  }
+    await assert.rejects(loadOrCaptureRunWorkspaceBaseline({
+      state, root, runId: 'racing-run', resuming: false,
+      observeVersionControl: async () => calls++ === 0 ? { kind: 'none' } : { kind: 'unavailable', reason: 'changed' }
+    }), /changed while.*baseline/iu);
+  } finally { root.close(); await rm(directory, { recursive: true, force: true }); await rm(stateDirectory, { recursive: true, force: true }); }
 });
 
-test('configured checks reject changed or mutating verification oracles', async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), 'coding-agent-oracle-'));
-  const runtimeDirectory = await mkdtemp(path.join(tmpdir(), 'coding-agent-oracle-runtime-'));
-  await mkdir(path.join(directory, 'test'));
-  await writeFile(path.join(directory, 'source.js'), 'export const value = 1;\n');
-  await writeFile(path.join(directory, 'test', 'source.test.js'), 'assert(value === 1);\n');
-  const root = RootedFileAuthority.adopt(directory);
+test('admitted plans freeze explicit and inferred checks and expose missing required coverage', () => {
+  const plan = deriveAdmittedCheckPlan(configuration('node test/source.test.js'), ['npm test', 'node test/source.test.js']);
+  assert.equal(plan.requiredCoverage, 'admitted');
+  assert.deepEqual(plan.checks.map((check) => [check.command, check.requirement, check.origin]), [
+    ['node test/source.test.js', 'required', 'project'],
+    ['npm test', 'required', 'inferred']
+  ]);
+  const missing = deriveAdmittedCheckPlan(undefined, []);
+  assert.equal(missing.requiredCoverage, 'missing');
+  assert.deepEqual(missing.checks, []);
+});
+
+test('authoritative checks reject changed or self-mutating verification definitions', async () => {
+  const fixture = await verificationFixture();
   try {
-    const baseline = await captureWorkspaceSnapshot(root);
-    const proposals = configuredCheckProposals(configuration('node test/source.test.js'));
+    await writeFile(path.join(fixture.candidateDirectory, 'test', 'source.test.js'), 'assert(true);\n');
     let calls = 0;
-    const [check] = createConfiguredChecks({ proposals, root, baseline, runtimeDirectory, createCommandExecution: async () => commandAuthority(async () => { calls += 1; return commandResult(); }), commandYieldMs: 0 });
-    assert.ok(check.implementationId.startsWith('coding-agent.command-check.v1:'));
-    await writeFile(path.join(directory, 'test', 'source.test.js'), 'assert(true);\n');
-    const changed = await check.prepare(context());
+    const checks = createChecks(fixture, async () => commandAuthority(async () => { calls += 1; return commandResult(); }));
+    const admittedBaseline = await settleCheck(checks[0]);
+    await appendCheck(fixture.events, checks[0], admittedBaseline);
+    const changed = await checks[1].prepare(context());
     assert.equal(changed.verdict, 'unknown');
     assert.equal(changed.output.classification, 'verifier_definition_changed');
-    assert.equal(calls, 0);
+    assert.equal(calls, 1);
 
-    await writeFile(path.join(directory, 'test', 'source.test.js'), 'assert(value === 1);\n');
-    let mutatingCalls = 0;
-    const [mutatingCheck] = createConfiguredChecks({
-      proposals,
-      root,
-      baseline,
-      runtimeDirectory,
-      createCommandExecution: async ({ root: verifierRoot }) => commandAuthority(async () => {
-        mutatingCalls += 1;
-        await writeFile(path.join(verifierRoot.identity.canonicalPath, 'generated.txt'), 'side effect\n');
-        return commandResult();
-      }),
-      commandYieldMs: 0
-    });
-    const prepared = await mutatingCheck.prepare(context());
-    assert.equal(typeof prepared.start, 'function');
-    const mutating = await prepared.start(context().signal);
-    await prepared.release();
-    assert.equal(mutating.verdict, 'passed');
-    assert.deepEqual(mutating.output.verifierWorkspaceChanges, ['generated.txt']);
-    assert.equal(mutatingCalls, 1);
-    await assert.rejects(access(path.join(directory, 'generated.txt')));
-  } finally {
-    root.close();
-    await rm(directory, { recursive: true, force: true });
-    await rm(runtimeDirectory, { recursive: true, force: true });
+    await writeFile(path.join(fixture.candidateDirectory, 'test', 'source.test.js'), 'assert(value === 1);\n');
+    const selfMutating = createChecks(fixture, async ({ root }) => commandAuthority(async () => {
+      await writeFile(path.join(root.identity.canonicalPath, 'test', 'source.test.js'), 'assert(true);\n');
+      return commandResult();
+    }));
+    const candidate = await settleCheck(selfMutating[1]);
+    assert.equal(candidate.verdict, 'unknown');
+    assert.equal(candidate.output.classification, 'verifier_self_modified');
+  } finally { await fixture.close(); }
+});
+
+test('baseline and candidate outcomes distinguish regressions from pre-existing failures and repairs', async () => {
+  for (const scenario of [
+    { baseline: commandResult(), candidate: commandResult({ exitCode: 1, stderr: 'new failure' }), verdict: 'failed', classification: 'candidate_regression' },
+    { baseline: commandResult({ exitCode: 1, stderr: 'same failure' }), candidate: commandResult({ exitCode: 1, stderr: 'same failure' }), verdict: 'passed', classification: 'pre_existing_failure' },
+    { baseline: commandResult({ exitCode: 1, stderr: 'partial failure', stderrOmittedBytes: 10 }), candidate: commandResult({ exitCode: 1, stderr: 'partial failure' }), verdict: 'unknown', classification: 'failure_comparison_incomplete' },
+    { baseline: commandResult({ exitCode: 1, stderr: 'old failure' }), candidate: commandResult(), verdict: 'passed', classification: 'pre_existing_failure_repaired' }
+  ]) {
+    const fixture = await verificationFixture();
+    let invocation = 0;
+    try {
+      const outcomes = [scenario.baseline, scenario.candidate];
+      const checks = createChecks(fixture, async () => commandAuthority(async () => outcomes[invocation++]));
+      const baseline = await settleCheck(checks[0]);
+      await appendCheck(fixture.events, checks[0], baseline);
+      const candidate = await settleCheck(checks[1]);
+      assert.equal(candidate.verdict, scenario.verdict);
+      assert.equal(candidate.output.classification, scenario.classification);
+    } finally { await fixture.close(); }
   }
 });
 
@@ -157,110 +134,82 @@ test('workspace aliases make verification coverage explicitly partial', async ()
   await writeFile(path.join(directory, 'source.js'), 'content\n');
   await symlink('source.js', path.join(directory, 'alias.js'));
   const root = RootedFileAuthority.adopt(directory);
-  try {
-    const snapshot = await captureWorkspaceSnapshot(root);
-    assert.equal(snapshot.coverage, 'partial');
-    assert.deepEqual(snapshot.causes, ['symbolic_link']);
-  } finally {
-    root.close();
-    await rm(directory, { recursive: true, force: true });
-  }
+  try { const snapshot = await captureWorkspaceSnapshot(root); assert.equal(snapshot.coverage, 'partial'); assert.deepEqual(snapshot.causes, ['symbolic_link']); }
+  finally { root.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
-test('verification results distinguish coverage, failed checks, and unavailable execution', async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), 'coding-agent-result-'));
-  const runtimeDirectory = await mkdtemp(path.join(tmpdir(), 'coding-agent-result-runtime-'));
-  await writeFile(path.join(directory, 'source.js'), 'content\n');
-  const root = RootedFileAuthority.adopt(directory);
-  try {
-    const baseline = await captureWorkspaceSnapshot(root);
-    const observe = async (coverage, result) => {
-      const configured = configuration('node verify.js', coverage);
-      const [check] = createConfiguredChecks({
-        proposals: configuredCheckProposals(configured),
-        root,
-        baseline,
-        runtimeDirectory,
-        createCommandExecution: async () => commandAuthority(async () => result),
-        commandYieldMs: 0
-      });
-      const prepared = await check.prepare(context());
-      try { return await prepared.start(context().signal); }
-      finally { await prepared.release(); }
-    };
-
-    const targeted = await observe('targeted', commandResult());
-    assert.equal(targeted.verdict, 'passed');
-    assert.equal(targeted.output.coverage, 'targeted');
-    assert.equal(targeted.output.classification, 'candidate_verified');
-
-    const failed = await observe('full', commandResult({ exitCode: 1 }));
-    assert.equal(failed.verdict, 'failed');
-    assert.equal(failed.output.classification, 'check_failed_baseline_unknown');
-    assert.equal(failed.output.baselineOutcome, 'not_observed');
-
-    const unavailable = await observe('full', commandResult({ status: 'failed' }));
-    assert.equal(unavailable.verdict, 'unknown');
-    assert.equal(unavailable.output.classification, 'check_unavailable');
-  } finally {
-    root.close();
-    await rm(directory, { recursive: true, force: true });
-    await rm(runtimeDirectory, { recursive: true, force: true });
-  }
-});
-
-function configuration(command, coverage = 'full') {
+async function verificationFixture() {
+  const parent = await mkdtemp(path.join(tmpdir(), 'coding-agent-checks-'));
+  const sourceDirectory = path.join(parent, 'source');
+  const candidateDirectory = path.join(parent, 'candidate');
+  await mkdir(path.join(sourceDirectory, 'test'), { recursive: true });
+  await writeFile(path.join(sourceDirectory, 'source.js'), 'export const value = 1;\n');
+  await writeFile(path.join(sourceDirectory, 'test', 'source.test.js'), 'assert(value === 1);\n');
+  const sourceRoot = RootedFileAuthority.adopt(sourceDirectory);
+  const baseline = await captureWorkspaceSnapshot(sourceRoot);
+  await materializeWorkspaceSnapshot(sourceRoot, baseline, candidateDirectory);
+  const candidateRoot = RootedFileAuthority.adopt(candidateDirectory);
+  const events = new InMemoryEventRepository(agentEventCodec);
   return {
-    version: 1,
-    provider: 'openai',
-    model: 'gpt-5.6-sol',
-    instructions: [],
-    tools: { enabled: [] },
-    permissions: { maximumMode: 'develop', requireApprovalFor: [] },
-    verification: { required: [{ id: 'tests', command, coverage }], advisory: [] }
+    parent, candidateDirectory, sourceRoot, candidateRoot, baseline, events,
+    async close() { candidateRoot.close(); sourceRoot.close(); await rm(parent, { recursive: true, force: true }); }
+  };
+}
+
+function createChecks(fixture, createCommandExecution) {
+  return createAuthoritativeChecks({
+    plan: deriveAdmittedCheckPlan(configuration('node test/source.test.js'), []), sourceRoot: fixture.sourceRoot, candidateRoot: fixture.candidateRoot,
+    baseline: fixture.baseline, runtimeDirectory: path.join(fixture.parent, 'runtime'), events: fixture.events, createCommandExecution, commandYieldMs: 0
+  });
+}
+
+async function settleCheck(check) {
+  const prepared = await check.prepare(context());
+  if (typeof prepared.start !== 'function') return prepared;
+  try { return await prepared.start(context().signal); }
+  finally { await prepared.release(); }
+}
+
+async function appendCheck(events, check, observation) {
+  await events.append('run-verification', {
+    type: 'check.ended', turnIndex: 1, turnId: 'turn-1', requestAttempt: 1, check: check.id,
+    result: { id: check.id, implementationId: check.implementationId, requirement: check.requirement, verdict: observation.verdict, summary: observation.summary, durationMs: 1, ...(observation.output === undefined ? {} : { output: observation.output }), ...(observation.diagnostic === undefined ? {} : { diagnostic: observation.diagnostic }) }
+  });
+}
+
+function configuration(command) {
+  return {
+    version: 1, provider: 'openai', model: 'gpt-5.6-sol', instructions: [], tools: { enabled: [] }, permissions: { maximumMode: 'develop', requireApprovalFor: [] },
+    verification: { required: [{ id: 'tests', command, coverage: 'full' }], advisory: [] }
   };
 }
 
 function context() {
   return {
-    runId: 'run-verification',
-    task: 'verify',
-    instructions: [],
-    candidate: { status: 'complete', message: 'done', source: 'content', turnIndex: 1 },
-    turnIndex: 1,
-    turnId: 'turn-1',
-    requestAttempt: 1,
-    metadata: {},
-    signal: new AbortController().signal,
+    runId: 'run-verification', task: 'verify', instructions: [], candidate: { status: 'complete', message: 'done', source: 'content', turnIndex: 1 },
+    turnIndex: 1, turnId: 'turn-1', requestAttempt: 1, metadata: {}, signal: new AbortController().signal,
     execution: { evidence: { read: async () => ({ items: [], bytes: 0, truncated: false }), readArtifact: async () => new Uint8Array() } }
   };
 }
 
 function commandResult(options = {}) {
-  const output = { text: '', observedBytes: 0, capturedBytes: 0, omittedBytes: 0, startsAtOutputStart: true, endsAtOutputEnd: true };
+  const output = (text = '', omittedBytes = 0) => ({ text, observedBytes: Buffer.byteLength(text) + omittedBytes, capturedBytes: Buffer.byteLength(text), omittedBytes, startsAtOutputStart: omittedBytes === 0, endsAtOutputEnd: true });
   const status = options.status ?? 'exited';
-  return { processId: 'process-verification', owner: { runId: 'run-verification', turnId: 'turn-1', toolBatchId: 'verification:tests', callIndex: 0 }, status, cursorStart: 0, cursorEnd: 0, stdout: output, stderr: output, combined: output, ...(status === 'exited' ? { exitCode: options.exitCode ?? 0, signal: null } : {}) };
+  return {
+    processId: 'process-verification', owner: { runId: 'run-verification', turnId: 'turn-1', toolBatchId: 'verification', callIndex: 0 }, status, cursorStart: 0, cursorEnd: 0,
+    stdout: output(options.stdout, options.stdoutOmittedBytes), stderr: output(options.stderr, options.stderrOmittedBytes), combined: output(`${options.stdout ?? ''}${options.stderr ?? ''}`, (options.stdoutOmittedBytes ?? 0) + (options.stderrOmittedBytes ?? 0)),
+    ...(status === 'exited' ? { exitCode: options.exitCode ?? 0, signal: null } : {})
+  };
 }
 
 function commandAuthority(execute) {
   const authority = {
     descriptor: Object.freeze({ implementationId: 'test.command@1', recoveryIdentity: 'test-recovery', capabilities: Object.freeze(['test']), supportsPty: false }),
-    resourceLeases: new ResourceLeaseCoordinator(),
-    prepare: async () => createCommandExecutionPreparation({ executionId: 'process-verification', expiresAt: '2099-01-01T00:00:00.000Z' }, () => undefined),
-    start: async () => execute(),
-    query: async () => execute(),
-    writeInput: async () => undefined,
-    closeInput: async () => undefined,
-    terminate: async () => execute(),
-    disposeRun: async () => [],
-    recoveredTerminalReports: () => [],
-    acknowledgeTerminalReport: async () => undefined,
-    reconcile: async () => ({ resolved: [], unresolved: [] }),
-    retryReconciliation: async () => ({ resolved: [], unresolved: [] }),
-    acknowledgeUnresolved: async () => undefined,
-    close: async () => undefined,
-    executionId: () => 'process-verification',
-    reconcileExecution: async () => ({ status: 'settled', result: await execute() })
+    resourceLeases: new ResourceLeaseCoordinator(), prepare: async () => createCommandExecutionPreparation({ executionId: 'process-verification', expiresAt: '2099-01-01T00:00:00.000Z' }, () => undefined),
+    start: async () => execute(), query: async () => execute(), writeInput: async () => undefined, closeInput: async () => undefined, terminate: async () => execute(),
+    disposeRun: async () => [], recoveredTerminalReports: () => [], acknowledgeTerminalReport: async () => undefined, reconcile: async () => ({ resolved: [], unresolved: [] }),
+    retryReconciliation: async () => ({ resolved: [], unresolved: [] }), acknowledgeUnresolved: async () => undefined, close: async () => undefined,
+    executionId: () => 'process-verification', reconcileExecution: async () => ({ status: 'settled', result: await execute() })
   };
   adoptCommandExecution(authority);
   return authority;

@@ -30,7 +30,8 @@ test('permission mode and trust matrix never grants network or host escape', () 
       assert.equal(authority.permissions.hostEscape, 'denied');
       assert.equal(authority.enabledTools.includes('apply_patch'), mode !== 'review');
       assert.equal(authority.enabledTools.includes('exec_command'), mode === 'develop');
-      assert.equal(authority.verificationCommands, mode === 'develop' ? 'sandboxed' : 'disabled');
+      assert.equal(authority.verificationCommands, mode === 'review' ? 'disabled' : 'sandboxed');
+      assert.equal(authority.permissions.commandExecution, mode === 'develop' ? 'sandboxed' : 'denied');
       assert.equal(authority.requiredApprovals.includes('command'), trust === 'restricted' && mode === 'develop');
     }
   }

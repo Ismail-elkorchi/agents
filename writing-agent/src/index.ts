@@ -12,6 +12,7 @@ export * from './provider.js';
 export * from './quality.js';
 export * from './revisions.js';
 export * from './runtime.js';
+export * from './semantic-checker.js';
 export * from './sources.js';
 export * from './text-ranges.js';
 export * from './voice.js';

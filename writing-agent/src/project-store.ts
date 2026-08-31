@@ -14,6 +14,7 @@ import {
   editorialFindingSchema,
   identifierSchema,
   projectSnapshotSchema,
+  proposalQualityEvaluationSchema,
   revisionProposalSchema,
   sha256Schema,
   sourceRecordSchema,
@@ -28,6 +29,7 @@ import {
   type EditorialDecision,
   type EditorialFinding,
   type ProjectSnapshot,
+  type ProposalQualityEvaluation,
   type RevisionProposal,
   type SourceRecord,
   type WritingBriefRevision,
@@ -69,6 +71,16 @@ const proposalLifecycleSchema = z.strictObject({
   status: z.enum(['accepted', 'rejected', 'superseded', 'applied']),
   decisionId: identifierSchema,
   explanation: z.string().trim().min(1).max(100_000)
+});
+
+const operationLifecycleSchema = z.strictObject({
+  operationId: identifierSchema,
+  runId: identifierSchema,
+  status: z.enum(['suspended', 'completed', 'failed', 'aborted', 'inconclusive']),
+  executionSha256: sha256Schema,
+  proposalId: identifierSchema.optional(),
+  committedRevisionId: identifierSchema.optional(),
+  reason: z.string().trim().min(1).max(100_000).optional()
 });
 
 const assumptionStatusChangeSchema = z.strictObject({
@@ -116,8 +128,10 @@ const eventPayloadSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('brief.revised'), brief: writingBriefRevisionSchema }),
   z.strictObject({ kind: z.literal('assumption.status-changed'), change: assumptionStatusChangeSchema }),
   z.strictObject({ kind: z.literal('operation.admitted'), operation: writingOperationSchema }),
+  z.strictObject({ kind: z.literal('operation.lifecycle'), lifecycle: operationLifecycleSchema }),
   z.strictObject({ kind: z.literal('context.recorded'), receipt: contextReceiptSchema }),
   z.strictObject({ kind: z.literal('proposal.created'), proposal: revisionProposalSchema }),
+  z.strictObject({ kind: z.literal('proposal.quality-evaluated'), evaluation: proposalQualityEvaluationSchema }),
   z.strictObject({ kind: z.literal('proposal.lifecycle'), lifecycle: proposalLifecycleSchema }),
   z.strictObject({ kind: z.literal('mutation.settled'), settlement: mutationSettlementSchema }),
   z.strictObject({ kind: z.literal('revision.committed'), snapshot: projectSnapshotSchema, cause: z.enum(['initial', 'brief', 'proposal', 'direct', 'structure', 'undo', 'source', 'evidence', 'provenance']) }),
@@ -156,6 +170,7 @@ const headPointerSchema = z.strictObject({
 
 export type ProjectLogRecord = z.infer<typeof logRecordSchema>;
 export type ProjectMutationSettlement = z.infer<typeof mutationSettlementSchema>;
+export type WritingOperationLifecycle = z.infer<typeof operationLifecycleSchema>;
 export type ProposalStatus = 'proposed' | 'accepted' | 'rejected' | 'superseded' | 'applied';
 
 export interface ProjectView {
@@ -163,7 +178,9 @@ export interface ProjectView {
   readonly records: readonly ProjectLogRecord[];
   readonly current: ProjectSnapshot;
   readonly proposals: ReadonlyMap<string, { readonly proposal: RevisionProposal; readonly status: ProposalStatus }>;
+  readonly qualityEvaluations: ReadonlyMap<string, ProposalQualityEvaluation>;
   readonly operations: ReadonlyMap<string, WritingOperation>;
+  readonly operationLifecycles: ReadonlyMap<string, WritingOperationLifecycle>;
   readonly contexts: ReadonlyMap<string, ContextReceipt>;
   readonly settlements: ReadonlyMap<string, ProjectMutationSettlement>;
 }
@@ -286,12 +303,50 @@ export class WritingProjectStore {
     await this.appendMany([{ payload: { kind: 'operation.admitted', operation }, projectRevisionId: expectedRevisionId }], { expectedRevisionId });
   }
 
+  async appendOperationLifecycle(input: z.input<typeof operationLifecycleSchema>, expectedRevisionId: string): Promise<void> {
+    const lifecycle = adoptSchema(operationLifecycleSchema, input);
+    const existing = await this.operationLifecycleReceipt(lifecycle.operationId);
+    if (existing !== undefined && existing.status !== 'suspended') {
+      if (sameOperationSettlement(existing, lifecycle)) return;
+      throw new Error(`Writing operation already has a conflicting terminal settlement: ${lifecycle.operationId}`);
+    }
+    if (existing !== undefined && sameOperationSettlement(existing, lifecycle)) return;
+    await this.appendMany([{ payload: { kind: 'operation.lifecycle', lifecycle }, projectRevisionId: expectedRevisionId }], { expectedRevisionId });
+  }
+
   async appendContext(receipt: ContextReceipt, expectedRevisionId: string): Promise<void> {
     await this.appendMany([{ payload: { kind: 'context.recorded', receipt }, projectRevisionId: expectedRevisionId }], { expectedRevisionId });
   }
 
   async appendProposal(proposal: RevisionProposal): Promise<void> {
-    await this.appendMany([{ payload: { kind: 'proposal.created', proposal }, projectRevisionId: proposal.baseProjectRevisionId }], { expectedRevisionId: proposal.baseProjectRevisionId });
+    const view = await this.view();
+    const superseded = [...view.proposals.values()].filter((entry) => entry.proposal.operationId === proposal.operationId && entry.status === 'proposed');
+    await this.appendMany([
+      ...superseded.map((entry) => ({
+        payload: {
+          kind: 'proposal.lifecycle' as const,
+          lifecycle: {
+            proposalId: entry.proposal.proposalId,
+            expectedStatus: 'proposed' as const,
+            status: 'superseded' as const,
+            decisionId: contentId('proposal-supersession', { previousProposalId: entry.proposal.proposalId, proposalId: proposal.proposalId }),
+            explanation: `Superseded by revised proposal ${proposal.proposalId}.`
+          }
+        },
+        projectRevisionId: proposal.baseProjectRevisionId
+      })),
+      { payload: { kind: 'proposal.created' as const, proposal }, projectRevisionId: proposal.baseProjectRevisionId }
+    ], { expectedRevisionId: proposal.baseProjectRevisionId });
+  }
+
+  async appendProposalQuality(evaluation: ProposalQualityEvaluation): Promise<void> {
+    const parsed = proposalQualityEvaluationSchema.parse(evaluation);
+    const existing = await this.qualityEvaluationReceipt(parsed.proposalId);
+    if (existing !== undefined) {
+      if (canonicalSha256(existing) !== canonicalSha256(parsed)) throw new Error(`Proposal quality evaluation conflicts with its durable receipt: ${parsed.proposalId}`);
+      return;
+    }
+    await this.appendMany([{ payload: { kind: 'proposal.quality-evaluated', evaluation: parsed }, projectRevisionId: parsed.baseProjectRevisionId }], { expectedRevisionId: parsed.baseProjectRevisionId });
   }
 
   async appendProposalLifecycle(input: z.input<typeof proposalLifecycleSchema>, expectedRevisionId: string): Promise<void> {
@@ -409,6 +464,14 @@ export class WritingProjectStore {
     return (await this.view()).proposals.get(proposalId)?.proposal;
   }
 
+  async qualityEvaluationReceipt(proposalId: string): Promise<ProposalQualityEvaluation | undefined> {
+    return (await this.view()).qualityEvaluations.get(proposalId);
+  }
+
+  async operationLifecycleReceipt(operationId: string): Promise<WritingOperationLifecycle | undefined> {
+    return (await this.view()).operationLifecycles.get(operationId);
+  }
+
   private async appendMany(inputs: readonly AppendRecordInput[], guard: { readonly expectedRevisionId: string | undefined }): Promise<void> {
     if (inputs.length === 0) return;
     await withPrivateLock(this.#directory, async () => {
@@ -436,6 +499,7 @@ export class WritingProjectStore {
           ...(input.projectRevisionId === undefined ? {} : { projectRevisionId: input.projectRevisionId }),
           payload: input.payload
         });
+        validateConcurrentTransition(existingRecords, candidate, this.identity);
         const recordHash = canonicalSha256({ previousHash, record: candidate });
         const envelope = adoptSchema(logEnvelopeSchema, { previousHash, record: candidate, recordHash });
         await appendPrivateLine(path.join(this.#directory, 'project.jsonl'), JSON.stringify(envelope));
@@ -461,6 +525,32 @@ export class WritingProjectStore {
     }
     await writeHead(this.#directory, this.identity.projectId, current.revision.revisionId, lastHash);
   }
+}
+
+function validateConcurrentTransition(
+  records: readonly ProjectLogRecord[],
+  candidate: ProjectLogRecord,
+  identity: WritingProjectIdentity
+): void {
+  const payload = candidate.payload;
+  if (payload.kind !== 'operation.lifecycle' && payload.kind !== 'proposal.quality-evaluated' && payload.kind !== 'proposal.lifecycle') return;
+  const view = projectView(records, identity);
+  if (payload.kind === 'operation.lifecycle') {
+    const operation = view.operations.get(payload.lifecycle.operationId);
+    if (operation?.runId !== payload.lifecycle.runId) throw new Error(`Operation lifecycle precedes or contradicts admission: ${payload.lifecycle.operationId}`);
+    const previous = view.operationLifecycles.get(payload.lifecycle.operationId);
+    if (previous !== undefined && previous.status !== 'suspended') throw new Error(`Operation lifecycle changes a terminal settlement: ${payload.lifecycle.operationId}`);
+    return;
+  }
+  if (payload.kind === 'proposal.quality-evaluated') {
+    const proposal = view.proposals.get(payload.evaluation.proposalId);
+    if (proposal?.proposal.operationId !== payload.evaluation.operationId) throw new Error(`Proposal quality evaluation precedes or contradicts its proposal: ${payload.evaluation.proposalId}`);
+    if (view.qualityEvaluations.has(payload.evaluation.proposalId)) throw new Error(`Proposal quality evaluation already exists: ${payload.evaluation.proposalId}`);
+    return;
+  }
+  const proposal = view.proposals.get(payload.lifecycle.proposalId);
+  if (proposal === undefined) throw new Error(`Proposal lifecycle precedes creation: ${payload.lifecycle.proposalId}`);
+  if (proposal.status !== payload.lifecycle.expectedStatus) throw new Error(`Proposal lifecycle expected ${payload.lifecycle.expectedStatus}, found ${proposal.status}: ${payload.lifecycle.proposalId}`);
 }
 
 interface AppendRecordInput {
@@ -503,15 +593,29 @@ async function readLogEnvelopesIfPresent(directory: string): Promise<readonly z.
 
 function projectView(records: readonly ProjectLogRecord[], identity: WritingProjectIdentity): ProjectView {
   const proposals = new Map<string, { proposal: RevisionProposal; status: ProposalStatus }>();
+  const qualityEvaluations = new Map<string, ProposalQualityEvaluation>();
   const operations = new Map<string, WritingOperation>();
+  const operationLifecycles = new Map<string, WritingOperationLifecycle>();
   const contexts = new Map<string, ContextReceipt>();
   const settlements = new Map<string, ProjectMutationSettlement>();
   for (const record of records) {
     if (record.projectId !== identity.projectId) throw new Error(`Project log mixes project identities at record ${record.recordId}.`);
     const payload = record.payload;
     if (payload.kind === 'operation.admitted') uniqueSet(operations, payload.operation.operationId, payload.operation, 'operation');
+    else if (payload.kind === 'operation.lifecycle') {
+      const operation = operations.get(payload.lifecycle.operationId);
+      if (operation?.runId !== payload.lifecycle.runId) throw new Error(`Operation lifecycle precedes or contradicts admission: ${payload.lifecycle.operationId}`);
+      const previous = operationLifecycles.get(payload.lifecycle.operationId);
+      if (previous !== undefined && previous.status !== 'suspended') throw new Error(`Operation lifecycle changes a terminal settlement: ${payload.lifecycle.operationId}`);
+      operationLifecycles.set(payload.lifecycle.operationId, payload.lifecycle);
+    }
     else if (payload.kind === 'context.recorded') uniqueSet(contexts, payload.receipt.contextReceiptId, payload.receipt, 'context receipt');
     else if (payload.kind === 'proposal.created') uniqueSet(proposals, payload.proposal.proposalId, { proposal: payload.proposal, status: 'proposed' }, 'proposal');
+    else if (payload.kind === 'proposal.quality-evaluated') {
+      const proposal = proposals.get(payload.evaluation.proposalId);
+      if (proposal?.proposal.operationId !== payload.evaluation.operationId) throw new Error(`Proposal quality evaluation precedes or contradicts its proposal: ${payload.evaluation.proposalId}`);
+      uniqueSet(qualityEvaluations, payload.evaluation.proposalId, payload.evaluation, 'proposal quality evaluation');
+    }
     else if (payload.kind === 'proposal.lifecycle') {
       const proposal = proposals.get(payload.lifecycle.proposalId);
       if (proposal === undefined) throw new Error(`Proposal lifecycle precedes creation: ${payload.lifecycle.proposalId}`);
@@ -521,7 +625,27 @@ function projectView(records: readonly ProjectLogRecord[], identity: WritingProj
   }
   const current = latestSnapshot(records);
   if (current === undefined) throw new Error(`Writing project ${identity.projectId} has no current revision.`);
-  return deepFreeze({ identity, records: Object.freeze([...records]), current, proposals, operations, contexts, settlements });
+  return deepFreeze({ identity, records: Object.freeze([...records]), current, proposals, qualityEvaluations, operations, operationLifecycles, contexts, settlements });
+}
+
+function sameOperationSettlement(left: WritingOperationLifecycle, right: WritingOperationLifecycle): boolean {
+  return canonicalSha256({
+    operationId: left.operationId,
+    runId: left.runId,
+    status: left.status,
+    executionSha256: left.executionSha256,
+    proposalId: left.proposalId,
+    committedRevisionId: left.committedRevisionId,
+    reason: left.reason
+  }) === canonicalSha256({
+    operationId: right.operationId,
+    runId: right.runId,
+    status: right.status,
+    executionSha256: right.executionSha256,
+    proposalId: right.proposalId,
+    committedRevisionId: right.committedRevisionId,
+    reason: right.reason
+  });
 }
 
 function latestSnapshot(records: readonly ProjectLogRecord[]): ProjectSnapshot | undefined {

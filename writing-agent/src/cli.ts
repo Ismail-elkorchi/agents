@@ -82,7 +82,9 @@ async function runProjectCommand(project: WritingProject, command: string | unde
     const explanation = rest.join(' ').trim() || 'Direct user requested application of this exact proposal.';
     const proposalView = (await project.store.view()).proposals.get(proposalId);
     if (proposalView?.status === 'proposed') {
-      const humanCriterionIds = new Set(proposalView.proposal.criterionCoverage
+      const evaluation = (await project.store.view()).qualityEvaluations.get(proposalId);
+      if (evaluation === undefined) throw new Error(`Proposal has no durable Agent Core quality evaluation: ${proposalId}`);
+      const humanCriterionIds = new Set(evaluation.criterionCoverage
         .filter((criterion) => criterion.verificationKind === 'human')
         .map((criterion) => criterion.criterionId));
       const invalidCriterionIds = options.humanCriterionIds.filter((criterionId) => !humanCriterionIds.has(criterionId));
@@ -109,7 +111,7 @@ async function runProjectCommand(project: WritingProject, command: string | unde
   }
   if (command === 'resume') {
     const runtime = providerRuntime(options);
-    printAgentResult(await resumeWritingSuspension({ project, ...runtime, ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }) })); return;
+    print(await resumeWritingSuspension({ project, ...runtime, ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }) })); return;
   }
   if (command === 'decide') {
     const decisionRequestId = requiredArgument(subcommand, 'decide requires a decision-request ID');
@@ -119,7 +121,7 @@ async function runProjectCommand(project: WritingProject, command: string | unde
     const fingerprint = requiredArgument(guards.fingerprint, 'Missing exact guard --fingerprint.');
     const operationRevision = requiredArgument(guards['operation-revision'], 'Missing exact guard --operation-revision.');
     const runtime = providerRuntime(options);
-    printAgentResult(await decideWritingSuspension({ project, ...runtime, decisionRequestId, choice, runId, fingerprint, expectedOperationRevision: positiveInteger(operationRevision, 'operation revision'), ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }) })); return;
+    print(await decideWritingSuspension({ project, ...runtime, decisionRequestId, choice, runId, fingerprint, expectedOperationRevision: positiveInteger(operationRevision, 'operation revision'), ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }) })); return;
   }
   if (command === 'approval') {
     const approvalId = requiredArgument(subcommand, 'approval requires an approval ID');
@@ -129,12 +131,12 @@ async function runProjectCommand(project: WritingProject, command: string | unde
     const runId = requiredArgument(guards['run-id'], 'Missing exact guard --run-id.');
     const fingerprint = requiredArgument(guards.fingerprint, 'Missing exact guard --fingerprint.');
     const runtime = providerRuntime(options);
-    printAgentResult(await resolveWritingApproval({ project, ...runtime, approvalId, decision, runId, fingerprint, ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }) })); return;
+    print(await resolveWritingApproval({ project, ...runtime, approvalId, decision, runId, fingerprint, ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }) })); return;
   }
   if (command === 'abort') {
     const runtime = providerRuntime(options);
     const runId = requiredArgument(subcommand, 'abort requires the exact run ID');
-    print({ aborted: await abortWritingOperation({ project, ...runtime, runId, reason: rest.join(' ').trim() || 'Direct user requested abort.', ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }) }) }); return;
+    print(await abortWritingOperation({ project, ...runtime, runId, reason: rest.join(' ').trim() || 'Direct user requested abort.', ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }) })); return;
   }
   if (command === 'plan' || command === 'draft' || command === 'revise' || command === 'review') { await runModelCommand(project, command, subcommand, rest, options); return; }
   throw new Error(`Unknown or incomplete Writing Agent command: ${[command, subcommand].filter(Boolean).join(' ')}`);

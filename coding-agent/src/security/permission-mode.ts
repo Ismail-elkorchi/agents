@@ -65,9 +65,8 @@ export function resolveCodingAuthority(input: {
     }
     if (mode === 'develop') requiredApprovals.add('command');
   }
-  const verificationCommands = input.hasVerificationChecks && mode === 'develop' ? 'sandboxed' : 'disabled';
-  const commandAvailable = verificationCommands === 'sandboxed'
-    || enabledTools.some((name) => name === 'exec_command' || name === 'write_stdin' || name === 'stop_process');
+  const verificationCommands = input.hasVerificationChecks && mode !== 'review' ? 'sandboxed' : 'disabled';
+  const commandAvailable = enabledTools.some((name) => name === 'exec_command' || name === 'write_stdin' || name === 'stop_process');
   return Object.freeze({
     mode,
     toolPolicy: Object.freeze({ allowedRisks: Object.freeze(allowedRisks) }),

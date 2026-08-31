@@ -21,7 +21,7 @@ import {
 } from './domain.js';
 import { canonicalJson, canonicalSha256, contentId, nowTimestamp } from './canonical.js';
 import type { WritingProject } from './project.js';
-import { prepareProposalQuality, type WritingEditorialChecker } from './quality.js';
+import { prepareProposalMaterial } from './quality.js';
 
 export const PROPOSE_REVISION_IMPLEMENTATION_ID = 'writing-agent.propose-revision@2';
 export const WRITING_OPERATION_SERVICE = 'writingOperation';
@@ -71,18 +71,15 @@ export class WritingOperationService {
   readonly project: WritingProject;
   readonly operation: WritingOperation;
   readonly contextReceipt: ContextReceipt;
-  readonly editorialChecker: WritingEditorialChecker | undefined;
 
   constructor(input: {
     readonly project: WritingProject;
     readonly operation: WritingOperation;
     readonly contextReceipt: ContextReceipt;
-    readonly editorialChecker?: WritingEditorialChecker;
   }) {
     this.project = input.project;
     this.operation = input.operation;
     this.contextReceipt = input.contextReceipt;
-    this.editorialChecker = input.editorialChecker;
     assertTargetDescriptors(input.operation, input.contextReceipt);
     operationServices.add(this);
     Object.freeze(this);
@@ -140,15 +137,14 @@ export class WritingOperationService {
       if (!sameProposalIntent(existing, input)) throw new Error(`Proposal identity conflicts with a different canonical intent: ${input.proposalId}`);
       return existing;
     }
-    const quality = await prepareProposalQuality({
+    const materialPreparation = await prepareProposalMaterial({
       project: this.project,
       operation: this.operation,
       proposalId: input.proposalId,
       textEdits: input.textEdits,
       structuralChanges: input.structuralChanges,
       declaration: input.semanticChangeDeclaration,
-      contextReceipt: this.contextReceipt,
-      ...(this.editorialChecker === undefined ? {} : { editorialChecker: this.editorialChecker })
+      contextReceipt: this.contextReceipt
     });
     const material = {
       proposalId: input.proposalId,
@@ -159,13 +155,9 @@ export class WritingOperationService {
       textEdits: input.textEdits,
       structuralChanges: input.structuralChanges,
       expectedBaseHashes: Object.fromEntries(input.textEdits.map((edit) => [edit.resourceId, edit.baseSha256])),
-      preservationContract: quality.preservationContract,
+      preservationContract: materialPreparation.preservationContract,
       semanticChangeDeclaration: input.semanticChangeDeclaration,
-      semanticPreservationFindings: quality.semanticPreservationFindings,
-      proposedAuthorshipProvenance: quality.proposedAuthorshipProvenance,
-      deterministicChecks: quality.deterministicChecks,
-      editorialFindings: quality.editorialFindings,
-      criterionCoverage: quality.criterionCoverage,
+      proposedAuthorshipProvenance: materialPreparation.proposedAuthorshipProvenance,
       contextReceiptId: this.contextReceipt.contextReceiptId,
       status: 'proposed' as const,
       boundedRationale: input.rationale,
@@ -371,8 +363,7 @@ function proposalObservation(proposal: RevisionProposal) {
 }
 
 function boundedSummary(proposal: RevisionProposal): string {
-  const unresolvedCriteria = proposal.criterionCoverage.filter((coverage) => coverage.verdict !== 'passed' || coverage.coverage !== 'complete').length;
-  const summary = `${String(proposal.textEdits.length)} resource edit group(s), ${String(proposal.structuralChanges.length)} structural change(s), ${String(proposal.deterministicChecks.filter((check) => check.verdict !== 'passed').length)} non-passing deterministic check(s), ${String(proposal.semanticPreservationFindings.filter((finding) => finding.verdict !== 'passed' || finding.coverage !== 'complete').length)} unresolved semantic preservation finding(s), ${String(unresolvedCriteria)} uncovered acceptance criterion/criteria.`;
+  const summary = `${String(proposal.textEdits.length)} resource edit group(s) and ${String(proposal.structuralChanges.length)} structural change(s); deterministic and interpretive quality verification follows in Agent Core.`;
   return summary.slice(0, 4_000);
 }
 

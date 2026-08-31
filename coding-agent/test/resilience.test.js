@@ -80,7 +80,7 @@ test('a denied restricted-workspace mutation remains unapplied and resumes to an
   const fixture = await createWorkspace({
     endpoint: provider.endpoint,
     tools: ['read_files', 'apply_patch'],
-    checks: [],
+    checks: [{ id: 'smoke', command: 'node --version', coverage: 'full' }],
     trustLevel: 'restricted',
     files: { 'src/feature.js': sourceBefore }
   });
@@ -100,11 +100,11 @@ test('a denied restricted-workspace mutation remains unapplied and resumes to an
     const denied = await runCli(fixture, [
       'approval', 'deny', runId, approvalId, fingerprint, '--permissions', 'edit', '--provider', 'ollama', '--model', 'v0-scripted'
     ]);
-    assert.equal(denied.code, 0, `${denied.stdout}\n${denied.stderr}`);
+    assert.equal(denied.code, 1, `${denied.stdout}\n${denied.stderr}`);
     assert.equal(await readFile(path.join(fixture.root, 'src/feature.js'), 'utf8'), sourceBefore);
     assert.match(denied.stdout, /workspace remains unchanged/u);
     assert.match(denied.stdout, /Workspace changes: 0 \(complete\)/u);
-    assert.match(denied.stdout, /Remaining uncertainty: none/u);
+    assert.match(denied.stdout, /Required verification coverage is unknown/u);
     assert.equal(provider.chatRequests.length, 3);
   } finally {
     await provider.close();
@@ -150,7 +150,7 @@ test('resilient CLI recovery continues the accepted root-bound read and structur
   const fixture = await createWorkspace({
     endpoint: provider.endpoint,
     tools: ['read_files', 'apply_patch'],
-    checks: [],
+    checks: [{ id: 'smoke', command: 'node --version', coverage: 'full' }],
     files: {
       'AGENTS.md': 'ROOT_V0_INSTRUCTION: inspect before editing and preserve unrelated files.\n',
       'src/AGENTS.md': 'SCOPED_V0_INSTRUCTION: only change src/note.txt from alpha to beta.\n',
@@ -161,19 +161,24 @@ test('resilient CLI recovery continues the accepted root-bound read and structur
   try {
     await trust(fixture);
     provider.blockNextShow();
-    const first = spawnCli(fixture, ['exec', 'Apply the scoped repository instruction.', '--permissions', 'edit']);
+    const first = spawnCli(fixture, ['exec', 'Apply the scoped repository instruction.', '--permissions', sandboxAvailable ? 'develop' : 'edit']);
     await provider.waitForBlockedShow();
     first.killAbruptly();
     assertAbruptTermination(await first.result);
     provider.releaseBlockedShow();
 
-    const resumed = await runCli(fixture, ['exec', '--resume', '--permissions', 'edit']);
-    assert.equal(resumed.code, 0, `${resumed.stdout}\n${resumed.stderr}`);
-    assert.equal(await readFile(path.join(fixture.root, 'src/note.txt'), 'utf8'), 'beta\n');
+    const resumed = await runCli(fixture, ['exec', '--resume', '--permissions', sandboxAvailable ? 'develop' : 'edit']);
+    assert.equal(resumed.code, sandboxAvailable ? 0 : 1, `${resumed.stdout}\n${resumed.stderr}`);
+    assert.equal(await readFile(path.join(fixture.root, 'src/note.txt'), 'utf8'), sandboxAvailable ? 'beta\n' : noteBefore);
     assert.equal(await readFile(path.join(fixture.root, 'untouched.txt'), 'utf8'), 'keep\n');
-    assert.match(resumed.stdout, /Workspace changes: 1 \(complete\)/u);
-    assert.match(resumed.stdout, /- modified src\/note\.txt \[agent\]/u);
-    assert.match(resumed.stdout, /Remaining uncertainty: none/u);
+    if (sandboxAvailable) {
+      assert.match(resumed.stdout, /Workspace changes: 1 \(complete\)/u);
+      assert.match(resumed.stdout, /- modified src\/note\.txt \[agent\]/u);
+      assert.match(resumed.stdout, /Remaining uncertainty: none/u);
+    } else {
+      assert.match(resumed.stdout, /Required verification coverage is unknown/u);
+      assert.match(resumed.stdout, /Workspace changes: 0 \(partial\)/u);
+    }
     assert.equal(provider.chatRequests.length, 3);
     const initialRequest = JSON.stringify(provider.chatRequests[0]);
     assert.match(initialRequest, /ROOT_V0_INSTRUCTION/u);
@@ -301,13 +306,13 @@ test('sandboxed task execution cannot reach the host provider endpoint', { skip:
   const fixture = await createWorkspace({
     endpoint: provider.endpoint,
     tools: ['exec_command'],
-    checks: [],
+    checks: [{ id: 'smoke', command: 'node --version', coverage: 'full' }],
     files: {}
   });
   try {
     await trust(fixture);
     const output = await runCli(fixture, ['exec', 'Prove the command sandbox cannot reach the provider endpoint.', '--permissions', 'develop']);
-    assert.equal(output.code, 0, `${output.stdout}\n${output.stderr}`);
+    assert.equal(output.code, sandboxAvailable ? 0 : 1, `${output.stdout}\n${output.stderr}`);
     assert.match(output.stderr, /network-denied/u);
     assert.match(output.stdout, /The sandbox denied network access/u);
     assert.match(output.stdout, /Remaining uncertainty: none/u);
@@ -353,7 +358,7 @@ test('a multi-file refactor removes dead code while preserving an unrelated dirt
   const fixture = await createWorkspace({
     endpoint: provider.endpoint,
     tools: ['list_directory', 'read_files', 'apply_patch'],
-    checks: [],
+    checks: [{ id: 'smoke', command: 'node --version', coverage: 'full' }],
     files: {
       'src/main.js': mainBefore,
       'src/helpers.js': helpersBefore,
@@ -365,20 +370,22 @@ test('a multi-file refactor removes dead code while preserving an unrelated dirt
     await initializeGitRepository(fixture);
     await writeFile(path.join(fixture.root, 'notes.txt'), 'user work in progress\n');
     await trust(fixture);
-    const output = await runCli(fixture, ['exec', 'Refactor the live helper and remove its dead code. Preserve unrelated changes.', '--permissions', 'edit']);
-    assert.equal(output.code, 0, `${output.stdout}\n${output.stderr}`);
+    const output = await runCli(fixture, ['exec', 'Refactor the live helper and remove its dead code. Preserve unrelated changes.', '--permissions', sandboxAvailable ? 'develop' : 'edit']);
+    assert.equal(output.code, sandboxAvailable ? 0 : 1, `${output.stdout}\n${output.stderr}`);
     assert.equal(await readFile(path.join(fixture.root, 'notes.txt'), 'utf8'), 'user work in progress\n');
-    assert.equal(await readFile(path.join(fixture.root, 'src/main.js'), 'utf8'), "import { double } from './helpers.js';\nexport const result = double(2);\n");
-    assert.equal(await readFile(path.join(fixture.root, 'src/helpers.js'), 'utf8'), 'export const double = (value) => value * 2;\n');
-    await assert.rejects(readFile(path.join(fixture.root, 'src/legacy.js'), 'utf8'), { code: 'ENOENT' });
-    assert.match(output.stdout, sandboxAvailable
-      ? /Workspace changes: 3 \(complete\)/u
-      : /Workspace changes: 3 \(partial\)/u);
-    assert.match(output.stdout, /- modified src\/helpers\.js \[agent\]/u);
-    assert.match(output.stdout, /- deleted src\/legacy\.js \[agent\]/u);
-    assert.match(output.stdout, /- modified src\/main\.js \[agent\]/u);
-    if (sandboxAvailable) assert.match(output.stdout, /Remaining uncertainty: none/u);
-    else assert.match(output.stdout, /Change coverage is partial: version control — unavailable\./u);
+    assert.equal(await readFile(path.join(fixture.root, 'src/main.js'), 'utf8'), sandboxAvailable ? "import { double } from './helpers.js';\nexport const result = double(2);\n" : mainBefore);
+    assert.equal(await readFile(path.join(fixture.root, 'src/helpers.js'), 'utf8'), sandboxAvailable ? 'export const double = (value) => value * 2;\n' : helpersBefore);
+    if (sandboxAvailable) {
+      await assert.rejects(readFile(path.join(fixture.root, 'src/legacy.js'), 'utf8'), { code: 'ENOENT' });
+      assert.match(output.stdout, /Workspace changes: 3 \(complete\)/u);
+      assert.match(output.stdout, /- modified src\/helpers\.js \[agent\]/u);
+      assert.match(output.stdout, /- deleted src\/legacy\.js \[agent\]/u);
+      assert.match(output.stdout, /- modified src\/main\.js \[agent\]/u);
+      assert.match(output.stdout, /Remaining uncertainty: none/u);
+    } else {
+      assert.equal(await readFile(path.join(fixture.root, 'src/legacy.js'), 'utf8'), legacyBefore);
+      assert.match(output.stdout, /Required verification coverage is unknown/u);
+    }
     assert.equal(provider.chatRequests.length, 4);
     const initialPrompt = provider.chatRequests[0].messages.map((message) => message.content).join('\n');
     if (sandboxAvailable) assert.match(initialPrompt, /notes\.txt/u);
@@ -401,12 +408,12 @@ test('a concurrent file replacement is never attributed to the agent mutation re
   const fixture = await createWorkspace({
     endpoint: provider.endpoint,
     tools: ['read_files', 'apply_patch'],
-    checks: [],
+    checks: [{ id: 'smoke', command: 'node --version', coverage: 'full' }],
     files: { 'src/note.txt': sourceBefore }
   });
   try {
     await trust(fixture);
-    const running = spawnCli(fixture, ['exec', 'Change alpha to beta.', '--permissions', 'edit']);
+    const running = spawnCli(fixture, ['exec', 'Change alpha to beta.', '--permissions', sandboxAvailable ? 'develop' : 'edit']);
     await provider.waitForChatCount(2);
     provider.blockNextChat();
     await provider.waitForBlockedChat();
@@ -414,7 +421,7 @@ test('a concurrent file replacement is never attributed to the agent mutation re
     provider.releaseBlockedChat(finalResponse('Changed alpha to beta.'));
 
     const output = await running.result;
-    assert.equal(output.code, 0, `${output.stdout}\n${output.stderr}`);
+    assert.equal(output.code, 1, `${output.stdout}\n${output.stderr}`);
     assert.equal(await readFile(path.join(fixture.root, 'src/note.txt'), 'utf8'), 'concurrent-user-value\n');
     assert.match(output.stdout, /Workspace changes: 1 \(partial\)/u);
     assert.match(output.stdout, /- modified src\/note\.txt \[external\/concurrent\]/u);

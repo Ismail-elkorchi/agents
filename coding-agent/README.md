@@ -41,7 +41,7 @@ Interactive startup does not require provider, model, permission, or trust flags
 
 Session selection is not part of project configuration. A resumed session restores its latest provider and model unless explicitly overridden. Interactive model resolution order is explicit CLI options, resumed-session settings, trusted project configuration, the stored user selection, then environment values. Noninteractive execution does not consume the interactive user default. There is no provider or model fallback chosen by the application.
 
-Select one permission ceiling with `--permissions`: `review` exposes root-bound reads, `edit` adds structured patch mutation, and `develop` adds sandboxed commands and verification. Project configuration can only narrow that ceiling and exact tool set. Coding Agent never falls back to ambient command execution; if Sandbox cannot establish the declared boundary, commands are unavailable.
+Select one permission ceiling with `--permissions`: `review` exposes root-bound reads, `edit` adds structured patch mutation, and `develop` also exposes sandboxed commands to the model. Mutable `edit` and `develop` runs execute their admitted verification plan through a separate sandboxed verifier authority; granting verification never grants the model a shell. Project configuration can only narrow the ceiling and exact model-facing tool set. Coding Agent never falls back to ambient command execution; if Sandbox cannot establish the declared boundary, the affected model command or required check is explicitly unavailable.
 
 A trusted project may propose a narrower boundary:
 
@@ -106,7 +106,9 @@ const checks = [{
 }];
 ```
 
-Deterministic checks inspect only their admitted candidate and evidence. In `develop` mode, configured commands run through a durable no-network Sandbox execution against a private exact copy of the candidate, never the authoritative workspace. `coverage` is required and must be `targeted` or `full`; it describes what the command actually proves. Changes to tests, package scripts, compiler/build configuration, CI workflows, dependencies, or lockfiles make the configured check inconclusive instead of letting a modified verifier certify itself. A lower permission mode leaves command checks explicitly unavailable rather than running them on the host.
+Deterministic checks inspect only their admitted candidate and evidence. Every mutable run freezes one admitted check plan. In `develop` mode, each command runs first against an exact private copy of the pre-edit baseline and then against an exact private copy of the candidate through durable no-network Sandbox execution. Candidate failure is accepted only when its exit result and bounded failure signature match a pre-existing baseline failure; a new or changed failure is a regression. `coverage` is required and must be `targeted` or `full`; it describes what the command actually proves. Changes to tests, Coding Agent configuration, package scripts, compiler/build configuration, CI workflows, dependencies, or lockfiles make the configured check inconclusive instead of letting a modified verifier certify itself. Missing required checks, unavailable execution, incomplete snapshots, and unknown baseline results prevent completion. A lower permission mode leaves command checks explicitly unavailable rather than running them on the host.
+
+Mutable tools operate only in a persistent private candidate workspace. Agent Core owns candidate snapshots, checkpoints, diffs, rollback, and journaled promotion. The authoritative workspace is changed only by the accepting disposition after required verification passes, and promotion refuses a source workspace that changed after isolation.
 
 ## Result semantics
 
@@ -139,7 +141,7 @@ Run `coding-agent [initial task] [options]` for the interactive TUI. Run `coding
 | `--temperature <n>` | Set a finite temperature when the selected provider/model supports it. OpenAI Codex subscription requests do not support temperature. |
 | `--reasoning-effort <level>` | Select `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`, subject to provider/model support. |
 | `--show-reasoning` | Render reasoning text or summaries exposed by the provider. It does not expose private chain-of-thought. |
-| `--permissions <review\|edit\|develop>` | Select the authority ceiling. Defaults to `review`; `edit` adds structured patches; `develop` adds sandboxed commands and command checks. |
+| `--permissions <review\|edit\|develop>` | Select the model authority ceiling. Defaults to `review`; `edit` adds structured patches; `develop` adds sandboxed model commands. Mutable modes run the separately admitted verifier plan. |
 | `--resume` | Select the most recently active session. In taskless `exec` mode, drive its unfinished accepted operation without creating another submission. |
 | `--session <id>` | Select an existing session by exact ID. In taskless `exec` mode, drive its unfinished accepted operation without creating another submission. |
 | `--branch <entry-id>` | Branch the selected existing session from an entry. Requires `--resume` or `--session`. |

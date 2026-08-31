@@ -6,6 +6,7 @@ import {
   deterministicCheckSchema,
   documentNodeSchema,
   editorialFindingSchema,
+  proposalQualityEvaluationSchema,
   preservationContractSchema,
   relationEdgeSchema,
   semanticPreservationFindingSchema,
@@ -17,7 +18,9 @@ import {
   type HumanCriterionDecision,
   type LocalizedTextEdit,
   type PreservationContract,
+  type ProposalQualityEvaluation,
   type ProjectSnapshot,
+  type RevisionProposal,
   type SemanticChangeDeclaration,
   type SemanticPreservationFinding,
   type StructuralChange,
@@ -46,24 +49,29 @@ export interface WritingEditorialChecker {
     readonly declaration: SemanticChangeDeclaration;
     readonly preservationContract: PreservationContract;
     readonly evaluationInputSha256: string;
+    readonly signal?: AbortSignal;
   }): Promise<{
     readonly semanticPreservationFindings: readonly SemanticPreservationFinding[];
     readonly editorialFindings: readonly EditorialFinding[];
   }>;
 }
 
-export interface PreparedProposalQuality {
+export interface PreparedProposalMaterial {
   readonly candidateText: ReadonlyMap<string, string>;
+  readonly baseText: ReadonlyMap<string, string>;
+  readonly base: ProjectSnapshot;
+  readonly comparisonBaselines: readonly EditorialComparisonBaseline[];
   readonly preservationContract: PreservationContract;
-  readonly deterministicChecks: readonly DeterministicCheck[];
-  readonly semanticPreservationFindings: readonly SemanticPreservationFinding[];
-  readonly editorialFindings: readonly EditorialFinding[];
-  readonly criterionCoverage: readonly CriterionCoverage[];
   readonly proposedAuthorshipProvenance: readonly AuthorshipProvenance[];
   readonly candidateRevisionId: string;
+  readonly evaluationInputSha256: string;
 }
 
-export async function prepareProposalQuality(input: {
+export interface PreparedProposalQuality extends PreparedProposalMaterial {
+  readonly deterministicChecks: readonly DeterministicCheck[];
+}
+
+interface ProposalPreparationInput {
   readonly project: WritingProject;
   readonly operation: WritingOperation;
   readonly proposalId: string;
@@ -71,9 +79,10 @@ export async function prepareProposalQuality(input: {
   readonly structuralChanges: readonly StructuralChange[];
   readonly declaration: SemanticChangeDeclaration;
   readonly contextReceipt: ContextReceipt;
-  readonly editorialChecker?: WritingEditorialChecker;
   readonly clock?: () => Date;
-}): Promise<PreparedProposalQuality> {
+}
+
+export async function prepareProposalMaterial(input: ProposalPreparationInput): Promise<PreparedProposalMaterial> {
   const view = await input.project.store.view();
   const base = view.current;
   if (base.revision.revisionId !== input.operation.baseProjectRevisionId) throw new Error('Proposal targets a stale project revision.');
@@ -151,51 +160,112 @@ export async function prepareProposalQuality(input: {
     structuralChanges: input.structuralChanges,
     declaration: input.declaration
   });
-  const deterministicChecks = deterministicProposalChecks({
-    base,
-    operation: input.operation,
-    textEdits: input.textEdits,
-    structuralChanges: input.structuralChanges,
-    declaration: input.declaration,
-    baseText,
-    candidateText,
-    preservationContract
-  });
   const evaluationInputSha256 = editorialEvaluationInputSha256({
     operation: input.operation,
-    baseRevisionId: base.revision.revisionId,
+    base,
     candidateRevisionId,
     candidateText,
     comparisonBaselines,
     declaration: input.declaration,
     preservationContract
   });
-  const editorial = input.editorialChecker === undefined
-    ? defaultEditorialFindings(base, candidateRevisionId, input.operation, input.textEdits, input.structuralChanges, input.declaration, evaluationInputSha256)
-    : await input.editorialChecker.evaluate({ operation: input.operation, base, comparisonBaselines, candidateRevisionId, candidateText, declaration: input.declaration, preservationContract, evaluationInputSha256 });
-  assertEditorialBindings({
-    semanticFindings: editorial.semanticPreservationFindings,
-    editorialFindings: editorial.editorialFindings,
-    base,
-    candidateRevisionId,
-    candidateText,
-    evaluationInputSha256,
-    ...(input.editorialChecker === undefined ? {} : { checker: input.editorialChecker })
-  });
-  const criterionCoverage = acceptanceCriterionCoverage(base, deterministicChecks, editorial.editorialFindings);
   return Object.freeze({
     candidateText,
+    baseText,
+    base,
+    comparisonBaselines,
     preservationContract,
-    deterministicChecks,
-    semanticPreservationFindings: Object.freeze([...editorial.semanticPreservationFindings]),
-    editorialFindings: Object.freeze([...editorial.editorialFindings]),
-    criterionCoverage,
     proposedAuthorshipProvenance: Object.freeze(proposedAuthorship),
-    candidateRevisionId
+    candidateRevisionId,
+    evaluationInputSha256
   });
 }
 
-export function proposalCanApply(proposal: {
+export async function prepareProposalQuality(input: ProposalPreparationInput): Promise<PreparedProposalQuality> {
+  const prepared = await prepareProposalMaterial(input);
+  const deterministicChecks = deterministicProposalChecks({
+    base: prepared.base,
+    operation: input.operation,
+    textEdits: input.textEdits,
+    structuralChanges: input.structuralChanges,
+    declaration: input.declaration,
+    baseText: prepared.baseText,
+    candidateText: prepared.candidateText,
+    preservationContract: prepared.preservationContract
+  });
+  return Object.freeze({ ...prepared, deterministicChecks });
+}
+
+export async function evaluateProposalQuality(input: {
+  readonly project: WritingProject;
+  readonly operation: WritingOperation;
+  readonly proposal: RevisionProposal;
+  readonly contextReceipt: ContextReceipt;
+  readonly checker: WritingEditorialChecker;
+  readonly clock?: () => Date;
+  readonly signal?: AbortSignal;
+}): Promise<ProposalQualityEvaluation> {
+  const prepared = await prepareProposalQuality({
+    project: input.project,
+    operation: input.operation,
+    proposalId: input.proposal.proposalId,
+    textEdits: input.proposal.textEdits,
+    structuralChanges: input.proposal.structuralChanges,
+    declaration: input.proposal.semanticChangeDeclaration,
+    contextReceipt: input.contextReceipt,
+    ...(input.clock === undefined ? {} : { clock: input.clock })
+  });
+  if (canonicalSha256(prepared.preservationContract) !== canonicalSha256(input.proposal.preservationContract)) {
+    throw new Error(`Proposal quality inputs no longer reproduce their durable deterministic evidence: ${input.proposal.proposalId}`);
+  }
+  const editorial = await input.checker.evaluate({
+    operation: input.operation,
+    base: prepared.base,
+    comparisonBaselines: prepared.comparisonBaselines,
+    candidateRevisionId: prepared.candidateRevisionId,
+    candidateText: prepared.candidateText,
+    declaration: input.proposal.semanticChangeDeclaration,
+    preservationContract: prepared.preservationContract,
+    evaluationInputSha256: prepared.evaluationInputSha256,
+    ...(input.signal === undefined ? {} : { signal: input.signal })
+  });
+  assertExactEvaluationCoverage(editorial, input.operation, prepared.base);
+  assertEditorialBindings({
+    semanticFindings: editorial.semanticPreservationFindings,
+    editorialFindings: editorial.editorialFindings,
+    base: prepared.base,
+    candidateRevisionId: prepared.candidateRevisionId,
+    candidateText: prepared.candidateText,
+    evaluationInputSha256: prepared.evaluationInputSha256,
+    checker: input.checker
+  });
+  const criterionCoverage = acceptanceCriterionCoverage(prepared.base, prepared.deterministicChecks, editorial.editorialFindings);
+  return proposalQualityEvaluationSchema.parse({
+    evaluationId: contentId('proposal-quality', {
+      proposalId: input.proposal.proposalId,
+      evaluatorImplementationId: input.checker.implementationId,
+      verificationPolicyId: input.checker.verificationPolicyId,
+      calibrationId: input.checker.calibrationId,
+      evaluationInputSha256: prepared.evaluationInputSha256,
+      deterministicChecksSha256: canonicalSha256(prepared.deterministicChecks)
+    }),
+    proposalId: input.proposal.proposalId,
+    operationId: input.operation.operationId,
+    baseProjectRevisionId: prepared.base.revision.revisionId,
+    candidateRevisionId: prepared.candidateRevisionId,
+    evaluationInputSha256: prepared.evaluationInputSha256,
+    evaluatorImplementationId: input.checker.implementationId,
+    verificationPolicyId: input.checker.verificationPolicyId,
+    ...(input.checker.calibrationId === undefined ? {} : { calibrationId: input.checker.calibrationId }),
+    deterministicChecks: [...prepared.deterministicChecks],
+    semanticPreservationFindings: [...editorial.semanticPreservationFindings],
+    editorialFindings: [...editorial.editorialFindings],
+    criterionCoverage: [...criterionCoverage],
+    evaluatedAt: nowTimestamp(input.clock)
+  });
+}
+
+export function proposalCanApply(quality: {
   readonly deterministicChecks: readonly DeterministicCheck[];
   readonly semanticPreservationFindings: readonly SemanticPreservationFinding[];
   readonly editorialFindings: readonly EditorialFinding[];
@@ -204,16 +274,16 @@ export function proposalCanApply(proposal: {
   const decisions = new Map(humanCriterionDecisions.map((decision) => [decision.criterionId, decision]));
   if (decisions.size !== humanCriterionDecisions.length) throw new Error('Human acceptance criterion decisions must be unique.');
   const reasons: string[] = [];
-  for (const check of proposal.deterministicChecks) {
+  for (const check of quality.deterministicChecks) {
     if (check.requirement === 'required' && check.verdict !== 'passed') reasons.push(`check:${check.checkId}:${check.verdict}`);
   }
-  for (const finding of proposal.semanticPreservationFindings) {
+  for (const finding of quality.semanticPreservationFindings) {
     if (finding.requirement === 'required' && (finding.verdict !== 'passed' || finding.coverage !== 'complete')) reasons.push(`semantic:${finding.findingId}:${finding.verdict}/${finding.coverage}`);
   }
-  for (const finding of proposal.editorialFindings) {
+  for (const finding of quality.editorialFindings) {
     if (finding.severity === 'required' && (finding.verdict !== 'passed' || finding.coverage !== 'complete')) reasons.push(`editorial:${finding.findingId}:${finding.verdict}/${finding.coverage}`);
   }
-  for (const coverage of proposal.criterionCoverage) {
+  for (const coverage of quality.criterionCoverage) {
     if (coverage.requirement !== 'required') continue;
     if (coverage.verificationKind === 'human') {
       const decision = decisions.get(coverage.criterionId);
@@ -330,7 +400,7 @@ function deterministicProposalChecks(input: {
   return Object.freeze(checks);
 }
 
-function acceptanceCriterionCoverage(
+export function acceptanceCriterionCoverage(
   base: ProjectSnapshot,
   checks: readonly DeterministicCheck[],
   editorialFindings: readonly EditorialFinding[]
@@ -371,7 +441,7 @@ function acceptanceCriterionCoverage(
       coverage,
       evaluatorIds: [...new Set(selected.map((finding) => finding.evaluatorId))].sort(),
       evidenceIds: selected.map((finding) => finding.findingId).sort(),
-      explanation: selected.length === 0 ? 'No calibrated editorial finding declared coverage of this criterion.' : 'Coverage is derived only from editorial findings that explicitly bind this criterion ID.'
+        explanation: selected.length === 0 ? 'No admitted editorial evaluator finding declared coverage of this criterion.' : 'Coverage is derived only from editorial findings that explicitly bind this criterion ID.'
     });
   }));
 }
@@ -380,42 +450,6 @@ function aggregateVerdict(verdicts: readonly ('passed' | 'failed' | 'unknown')[]
   if (verdicts.some((verdict) => verdict === 'failed')) return 'failed';
   if (verdicts.length === 0 || verdicts.some((verdict) => verdict === 'unknown')) return 'unknown';
   return 'passed';
-}
-
-function defaultEditorialFindings(
-  base: ProjectSnapshot,
-  candidateRevisionId: string,
-  operation: WritingOperation,
-  edits: readonly LocalizedTextEdit[],
-  structuralChanges: readonly StructuralChange[],
-  declaration: SemanticChangeDeclaration,
-  evaluationInputSha256: string
-): {
-  readonly semanticPreservationFindings: readonly SemanticPreservationFinding[];
-  readonly editorialFindings: readonly EditorialFinding[];
-} {
-  const changedScopes = edits.map((edit) => edit.resourceId);
-  const semantic: SemanticPreservationFinding[] = changedScopes.length === 0
-    ? [semanticPreservationFindingSchema.parse({
-      findingId: contentId('semantic-finding', { operationId: operation.operationId, scope: 'structural' }),
-      scope: 'structural changes', requirement: 'required', verdict: structuralChanges.length === 0 ? 'passed' : 'unknown', coverage: structuralChanges.length === 0 ? 'complete' : 'unknown',
-      evidenceRanges: [],
-      intendedChanges: declaration.kind === 'changes' ? declaration.items.map((item) => item.itemId) : [], observedChanges: [], unexplainedChanges: [], lostPriorEditIds: [],
-      evaluatorId: 'writing-agent.deterministic-preservation@1', verificationPolicyId: 'writing-agent.semantic-preservation@1',
-      evaluationInputSha256, baseRevisionId: base.revision.revisionId, candidateRevisionId,
-      explanation: structuralChanges.length === 0 ? 'No text or structural change requires interpretive comparison.' : 'Structural meaning requires an injected calibrated editorial check.'
-    })]
-    : changedScopes.map((scope) => semanticPreservationFindingSchema.parse({
-      findingId: contentId('semantic-finding', { operationId: operation.operationId, scope }),
-      scope, requirement: 'required', verdict: 'unknown', coverage: 'unknown',
-      evidenceRanges: [],
-      intendedChanges: declaration.kind === 'changes' ? declaration.items.map((item) => item.itemId) : [],
-      observedChanges: [], unexplainedChanges: ['Interpretive comparison is unavailable without an injected calibrated editorial checker.'], lostPriorEditIds: [],
-      evaluatorId: 'writing-agent.no-default-model-judge@1', verificationPolicyId: 'writing-agent.semantic-preservation@1',
-      evaluationInputSha256, baseRevisionId: base.revision.revisionId, candidateRevisionId,
-      explanation: 'The application does not convert an uncalibrated model judgment into a passing preservation gate.'
-    }));
-  return Object.freeze({ semanticPreservationFindings: Object.freeze(semantic), editorialFindings: Object.freeze([]) });
 }
 
 function assertProtectedRanges(content: string, protectedRanges: ProjectSnapshot['resources'][number]['protectedRanges'], request: LocalizedTextEdit, operation: WritingOperation): void {
@@ -689,7 +723,7 @@ function syntaxVerdict(base: ProjectSnapshot, text: ReadonlyMap<string, string>)
 
 function editorialEvaluationInputSha256(input: {
   readonly operation: WritingOperation;
-  readonly baseRevisionId: string;
+  readonly base: ProjectSnapshot;
   readonly candidateRevisionId: string;
   readonly candidateText: ReadonlyMap<string, string>;
   readonly comparisonBaselines: readonly EditorialComparisonBaseline[];
@@ -698,7 +732,14 @@ function editorialEvaluationInputSha256(input: {
 }): string {
   return canonicalSha256({
     operationId: input.operation.operationId,
-    baseRevisionId: input.baseRevisionId,
+    baseVerificationContext: {
+      revisionId: input.base.revision.revisionId,
+      acceptanceCriteria: input.base.brief.acceptanceCriteria,
+      sources: input.base.sources,
+      claims: input.base.claims,
+      evidenceRelations: input.base.evidenceRelations,
+      editorialDecisions: input.base.editorialDecisions
+    },
     candidateRevisionId: input.candidateRevisionId,
     comparisonBaselines: input.comparisonBaselines.map((baseline) => ({
       revisionId: baseline.snapshot.revision.revisionId,
@@ -712,6 +753,29 @@ function editorialEvaluationInputSha256(input: {
     declaration: input.declaration,
     preservationContract: input.preservationContract
   });
+}
+
+function assertExactEvaluationCoverage(
+  evaluation: Awaited<ReturnType<WritingEditorialChecker['evaluate']>>,
+  operation: WritingOperation,
+  base: ProjectSnapshot
+): void {
+  assertExactSet(
+    evaluation.semanticPreservationFindings.map((finding) => finding.scope),
+    operation.intents.map((intent) => intent.intentId),
+    'semantic intent scopes'
+  );
+  assertExactSet(
+    evaluation.editorialFindings.map((finding) => finding.criterionId),
+    base.brief.acceptanceCriteria.filter((criterion) => criterion.verificationKind === 'editorial').map((criterion) => criterion.criterionId),
+    'editorial criterion bindings'
+  );
+}
+
+function assertExactSet(actual: readonly string[], expected: readonly string[], label: string): void {
+  if (new Set(actual).size !== actual.length || canonicalSha256([...actual].sort()) !== canonicalSha256([...expected].sort())) {
+    throw new Error(`Editorial checker did not return the exact ${label}.`);
+  }
 }
 
 async function loadComparisonBaselines(
