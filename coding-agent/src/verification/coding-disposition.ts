@@ -5,6 +5,7 @@ import {
   type AgentDispositionInput,
   type AgentDispositionPolicy
 } from '@agent-core/runtime';
+import type { AdmittedCodingCheckPlan } from './configured-checks.js';
 
 const MAX_REPORTED_FAILURES = 20;
 
@@ -12,19 +13,21 @@ const MAX_REPORTED_FAILURES = 20;
 export function createCodingDisposition(input: {
   readonly candidateWorkspace?: AgentCandidateWorkspace;
   readonly mutable: boolean;
+  readonly requiredCoverage: AdmittedCodingCheckPlan['requiredCoverage'];
 }): AgentDispositionPolicy {
   if (!input.mutable) return Object.freeze({
     kind: 'deterministic' as const,
-    implementationId: 'coding-agent.disposition.review-only@2',
-    policyIdentity: Object.freeze({ strategy: 'required-checks-review-only', version: 2 }),
+    implementationId: 'coding-agent.disposition.review-only@3',
+    policyIdentity: Object.freeze({ strategy: 'required-checks-review-only', version: 3 }),
     evaluate: (disposition: AgentDispositionInput) => verificationDecision(disposition)
   });
   return Object.freeze({
     kind: 'effect' as const,
-    implementationId: 'coding-agent.disposition.verify-and-promote@2',
+    implementationId: 'coding-agent.disposition.verify-and-promote@3',
     policyIdentity: Object.freeze({
       strategy: 'required-checks-then-candidate-promotion',
-      version: 2,
+      version: 3,
+      requiredCoverage: input.requiredCoverage,
       ...(input.candidateWorkspace ? { candidateWorkspace: Object.freeze({
         implementationId: input.candidateWorkspace.descriptor.implementationId,
         workspaceId: input.candidateWorkspace.descriptor.workspaceId,
@@ -36,6 +39,21 @@ export function createCodingDisposition(input: {
       const decision = verificationDecision(disposition);
       if (decision.kind !== 'accept') return decision;
       if (input.candidateWorkspace === undefined) return Object.freeze({ kind: 'inconclusive' as const, reason: 'The mutable run has no isolated candidate workspace to publish.' });
+      if (input.requiredCoverage === 'missing') {
+        const diff = await input.candidateWorkspace.diff();
+        if (diff.coverage !== 'complete') {
+          return Object.freeze({
+            kind: 'inconclusive' as const,
+            reason: `Required verification coverage is unknown because the candidate diff is incomplete: ${diff.causes.join(', ')}.`
+          });
+        }
+        if (diff.entries.length > 0) {
+          return Object.freeze({
+            kind: 'inconclusive' as const,
+            reason: 'Required verification coverage is unknown; the changed candidate cannot be completed or published because no required verification command was admitted.'
+          });
+        }
+      }
       return prepareCandidateWorkspaceAcceptance(input.candidateWorkspace);
     }
   });

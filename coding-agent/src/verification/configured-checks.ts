@@ -89,7 +89,6 @@ export function createAuthoritativeChecks(input: {
   readonly commandYieldMs: number;
 }): readonly AgentCheckDefinition[] {
   const checks: AgentCheckDefinition[] = [];
-  if (input.plan.requiredCoverage === 'missing') checks.push(missingCoverageCheck(input.plan, 'No required verification command was admitted for this mutable operation.'));
   for (const check of input.plan.checks) {
     checks.push(commandPhaseCheck(check, 'baseline', input));
     checks.push(commandPhaseCheck(check, 'candidate', input));
@@ -287,17 +286,6 @@ function parseBaselineOutcome(result: AgentCheckResult | undefined): { readonly 
     || typeof result.output.exitCode !== 'number' || !Number.isSafeInteger(result.output.exitCode)
     || typeof result.output.failureSignature !== 'string' || typeof result.output.outputComplete !== 'boolean') return undefined;
   return Object.freeze({ outcome: result.output.outcome, exitCode: result.output.exitCode, failureSignature: result.output.failureSignature, outputComplete: result.output.outputComplete });
-}
-
-function missingCoverageCheck(plan: AdmittedCodingCheckPlan, reason: string): AgentCheckDefinition {
-  return Object.freeze({
-    kind: 'deterministic' as const,
-    id: 'coding-required-verification-coverage',
-    implementationId: `coding-agent.required-verification-coverage@2:${sha256(plan.implementationId)}`,
-    requirement: 'required' as const,
-    description: 'Require an executable admitted verifier for mutable coding operations.',
-    run() { return Promise.resolve(unknownObservation({ command: 'required verification', coverage: 'full' }, 'required_coverage_missing', reason)); }
-  });
 }
 
 function unknownObservation(check: Pick<AdmittedCodingCheck, 'command' | 'coverage'>, classification: string, message: string, details: Readonly<Record<string, unknown>> = {}): AgentCheckObservation {

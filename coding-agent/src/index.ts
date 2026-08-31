@@ -972,7 +972,11 @@ async function createRuntime(
             instructions: instructionSet.instructions,
             contextItems: Object.freeze([repositoryOrientationContext(orientation)]),
             ...(checks.length > 0 ? { checks } : {}),
-            disposition: createCodingDisposition({ ...(candidateWorkspace ? { candidateWorkspace } : {}), mutable }),
+            disposition: createCodingDisposition({
+              ...(candidateWorkspace ? { candidateWorkspace } : {}),
+              mutable,
+              requiredCoverage: runCheckPlan.requiredCoverage
+            }),
             ...(projectExecutionPolicy && options.configuration?.limits ? { limits: options.configuration.limits } : {}),
             metadata: {
               workspaceId: workspace.identity.id,
