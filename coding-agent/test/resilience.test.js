@@ -100,11 +100,16 @@ test('a denied restricted-workspace mutation remains unapplied and resumes to an
     const denied = await runCli(fixture, [
       'approval', 'deny', runId, approvalId, fingerprint, '--permissions', 'edit', '--provider', 'ollama', '--model', 'v0-scripted'
     ]);
-    assert.equal(denied.code, 1, `${denied.stdout}\n${denied.stderr}`);
+    assert.equal(denied.code, sandboxAvailable ? 0 : 1, `${denied.stdout}\n${denied.stderr}`);
     assert.equal(await readFile(path.join(fixture.root, 'src/feature.js'), 'utf8'), sourceBefore);
     assert.match(denied.stdout, /workspace remains unchanged/u);
     assert.match(denied.stdout, /Workspace changes: 0 \(complete\)/u);
-    assert.match(denied.stdout, /Required verification coverage is unknown/u);
+    if (sandboxAvailable) {
+      assert.match(denied.stdout, /Verification: Passed/u);
+      assert.match(denied.stdout, /Remaining uncertainty: none/u);
+    } else {
+      assert.match(denied.stdout, /Required verification coverage is unknown/u);
+    }
     assert.equal(provider.chatRequests.length, 3);
   } finally {
     await provider.close();
@@ -227,7 +232,7 @@ test('resilient CLI slice recovers before generation and completes one confined 
     assert.equal(await readFile(path.join(fixture.root, 'src/note.txt'), 'utf8'), 'beta\n');
     assert.equal(await readFile(path.join(fixture.root, 'untouched.txt'), 'utf8'), 'keep\n');
     assert.match(resumed.stdout, /Verification: Passed/u);
-    assert.match(resumed.stdout, /- note: required\/passed/u);
+    assert.match(resumed.stdout, /- note:candidate: required\/passed/u);
     assert.match(resumed.stdout, /Workspace changes: 1 \(complete\)/u);
     assert.match(resumed.stdout, /- modified src\/note\.txt \[agent\]/u);
     assert.match(resumed.stdout, /Remaining uncertainty: none/u);
@@ -264,7 +269,11 @@ test('a failed required check drives a bounded repair without weakening the veri
   const fixture = await createWorkspace({
     endpoint: provider.endpoint,
     tools: ['read_files', 'apply_patch'],
-    checks: [{ id: 'note-value', command: "test \"$(cat src/note.txt)\" = beta", coverage: 'targeted' }],
+    checks: [{
+      id: 'note-value',
+      command: "value=$(cat src/note.txt); test \"$value\" = beta || { printf '%s\\n' \"$value\" >&2; exit 1; }",
+      coverage: 'targeted'
+    }],
     files: { 'src/note.txt': noteBefore }
   });
   try {
