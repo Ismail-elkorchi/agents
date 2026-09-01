@@ -90,7 +90,7 @@ async function runResilientMutationCase() {
     ]);
     if (ended.code !== 0) throw new Error(`Conformance task did not complete.\n${ended.stdout}\n${ended.stderr}`);
     const report = await readChangeReport(fixture, runId);
-    const prompt = provider.chatRequests[0].messages.map((message) => message.content).join('\n');
+    const prompt = provider.chatRequests.flatMap((request) => request.messages).map((message) => message.content).join('\n');
     const target = await readFile(path.join(fixture.root, 'src/note.txt'), 'utf8');
     const untouched = await readFile(path.join(fixture.root, 'untouched.txt'), 'utf8');
     return {
