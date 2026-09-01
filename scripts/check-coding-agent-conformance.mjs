@@ -15,7 +15,7 @@ import {
 import {
   assertCodingAgentConformanceThresholds,
   evaluateCodingAgentConformance,
-  hasPassedRequiredCandidateCheck
+  hasPassedRequiredWorkingCopyCheck
 } from './coding-agent-conformance-metrics.mjs';
 import { decodeCodingHandoff } from '../coding-agent/dist/changes/coding-handoff.js';
 
@@ -113,7 +113,7 @@ async function runResilientMutationCase() {
           ...(untouched === 'preserve\n' ? ['preserve-unrelated'] : [])
         ],
         approvalsRequested: requestedApprovals,
-        passedChecks: hasPassedRequiredCandidateCheck(ended.stdout, 'note-value') ? ['note-value'] : [],
+        passedChecks: hasPassedRequiredWorkingCopyCheck(ended.stdout, 'note-value') ? ['note-value'] : [],
         processLossPoint,
         changes: report.changes.map((change) => ({ path: change.path, bytes: change.afterBytes ?? change.beforeBytes ?? 0 })),
         clarificationRequested: false,
@@ -142,8 +142,7 @@ async function runClarificationCase() {
     await trust(fixture);
     const ended = await runCli(fixture, ['exec', 'Fix the issue.', '--permissions', 'edit']);
     if (ended.code !== 0) throw new Error(`Clarification task did not complete.\n${ended.stdout}\n${ended.stderr}`);
-    const runId = match(ended.stdout, /Run: (\S+)/u, 'run id');
-    const report = await readChangeReport(fixture, runId);
+    const report = await readChangeReport(fixture);
     const clarificationRequested = /identify the exact target and acceptable blast radius/u.test(ended.stdout);
     return {
       specification: {

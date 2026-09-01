@@ -6,9 +6,9 @@ function ratio(numerator, denominator) {
   });
 }
 
-export function hasPassedRequiredCandidateCheck(output, checkId) {
+export function hasPassedRequiredWorkingCopyCheck(output, checkId) {
   if (typeof output !== 'string' || typeof checkId !== 'string' || checkId.length === 0) return false;
-  const prefix = `- ${checkId}:candidate: required/passed`;
+  const prefix = `- ${checkId}:working-copy: required/passed`;
   return output.split(/\r?\n/u).some((line) => line === prefix || line.startsWith(`${prefix} - `));
 }
 
