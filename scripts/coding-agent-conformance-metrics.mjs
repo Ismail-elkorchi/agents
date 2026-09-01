@@ -106,7 +106,7 @@ export function assertCodingAgentConformanceThresholds(metrics) {
 }
 
 function requireTerminal(id, expected, actual) {
-  for (const field of ['executionStatus', 'candidateStatus', 'verificationStatus', 'terminationReason']) {
+  for (const field of ['executionStatus', 'modelOutputStatus', 'verificationStatus', 'terminationReason']) {
     if (actual[field] !== expected[field]) {
       throw new Error(`${id} terminal ${field} was ${String(actual[field])}; expected ${String(expected[field])}.`);
     }

@@ -208,7 +208,7 @@ function scopeViolations(report, allowedPaths, forbiddenPaths) {
 function parseTerminal(output) {
   return {
     executionStatus: match(output, /Execution: (\S+)/u, 'execution status').toLowerCase(),
-    candidateStatus: match(output, /Candidate: (\S+)/u, 'candidate status').toLowerCase(),
+    modelOutputStatus: match(output, /Model output: (\S+)/u, 'model output status').toLowerCase(),
     verificationStatus: match(output, /Verification: ([^\n]+)/u, 'verification status').trim().toLowerCase().replaceAll(' ', '_'),
     terminationReason: /Model termination: Stop/u.test(output) ? 'model_completed' : 'unexpected'
   };
@@ -217,7 +217,7 @@ function parseTerminal(output) {
 function terminal(verificationStatus) {
   return {
     executionStatus: 'completed',
-    candidateStatus: 'complete',
+    modelOutputStatus: 'complete',
     verificationStatus,
     terminationReason: 'model_completed'
   };
