@@ -4,18 +4,18 @@ import { StringDecoder } from 'node:string_decoder';
 import {
   ResourceLeaseCoordinator,
   adoptCommandExecution,
-  createCommandExecutionPreparation,
+  createCommandExecutionReservation,
   type CommandExecution,
   type CommandExecutionDescriptor,
   type CommandExecutionOwner,
-  type CommandExecutionPreparation,
+  type CommandExecutionReservation,
   type CommandExecutionReport,
   type CommandExecutionResult,
   type CommandExecutionStatus,
   type CommandOutputView,
   type CommandReconciliationResult,
-  type PrepareCommandRequest,
-  type StartPreparedCommandOptions
+  type CommandExecutionPlanRequest,
+  type StartCommandExecutionOptions
 } from '@agent-core/tools';
 import type { RootedFileAuthority } from '@agent-core/tools-local';
 import { parseJsonObject, type JsonObject } from '@agent-core/json';
@@ -33,12 +33,13 @@ export interface SandboxCommandPlanContext {
   readonly workspacePath: string;
 }
 
-export interface SandboxPreparedCommand {
-  readonly request: PrepareCommandRequest;
+export interface SandboxCommandAuthorization {
+  readonly request: CommandExecutionPlanRequest;
   readonly executionId: string;
   readonly requestDigest: string;
   readonly policyDigest: string;
   readonly executionDigest: string;
+  // `prepared` is the upstream Sandbox wire state; this adapter exposes it as authorization.
   readonly summary: Extract<SandboxExecutionObservation, { kind: 'prepared' }>['summary'];
   readonly enforcement: Extract<SandboxExecutionObservation, { kind: 'prepared' }>['enforcement'];
   readonly expiresAtMs: number;
@@ -54,10 +55,10 @@ export interface SandboxCommandExecutionOptions {
   readonly rootedFileAuthority: RootedFileAuthority;
   readonly state: PrivateStateDirectory;
   readonly createRun: (
-    request: PrepareCommandRequest,
+    request: CommandExecutionPlanRequest,
     context: SandboxCommandPlanContext
   ) => SandboxDetachedRunOptions | Promise<SandboxDetachedRunOptions>;
-  readonly validatePrepared: (prepared: SandboxPreparedCommand) => void | Promise<void>;
+  readonly validateAuthorization: (authorization: SandboxCommandAuthorization) => void | Promise<void>;
   readonly maxRetainedOutputBytes: number;
 }
 
@@ -69,25 +70,25 @@ interface StoredOwner {
   readonly authorization?: JsonObject;
 }
 
-class SandboxCommandPreparation {
-  #state: 'prepared' | 'started' | 'activated' | 'released' = 'prepared';
+class SandboxCommandPlan {
+  #state: 'planned' | 'started' | 'activated' | 'released' = 'planned';
 
   constructor(
     readonly authority: SandboxCommandExecution,
-    readonly request: PrepareCommandRequest,
+    readonly request: CommandExecutionPlanRequest,
     readonly observation: SandboxExecutionObservation,
     private readonly releaseAuthority: () => Promise<void>
   ) {
   }
 
   start() {
-    if (this.#state !== 'prepared') throw new Error('Sandbox command preparation is single-use.');
+    if (this.#state !== 'planned') throw new Error('Sandbox command plan is single-use.');
     this.#state = 'started';
     return { request: this.request, observation: this.observation };
   }
 
   markActivated(): void {
-    if (this.#state !== 'started') throw new Error('Sandbox command preparation was not started.');
+    if (this.#state !== 'started') throw new Error('Sandbox command plan was not started.');
     this.#state = 'activated';
   }
 
@@ -105,14 +106,14 @@ export class SandboxCommandExecution implements CommandExecution {
   readonly #recovered = new Map<string, CommandExecutionReport>();
   readonly #unresolved = new Map<string, { rootPath: string; diagnostic: string }>();
   readonly #abortListeners = new Map<string, { signal: AbortSignal; listener: () => void }>();
-  readonly #preparations = new WeakMap<CommandExecutionPreparation, SandboxCommandPreparation>();
+  readonly #plans = new WeakMap<CommandExecutionReservation, SandboxCommandPlan>();
   #closed = false;
 
   private constructor(private readonly options: SandboxCommandExecutionOptions) {
     this.descriptor = Object.freeze({
       implementationId: 'coding-agent.sandbox-command-execution@1',
       recoveryIdentity: `${options.repository.identity}:${createHash('sha256').update(options.rootedFileAuthority.identity.canonicalPath).digest('hex')}`,
-      capabilities: Object.freeze(['sandbox-process', 'caller-process-recovery', 'prepared-authorization']),
+      capabilities: Object.freeze(['sandbox-process', 'caller-process-recovery', 'staged-authorization']),
       supportsPty: false
     });
     adoptCommandExecution(this);
@@ -125,7 +126,7 @@ export class SandboxCommandExecution implements CommandExecution {
     return execution;
   }
 
-  async prepare(request: PrepareCommandRequest): Promise<CommandExecutionPreparation> {
+  async plan(request: CommandExecutionPlanRequest): Promise<CommandExecutionReservation> {
     this.#ensureOpen();
     if (this.#unresolved.size > 0) throw new Error('Unresolved sandbox executions block new command starts for this workspace.');
     if (request.pty) throw new Error('The configured sandbox command execution does not support PTY mode.');
@@ -137,31 +138,32 @@ export class SandboxCommandExecution implements CommandExecution {
       workspacePath: request.rootedDirectory
     });
     validateWorkspaceGrant(run, this.options.rootedFileAuthority.identity.canonicalPath);
-    const prepared = await this.options.repository.prepare({ executionId: processId, run }, {
+    // `prepare` is fixed by the upstream Sandbox protocol. Coding Agent treats its result as authorization.
+    const observation = await this.options.repository.prepare({ executionId: processId, run }, {
       maxBytes: this.options.maxRetainedOutputBytes,
       waitMs: Math.max(1, Math.min(request.timeoutMs, 30_000))
     });
-    if (prepared.kind === 'rejected') {
-      await this.#bindOwner({ schemaVersion: 1, processId, owner: ownOwner(request.owner), requestDigest: prepared.requestDigest });
-      throw new Error(`Sandbox rejected command preparation: ${prepared.error.message}`);
+    if (observation.kind === 'rejected') {
+      await this.#bindOwner({ schemaVersion: 1, processId, owner: ownOwner(request.owner), requestDigest: observation.requestDigest });
+      throw new Error(`Sandbox rejected command plan: ${observation.error.message}`);
     }
-    if (prepared.requestDigest === undefined) throw new Error(`Sandbox execution ${processId} has no request binding.`);
-    const authorization = prepared.kind === 'prepared'
-      ? sandboxCommandAuthorization(this.descriptor, prepared)
+    if (observation.requestDigest === undefined) throw new Error(`Sandbox execution ${processId} has no request binding.`);
+    const authorization = observation.kind === 'prepared'
+      ? sandboxCommandAuthorization(this.descriptor, observation)
       : (await this.#storedOwner(processId)).authorization;
-    if (!authorization) throw new Error(`Sandbox execution ${processId} has no durable authorization evidence.`);
-    await this.#bindOwner({ schemaVersion: 1, processId, owner: ownOwner(request.owner), requestDigest: prepared.requestDigest, authorization });
-    if (prepared.kind === 'prepared') {
+    if (!authorization) throw new Error(`Sandbox execution ${processId} has no durable authorization record.`);
+    await this.#bindOwner({ schemaVersion: 1, processId, owner: ownOwner(request.owner), requestDigest: observation.requestDigest, authorization });
+    if (observation.kind === 'prepared') {
       try {
-        await this.options.validatePrepared(Object.freeze({
+        await this.options.validateAuthorization(Object.freeze({
           request,
           executionId: processId,
-          requestDigest: prepared.requestDigest,
-          policyDigest: prepared.policyDigest,
-          executionDigest: prepared.executionDigest,
-          summary: prepared.summary,
-          enforcement: prepared.enforcement,
-          expiresAtMs: prepared.expiresAtMs
+          requestDigest: observation.requestDigest,
+          policyDigest: observation.policyDigest,
+          executionDigest: observation.executionDigest,
+          summary: observation.summary,
+          enforcement: observation.enforcement,
+          expiresAtMs: observation.expiresAtMs
         }));
       } catch (error) {
         await this.options.repository.terminate(processId).catch(() => undefined);
@@ -169,37 +171,37 @@ export class SandboxCommandExecution implements CommandExecution {
         throw error;
       }
     }
-    const owned = new SandboxCommandPreparation(this, request, prepared, async () => {
-      if (prepared.kind !== 'prepared') return;
-      await this.options.repository.terminate(prepared.executionId);
-      await this.options.repository.forget(prepared.executionId);
-      await this.options.state.delete(ownerPath(prepared.executionId));
+    const owned = new SandboxCommandPlan(this, request, observation, async () => {
+      if (observation.kind !== 'prepared') return;
+      await this.options.repository.terminate(observation.executionId);
+      await this.options.repository.forget(observation.executionId);
+      await this.options.state.delete(ownerPath(observation.executionId));
     });
-    const preparation = createCommandExecutionPreparation(authorization, () => owned.release());
-    this.#preparations.set(preparation, owned);
-    return preparation;
+    const plan = createCommandExecutionReservation(authorization, () => owned.release());
+    this.#plans.set(plan, owned);
+    return plan;
   }
 
-  async start(preparation: CommandExecutionPreparation, options: StartPreparedCommandOptions = {}): Promise<CommandExecutionResult> {
+  async start(plan: CommandExecutionReservation, options: StartCommandExecutionOptions = {}): Promise<CommandExecutionResult> {
     this.#ensureOpen();
-    const owned = this.#preparations.get(preparation);
+    const owned = this.#plans.get(plan);
     if (owned?.authority !== this) {
-      throw new TypeError('Command preparation does not belong to this sandbox authority.');
+      throw new TypeError('Command plan does not belong to this sandbox authority.');
     }
-    const { request, observation: prepared } = owned.start();
-    const processId = prepared.executionId;
+    const { request, observation: authorization } = owned.start();
+    const processId = authorization.executionId;
     if (options.signal?.aborted) {
       await owned.release();
       throw abortError(options.signal);
     }
     this.#bindAbort(processId, options.signal);
-    if (prepared.kind === 'prepared') {
-      await this.options.repository.activate(processId, prepared);
+    if (authorization.kind === 'prepared') {
+      await this.options.repository.activate(processId, authorization);
       owned.markActivated();
     }
-    let observation = prepared.kind === 'prepared'
+    let observation = authorization.kind === 'prepared'
       ? await this.#waitForProcessObservation(processId, PROCESS_OBSERVATION_TIMEOUT_MS)
-      : prepared;
+      : authorization;
     if (observation.kind === 'running' && request.yieldMs > 0) {
       observation = await this.options.repository.inspect(processId, {
         maxBytes: this.options.maxRetainedOutputBytes,
@@ -390,7 +392,7 @@ export class SandboxCommandExecution implements CommandExecution {
     throw new Error(`Sandbox execution did not reach a process observation: ${observation.kind}.`);
   }
 
-  async #emitOutput(callback: StartPreparedCommandOptions['onProgress'], observation: SandboxExecutionObservation): Promise<void> {
+  async #emitOutput(callback: StartCommandExecutionOptions['onProgress'], observation: SandboxExecutionObservation): Promise<void> {
     if (!callback) return;
     let sequence = 0;
     const observed = { stdout: 0, stderr: 0 };
@@ -626,18 +628,18 @@ function decodeStoredOwner(text: string, processId: string): StoredOwner {
 
 function sandboxCommandAuthorization(
   descriptor: CommandExecutionDescriptor,
-  prepared: Extract<SandboxExecutionObservation, { readonly kind: 'prepared' }>
+  authorization: Extract<SandboxExecutionObservation, { readonly kind: 'prepared' }>
 ): JsonObject {
   return parseJsonObject({
     authority: descriptor.implementationId,
     recoveryIdentity: descriptor.recoveryIdentity,
-    executionId: prepared.executionId,
-    requestDigest: prepared.requestDigest,
-    policyDigest: prepared.policyDigest,
-    executionDigest: prepared.executionDigest,
-    summary: prepared.summary,
-    enforcement: prepared.enforcement,
-    expiresAt: new Date(prepared.expiresAtMs).toISOString()
+    executionId: authorization.executionId,
+    requestDigest: authorization.requestDigest,
+    policyDigest: authorization.policyDigest,
+    executionDigest: authorization.executionDigest,
+    summary: authorization.summary,
+    enforcement: authorization.enforcement,
+    expiresAt: new Date(authorization.expiresAtMs).toISOString()
   });
 }
 

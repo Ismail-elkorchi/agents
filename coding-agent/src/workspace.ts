@@ -89,8 +89,8 @@ export function describeWorkspace(identity: CodingWorkspaceIdentity, stateRoot =
   });
 }
 
-async function resolvePotentialPhysicalPath(candidate: string): Promise<string> {
-  let existing = path.resolve(candidate);
+async function resolvePotentialPhysicalPath(requestedPath: string): Promise<string> {
+  let existing = path.resolve(requestedPath);
   const absentSegments: string[] = [];
   for (;;) {
     try { return path.join(await realpath(existing), ...absentSegments.reverse()); }
@@ -104,8 +104,8 @@ async function resolvePotentialPhysicalPath(candidate: string): Promise<string> 
   }
 }
 
-function containsPath(root: string, candidate: string): boolean {
-  const relative = path.relative(root, candidate);
+function containsPath(root: string, requestedPath: string): boolean {
+  const relative = path.relative(root, requestedPath);
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 

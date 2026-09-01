@@ -82,9 +82,9 @@ async function runProjectCommand(project: WritingProject, command: string | unde
     const explanation = rest.join(' ').trim() || 'Direct user requested application of this exact proposal.';
     const proposalView = (await project.store.view()).proposals.get(proposalId);
     if (proposalView?.status === 'proposed') {
-      const evaluation = (await project.store.view()).qualityEvaluations.get(proposalId);
-      if (evaluation === undefined) throw new Error(`Proposal has no durable Agent Core quality evaluation: ${proposalId}`);
-      const humanCriterionIds = new Set(evaluation.criterionCoverage
+      const verification = (await project.store.view()).productionVerifications.get(proposalId);
+      if (verification === undefined) throw new Error(`Proposal has no durable Agent Core quality verification: ${proposalId}`);
+      const humanCriterionIds = new Set(verification.criterionCoverage
         .filter((criterion) => criterion.verificationKind === 'human')
         .map((criterion) => criterion.criterionId));
       const invalidCriterionIds = options.humanCriterionIds.filter((criterionId) => !humanCriterionIds.has(criterionId));
@@ -116,12 +116,12 @@ async function runProjectCommand(project: WritingProject, command: string | unde
   if (command === 'decide') {
     const decisionRequestId = requiredArgument(subcommand, 'decide requires a decision-request ID');
     const choice = requiredArgument(rest[0], 'decide requires an exact choice');
-    const guards = exactFlags(rest.slice(1), ['run-id', 'fingerprint', 'operation-revision']);
+    const guards = exactFlags(rest.slice(1), ['run-id', 'fingerprint', 'run-revision']);
     const runId = requiredArgument(guards['run-id'], 'Missing exact guard --run-id.');
     const fingerprint = requiredArgument(guards.fingerprint, 'Missing exact guard --fingerprint.');
-    const operationRevision = requiredArgument(guards['operation-revision'], 'Missing exact guard --operation-revision.');
+    const runRevision = requiredArgument(guards['run-revision'], 'Missing exact guard --run-revision.');
     const runtime = providerRuntime(options);
-    print(await decideWritingSuspension({ project, ...runtime, decisionRequestId, choice, runId, fingerprint, expectedOperationRevision: positiveInteger(operationRevision, 'operation revision'), ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }) })); return;
+    print(await decideWritingSuspension({ project, ...runtime, decisionRequestId, choice, runId, fingerprint, expectedRunRevision: positiveInteger(runRevision, 'run revision'), ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }) })); return;
   }
   if (command === 'approval') {
     const approvalId = requiredArgument(subcommand, 'approval requires an approval ID');
@@ -252,7 +252,7 @@ function requiredArgument(value: string | undefined, message: string): string { 
 async function requiredInput(parts: readonly string[]): Promise<string> { let value = parts.join(' ').trim(); if (value.length === 0 && !process.stdin.isTTY) value = (await readStandardInput()).trim(); if (value.length === 0) throw new Error('Command requires text or piped stdin.'); return value; }
 async function readStandardInput(): Promise<string> { let input = ''; process.stdin.setEncoding('utf8'); for await (const chunk of process.stdin) input += String(chunk); return input; }
 function print(value: unknown): void { process.stdout.write(`${JSON.stringify(value, null, 2)}\n`); }
-function printAgentResult(result: import('@agent-core/runtime').AgentRunResult): void { if (result.state === 'suspended') { print(result); process.exitCode = 2; return; } const candidate = result.terminal.candidate; process.stdout.write(`${candidate.status === 'absent' ? result.terminal.errorMessage ?? 'Writing run ended without output.' : candidate.message}\n`); if (result.terminal.executionStatus !== 'completed') process.exitCode = 1; }
+function printAgentResult(result: import('@agent-core/runtime').AgentRunResult): void { if (result.state === 'suspended') { print(result); process.exitCode = 2; return; } const modelOutput = result.terminal.modelOutput; process.stdout.write(`${modelOutput.status === 'absent' ? result.terminal.errorMessage ?? 'Writing run ended without output.' : modelOutput.message}\n`); if (result.terminal.executionStatus !== 'completed') process.exitCode = 1; }
 
 function printHelp(): void {
   process.stdout.write(`Writing Agent\n\nCommands:\n  write <brief>\n  init <brief>\n  status\n  brief show\n  brief amend <instruction>\n  plan [instruction]\n  draft <node> [instruction]\n  revise <node-or-resource> [instruction]\n  review <node-or-resource> [instruction]\n  diff [proposal-or-revision]\n  apply <proposal> [explanation]\n  reject <proposal> [explanation]\n  undo [revision] [explanation]\n  suspension\n  resume\n  decide <request> <choice> --run-id <id> --fingerprint <hash> --operation-revision <n>\n  approval <id> <allow|deny> --run-id <id> --fingerprint <hash>\n  abort <run-id> [reason]\n  source add <resource-id> [title]\n  source list\n\nGlobal options: --root <dir> --state-root <dir> --session <id> --provider <id> --model <id> --endpoint <url> --reasoning-effort <level>\nAcceptance options: --human-criterion <criterion-id> (repeat for every criterion explicitly passed)\nOperation constraints: --min-words <n> --max-words <n> --allow-number <value> --preserve-existing-numbers --forbid-new-citations --allow-entity <value>\n`);

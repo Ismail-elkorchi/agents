@@ -1,7 +1,7 @@
 import type {
   AgentApprovalSuspension,
   AgentEndedRunResult,
-  AgentOperationSuspension,
+  AgentRunSuspension,
   AgentProgressEvent,
   SessionCompactionEntry
 } from '@agent-core/runtime';
@@ -28,7 +28,7 @@ export type CodingAgentTuiMessage =
   | { readonly type: 'interactive.notice'; readonly message: string; readonly tone?: 'info' | 'warning' | 'error' }
   | { readonly type: 'session.hydrated'; readonly hydration: CodingAgentTuiHydration }
   | { readonly type: 'approval.required'; readonly suspension: AgentApprovalSuspension }
-  | { readonly type: 'operation.suspended'; readonly suspension: AgentOperationSuspension }
+  | { readonly type: 'run.suspended'; readonly suspension: AgentRunSuspension }
   | { readonly type: 'approval.decide'; readonly decision: 'allow' | 'deny' }
   | { readonly type: 'composer.edit'; readonly transition: TextAreaTransition }
   | { readonly type: 'composer.history'; readonly direction: 'previous' | 'next' }

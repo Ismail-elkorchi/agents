@@ -31,7 +31,7 @@ test('delayed command effects preserve progress received while the effect is run
       turnId: 'turn-1',
       requestAttempt: 1,
       content: 'Progress received during command.',
-      candidate: { status: 'complete', message: 'Progress received during command.', source: 'content', turnIndex: 1 }
+      modelOutput: { status: 'complete', message: 'Progress received during command.', source: 'content', turnIndex: 1 }
     }
   });
   await waitFor(() => host.frames().length > 2);

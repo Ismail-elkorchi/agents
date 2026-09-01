@@ -1,13 +1,13 @@
 import path from 'node:path';
-import { InMemoryArtifactRepository, InMemoryEventRepository } from '@agent-core/evidence';
-import { JsonlEventRepository, LocalArtifactRepository } from '@agent-core/evidence/node';
+import { InMemoryArtifactRepository, InMemoryEventRepository } from '@agent-core/persistence';
+import { JsonlEventRepository, LocalArtifactRepository } from '@agent-core/persistence/node';
 import { type ModelProvider, type ModelReasoningRequest, SimpleTokenEstimator } from '@agent-core/model';
 import {
-  AgentOperationCoordinator,
+  AgentRunCoordinator,
   AgentRuntime,
   AgentSession,
   agentEventCodec,
-  createAgentPreparedCheckEffect,
+  createAgentCheckEffectPlan,
   createSessionBinding,
   type AgentCheckDefinition,
   type AgentEvent,
@@ -21,12 +21,12 @@ import { validateResourceScope, type ToolAuthorizationRequest } from '@agent-cor
 import { createLocalToolHost, RootedFileAuthority, type LocalToolHost } from '@agent-core/tools-local';
 import { canonicalSha256, randomId } from './canonical.js';
 import {
-  type ContextReceipt,
+  type WritingContextSelection,
   type DeterministicCheck,
   type EditorialFinding,
   type SemanticPreservationFinding,
   type WritingIntent,
-  type WritingApplicationAuthorization,
+  type WritingApplyAuthorization,
   type WritingOperation,
   type WritingOperationKind,
   type WritingOperationMode,
@@ -39,7 +39,7 @@ import type { WritingProject } from './project.js';
 import { writingProjectSessionBinding } from './project.js';
 import { assertProposalToolOnlyPrivateMutation, createProposeRevisionTool, PROPOSE_REVISION_IMPLEMENTATION_ID, WritingOperationService, WRITING_OPERATION_SERVICE } from './proposal-tool.js';
 import { acceptRevisionProposal, applyRevisionProposal, type AppliedWritingRevision } from './revisions.js';
-import { evaluateProposalQuality, prepareProposalQuality, type WritingEditorialChecker } from './quality.js';
+import { verifyProposalProduction, runDeterministicProposalVerification, type WritingEditorialChecker } from './quality.js';
 import { ensurePrivateDirectory } from './private-state.js';
 import { createDefaultWritingEditorialChecker } from './semantic-checker.js';
 
@@ -73,7 +73,7 @@ export interface RunWritingOperationInput {
   readonly temperature?: number;
   readonly contextTokenBudget?: number;
   readonly editorialChecker?: WritingEditorialChecker;
-  readonly directAuthorization?: WritingApplicationAuthorization;
+  readonly directAuthorization?: WritingApplyAuthorization;
   readonly onProgress?: (event: AgentProgressEvent) => void | Promise<void>;
   readonly clock?: () => Date;
 }
@@ -135,18 +135,18 @@ export async function runWritingOperation(input: RunWritingOperationInput): Prom
       intents: input.intents,
       baseProjectRevisionId: view.current.revision.revisionId,
       mode: input.mode ?? 'suggest',
-      ...(input.directAuthorization === undefined ? {} : { applicationAuthorization: input.directAuthorization }),
+      ...(input.directAuthorization === undefined ? {} : { applyAuthorization: input.directAuthorization }),
       sessionId: composition.descriptor.id,
       runId,
-      snapshot: operationSnapshot(input.provider, input.model, input.reasoning, input.temperature, editorialChecker)
+      executionBinding: executionBinding(input.provider, input.model, input.reasoning, input.temperature, editorialChecker)
     }, { channel: 'direct-user', project: view.current, ...(input.clock === undefined ? {} : { clock: input.clock }) });
     const operationContract = createWritingOperationContract(operation, view.current);
     await input.project.store.appendOperation(operation, view.current.revision.revisionId);
-    const contextReceipt = await selectWritingContext({ project: input.project, operation, ...(input.contextTokenBudget === undefined ? {} : { tokenBudget: input.contextTokenBudget }) });
-    await input.project.store.appendContext(contextReceipt, operation.baseProjectRevisionId);
+    const contextSelection = await selectWritingContext({ project: input.project, operation, ...(input.contextTokenBudget === undefined ? {} : { tokenBudget: input.contextTokenBudget }) });
+    await input.project.store.appendContextSelection(contextSelection, operation.baseProjectRevisionId);
     const submission = await composition.session.submit({ task: operationTask(operationContract), runId });
     if (submission.kind === 'rejected') throw new Error(`Writing operation submission was rejected: ${submission.reason}.`);
-    if (submission.kind !== 'started') throw new Error('Writing operation was not admitted as the exact prepared submission.');
+    if (submission.kind !== 'started') throw new Error('Writing operation was not admitted as the exact queued submission.');
     const execution = await submission.completion;
     return await finishWritingOperation(input.project, operation.runId, execution, input.clock);
   } finally {
@@ -182,7 +182,7 @@ export async function decideWritingSuspension(input: RuntimeControlInput & {
   readonly decisionRequestId: string;
   readonly choice: string;
   readonly fingerprint: string;
-  readonly expectedOperationRevision: number;
+  readonly expectedRunRevision: number;
 }): Promise<WritingOperationResult> {
   return withControlRuntime(input, async (composition) => {
     await composition.session.restore();
@@ -267,13 +267,13 @@ async function openOperationRuntime(project: WritingProject, options: Omit<Runti
   });
   try {
     await host.ready();
-    const operations = new AgentOperationCoordinator(events);
+    const runs = new AgentRunCoordinator(events);
     const sessionBinding = { repository: sessions, descriptor };
     const session = new AgentSession({
       descriptor,
       expectedBinding: binding,
       repository: sessions,
-      operations,
+      runs,
       configuration: {
         provider: options.provider.id,
         model: requiredModel(options.model),
@@ -282,17 +282,16 @@ async function openOperationRuntime(project: WritingProject, options: Omit<Runti
       },
       async createRuntime(configuration, sessionProgress, runtimeContext) {
         if (configuration.provider !== options.provider.id) throw new Error(`Provider ${configuration.provider} is unavailable in this Writing Agent runtime.`);
-        const view = await project.store.view();
-        const operation = [...view.operations.values()].find((candidate) => candidate.runId === runtimeContext.runId);
+        const operation = await project.store.getOperationByRunId(runtimeContext.runId);
         if (operation === undefined) throw new Error(`No admitted writing operation owns run ${runtimeContext.runId}.`);
-        const contextReceipt = [...view.contexts.values()].find((candidate) => candidate.operationId === operation.operationId);
-        if (contextReceipt === undefined) throw new Error(`No durable context receipt owns operation ${operation.operationId}.`);
+        const contextSelection = await project.store.getContextSelectionForOperation(operation.operationId);
+        if (contextSelection === undefined) throw new Error(`No durable context selection owns operation ${operation.operationId}.`);
         const operationService = new WritingOperationService({
           project,
           operation,
-          contextReceipt
+          contextSelection
         });
-        const checks = writingQualityChecks(project, operation, contextReceipt, editorialChecker);
+        const checks = writingQualityChecks(project, operation, contextSelection, editorialChecker);
         return new AgentRuntime({
           provider: options.provider,
           model: configuration.model,
@@ -307,14 +306,14 @@ async function openOperationRuntime(project: WritingProject, options: Omit<Runti
           toolPolicy: { allowedRisks: ['read', 'write'] },
           toolAuthorizer: request => authorizeWritingTool(request, project, operation),
           instructions: [{ id: WRITING_RUNTIME_INSTRUCTION_ID, role: 'developer', content: PROJECT_OPERATION_INSTRUCTION }],
-          contextProvider: () => contextItemsForRuntime(contextReceipt),
+          contextProvider: () => contextItemsForRuntime(contextSelection),
           checks,
           disposition: writingProposalDisposition(),
           metadata: {
             projectId: project.store.identity.projectId,
             projectRevisionId: operation.baseProjectRevisionId,
             operationId: operation.operationId,
-            contextReceiptId: contextReceipt.contextReceiptId,
+            contextSelectionId: contextSelection.contextSelectionId,
             intentRegistryImplementationId: WRITING_INTENT_REGISTRY_IMPLEMENTATION_ID
           },
           ...(configuration.reasoning === undefined ? {} : { reasoning: configuration.reasoning }),
@@ -361,7 +360,7 @@ function assertSessionModel(descriptor: SessionDescriptor, provider: string, mod
 function writingQualityChecks(
   project: WritingProject,
   operation: WritingOperation,
-  contextReceipt: ContextReceipt,
+  contextSelection: WritingContextSelection,
   checker: WritingEditorialChecker
 ): readonly AgentCheckDefinition[] {
   const proposalIntegrity: AgentCheckDefinition = Object.freeze({
@@ -369,22 +368,22 @@ function writingQualityChecks(
     id: 'writing-proposal-integrity',
     implementationId: WRITING_PROPOSAL_CHECK_IMPLEMENTATION_ID,
     requirement: 'required' as const,
-    description: 'Require one active host-validated proposal whose deterministic quality evidence passes.',
+    description: 'Require one active host-validated proposal whose deterministic verification passes.',
     timeoutMs: 10_000,
     async run() {
       const proposal = await activeOperationProposal(project, operation);
       if (proposal === undefined) return { verdict: 'failed' as const, summary: 'Operation did not create exactly one active revision proposal.' };
-      const prepared = await prepareProposalQuality({
+      const verificationMaterial = await runDeterministicProposalVerification({
         project,
         operation,
         proposalId: proposal.proposalId,
         textEdits: proposal.textEdits,
         structuralChanges: proposal.structuralChanges,
         declaration: proposal.semanticChangeDeclaration,
-        contextReceipt
+        contextSelection
       });
-      const failed = prepared.deterministicChecks.filter((check) => check.requirement === 'required' && check.verdict === 'failed');
-      const unknown = prepared.deterministicChecks.filter((check) => check.requirement === 'required' && check.verdict === 'unknown');
+      const failed = verificationMaterial.deterministicChecks.filter((check) => check.requirement === 'required' && check.verdict === 'failed');
+      const unknown = verificationMaterial.deterministicChecks.filter((check) => check.requirement === 'required' && check.verdict === 'unknown');
       return {
         verdict: failed.length > 0 ? 'failed' as const : unknown.length > 0 ? 'unknown' as const : 'passed' as const,
         summary: failed.length > 0
@@ -392,7 +391,7 @@ function writingQualityChecks(
           : unknown.length > 0
             ? `Proposal ${proposal.proposalId} has unknown deterministic quality: ${unknown.map((check) => check.checkId).join(', ')}.`
             : `Proposal ${proposal.proposalId} passed all required deterministic quality checks.`,
-        output: { proposalId: proposal.proposalId, deterministicChecks: prepared.deterministicChecks }
+        output: { proposalId: proposal.proposalId, deterministicChecks: verificationMaterial.deterministicChecks }
       };
     }
   });
@@ -401,29 +400,29 @@ function writingQualityChecks(
     id: 'writing-interpretive-quality',
     implementationId: interpretiveCheckImplementationId(checker),
     requirement: 'required' as const,
-    description: 'Verify semantic preservation, evidence use, prior accepted edits, and editorial criteria against the exact proposal candidate.',
+    description: 'Verify semantic preservation, evidence use, prior accepted edits, and editorial criteria against the exact proposed revision.',
     timeoutMs: 10 * 60_000,
-    async prepare() {
+    async planEffect() {
       const proposal = await activeOperationProposal(project, operation);
       if (proposal === undefined) return { verdict: 'failed' as const, summary: 'Interpretive verification has no exact active proposal.' };
-      const existing = await project.store.qualityEvaluationReceipt(proposal.proposalId);
-      if (existing !== undefined) return qualityEvaluationObservation(existing);
-      const prepared = await prepareProposalQuality({
+      const existing = await project.store.getProposalProductionVerification(proposal.proposalId);
+      if (existing !== undefined) return productionVerificationObservation(existing);
+      const verificationMaterial = await runDeterministicProposalVerification({
         project,
         operation,
         proposalId: proposal.proposalId,
         textEdits: proposal.textEdits,
         structuralChanges: proposal.structuralChanges,
         declaration: proposal.semanticChangeDeclaration,
-        contextReceipt
+        contextSelection
       });
-      return createAgentPreparedCheckEffect({
+      return createAgentCheckEffectPlan({
         authorization: {
           contract: 'writing-agent.interpretive-quality@3',
           proposalId: proposal.proposalId,
           operationId: operation.operationId,
-          candidateRevisionId: prepared.candidateRevisionId,
-          evaluationInputSha256: prepared.evaluationInputSha256,
+          proposedRevisionId: verificationMaterial.proposedRevisionId,
+          verificationInputSha256: verificationMaterial.verificationInputSha256,
           evaluatorImplementationId: checker.implementationId,
           verificationPolicyId: checker.verificationPolicyId,
           ...(checker.calibrationId === undefined ? {} : { calibrationId: checker.calibrationId })
@@ -431,17 +430,17 @@ function writingQualityChecks(
         recovery: { kind: 'unknown' },
         start: async (signal) => {
           if (signal.aborted) throw signal.reason;
-          const receipt = await project.store.qualityEvaluationReceipt(proposal.proposalId);
-          const evaluation = receipt ?? await evaluateProposalQuality({ project, operation, proposal, contextReceipt, checker, signal });
-          if (receipt === undefined) await project.store.appendProposalQuality(evaluation);
-          return qualityEvaluationObservation(evaluation);
+          const existingVerification = await project.store.getProposalProductionVerification(proposal.proposalId);
+          const verification = existingVerification ?? await verifyProposalProduction({ project, operation, proposal, contextSelection, checker, signal });
+          if (existingVerification === undefined) await project.store.appendProposalProductionVerification(verification);
+          return productionVerificationObservation(verification);
         },
         reconcile: async (signal) => {
           if (signal.aborted) throw signal.reason;
-          const evaluation = await project.store.qualityEvaluationReceipt(proposal.proposalId);
-          return evaluation === undefined
+          const verification = await project.store.getProposalProductionVerification(proposal.proposalId);
+          return verification === undefined
             ? Object.freeze({ status: 'unknown' as const })
-            : Object.freeze({ status: 'settled' as const, observation: qualityEvaluationObservation(evaluation) });
+            : Object.freeze({ status: 'settled' as const, observation: productionVerificationObservation(verification) });
         },
         release: () => Promise.resolve()
       });
@@ -456,9 +455,9 @@ function writingQualityChecks(
     timeoutMs: 10_000,
     async run() {
       const proposal = await activeOperationProposal(project, operation);
-      const evaluation = proposal === undefined ? undefined : await project.store.qualityEvaluationReceipt(proposal.proposalId);
-      if (evaluation === undefined) return { verdict: 'unknown' as const, summary: 'Acceptance-criterion coverage has no durable interpretive evaluation.' };
-      const selected = evaluation.criterionCoverage.filter((coverage) => coverage.requirement === 'required' && coverage.verificationKind !== 'human');
+      const verification = proposal === undefined ? undefined : await project.store.getProposalProductionVerification(proposal.proposalId);
+      if (verification === undefined) return { verdict: 'unknown' as const, summary: 'Acceptance-criterion coverage has no durable interpretive verification.' };
+      const selected = verification.criterionCoverage.filter((coverage) => coverage.requirement === 'required' && coverage.verificationKind !== 'human');
       const failed = selected.filter((coverage) => coverage.verdict === 'failed');
       const incomplete = selected.filter((coverage) => coverage.verdict === 'unknown' || coverage.coverage !== 'complete');
       return {
@@ -468,7 +467,7 @@ function writingQualityChecks(
           : incomplete.length > 0
             ? `Required criteria are incompletely verified: ${incomplete.map((coverage) => coverage.criterionId).join(', ')}.`
             : 'Every required non-human acceptance criterion has complete passing coverage.',
-        output: { proposalId: proposal?.proposalId ?? '', criterionCoverage: evaluation.criterionCoverage }
+        output: { proposalId: proposal?.proposalId ?? '', criterionCoverage: verification.criterionCoverage }
       };
     }
   });
@@ -499,11 +498,11 @@ async function activeOperationProposal(project: WritingProject, operation: Writi
   return active.length === 1 ? active[0]?.proposal : undefined;
 }
 
-function qualityEvaluationObservation(evaluation: import('./domain.js').ProposalQualityEvaluation) {
-  const failed = evaluation.semanticPreservationFindings.some((finding) => finding.requirement === 'required' && finding.verdict === 'failed')
-    || evaluation.editorialFindings.some((finding) => finding.severity === 'required' && finding.verdict === 'failed');
-  const incomplete = evaluation.semanticPreservationFindings.some((finding) => finding.requirement === 'required' && (finding.verdict === 'unknown' || finding.coverage !== 'complete'))
-    || evaluation.editorialFindings.some((finding) => finding.severity === 'required' && (finding.verdict === 'unknown' || finding.coverage !== 'complete'));
+function productionVerificationObservation(verification: import('./domain.js').ProposalProductionVerification) {
+  const failed = verification.semanticPreservationFindings.some((finding) => finding.requirement === 'required' && finding.verdict === 'failed')
+    || verification.editorialFindings.some((finding) => finding.severity === 'required' && finding.verdict === 'failed');
+  const incomplete = verification.semanticPreservationFindings.some((finding) => finding.requirement === 'required' && (finding.verdict === 'unknown' || finding.coverage !== 'complete'))
+    || verification.editorialFindings.some((finding) => finding.severity === 'required' && (finding.verdict === 'unknown' || finding.coverage !== 'complete'));
   return Object.freeze({
     verdict: failed ? 'failed' as const : incomplete ? 'unknown' as const : 'passed' as const,
     summary: failed
@@ -512,13 +511,13 @@ function qualityEvaluationObservation(evaluation: import('./domain.js').Proposal
         ? 'Required semantic preservation or editorial verification is incomplete.'
         : 'The exact proposal passed required semantic preservation and editorial verification.',
     output: Object.freeze({
-      evaluationId: evaluation.evaluationId,
-      proposalId: evaluation.proposalId,
-      candidateRevisionId: evaluation.candidateRevisionId,
-      evaluationInputSha256: evaluation.evaluationInputSha256,
-      deterministicChecks: evaluation.deterministicChecks,
-      semanticPreservationFindings: evaluation.semanticPreservationFindings,
-      editorialFindings: evaluation.editorialFindings
+      verificationId: verification.verificationId,
+      proposalId: verification.proposalId,
+      proposedRevisionId: verification.proposedRevisionId,
+      verificationInputSha256: verification.verificationInputSha256,
+      deterministicChecks: verification.deterministicChecks,
+      semanticPreservationFindings: verification.semanticPreservationFindings,
+      editorialFindings: verification.editorialFindings
     })
   });
 }
@@ -548,7 +547,7 @@ function authorizeWritingTool(request: ToolAuthorizationRequest, project: Writin
   });
 }
 
-function operationSnapshot(provider: ModelProvider, model: string, reasoning: ModelReasoningRequest | undefined, temperature: number | undefined, checker: WritingEditorialChecker) {
+function executionBinding(provider: ModelProvider, model: string, reasoning: ModelReasoningRequest | undefined, temperature: number | undefined, checker: WritingEditorialChecker) {
   const configuration = {
     provider: provider.id,
     providerImplementationId: provider.implementationId,
@@ -610,15 +609,15 @@ async function finishWritingOperation(
   clock?: () => Date
 ): Promise<WritingOperationResult> {
   let view = await project.store.view();
-  const operation = [...view.operations.values()].find((candidate) => candidate.runId === runId);
+  const operation = await project.store.getOperationByRunId(runId);
   if (operation === undefined) throw new Error(`No durable writing operation owns run ${runId}.`);
-  const contextReceipt = [...view.contexts.values()].find((candidate) => candidate.operationId === operation.operationId);
-  if (contextReceipt === undefined) throw new Error(`No durable context receipt owns operation ${operation.operationId}.`);
+  const contextSelection = await project.store.getContextSelectionForOperation(operation.operationId);
+  if (contextSelection === undefined) throw new Error(`No durable context selection owns operation ${operation.operationId}.`);
   let proposal = currentOperationProposal(view, operation.operationId);
   let applied: AppliedWritingRevision | undefined;
   if (execution.state === 'ended' && execution.terminal.executionStatus === 'completed' && operation.mode === 'apply') {
     if (proposal === undefined) throw new Error(`Completed apply operation has no revision proposal: ${operation.operationId}`);
-    const authorization = operation.applicationAuthorization;
+    const authorization = operation.applyAuthorization;
     if (authorization === undefined) throw new Error(`Apply operation has no durable direct-user authorization: ${operation.operationId}`);
     const proposalState = view.proposals.get(proposal.proposalId)?.status;
     if (proposalState === 'proposed') {
@@ -648,7 +647,7 @@ async function finishWritingOperation(
     ...(applied === undefined ? {} : { committedRevisionId: applied.revisionId }),
     ...(settlement.reason === undefined ? {} : { reason: settlement.reason })
   }, view.current.revision.revisionId);
-  return operationResult(operation, execution, contextReceipt, proposal, view, applied);
+  return operationResult(operation, execution, contextSelection, proposal, view, applied);
 }
 
 async function durableEndedExecution(events: JsonlEventRepository<AgentEvent>, runId: string): Promise<AgentRunResult> {
@@ -677,22 +676,22 @@ function operationLifecycleSettlement(execution: AgentRunResult): {
 function operationResult(
   operation: WritingOperation,
   execution: AgentRunResult,
-  contextReceipt: ContextReceipt,
+  contextSelection: WritingContextSelection,
   proposal: import('./domain.js').RevisionProposal | undefined,
   view: Awaited<ReturnType<WritingProject['store']['view']>>,
   applied: AppliedWritingRevision | undefined
 ): WritingOperationResult {
   const terminal = execution.state === 'ended' ? execution.terminal : undefined;
-  const evaluation = proposal === undefined ? undefined : view.qualityEvaluations.get(proposal.proposalId);
-  const checkResults: readonly DeterministicCheck[] = evaluation?.deterministicChecks ?? [];
-  const semanticFindings: readonly SemanticPreservationFinding[] = evaluation?.semanticPreservationFindings ?? [];
-  const editorialFindings: readonly EditorialFinding[] = evaluation?.editorialFindings ?? [];
+  const verification = proposal === undefined ? undefined : view.productionVerifications.get(proposal.proposalId);
+  const checkResults: readonly DeterministicCheck[] = verification?.deterministicChecks ?? [];
+  const semanticFindings: readonly SemanticPreservationFinding[] = verification?.semanticPreservationFindings ?? [];
+  const editorialFindings: readonly EditorialFinding[] = verification?.editorialFindings ?? [];
   const settlement = proposal === undefined ? undefined : view.settlements.get(proposal.proposalId);
   const uncertainties = [
     ...checkResults.filter((check) => check.requirement === 'required' && check.verdict === 'unknown').map((check) => `${check.checkId}: unknown`),
     ...semanticFindings.filter((finding) => finding.requirement === 'required' && (finding.verdict === 'unknown' || finding.coverage !== 'complete')).map((finding) => `${finding.findingId}: ${finding.verdict}/${finding.coverage}`),
     ...editorialFindings.filter((finding) => finding.severity === 'required' && (finding.verdict === 'unknown' || finding.coverage !== 'complete')).map((finding) => `${finding.findingId}: ${finding.verdict}/${finding.coverage}`),
-    ...(evaluation?.criterionCoverage.filter((coverage) => coverage.requirement === 'required' && coverage.verificationKind !== 'human' && (coverage.verdict === 'unknown' || coverage.coverage !== 'complete')).map((coverage) => `${coverage.criterionId}: ${coverage.verdict}/${coverage.coverage}`) ?? []),
+    ...(verification?.criterionCoverage.filter((coverage) => coverage.requirement === 'required' && coverage.verificationKind !== 'human' && (coverage.verdict === 'unknown' || coverage.coverage !== 'complete')).map((coverage) => `${coverage.criterionId}: ${coverage.verdict}/${coverage.coverage}`) ?? []),
     ...(settlement?.remainingUncertainty ?? []),
     ...(execution.state === 'suspended' ? [`suspended:${execution.reason}`] : [])
   ];
@@ -717,7 +716,7 @@ function operationResult(
     ...(settlement === undefined ? {} : { transactionSettlement: { transactionId: settlement.transactionId, outcome: settlement.outcome, cleanup: settlement.cleanup } }),
     semanticPreservationFindings: semanticFindings,
     checkResults,
-    ...(evaluation === undefined ? {} : { criterionCoverage: evaluation.criterionCoverage }),
+    ...(verification === undefined ? {} : { criterionCoverage: verification.criterionCoverage }),
     disposition,
     editorialFindings,
     reviewStatus: proposal === undefined
@@ -727,11 +726,11 @@ function operationResult(
         : view.proposals.get(proposal.proposalId)?.status === 'rejected'
           ? 'rejected'
           : 'pending',
-    contextReceipt,
+    contextSelection,
     affectedResourceIds: proposal?.affectedResourceIds ?? operation.targetResourceIds,
     authorshipProvenanceChanges: applied?.provenance ?? proposal?.proposedAuthorshipProvenance ?? [],
     remainingUncertainty: Object.freeze([...new Set(uncertainties)]),
-    ...(terminal?.candidate.status === 'absent' ? {} : terminal === undefined ? {} : { candidateMessage: terminal.candidate.message })
+    ...(terminal?.modelOutput.status === 'absent' ? {} : terminal === undefined ? {} : { modelOutputMessage: terminal.modelOutput.message })
   });
 }
 

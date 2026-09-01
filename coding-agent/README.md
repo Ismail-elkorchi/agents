@@ -32,7 +32,7 @@ printf '%s\n' 'summarize the workspace' | coding-agent exec -
 coding-agent --resume
 coding-agent --session SESSION_ID
 
-# Noninteractive recovery drives the unfinished accepted operation without queuing a new task
+# Noninteractive recovery drives the unfinished accepted run without queuing a new task
 coding-agent exec --resume
 coding-agent exec --session SESSION_ID
 ```
@@ -82,7 +82,7 @@ if (result.state === 'suspended') {
 
 Changed input, effects, implementation, policy, or execution boundary invalidates the approval. Non-idempotent uncertain work is never retried automatically.
 
-The CLI supports the same persisted operation after process restart:
+The CLI supports the same persisted run after process restart:
 
 ```bash
 coding-agent approval allow RUN_ID APPROVAL_ID FINGERPRINT --root . --config coding-agent.config.json --permissions develop
@@ -97,28 +97,28 @@ const checks = [{
   kind: 'deterministic' as const,
   requirement: 'required' as const,
   timeoutMs: 2_000,
-  async run({ candidate, signal }) {
+  async run({ modelOutput, signal }) {
     signal.throwIfAborted();
-    return candidate.message.includes('risk')
+    return modelOutput.message.includes('risk')
       ? { verdict: 'passed' as const, summary: 'Risk is covered.' }
       : { verdict: 'failed' as const, summary: 'Risk is missing.' };
   }
 }];
 ```
 
-Deterministic checks inspect only their admitted candidate and evidence. Every mutable run freezes one admitted check plan. In `develop` mode, each command runs first against an exact private copy of the pre-edit baseline and then against an exact private copy of the candidate through durable no-network Sandbox execution. Candidate failure is accepted only when its exit result and bounded failure signature match a pre-existing baseline failure; a new or changed failure is a regression. `coverage` is required and must be `targeted` or `full`; it describes what the command actually proves. Changes to tests, Coding Agent configuration, package scripts, compiler/build configuration, CI workflows, dependencies, or lockfiles make the configured check inconclusive instead of letting a modified verifier certify itself. Missing required checks, unavailable execution, incomplete snapshots, and unknown baseline results prevent completion. A lower permission mode leaves command checks explicitly unavailable rather than running them on the host.
+Deterministic Core checks inspect their admitted model output and observations. Every mutable Coding run also freezes one admitted command-check plan. In `develop` mode, each command first produces a `PreChangeCommandObservation` against an exact private copy of the `PreChangeSnapshot`; the candidate acceptance check then runs against the exact changed working copy through durable no-network Sandbox execution. A changed-working-copy failure is accepted only when its exit result and bounded failure signature match a pre-existing failure; a new or changed failure is a regression. `coverage` is required and must be `targeted` or `full`. Changes to tests, Coding Agent configuration, package scripts, compiler/build configuration, CI workflows, dependencies, or lockfiles make acceptance inconclusive instead of letting a modified verifier certify itself. Missing required checks, unavailable execution, incomplete snapshots, and unknown pre-change observations prevent completion. A lower permission mode leaves command checks explicitly unavailable rather than running them on the host.
 
-Mutable tools operate only in a persistent private candidate workspace. Agent Core owns candidate snapshots, checkpoints, diffs, rollback, and journaled promotion. The authoritative workspace is changed only by the accepting disposition after required verification passes, and promotion refuses a source workspace that changed after isolation.
+Mutable tools operate only in a persistent `IsolatedWorkingCopy` owned by Coding Agent. Coding Agent owns its `PreChangeSnapshot`, checkpoints, diffs, rollback, apply authorization, and journaled application. Agent Core owns run/effect truth but no coding workspace policy. The source workspace changes only after accepting disposition and required candidate acceptance checks pass; application refuses a source workspace that changed after isolation.
 
 ## Result semantics
 
-- Normal stop with visible content: completed execution and complete candidate.
-- Output limit or content filter with visible content: completed execution and partial candidate.
-- Interrupted stream or abort after visible content: failed/aborted execution, partial candidate, verification not run.
-- Failure before visible content: absent candidate.
+- Normal stop with visible content: completed execution and complete model output.
+- Output limit or content filter with visible content: completed execution and partial model output.
+- Interrupted stream or abort after visible content: failed/aborted execution, partial model output, verification not run.
+- Failure before visible content: absent model output.
 - Missing or unknown required check: inconclusive verification.
 
-For every ended run, Coding Agent compares the exact root-bound workspace state captured before runtime effects with the final state and reduces `apply_patch` ledger receipts into a bounded durable change report. The CLI prints changed paths and distinguishes structured mutations from external or concurrent changes. A path already reported by the initial Git observation remains marked as changed before the run; Coding Agent never assumes the workspace started clean. Binary, oversized, aliased, unreadable, or truncated evidence makes coverage explicitly partial. Model prose is candidate narrative, not authority for changed paths or verification status, and command effects are never described as undoable.
+For every ended run, Coding Agent compares the exact root-bound state captured in the `PreChangeSnapshot` with the final working-copy state and reduces `apply_patch` ledger receipts into a bounded durable change report. The CLI prints changed paths and distinguishes structured mutations from external or concurrent changes. A path already reported by the initial Git observation remains marked as changed before the run; Coding Agent never assumes the workspace started clean. Binary, oversized, aliased, unreadable, or truncated observations make coverage explicitly partial. Model prose is not authority for changed paths or verification status, and command effects are never described as undoable.
 
 The interactive TUI renders before runtime activation, then restores durable conversation, terminal checks and changes, queued work, driver control, approvals, and unknown-effect recovery. Its status line retains the active provider, model, trust, sandbox, and permission boundary. Provider, model, permission mode, and trust changes are admitted only while the session is idle with no queued submissions. Use Ctrl+P for commands. Use Up and Down at the first or last composer line to browse sent messages; the current draft is restored when history browsing ends.
 
@@ -142,8 +142,8 @@ Run `coding-agent [initial task] [options]` for the interactive TUI. Run `coding
 | `--reasoning-effort <level>` | Select `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`, subject to provider/model support. |
 | `--show-reasoning` | Render reasoning text or summaries exposed by the provider. It does not expose private chain-of-thought. |
 | `--permissions <review\|edit\|develop>` | Select the model authority ceiling. Defaults to `review`; `edit` adds structured patches; `develop` adds sandboxed model commands. Mutable modes run the separately admitted verifier plan. |
-| `--resume` | Select the most recently active session. In taskless `exec` mode, drive its unfinished accepted operation without creating another submission. |
-| `--session <id>` | Select an existing session by exact ID. In taskless `exec` mode, drive its unfinished accepted operation without creating another submission. |
+| `--resume` | Select the most recently active session. In taskless `exec` mode, drive its unfinished accepted run without creating another submission. |
+| `--session <id>` | Select an existing session by exact ID. In taskless `exec` mode, drive its unfinished accepted run without creating another submission. |
 | `--branch <entry-id>` | Branch the selected existing session from an entry. Requires `--resume` or `--session`. |
 
 For interactive sessions, model-selection precedence is explicit CLI option, resumed-session setting, matching trusted project configuration, stored user selection, then environment. For `exec`, precedence is explicit CLI option, resumed-session setting, matching trusted project configuration, then environment. Provider-specific project settings are meaningful only for their configured provider. A provider and model must be selected explicitly through one of those sources or through the interactive `/provider` and `/model` commands.

@@ -4,7 +4,7 @@
   "include": ["src"],
   "references": [
     { "path": "../../agent-core/packages/auth" },
-    { "path": "../../agent-core/packages/evidence" },
+    { "path": "../../agent-core/packages/persistence" },
     { "path": "../../agent-core/packages/effects" },
     { "path": "../../agent-core/packages/json" },
     { "path": "../../agent-core/packages/model" },

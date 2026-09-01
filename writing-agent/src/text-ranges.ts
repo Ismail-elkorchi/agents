@@ -78,7 +78,7 @@ export function offsetRange(content: string, range: { readonly start: { readonly
 }
 
 export function rangeFromOffsets(content: string, start: number, end: number) {
-  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || end > content.length) throw new Error('Text offsets are outside the candidate content.');
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || end > content.length) throw new Error('Text offsets are outside the proposed content.');
   return Object.freeze({ start: positionAtOffset(content, start), end: positionAtOffset(content, end) });
 }
 

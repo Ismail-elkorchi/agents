@@ -68,30 +68,31 @@ export class SandboxGitRepositoryObserver implements GitRepositoryObserver {
     if (signal?.aborted) throw abortError(signal);
     const executionId = `git-status-${randomUUID()}`;
     const run = gitStatusRun(this.#gitExecutable, location);
-    let prepared: SandboxExecutionObservation;
+    let authorizationObservation: SandboxExecutionObservation;
     try {
-      prepared = await this.#repository.prepare({ executionId, run }, { maxBytes: MAX_OUTPUT_BYTES, waitMs: STATUS_TIMEOUT_MS });
+      // `prepare` and the matching state tags are names fixed by the upstream sandbox protocol.
+      authorizationObservation = await this.#repository.prepare({ executionId, run }, { maxBytes: MAX_OUTPUT_BYTES, waitMs: STATUS_TIMEOUT_MS });
     } catch {
       return Object.freeze({ kind: 'unavailable', reason: 'sandbox_unavailable', executionId });
     }
-    if (prepared.kind === 'rejected') return Object.freeze({ kind: 'unavailable', reason: 'execution_rejected', executionId });
-    if (prepared.kind === 'unknown' || prepared.kind === 'preparing') return Object.freeze({ kind: 'unavailable', reason: 'execution_unknown', executionId });
-    if (prepared.kind === 'expired') return Object.freeze({ kind: 'unavailable', reason: 'execution_expired', executionId });
-    if (prepared.kind !== 'prepared') return Object.freeze({ kind: 'unavailable', reason: 'status_failed', executionId });
+    if (authorizationObservation.kind === 'rejected') return Object.freeze({ kind: 'unavailable', reason: 'execution_rejected', executionId });
+    if (authorizationObservation.kind === 'unknown' || authorizationObservation.kind === 'preparing') return Object.freeze({ kind: 'unavailable', reason: 'execution_unknown', executionId });
+    if (authorizationObservation.kind === 'expired') return Object.freeze({ kind: 'unavailable', reason: 'execution_expired', executionId });
+    if (authorizationObservation.kind !== 'prepared') return Object.freeze({ kind: 'unavailable', reason: 'status_failed', executionId });
     const receipt: GitObservationReceipt = Object.freeze({
       executionId,
-      requestDigest: prepared.requestDigest,
-      policyDigest: prepared.policyDigest,
-      executionDigest: prepared.executionDigest,
-      backend: prepared.summary.backend.id,
-      backendVersion: prepared.summary.backend.version,
-      ...(prepared.summary.execution.executableIdentityDigest ? { executableIdentityDigest: prepared.summary.execution.executableIdentityDigest } : {}),
-      ...(prepared.summary.execution.executableContentSha256 ? { executableContentSha256: prepared.summary.execution.executableContentSha256 } : {})
+      requestDigest: authorizationObservation.requestDigest,
+      policyDigest: authorizationObservation.policyDigest,
+      executionDigest: authorizationObservation.executionDigest,
+      backend: authorizationObservation.summary.backend.id,
+      backendVersion: authorizationObservation.summary.backend.version,
+      ...(authorizationObservation.summary.execution.executableIdentityDigest ? { executableIdentityDigest: authorizationObservation.summary.execution.executableIdentityDigest } : {}),
+      ...(authorizationObservation.summary.execution.executableContentSha256 ? { executableContentSha256: authorizationObservation.summary.execution.executableContentSha256 } : {})
     });
     const terminateOnAbort = () => { void this.#repository.terminate(executionId).catch(() => undefined); };
     signal?.addEventListener('abort', terminateOnAbort, { once: true });
     try {
-      await this.#repository.activate(executionId, prepared);
+      await this.#repository.activate(executionId, authorizationObservation);
       const observation = await waitForTerminal(this.#repository, executionId);
       if (observation.kind === 'unknown') return Object.freeze({ kind: 'unavailable', reason: 'execution_unknown', executionId });
       if (observation.kind === 'expired') return Object.freeze({ kind: 'unavailable', reason: 'execution_expired', executionId });

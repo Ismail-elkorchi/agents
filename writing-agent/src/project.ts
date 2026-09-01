@@ -195,7 +195,7 @@ export async function registerManagedTextResource(project: WritingProject, input
     authorshipProvenance: [...current.authorshipProvenance, provenance]
   });
   const adopted = snapshot.resources.find((candidate) => candidate.resourceId === resourceId);
-  if (adopted === undefined) throw new Error('Committed resource projection is unavailable.');
+  if (adopted === undefined) throw new Error('Committed resource is unavailable.');
   const committedProvenance = { ...provenance, projectRevisionId: snapshot.revision.revisionId };
   const finalSnapshot = createProjectRevision({
     ...snapshotParts(snapshot),
@@ -216,7 +216,7 @@ export async function registerManagedTextResource(project: WritingProject, input
     provenance: [committedProvenance]
   });
   const finalResource = finalSnapshot.resources.find((candidate) => candidate.resourceId === resourceId);
-  if (finalResource === undefined) throw new Error('Committed resource projection is unavailable.');
+  if (finalResource === undefined) throw new Error('Committed resource is unavailable.');
   return finalResource;
 }
 
@@ -266,7 +266,7 @@ export async function createManagedTextResource(project: WritingProject, input: 
       signal: controller.signal,
       services: { rootedFileAuthority: project.authority, patchJournal: journal, localToolConfiguration: DEFAULT_LOCAL_TOOL_CONFIGURATION },
       boundary: { authorizationPolicyId: 'writing-agent/direct-resource-create@1', executionTargetId: `writing-project:${view.identity.projectStoreId}` },
-      preparation: { async own(resource: { release(): void | Promise<void> }) { await resource.release(); } }
+      lifetime: { async own(resource: { release(): void | Promise<void> }) { await resource.release(); } }
     };
     const canonical = await applyPatchTool.canonicalizeInput(decoded.input, context);
     const effects = await applyPatchTool.deriveEffects(canonical, context);
@@ -279,7 +279,7 @@ export async function createManagedTextResource(project: WritingProject, input: 
     });
     if (observation.kind !== 'result' || !observation.ok) throw new Error(`Agent Core apply_patch rejected resource creation: ${observation.summary}`);
     const output = applyPatchOutputSchema.parse(observation.output);
-    if (output.operationStatus !== 'applied' || !output.createdPaths.includes(relativePath)) throw new Error(`Agent Core apply_patch did not create the exact managed resource: ${relativePath}`);
+    if (output.applicationStatus !== 'applied' || !output.createdPaths.includes(relativePath)) throw new Error(`Agent Core apply_patch did not create the exact managed resource: ${relativePath}`);
     } finally { journal.close(); }
   }
   const created = await readRootedText(project.authority, relativePath, 64 * 1024 * 1024);

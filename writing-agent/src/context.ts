@@ -1,6 +1,6 @@
 import { canonicalSha256, contentId, deepFreeze, textSha256 } from './canonical.js';
-import type { ContextItemInput } from '@agent-core/runtime';
-import { contextReceiptSchema, type ContextReceipt, type ProjectSnapshot, type WritingOperation } from './domain.js';
+import type { PromptContextItemInput } from '@agent-core/runtime';
+import { writingContextSelectionSchema, type WritingContextSelection, type ProjectSnapshot, type WritingOperation } from './domain.js';
 import type { WritingProject } from './project.js';
 import { completeTextRange, readRootedText } from './project.js';
 import { offsetRange, rangeFromOffsets } from './text-ranges.js';
@@ -13,7 +13,7 @@ export async function selectWritingContext(input: {
   readonly project: WritingProject;
   readonly operation: WritingOperation;
   readonly tokenBudget?: number;
-}): Promise<ContextReceipt> {
+}): Promise<WritingContextSelection> {
   const snapshot = (await input.project.store.view()).current;
   if (input.operation.baseProjectRevisionId !== snapshot.revision.revisionId) throw new Error('Cannot select context for a stale writing operation.');
   const tokenBudget = input.tokenBudget ?? 24_000;
@@ -22,7 +22,7 @@ export async function selectWritingContext(input: {
   const candidates = [...selection.items].sort((left, right) => contextPriority(left.kind) - contextPriority(right.kind));
   let remaining = tokenBudget;
   let truncated = false;
-  const items: ContextReceipt['items'][number][] = [];
+  const items: WritingContextSelection['items'][number][] = [];
   const omittedCounts: Record<string, number> = {};
   for (const candidate of candidates) {
     const cost = estimateTokens(candidate.content);
@@ -61,32 +61,31 @@ export async function selectWritingContext(input: {
     truncated,
     coverage
   };
-  return deepFreeze(contextReceiptSchema.parse({ contextReceiptId: contentId('context', material), ...material }));
+  return deepFreeze(writingContextSelectionSchema.parse({ contextSelectionId: contentId('context', material), ...material }));
 }
 
-export function contextItemsForRuntime(receipt: ContextReceipt): readonly ContextItemInput[] {
-  return receipt.items.map((item) => ({
+export function contextItemsForRuntime(selection: WritingContextSelection): readonly PromptContextItemInput[] {
+  return selection.items.map((item) => ({
     id: item.itemId,
     content: item.content,
     sourceUri: `writing-context://${encodeURIComponent(item.kind)}/${encodeURIComponent(item.itemId)}`,
     sourceKind: item.trust === 'trusted-control' ? 'user' : 'external',
-    confidence: item.trust === 'trusted-control' ? 'verified' : 'unverified',
+    integrity: item.trust === 'trusted-control' ? 'verified' : 'unverified',
     representation: item.range === undefined ? 'full' : 'excerpt',
     mediaType: 'text/plain',
     title: item.kind,
     ...(item.range === undefined ? {} : { range: { kind: 'line' as const, start: item.range.start.line, end: item.range.end.line } }),
     tokenEstimate: estimateTokens(item.content),
-    selectionReason: item.reasonCodes.join(','),
-    score: 1
+    purpose: item.reasonCodes.join(',')
   }));
 }
 
 async function contextCandidates(project: WritingProject, operation: WritingOperation, snapshot: ProjectSnapshot): Promise<{
-  readonly items: ContextReceipt['items'][number][];
-  readonly targetDescriptors: ContextReceipt['targetDescriptors'];
+  readonly items: WritingContextSelection['items'][number][];
+  readonly targetDescriptors: WritingContextSelection['targetDescriptors'];
 }> {
-  const candidates: ContextReceipt['items'][number][] = [];
-  const targetDescriptors: ContextReceipt['targetDescriptors'][number][] = [];
+  const candidates: WritingContextSelection['items'][number][] = [];
+  const targetDescriptors: WritingContextSelection['targetDescriptors'][number][] = [];
   candidates.push(item({
     itemId: snapshot.brief.briefRevisionId,
     kind: 'writing-brief',
@@ -198,9 +197,9 @@ async function contextCandidates(project: WritingProject, operation: WritingOper
 function targetDescriptor(
   resource: ProjectSnapshot['resources'][number],
   content: string
-): ContextReceipt['targetDescriptors'][number] {
-  const anchors: ContextReceipt['targetDescriptors'][number]['anchors'][number][] = [];
-  const add = (kind: 'document' | 'paragraph' | 'protected-range', range: ContextReceipt['targetDescriptors'][number]['anchors'][number]['range'], label: string, targetRangeId?: string) => {
+): WritingContextSelection['targetDescriptors'][number] {
+  const anchors: WritingContextSelection['targetDescriptors'][number]['anchors'][number][] = [];
+  const add = (kind: 'document' | 'paragraph' | 'protected-range', range: WritingContextSelection['targetDescriptors'][number]['anchors'][number]['range'], label: string, targetRangeId?: string) => {
     const offsets = offsetRange(content, range);
     const textHash = textSha256(content.slice(offsets.start, offsets.end));
     anchors.push({
@@ -246,7 +245,7 @@ function trimTrailingNewlines(content: string, start: number, end: number): numb
   return selected;
 }
 
-function item(value: ContextReceipt['items'][number]): ContextReceipt['items'][number] {
+function item(value: WritingContextSelection['items'][number]): WritingContextSelection['items'][number] {
   return value;
 }
 

@@ -18,7 +18,7 @@ test('TUI preserves terminal truth and does not duplicate the final answer', asy
     type: 'progress',
     event: {
       type: 'assistant.ended', turnIndex: 1, turnId: 'turn-1', requestAttempt: 1,
-      content: 'Answer.', candidate: { status: 'complete', message: 'Answer.', source: 'content', turnIndex: 1 }
+      content: 'Answer.', modelOutput: { status: 'complete', message: 'Answer.', source: 'content', turnIndex: 1 }
     }
   });
   await events.enqueue({ type: 'result', result: { state: 'ended', terminal, deliveryDiagnostics: [] } });
@@ -74,7 +74,7 @@ function runProjectionApp() {
 function base() {
   return {
     runId: 'run', finalizationId: 'final', phase: 'ended', executionStatus: 'completed', verificationStatus: 'not_required', terminationReason: 'model_completed', modelTerminationReason: 'stop',
-    candidate: { status: 'complete', message: 'Answer.', source: 'content', turnIndex: 1 }, turnCount: 1, checkResults: [],
-    budget: { modelTurns: 1, totalToolCalls: 0, repeatedIdenticalToolCalls: 0, candidateRevisions: 0, elapsedMs: 1, promptTokens: 0, completionTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, knownCosts: {}, pricingStatus: 'unknown', unknownPricedTokens: 0, consecutiveProviderFailures: 0, consecutiveToolFailures: 0 }
+    modelOutput: { status: 'complete', message: 'Answer.', source: 'content', turnIndex: 1 }, turnCount: 1, checkResults: [],
+    budget: { modelTurns: 1, totalToolCalls: 0, repeatedIdenticalToolCalls: 0, revisionAttempts: 0, elapsedMs: 1, promptTokens: 0, completionTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, knownCosts: {}, pricingStatus: 'unknown', unknownPricedTokens: 0, consecutiveProviderFailures: 0, consecutiveToolFailures: 0 }
   };
 }

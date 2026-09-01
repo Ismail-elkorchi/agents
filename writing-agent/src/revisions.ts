@@ -63,16 +63,16 @@ export async function acceptRevisionProposal(project: WritingProject, input: {
   if (operation === undefined) throw new Error(`Writing proposal operation is unavailable: ${proposal.operationId}`);
   if (proposal.baseProjectRevisionId !== view.current.revision.revisionId) throw new Error(`Writing proposal base is stale: ${proposal.proposalId}`);
   if (operation.briefRevisionId !== view.current.brief.briefRevisionId) throw new Error(`Writing proposal brief is stale: ${proposal.proposalId}`);
-  const evaluation = view.qualityEvaluations.get(proposal.proposalId);
-  if (evaluation === undefined) throw new Error(`Writing proposal has no durable Agent Core quality evaluation: ${proposal.proposalId}`);
-  const humanCriteria = new Set(evaluation.criterionCoverage.filter((criterion) => criterion.verificationKind === 'human').map((criterion) => criterion.criterionId));
+  const verification = view.productionVerifications.get(proposal.proposalId);
+  if (verification === undefined) throw new Error(`Writing proposal has no durable Agent Core quality verification: ${proposal.proposalId}`);
+  const humanCriteria = new Set(verification.criterionCoverage.filter((criterion) => criterion.verificationKind === 'human').map((criterion) => criterion.criterionId));
   const criterionDecisions = input.humanCriterionDecisions.map((decision) => humanCriterionDecisionSchema.parse(decision));
   for (const decision of criterionDecisions) if (!humanCriteria.has(decision.criterionId)) throw new Error(`Human decision targets a criterion that is not human-verified: ${decision.criterionId}`);
   const applicability = proposalCanApply({
-    deterministicChecks: evaluation.deterministicChecks,
-    semanticPreservationFindings: evaluation.semanticPreservationFindings,
-    editorialFindings: evaluation.editorialFindings,
-    criterionCoverage: evaluation.criterionCoverage
+    deterministicChecks: verification.deterministicChecks,
+    semanticPreservationFindings: verification.semanticPreservationFindings,
+    editorialFindings: verification.editorialFindings,
+    criterionCoverage: verification.criterionCoverage
   }, criterionDecisions);
   if (!applicability.allowed) throw new Error(`Writing proposal cannot be accepted while required verification is non-passing: ${applicability.reasons.join(', ')}.`);
   const explanation = input.explanation.trim();
@@ -81,7 +81,7 @@ export async function acceptRevisionProposal(project: WritingProject, input: {
     decisionId: contentId('decision', { proposalId: input.proposalId, decision: 'accepted', explanation, criterionDecisions }),
     projectRevisionId: view.current.revision.revisionId,
     proposalId: input.proposalId,
-    findingIds: [...evaluation.semanticPreservationFindings.map((finding) => finding.findingId), ...evaluation.editorialFindings.map((finding) => finding.findingId)],
+    findingIds: [...verification.semanticPreservationFindings.map((finding) => finding.findingId), ...verification.editorialFindings.map((finding) => finding.findingId)],
     criterionDecisions,
     decision: 'accepted',
     explanation,
@@ -101,12 +101,12 @@ export async function rejectRevisionProposal(project: WritingProject, proposalId
   const proposalView = view.proposals.get(proposalId);
   if (proposalView === undefined) throw new Error(`Unknown writing proposal: ${proposalId}`);
   if (proposalView.status !== 'proposed') throw new Error(`Writing proposal is already ${proposalView.status}: ${proposalId}`);
-  const evaluation = view.qualityEvaluations.get(proposalId);
+  const verification = view.productionVerifications.get(proposalId);
   const decision = editorialDecisionSchema.parse({
     decisionId: contentId('decision', { proposalId, decision: 'rejected', explanation }),
     projectRevisionId: view.current.revision.revisionId,
     proposalId,
-    findingIds: evaluation === undefined ? [] : [...evaluation.semanticPreservationFindings.map((finding) => finding.findingId), ...evaluation.editorialFindings.map((finding) => finding.findingId)],
+    findingIds: verification === undefined ? [] : [...verification.semanticPreservationFindings.map((finding) => finding.findingId), ...verification.editorialFindings.map((finding) => finding.findingId)],
     criterionDecisions: [],
     decision: 'rejected',
     explanation,
@@ -141,11 +141,11 @@ export async function applyRevisionProposal(project: WritingProject, input: {
   const operation = view.operations.get(proposal.operationId);
   if (operation === undefined) throw new Error(`Writing proposal operation is unavailable: ${proposal.operationId}`);
   if (operation.briefRevisionId !== view.current.brief.briefRevisionId) throw new Error(`Writing proposal brief is stale: ${proposal.proposalId}`);
-  const evaluation = view.qualityEvaluations.get(proposal.proposalId);
-  if (evaluation === undefined) throw new Error(`Writing proposal quality evaluation is unavailable: ${proposal.proposalId}`);
+  const verification = view.productionVerifications.get(proposal.proposalId);
+  if (verification === undefined) throw new Error(`Writing proposal quality verification is unavailable: ${proposal.proposalId}`);
   const acceptanceDecision = requireProposalDecision(view.records, proposal.proposalId, 'accepted');
   const textEdits = proposal.textEdits;
-  const plan = await prepareTextPlan(project, view.current, textEdits);
+  const plan = await planTextTransaction(project, view.current, textEdits);
   const transactionId = contentId('writing-edit', { proposalId: proposal.proposalId, textEdits });
   const journalDirectory = path.join(project.state.projectDirectory(project.store.identity.projectId), 'transactions');
   await mkdir(journalDirectory, { recursive: true, mode: 0o700 });
@@ -176,7 +176,7 @@ export async function applyRevisionProposal(project: WritingProject, input: {
       });
       if (observation.kind !== 'result' || !observation.ok) throw new Error(`Agent Core edit_text rejected proposal application: ${observation.summary}`);
       const output = editTextOutputSchema.parse(observation.output);
-      if (output.operationStatus !== 'applied' && output.operationStatus !== 'no_change') throw new Error(`Agent Core edit_text did not establish a committed result: ${output.operationStatus}`);
+      if (output.applicationStatus !== 'applied' && output.applicationStatus !== 'no_change') throw new Error(`Agent Core edit_text did not establish a committed result: ${output.applicationStatus}`);
       const receipt = await journal.withAuthority(project.authority, (authority) => authority.receipt(transactionId));
       if (receipt === undefined) throw new Error(`Committed text edit has no durable transaction receipt: ${transactionId}`);
       transactionResult = receipt.result;
@@ -210,8 +210,8 @@ export async function applyRevisionProposal(project: WritingProject, input: {
     createdAt: nowTimestamp(clock)
   }));
   const allNewProvenance = [...proposedRecords, ...acceptedRecords];
-  const findings = evaluation.editorialFindings;
-  const checks = evaluation.deterministicChecks;
+  const findings = verification.editorialFindings;
+  const checks = verification.deterministicChecks;
   const provisional = createProjectRevision({
     ...snapshotParts(view.current),
     parentRevisionIds: [view.current.revision.revisionId],
@@ -349,7 +349,7 @@ export async function undoWritingRevision(project: WritingProject, input: {
       });
       if (observation.kind !== 'result' || !observation.ok) throw new Error(`Agent Core edit_text rejected undo: ${observation.summary}`);
       const output = editTextOutputSchema.parse(observation.output);
-      if (output.operationStatus !== 'applied' && output.operationStatus !== 'no_change') throw new Error(`Agent Core edit_text did not establish undo: ${output.operationStatus}`);
+      if (output.applicationStatus !== 'applied' && output.applicationStatus !== 'no_change') throw new Error(`Agent Core edit_text did not establish undo: ${output.applicationStatus}`);
       const receipt = await journal.withAuthority(project.authority, (authority) => authority.receipt(transactionId));
       if (receipt === undefined) throw new Error(`Committed undo has no durable transaction receipt: ${transactionId}`);
       transactionResult = receipt.result;
@@ -442,7 +442,7 @@ export async function undoWritingRevision(project: WritingProject, input: {
   return Object.freeze({ mutationId, restoredRevisionId, revisionId: snapshot.revision.revisionId, transactionId, fileChanges, recoveredFinalization });
 }
 
-async function prepareTextPlan(project: WritingProject, base: ProjectSnapshot, edits: readonly LocalizedTextEdit[]) {
+async function planTextTransaction(project: WritingProject, base: ProjectSnapshot, edits: readonly LocalizedTextEdit[]) {
   const plan = new Map<string, { path: string; oldContent: string; newContent: string; oldSha256: string; newSha256: string }>();
   for (const request of edits) {
     const resource = requireResource(base, request.resourceId);
@@ -473,7 +473,7 @@ function assertRecoveryPlan(recovery: z.infer<typeof editTextRecoveryPayloadSche
   if (recovery.transactionId !== transactionId) throw new Error('Recovered text transaction ID does not match proposal application.');
   for (const item of plan.values()) {
     const file = recovery.files.find((candidate) => candidate.path === item.path);
-    if (file?.oldSha256 !== item.oldSha256 || file.newSha256 !== item.newSha256) throw new Error(`Recovered text transaction does not match prepared proposal file: ${item.path}`);
+    if (file?.oldSha256 !== item.oldSha256 || file.newSha256 !== item.newSha256) throw new Error(`Recovered text transaction does not match the staged proposal file: ${item.path}`);
   }
 }
 
@@ -490,10 +490,10 @@ function expectedAnchorText(
   edit: LocalizedTextEdit['edits'][number]
 ): string {
   const content = plan.get(resourceId)?.oldContent;
-  if (content === undefined) throw new Error(`Prepared text plan lacks anchor preimage content: ${resourceId}`);
+  if (content === undefined) throw new Error(`Text application plan lacks anchor preimage content: ${resourceId}`);
   const offsets = offsetRange(content, edit.range);
   const expectedText = content.slice(offsets.start, offsets.end);
-  if (textSha256(expectedText) !== edit.expectedTextSha256) throw new Error(`Prepared text plan anchor preimage is stale: ${edit.anchorId}`);
+  if (textSha256(expectedText) !== edit.expectedTextSha256) throw new Error(`Text application plan anchor preimage is stale: ${edit.anchorId}`);
   return expectedText;
 }
 

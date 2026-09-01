@@ -2,8 +2,8 @@ import { createScrollState, createTextAreaState } from '@ismail-elkorchi/termina
 import type { ScrollState, TextAreaState, UnscrolledSearchPickerState } from '@ismail-elkorchi/terminal-ui/behavior';
 import type {
   AgentApprovalSuspension,
-  AgentOperationInspection,
-  AgentOperationSuspension,
+  AgentRunInspection,
+  AgentRunSuspension,
   AgentDeliveryDiagnostic,
   AgentProgressEvent,
   AgentProviderStateSummary,
@@ -64,7 +64,7 @@ export interface CodingAgentTuiDebugState {
   readonly replayState?: SessionReplayState;
   readonly branchPoints: readonly SessionBranchPoint[];
   readonly pendingSubmissions: readonly SessionPendingSubmission[];
-  readonly operations: readonly AgentOperationInspection[];
+  readonly runs: readonly AgentRunInspection[];
   readonly changeReports: readonly RunChangeReport[];
 }
 
@@ -72,7 +72,7 @@ export type CodingAgentTuiRunState =
   | { readonly kind: 'idle' }
   | { readonly kind: 'working'; readonly label: string; readonly phase?: AgentRunPhase }
   | { readonly kind: 'waiting_for_approval'; readonly suspension: AgentApprovalSuspension }
-  | { readonly kind: 'waiting_for_recovery'; readonly suspension: AgentOperationSuspension }
+  | { readonly kind: 'waiting_for_recovery'; readonly suspension: AgentRunSuspension }
   | { readonly kind: 'ended'; readonly terminal: AgentTerminalSnapshot }
   | { readonly kind: 'failed'; readonly message: string };
 
@@ -143,7 +143,7 @@ export function createInitialCodingAgentTuiState(
       deliveryDiagnostics: [],
       branchPoints: [],
       pendingSubmissions: [],
-      operations: [],
+      runs: [],
       changeReports: []
     },
     nextLocalId: 1

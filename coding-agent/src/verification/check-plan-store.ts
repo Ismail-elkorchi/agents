@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { PrivateStateDirectory } from '../state/private-state.js';
-import type { AdmittedCodingCheck, AdmittedCodingCheckPlan } from './configured-checks.js';
+import type { AdmittedCodingCheck, AdmittedCodingCheckPlan } from './candidate-acceptance-checks.js';
 
 /** Admits one immutable verification plan per run and reloads it for every recovery path. */
 export async function loadOrAdmitCheckPlan(input: {

@@ -12,7 +12,7 @@ import type { GitObservationReceipt } from '../workspace/git/repository-observer
 
 const ENTRIES_PER_CHUNK = 1_000;
 
-interface BaselineManifest {
+interface PreChangeSnapshotManifest {
   readonly schemaVersion: 1;
   readonly runId: string;
   readonly digest: string;
@@ -25,29 +25,29 @@ interface BaselineManifest {
   readonly versionControlDigest: string;
 }
 
-export interface RunWorkspaceBaseline {
+export interface PreChangeSnapshot {
   readonly workspace: WorkspaceSnapshot;
   readonly versionControl: RepositoryVersionControl;
 }
 
 /** Returns the immutable pre-effect workspace state owned by one accepted run. */
-export async function loadOrCaptureRunWorkspaceBaseline(input: {
+export async function loadOrCapturePreChangeSnapshot(input: {
   readonly state: PrivateStateDirectory;
   readonly root: RootedFileAuthority;
   readonly runId: string;
   readonly resuming: boolean;
   readonly observeVersionControl: () => Promise<RepositoryVersionControl>;
-}): Promise<RunWorkspaceBaseline> {
-  const directory = baselineDirectory(input.runId);
+}): Promise<PreChangeSnapshot> {
+  const directory = preChangeSnapshotDirectory(input.runId);
   const stored = await input.state.read(`${directory}/manifest.json`);
-  if (stored !== undefined) return loadRunWorkspaceBaseline(input.state, input.runId);
-  if (input.resuming) throw new Error(`Workspace baseline for resumed run ${input.runId} is missing.`);
+  if (stored !== undefined) return loadPreChangeSnapshot(input.state, input.runId);
+  if (input.resuming) throw new Error(`Pre-change snapshot for resumed run ${input.runId} is missing.`);
 
-  const versionControlBefore = await input.observeVersionControl();
+  const versionControlBeforeCapture = await input.observeVersionControl();
   const snapshot = await captureWorkspaceSnapshot(input.root);
   const versionControl = await input.observeVersionControl();
-  if (versionControlIdentity(versionControlBefore) !== versionControlIdentity(versionControl)) {
-    throw new Error(`Workspace version-control state changed while run baseline ${input.runId} was being captured.`);
+  if (versionControlIdentity(versionControlBeforeCapture) !== versionControlIdentity(versionControl)) {
+    throw new Error(`Workspace version-control state changed while run pre-change snapshot ${input.runId} was being captured.`);
   }
   const versionControlText = JSON.stringify(versionControl);
   const versionControlDigest = createHash('sha256').update(versionControlText).digest('hex');
@@ -56,7 +56,7 @@ export async function loadOrCaptureRunWorkspaceBaseline(input: {
     await input.state.write(`${directory}/entries-${String(index)}.json`, JSON.stringify(chunks[index]));
   }
   await input.state.write(`${directory}/version-control.json`, versionControlText);
-  const manifest: BaselineManifest = Object.freeze({
+  const manifest: PreChangeSnapshotManifest = Object.freeze({
     schemaVersion: 1,
     runId: input.runId,
     digest: snapshot.digest,
@@ -72,18 +72,18 @@ export async function loadOrCaptureRunWorkspaceBaseline(input: {
   return Object.freeze({ workspace: snapshot, versionControl });
 }
 
-export async function loadRunWorkspaceBaseline(
+export async function loadPreChangeSnapshot(
   state: PrivateStateDirectory,
   runId: string
-): Promise<RunWorkspaceBaseline> {
-  const directory = baselineDirectory(runId);
+): Promise<PreChangeSnapshot> {
+  const directory = preChangeSnapshotDirectory(runId);
   const manifestText = await state.read(`${directory}/manifest.json`);
-  if (manifestText === undefined) throw new Error(`Workspace baseline for run ${runId} is missing.`);
-  return loadBaseline(state, directory, runId, manifestText);
+  if (manifestText === undefined) throw new Error(`Pre-change snapshot for run ${runId} is missing.`);
+  return loadPreChange(state, directory, runId, manifestText);
 }
 
-export async function deleteRunWorkspaceBaseline(state: PrivateStateDirectory, runId: string): Promise<void> {
-  const directory = baselineDirectory(runId);
+export async function deletePreChangeSnapshot(state: PrivateStateDirectory, runId: string): Promise<void> {
+  const directory = preChangeSnapshotDirectory(runId);
   const stored = await state.read(`${directory}/manifest.json`);
   if (stored === undefined) return;
   const manifest = decodeManifest(JSON.parse(stored), runId);
@@ -94,28 +94,28 @@ export async function deleteRunWorkspaceBaseline(state: PrivateStateDirectory, r
   await state.delete(`${directory}/manifest.json`);
 }
 
-async function loadBaseline(
+async function loadPreChange(
   state: PrivateStateDirectory,
   directory: string,
   runId: string,
   manifestText: string
-): Promise<RunWorkspaceBaseline> {
+): Promise<PreChangeSnapshot> {
   const manifest = decodeManifest(JSON.parse(manifestText), runId);
   const entries: WorkspaceSnapshotEntry[] = [];
   for (let index = 0; index < manifest.chunkCount; index += 1) {
     const text = await state.read(`${directory}/entries-${String(index)}.json`);
-    if (text === undefined) throw new Error(`Workspace baseline ${runId} is missing entry chunk ${String(index)}.`);
+    if (text === undefined) throw new Error(`Pre-change snapshot ${runId} is missing entry chunk ${String(index)}.`);
     entries.push(...decodeEntries(JSON.parse(text)));
   }
-  if (entries.length !== manifest.entryCount) throw new Error(`Workspace baseline ${runId} has an invalid entry count.`);
+  if (entries.length !== manifest.entryCount) throw new Error(`Pre-change snapshot ${runId} has an invalid entry count.`);
   const digest = createHash('sha256').update(JSON.stringify(entries)).digest('hex');
-  if (digest !== manifest.digest) throw new Error(`Workspace baseline ${runId} failed its content digest.`);
+  if (digest !== manifest.digest) throw new Error(`Pre-change snapshot ${runId} failed its content digest.`);
   const fileCount = entries.filter((entry) => entry.kind === 'file' && entry.sha256 !== undefined).length;
-  if (fileCount !== manifest.fileCount) throw new Error(`Workspace baseline ${runId} has an invalid file count.`);
+  if (fileCount !== manifest.fileCount) throw new Error(`Pre-change snapshot ${runId} has an invalid file count.`);
   const versionControlText = await state.read(`${directory}/version-control.json`);
   if (versionControlText === undefined
     || createHash('sha256').update(versionControlText).digest('hex') !== manifest.versionControlDigest) {
-    throw new Error(`Workspace baseline ${runId} has invalid version-control evidence.`);
+    throw new Error(`Pre-change snapshot ${runId} has an invalid version-control observation.`);
   }
   const versionControl = decodeVersionControl(JSON.parse(versionControlText));
   const workspace = Object.freeze({
@@ -129,7 +129,7 @@ async function loadBaseline(
   return Object.freeze({ workspace, versionControl });
 }
 
-function decodeManifest(value: unknown, runId: string): BaselineManifest {
+function decodeManifest(value: unknown, runId: string): PreChangeSnapshotManifest {
   if (!isRecord(value)
     || Object.keys(value).some((key) => !['schemaVersion', 'runId', 'digest', 'coverage', 'causes', 'fileCount', 'totalBytes', 'entryCount', 'chunkCount', 'versionControlDigest'].includes(key))
     || value.schemaVersion !== 1
@@ -143,7 +143,7 @@ function decodeManifest(value: unknown, runId: string): BaselineManifest {
     || !nonNegativeInteger(value.chunkCount)
     || !sha256(value.versionControlDigest)
     || value.chunkCount !== Math.ceil(value.entryCount / ENTRIES_PER_CHUNK)) {
-    throw new Error(`Workspace baseline manifest for ${runId} is invalid.`);
+    throw new Error(`Pre-change snapshot manifest for ${runId} is invalid.`);
   }
   return Object.freeze({
     schemaVersion: 1,
@@ -160,7 +160,7 @@ function decodeManifest(value: unknown, runId: string): BaselineManifest {
 }
 
 function decodeEntries(value: unknown): readonly WorkspaceSnapshotEntry[] {
-  if (!Array.isArray(value) || value.length > ENTRIES_PER_CHUNK) throw new Error('Workspace baseline entry chunk is invalid.');
+  if (!Array.isArray(value) || value.length > ENTRIES_PER_CHUNK) throw new Error('Pre-change snapshot entry chunk is invalid.');
   return Object.freeze(value.map((entry) => {
     if (!isRecord(entry)
       || Object.keys(entry).some((key) => !['path', 'kind', 'mode', 'bytes', 'sha256', 'content'].includes(key))
@@ -173,7 +173,7 @@ function decodeEntries(value: unknown): readonly WorkspaceSnapshotEntry[] {
       || (entry.content !== undefined && entry.content !== 'text' && entry.content !== 'binary')
       || (entry.kind === 'file' && entry.sha256 !== undefined && entry.content === undefined)
       || (entry.content !== undefined && (entry.kind !== 'file' || entry.sha256 === undefined))) {
-      throw new Error('Workspace baseline entry is invalid.');
+      throw new Error('Pre-change snapshot entry is invalid.');
     }
     return Object.freeze({
       path: entry.path,
@@ -186,8 +186,8 @@ function decodeEntries(value: unknown): readonly WorkspaceSnapshotEntry[] {
   }));
 }
 
-function baselineDirectory(runId: string): string {
-  return `run-workspace-baselines/${createHash('sha256').update(runId).digest('hex')}`;
+function preChangeSnapshotDirectory(runId: string): string {
+  return `run-pre-change-snapshots/${createHash('sha256').update(runId).digest('hex')}`;
 }
 
 function versionControlIdentity(value: RepositoryVersionControl): string {
@@ -208,14 +208,14 @@ function versionControlIdentity(value: RepositoryVersionControl): string {
 }
 
 function decodeVersionControl(value: unknown): RepositoryVersionControl {
-  if (!isRecord(value)) throw new Error('Workspace baseline version-control state is invalid.');
+  if (!isRecord(value)) throw new Error('Pre-change snapshot version-control state is invalid.');
   if (value.kind === 'none' && Object.keys(value).length === 1) return Object.freeze({ kind: 'none' });
   if (value.kind === 'unavailable'
     && Object.keys(value).every((key) => key === 'kind' || key === 'reason')
     && typeof value.reason === 'string') return Object.freeze({ kind: 'unavailable', reason: value.reason });
   if (value.kind !== 'git'
     || Object.keys(value).some((key) => key !== 'kind' && key !== 'status')
-    || !isRecord(value.status)) throw new Error('Workspace baseline version-control state is invalid.');
+    || !isRecord(value.status)) throw new Error('Pre-change snapshot version-control state is invalid.');
   const status = value.status;
   if (status.kind === 'unavailable'
     && Object.keys(status).every((key) => key === 'kind' || key === 'reason' || key === 'executionId')
@@ -231,13 +231,13 @@ function decodeVersionControl(value: unknown): RepositoryVersionControl {
     || !nonNegativeInteger(status.totalEntries)
     || !nonNegativeInteger(status.omittedEntries)
     || (status.coverage !== 'complete' && status.coverage !== 'partial')
-    || !isRecord(status.receipt)) throw new Error('Workspace baseline version-control state is invalid.');
+    || !isRecord(status.receipt)) throw new Error('Pre-change snapshot version-control state is invalid.');
   const entries = Object.freeze(status.entries.map((entry) => {
     if (!isRecord(entry)
       || Object.keys(entry).some((key) => !['path', 'state', 'sourcePathSha256', 'hazards'].includes(key))
       || typeof entry.path !== 'string' || typeof entry.state !== 'string' || !sha256(entry.sourcePathSha256)
       || !Array.isArray(entry.hazards)) {
-      throw new Error('Workspace baseline version-control entry is invalid.');
+      throw new Error('Pre-change snapshot version-control entry is invalid.');
     }
     const hazards = Object.freeze(entry.hazards.map((hazard: unknown) => decodeContentHazard(hazard)));
     return Object.freeze({ path: entry.path, state: entry.state, sourcePathSha256: entry.sourcePathSha256, hazards });
@@ -264,7 +264,7 @@ function decodeReceipt(value: Record<string, unknown>): GitObservationReceipt {
     || required.some((key) => typeof value[key] !== 'string')
     || (value.executableIdentityDigest !== undefined && !sha256(value.executableIdentityDigest))
     || (value.executableContentSha256 !== undefined && !sha256(value.executableContentSha256))) {
-    throw new Error('Workspace baseline Git receipt is invalid.');
+    throw new Error('Pre-change snapshot Git receipt is invalid.');
   }
   const executionId = requiredString(value.executionId);
   const requestDigest = requiredString(value.requestDigest);
@@ -311,7 +311,7 @@ function stringArray(value: unknown): value is readonly string[] {
 }
 
 function requiredString(value: unknown): string {
-  if (typeof value !== 'string') throw new Error('Workspace baseline Git receipt is invalid.');
+  if (typeof value !== 'string') throw new Error('Pre-change snapshot Git receipt is invalid.');
   return value;
 }
 
@@ -321,6 +321,6 @@ function isContentHazard(value: unknown): value is ContentHazard {
 }
 
 function decodeContentHazard(value: unknown): ContentHazard {
-  if (!isContentHazard(value)) throw new Error('Workspace baseline version-control hazard is invalid.');
+  if (!isContentHazard(value)) throw new Error('Pre-change snapshot version-control hazard is invalid.');
   return value;
 }

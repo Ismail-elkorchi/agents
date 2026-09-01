@@ -1,54 +1,58 @@
 # Writing Agent
 
-Writing Agent is a project-oriented writing application composed from Agent Core. It keeps briefs, structured intents, proposals, evidence, editorial decisions, authorship provenance, context receipts, transaction settlements, and content-addressed project revisions in one append-only private project log.
+Writing Agent is a project-oriented application composed from Agent Core. Its append-only private project log retains briefs, structured operations and intents, context selections, proposals, claim/source evidence, editorial decisions, authorship provenance, production verification, transaction settlements, and content-addressed project revisions.
 
-Private state defaults to the platform user-state directory (`$XDG_STATE_HOME/writing-agent` or `~/.local/state/writing-agent`) and must remain outside the writing project. Use `--state-root` for an explicit external location. `.writing-agent` and `.git` are denied inside the rooted project authority and are never authoritative state.
+Private state defaults to the platform user-state directory ($XDG_STATE_HOME/writing-agent or ~/.local/state/writing-agent) and must remain outside the writing project. Use --state-root for another external location. .writing-agent and .git are denied inside rooted project authority and are never authoritative state.
 
-The model receives bounded project text, sources, excerpts, and tool output as untrusted data. Application-owned target descriptors are separate trusted control: each descriptor binds an admitted resource ID to its rooted relative path, base hash, media type, and stable document, paragraph, and protected-range anchors. A direct user request is adopted as an immutable structured operation before model execution.
+## Model and authority boundary
 
-In the default `suggest` mode, the model can read only exact admitted managed resources and `propose_revision` is its only write capability. Its schema is compiled for the admitted operation: text intents expose only their exact intent IDs, resource IDs, anchor IDs, and replacement prose, while structural alternatives appear only for corresponding structural intents. The model does not submit paths, hashes, ranges, source preimages, verification verdicts, criterion coverage, or mutation authority. The operation service injects and validates control values and candidate material before appending one durable proposal; it cannot mutate user files. Deterministic quality checks, semantic preservation, and editorial findings are produced afterward inside Agent Core's required verification boundary and persisted in a proposal-quality evaluation receipt.
+A direct user request is admitted as an immutable writing operation. WritingExecutionBinding freezes the operation, base project revision, context selection, and proposal vocabulary used by one run.
 
-Applying an accepted proposal is a separate application action using Agent Core's recoverable text transaction. Apply-mode direct-user authority is captured in the admitted operation, not retained as transient caller state. Initial execution, approval and decision continuation, recovery, and abort all pass through the same idempotent operation finalizer. A terminal Agent Core run that outlives its caller is reconciled from the durable run event, and an interrupted apply is recovered from its exact transaction receipt before one terminal operation lifecycle is appended. Required failed, unknown, stale, partially covered, or unevaluated verification blocks acceptance. Human acceptance criteria require explicit criterion-level decisions, which are retained in the editorial decision rather than inferred from a generic approval.
+The producer receives the complete applicable WritingOperationContract: every intent instruction, dependency, target, preservation requirement, affected criterion, affected claim/evidence relation, prior decision, and exact machine constraint that may affect acceptance. Project text, sources, excerpts, and tool output remain data. Host-owned target descriptors bind admitted resource IDs to rooted paths, hashes, media types, and stable document/range anchors.
 
-The CLI requires one `--human-criterion <criterion-id>` option for each human criterion the user explicitly passes when applying a proposal. It does not infer those decisions from the `apply` command itself.
+In suggest mode, the model can read only admitted target resources and affected local source resources. propose_revision is its only write-shaped capability. The model supplies admitted IDs and replacement prose; it cannot choose paths, hashes, preimages, verification verdicts, criterion coverage, or mutation authority. The host validates and stores one private proposal without modifying managed files.
 
-One-shot writing remains available only through the explicit transient composition:
+All model calls, including semantic verification, pass through Agent Core's InferenceGateway. Writing performs one ordered WritingContextSelection; Core preserves that order in PromptMaterial and does not run another relevance selector.
 
-```bash
+## Verification and evidence
+
+Evidence means material that supports or contradicts a claim. Tool outputs are observations, deterministic check details are observations, and model-returned prose is model output.
+
+ProposalProductionVerification combines:
+
+- deterministic structural, range, hash, provenance, length, citation, number, and named-entity checks;
+- semantic-preservation and editorial findings against the exact proposed revision;
+- exact claim/source evidence excerpts relevant to the admitted operation;
+- criterion-level human decisions where machine verification is insufficient.
+
+Unknown, stale, partially covered, or failed required verification blocks acceptance. Semantic findings cannot override deterministic failures. Findings bind the proposed revision, base revision, operation contract, exact supporting ranges, and verification-input hash.
+
+The CLI requires one --human-criterion option for every human criterion the user explicitly passes when applying a proposal. An apply command alone does not imply those decisions.
+
+## Apply and recovery
+
+Applying an accepted proposal is a separate application action. WritingApplyAuthorization binds the proposal, project/base revisions, resource preimages, production verification, human decisions, and recoverable transaction identity.
+
+Initial execution, user decisions, recovery, and abort converge through the same idempotent finalization path. A run that outlives its caller is reconciled from durable run events. A committed text transaction is recovered before one terminal writing lifecycle is appended. Stale content is never force-overwritten, and rejection leaves managed files unchanged.
+
+## Commands
+
+One-shot transient writing remains explicit:
+
+~~~bash
 writing-agent write "Draft a concise product announcement."
-```
+~~~
 
-Project commands include `init`, `status`, `brief show`, `brief amend`, `plan`, `draft`, `revise`, `review`, `diff`, `apply`, `reject`, `undo`, `suspension`, `resume`, `decide`, `approval`, `abort`, `source add`, and `source list`. Provider selection is application configuration, not a package assumption:
+Project commands include init, status, brief show, brief amend, plan, draft, revise, review, diff, apply, reject, undo, suspension, resume, decide, approval, abort, source add, and source list.
 
-```bash
+~~~bash
 writing-agent init --root ./manuscript "Write a sourced technical essay."
 writing-agent status --root ./manuscript
 writing-agent revise <resource-id> --root ./manuscript --provider openai-codex --model <model> --reasoning-effort medium --min-words 1200 --max-words 1500 --preserve-existing-numbers --forbid-new-citations "Tighten the opening without changing claims."
-```
+~~~
 
-Exactly four provider compositions are supported: `ollama`, `openrouter`, `openai`, and `openai-codex`. The library APIs remain provider-neutral and accept an Agent Core `ModelProvider` directly.
+Exactly four provider compositions are supported: ollama, openrouter, openai, and openai-codex. Library APIs remain provider-neutral and accept an Agent Core ModelProvider. Reasoning effort accepts none, minimal, low, medium, high, xhigh, or max; WRITING_AGENT_REASONING_EFFORT is the environment equivalent.
 
-`--reasoning-effort` accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; `WRITING_AGENT_REASONING_EFFORT` is the environment equivalent. Operation-level exact constraints are available through repeatable `--allow-number` and `--allow-entity` flags, `--preserve-existing-numbers`, and `--forbid-new-citations`. Project and intent length constraints are intersected only when they govern the same exact resource set. Constraints for different intents retain their own targets, so a multi-resource operation cannot accidentally evaluate one intent against another resource's text.
+Secure local revision currently requires Agent Core's Linux rooted-file authority, descriptor-relative checks, link checks, and recoverable patch journal. Unsupported platforms fail closed.
 
-Required exact constraints have deterministic closed-world checks for numbers, citations, and named entities. Every machine check identifies the acceptance criteria it covers. Evaluation criterion coverage is therefore derived only from explicit bindings to deterministic checks or admitted editorial findings; a narrow checker cannot imply coverage it did not declare. Source identity, excerpt hashes, claim/evidence graph integrity, semantic evidence verdicts, semantic-preservation findings, and direct human decisions remain distinct records, and unknown evidence is never converted to support.
-
-Secure local revision currently relies on Agent Core's Linux rooted-file authority, descriptor-relative path checks, link checks, and recoverable patch journal. The package does not claim secure revision support on unsupported platforms.
-
-There is no autonomous mode. There is also no multi-agent orchestration, swarm API, specialist-agent configuration, inter-agent queue, or mutable role binding. Planning, drafting, review, evidence checking, and editorial work remain explicit bounded passes in one application. A specialist agent is deferred until evaluations demonstrate a benefit that separate passes cannot achieve and authority, shared-state conflict, attribution, suspension, and recovery contracts are defined.
-
-The terminal command surface is intentionally non-interactive. A TUI can be added after the project, revision, recovery, and evaluation contracts stabilize; no TUI state or generic resume abstraction is part of the current domain model.
-
-The committed evaluation corpus contains distinct development, regression, holdout, adversarial, and human-audit sets. Generated campaign answers, judge output, and aggregate reports are not committed. The regression set has a separately reviewed digest and runs as a required verification gate.
-
-A subscription-backed long-form campaign is deliberately separate from deterministic CI. Run it locally with existing provider authentication:
-
-```bash
-WRITING_EVAL_PROVIDER=openai-codex \
-WRITING_EVAL_MODEL=gpt-5.6-luna \
-WRITING_EVAL_REASONING_EFFORT=medium \
-npm run eval:writing:live
-```
-
-The ignored `writing-evaluation-artifacts/` output contains generated documents, exact commit and runtime bindings, a working-tree digest when a local checkout is dirty, operation/context/proposal identities, hashes, checks, criterion coverage, token budgets, and metadata for every provider request. It excludes credentials and hidden reasoning text. Live subscription-backed evaluation is local-only and is not part of GitHub Actions, ordinary CI, or release workflows.
-
-This contract is intentionally breaking. Current code does not parse or translate the former model-authored proposal hashes, copied preimage text/ranges, v1 intents, or old file-change field names.
+There is no autonomous mode, multi-agent orchestration, live model mutation, model-owned publication, or offline measurement corpus/campaign subsystem. The terminal surface is intentionally non-interactive. This package is pre-alpha and intentionally does not translate retired unpublished state names.

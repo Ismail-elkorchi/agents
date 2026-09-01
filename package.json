@@ -13,16 +13,14 @@
     "lint": "eslint \"coding-agent/src/**/*.ts\" \"writing-agent/src/**/*.ts\"",
     "test": "npm run build && npm run test:unit",
     "test:unit": "node scripts/run-test-suite.mjs",
-    "test:writing-regression": "node scripts/run-writing-regression.mjs",
-    "eval:writing:live": "npm run build && node scripts/run-writing-live-evaluation.mjs",
     "package": "node scripts/test-packed-consumer.mjs",
-    "verify": "npm run clean && npm run build && npm run lint && npm run check:conformance && npm run test:unit && npm run test:writing-regression",
+    "verify": "npm run clean && npm run build && npm run lint && npm run check:conformance && npm run test:unit",
     "verify:release": "npm run verify && npm run package",
     "clean": "node scripts/clean.mjs"
   },
   "devDependencies": {
     "@agent-core/auth": "file:../agent-core/packages/auth",
-    "@agent-core/evidence": "file:../agent-core/packages/evidence",
+    "@agent-core/persistence": "file:../agent-core/packages/persistence",
     "@agent-core/effects": "file:../agent-core/packages/effects",
     "@agent-core/json": "file:../agent-core/packages/json",
     "@agent-core/model": "file:../agent-core/packages/model",

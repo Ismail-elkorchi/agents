@@ -20,7 +20,7 @@ export interface CodingAgentLimitConfiguration {
   readonly modelTurns?: number;
   readonly totalToolCalls?: number;
   readonly repeatedIdenticalToolCalls?: number;
-  readonly candidateRevisions?: number;
+  readonly revisionAttempts?: number;
   readonly elapsedMs?: number;
   readonly promptTokens?: number;
   readonly completionTokens?: number;
@@ -110,9 +110,9 @@ function optionalNonnegative(value: unknown): boolean { return value === undefin
 function validLimits(value: unknown): value is CodingAgentLimitConfiguration {
   if (!isRecord(value)) return false;
   const numeric = ['maxConcurrentToolCalls', 'modelTurns', 'totalToolCalls', 'repeatedIdenticalToolCalls', 'elapsedMs', 'promptTokens', 'completionTokens', 'activeImageCount', 'activeImageBytes', 'activeImageTokens', 'consecutiveProviderFailures', 'consecutiveToolFailures'];
-  if (Object.keys(value).some((key) => ![...numeric, 'candidateRevisions', 'knownCost'].includes(key))) return false;
+  if (Object.keys(value).some((key) => ![...numeric, 'revisionAttempts', 'knownCost'].includes(key))) return false;
   if (numeric.some((key) => value[key] !== undefined && !optionalPositive(value[key]))) return false;
-  if (!optionalNonnegative(value.candidateRevisions)) return false;
+  if (!optionalNonnegative(value.revisionAttempts)) return false;
   return value.knownCost === undefined || (isRecord(value.knownCost) && typeof value.knownCost.amount === 'number' && Number.isFinite(value.knownCost.amount) && value.knownCost.amount > 0 && typeof value.knownCost.currency === 'string' && value.knownCost.currency.trim().length > 0);
 }
 function stringArray(value: unknown): value is readonly string[] { return Array.isArray(value) && value.every(item => typeof item === 'string' && item.length > 0); }

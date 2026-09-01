@@ -1,5 +1,5 @@
 import path from 'node:path';
-import type { PrepareCommandRequest } from '@agent-core/tools';
+import type { CommandExecutionPlanRequest } from '@agent-core/tools';
 import type { RootedFileAuthority } from '@agent-core/tools-local';
 import {
   LINUX_PROCESS_BASELINE_REQUIREMENTS,
@@ -8,7 +8,7 @@ import {
   type SandboxDetachedRunOptions
 } from '@ismail-elkorchi/sandbox';
 import type { PrivateStateDirectory } from '../state/private-state.js';
-import { SandboxCommandExecution, type SandboxPreparedCommand } from './sandbox-command-execution.js';
+import { SandboxCommandExecution, type SandboxCommandAuthorization } from './sandbox-command-execution.js';
 
 const TARGET_WORKSPACE = '/workspace';
 const MAX_RETAINED_OUTPUT_BYTES = 8 * 1024 * 1024;
@@ -39,7 +39,7 @@ export async function createCodingCommandAuthority(input: {
       state: input.state,
       maxRetainedOutputBytes: MAX_RETAINED_OUTPUT_BYTES,
       createRun: (request, context) => commandRun(request, context.hostWorkspaceRoot),
-      validatePrepared
+      validateAuthorization
     });
   } catch (error) {
     await repository.close().catch(() => undefined);
@@ -47,7 +47,7 @@ export async function createCodingCommandAuthority(input: {
   }
 }
 
-function commandRun(request: PrepareCommandRequest, hostWorkspaceRoot: string): SandboxDetachedRunOptions {
+function commandRun(request: CommandExecutionPlanRequest, hostWorkspaceRoot: string): SandboxDetachedRunOptions {
   return {
     isolation: { kind: 'process' },
     policy: {
@@ -89,31 +89,31 @@ function commandRun(request: PrepareCommandRequest, hostWorkspaceRoot: string): 
   };
 }
 
-function validatePrepared(prepared: SandboxPreparedCommand): void {
-  const { summary, enforcement, request } = prepared;
-  if (summary.isolation.kind !== 'process' || enforcement.boundary.kind !== 'os-process') throw new Error('Sandbox command preparation did not establish the required process boundary.');
-  if (summary.network.mode !== 'none') throw new Error('Sandbox command preparation unexpectedly permits network access.');
-  if (summary.filesystem.runtimeView !== 'system' || summary.filesystem.grants.length !== 1) throw new Error('Sandbox command preparation has an unexpected filesystem view.');
+function validateAuthorization(authorization: SandboxCommandAuthorization): void {
+  const { summary, enforcement, request } = authorization;
+  if (summary.isolation.kind !== 'process' || enforcement.boundary.kind !== 'os-process') throw new Error('Sandbox command plan did not establish the required process boundary.');
+  if (summary.network.mode !== 'none') throw new Error('Sandbox command plan unexpectedly permits network access.');
+  if (summary.filesystem.runtimeView !== 'system' || summary.filesystem.grants.length !== 1) throw new Error('Sandbox command plan has an unexpected filesystem view.');
   const grant = summary.filesystem.grants[0];
   if (grant?.targetPath !== TARGET_WORKSPACE || grant.access !== 'read-write' || grant.execution !== 'allow') {
-    throw new Error('Sandbox command preparation does not contain the required workspace grant.');
+    throw new Error('Sandbox command plan does not contain the required workspace grant.');
   }
   if (summary.execution.executable !== '/bin/sh'
     || summary.execution.args.length !== 2
     || summary.execution.args[0] !== '-c'
     || summary.execution.args[1] !== request.command
     || summary.execution.cwd !== targetDirectory(request.rootedDirectory)) {
-    throw new Error('Sandbox command preparation does not match the requested command identity.');
+    throw new Error('Sandbox command plan does not match the requested command identity.');
   }
   if (summary.execution.sensitiveEnvironmentNames.length !== 0
     || summary.execution.environmentNames.length !== 2
     || !summary.execution.environmentNames.includes('PATH')
     || !summary.execution.environmentNames.includes('CI')) {
-    throw new Error('Sandbox command preparation has an unexpected environment.');
+    throw new Error('Sandbox command plan has an unexpected environment.');
   }
   for (const required of LINUX_PROCESS_BASELINE_REQUIREMENTS.required) {
     const fact = enforcement.guarantees.find((candidate) => candidate.id === required);
-    if (fact?.status !== 'satisfied') throw new Error(`Sandbox command preparation did not satisfy required guarantee ${required}.`);
+    if (fact?.status !== 'satisfied') throw new Error(`Sandbox command plan did not satisfy required guarantee ${required}.`);
   }
 }
 

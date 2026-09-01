@@ -35,7 +35,7 @@ test('durable restore precedes live append and stable identities prevent duplica
     event: {
       type: 'assistant.ended', turnIndex: 1, turnId: 'turn-1', requestAttempt: 1,
       content: 'Partial restored',
-      candidate: { status: 'complete', message: 'Partial restored', source: 'content', turnIndex: 1 }
+      modelOutput: { status: 'complete', message: 'Partial restored', source: 'content', turnIndex: 1 }
     }
   });
   host.input('/exit\r');
@@ -46,7 +46,7 @@ test('durable restore precedes live append and stable identities prevent duplica
   assert.equal(exit.state.conversation.items.filter((entry) => entry.kind === 'assistant' && entry.turnId === 'turn-1').length, 1);
   assert.equal(exit.state.conversation.items.find((entry) => entry.id === 'assistant:turn-1').text, 'Partial restored');
   assert.equal(exit.state.debug.session.sessionId, 'session-1');
-  assert.equal(exit.state.debug.operations[0].state.control.status, 'owned');
+  assert.equal(exit.state.debug.runs[0].state.control.status, 'owned');
 });
 
 test('hydration restores exact approval and unknown-effect recovery boundaries', async () => {
@@ -71,11 +71,11 @@ test('hydration restores exact approval and unknown-effect recovery boundaries',
   await recoveryRuntime.dispose();
 });
 
-test('recovered queued operations surface queue and driver control', async () => {
+test('recovered queued runs surface queue and driver control', async () => {
   const hydration = baseHydration({ phase: 'idle', queuedInputs: 1 }, {
     pendingState: 'claimed',
     control: { status: 'detached' },
-    phase: { kind: 'preparing', step: 'assemble_turn', turnIndex: 2 }
+    phase: { kind: 'initializing', step: 'assemble_turn', turnIndex: 2 }
   });
   const host = createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 16 } });
   const runtime = createTuiRuntime({
@@ -84,7 +84,7 @@ test('recovered queued operations surface queue and driver control', async () =>
   });
   await runtime.start();
   assert.equal(runtime.state().run.kind, 'working');
-  assert.equal(runtime.state().run.label, 'Recovered operation queued');
+  assert.equal(runtime.state().run.label, 'Recovered run queued');
   assert.match(host.output(), /1 queued · driver detached/u);
   await runtime.dispose();
 });
@@ -105,7 +105,7 @@ test('completed hydration surfaces terminal checks and persisted workspace chang
   const history = runtime.state().conversation.items.find((entry) => entry.id === 'session:history');
   assert.equal(history.activity, 'history');
   assert.match(history.summary, /1 branch point · 1 terminal run/u);
-  assert.match(history.details, /final assistant-1 · run run-1 · completed · verification passed · candidate complete/u);
+  assert.match(history.details, /final assistant-1 · run run-1 · completed · verification passed · model output complete/u);
   await runtime.dispose();
 });
 
@@ -137,7 +137,7 @@ test('long stream pressure retains every reliable boundary and the latest stream
     event: {
       type: 'assistant.ended', turnIndex: 1, turnId: 'pressure-turn', requestAttempt: 1,
       content: 'final-value',
-      candidate: { status: 'complete', message: 'final-value', source: 'content', turnIndex: 1 }
+      modelOutput: { status: 'complete', message: 'final-value', source: 'content', turnIndex: 1 }
     }
   });
   host.input('/exit\r');
@@ -261,7 +261,7 @@ function runningHydration() {
   const hydration = baseHydration({ phase: 'running', activeRunId: 'run-1', queuedInputs: 0 }, {
     pendingState: 'claimed',
     control: { status: 'owned', driverId: 'driver-1' },
-    phase: { kind: 'preparing', step: 'assemble_turn', turnIndex: 1 }
+    phase: { kind: 'initializing', step: 'assemble_turn', turnIndex: 1 }
   });
   return {
     ...hydration,
@@ -304,7 +304,7 @@ function completedHydration() {
   const terminal = decodeAgentTerminalSnapshot({
     runId: 'run-1', finalizationId: 'final-1', phase: 'ended', executionStatus: 'completed',
     verificationStatus: 'passed', terminationReason: 'model_completed', modelTerminationReason: 'stop',
-    candidate: { status: 'complete', message: 'Completed answer.', source: 'content', turnIndex: 1 },
+    modelOutput: { status: 'complete', message: 'Completed answer.', source: 'content', turnIndex: 1 },
     turnCount: 1,
     checkResults: [{
       id: 'tests', implementationId: 'tests@1', requirement: 'required', verdict: 'passed',
@@ -323,24 +323,24 @@ function completedHydration() {
         id: 'assistant-1', type: 'assistant', runId: 'run-1', turnIndex: 1,
         turnId: 'turn-1', requestAttempt: 1, content: 'Completed answer.'
       })],
-      terminalProjections: [{
-        type: 'final', id: 'projection-1', timestamp: '2026-08-28T00:00:01.000Z',
+      runFinalizations: [{
+        type: 'run_finalization', id: 'finalization-record-1', timestamp: '2026-08-28T00:00:01.000Z',
         throughEntryId: 'assistant-1', runId: 'run-1', finalizationId: 'final-1', terminal
       }],
       ledgerRunIds: ['run-1']
     },
     branchPoints: [{
-      entryId: 'assistant-1', timestamp: '2026-08-28T00:00:01.000Z', kind: 'final',
+      entryId: 'assistant-1', timestamp: '2026-08-28T00:00:01.000Z', kind: 'run_finalization',
       runId: 'run-1', finalizationId: 'final-1'
     }],
     pendingSubmissions: [],
-    operations: [],
+    runs: [],
     changeReports: [{
-      schemaVersion: 1, runId: 'run-1', baselineDigest: '1'.repeat(64), finalDigest: '2'.repeat(64),
+      schemaVersion: 1, runId: 'run-1', preChangeDigest: '1'.repeat(64), finalDigest: '2'.repeat(64),
       coverage: 'complete', causes: [],
       changes: [{
         path: 'src/app.ts', kind: 'modified', attribution: 'structured_mutation', initial: 'existing',
-        versionControlBaseline: 'not_reported', content: 'text', receiptSequences: [4], conflicts: []
+        preChangeVersionControl: 'not_reported', content: 'text', receiptSequences: [4], conflicts: []
       }],
       totalChanges: 1, omittedChanges: 0, mutationReceipts: [], totalMutationReceipts: 0,
       omittedMutationReceipts: 0,
@@ -352,10 +352,10 @@ function completedHydration() {
   };
 }
 
-function baseHydration(sessionOverrides, operationOverrides) {
-  const pendingState = operationOverrides.pendingState;
-  const operation = operationInspection({
-    ...operationOverrides,
+function baseHydration(sessionOverrides, runOverrides) {
+  const pendingState = runOverrides.pendingState;
+  const run = runInspection({
+    ...runOverrides,
     pendingState: undefined
   });
   return {
@@ -365,19 +365,19 @@ function baseHydration(sessionOverrides, operationOverrides) {
       ...sessionOverrides
     },
     replay: {
-      session: descriptor(), branch: [], terminalProjections: [], ledgerRunIds: ['run-1']
+      session: descriptor(), branch: [], runFinalizations: [], ledgerRunIds: ['run-1']
     },
     branchPoints: [],
     pendingSubmissions: [{
       submissionId: 'submission-1', runId: 'run-1', state: pendingState,
       input: { task: 'Existing task' }, configuration: { provider: 'test-provider', model: 'test-model' }
     }],
-    operations: [operation],
+    runs: [run],
     changeReports: []
   };
 }
 
-function operationInspection(overrides) {
+function runInspection(overrides) {
   return {
     state: {
       runId: 'run-1', finalizationId: 'final-1', revision: 1, driverGeneration: 3,
@@ -423,7 +423,7 @@ function approvalRequest() {
 
 function budget() {
   return {
-    modelTurns: 1, totalToolCalls: 1, repeatedIdenticalToolCalls: 1, candidateRevisions: 0,
+    modelTurns: 1, totalToolCalls: 1, repeatedIdenticalToolCalls: 1, revisionAttempts: 0,
     elapsedMs: 1, promptTokens: 0, completionTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
     reasoningTokens: 0, knownCosts: {}, pricingStatus: 'unknown', unknownPricedTokens: 0,
     consecutiveProviderFailures: 0, consecutiveToolFailures: 0

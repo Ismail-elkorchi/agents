@@ -5,7 +5,7 @@ import { runTui } from '@ismail-elkorchi/terminal-ui/tui';
 import { CodingAgentTuiEventSource, createCodingAgentTuiApp } from '@ismail-elkorchi/coding-agent/tui';
 import { waitFor } from './coding-agent-tui-test-helpers.js';
 
-test('tool activity collapses success, expands failure, and keeps bounded evidence', async () => {
+test('tool activity collapses success, expands failure, and keeps bounded observed facts', async () => {
   const host = createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 20 } });
   const events = new CodingAgentTuiEventSource();
   const app = createCodingAgentTuiApp('', {
@@ -51,8 +51,9 @@ function toolEnded(callId, ok, summary) {
   return {
     type: 'tool.ended', ...identity(callId), toolName: 'exec_command',
     observation: {
-      kind: 'result', ok, summary, output: { outcome: ok ? 'exited' : 'runtime_error', command: callId },
-      evidence: { items: [{ action: 'execute', resources: [{ uri: 'workspace://command' }], outcome: ok ? 'success' : 'failure' }] }
+      kind: 'result', ok, summary, scope: { resources: ['workspace/command'], coverage: 'complete' },
+      output: { outcome: ok ? 'exited' : 'runtime_error', command: callId },
+      observedFacts: { items: [{ action: 'execute', resources: [{ uri: 'workspace://command' }], outcome: ok ? 'success' : 'failure' }] }
     }
   };
 }

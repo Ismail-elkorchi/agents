@@ -163,6 +163,7 @@ class FakeExecutionRepository {
   request;
 
   constructor(stdout) { this.stdout = stdout; }
+  // This fake mirrors the upstream Sandbox `prepare` method and `prepared` wire state.
   async prepare(request) { this.prepareCount += 1; this.request = request; return prepared(request.executionId); }
   async activate() { this.activationCount += 1; }
   async inspect(executionId) { return settled(executionId, this.stdout); }

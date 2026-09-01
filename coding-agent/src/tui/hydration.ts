@@ -1,8 +1,8 @@
 import type {
   AgentApprovalSuspension,
-  AgentOperationInspection,
-  AgentOperationSuspension,
-  AgentOperationState,
+  AgentRunInspection,
+  AgentRunSuspension,
+  AgentRunState,
   AgentSessionState,
   AgentTerminalSnapshot,
   SessionBranchEntry,
@@ -33,7 +33,7 @@ export interface CodingAgentTuiHydration {
   readonly replay: SessionReplayState;
   readonly branchPoints: readonly SessionBranchPoint[];
   readonly pendingSubmissions: readonly SessionPendingSubmission[];
-  readonly operations: readonly AgentOperationInspection[];
+  readonly runs: readonly AgentRunInspection[];
   readonly changeReports: readonly RunChangeReport[];
 }
 
@@ -59,32 +59,32 @@ export function hydrateCodingAgentTuiState(
       replayState: hydration.replay,
       branchPoints: Object.freeze([...hydration.branchPoints]),
       pendingSubmissions: Object.freeze([...hydration.pendingSubmissions]),
-      operations: Object.freeze([...hydration.operations]),
+      runs: Object.freeze([...hydration.runs]),
       changeReports: []
     }
   };
-  for (const entry of hydration.replay.branch) next = projectBranchEntry(next, entry);
+  for (const entry of hydration.replay.branch) next = applyBranchEntry(next, entry);
   next = applySessionState(next, hydration.session);
-  for (const projection of hydration.replay.terminalProjections) {
-    for (const check of projection.terminal.checkResults) {
-      next = applyCheckResult(next, check, projection.runId);
+  for (const finalization of hydration.replay.runFinalizations) {
+    for (const check of finalization.terminal.checkResults) {
+      next = applyCheckResult(next, check, finalization.runId);
     }
   }
-  const latestTerminal = hydration.replay.terminalProjections.at(-1)?.terminal;
+  const latestTerminal = hydration.replay.runFinalizations.at(-1)?.terminal;
   if (latestTerminal !== undefined) next = applyHydratedTerminal(next, latestTerminal);
   for (const report of hydration.changeReports) next = applyChangeReport(next, report);
-  next = projectSessionHistory(next, hydration.branchPoints, hydration.replay);
-  return projectSessionRunState(next, hydration);
+  next = restoreSessionHistory(next, hydration.branchPoints, hydration.replay);
+  return restoreSessionRunState(next, hydration);
 }
 
-function projectSessionHistory(
+function restoreSessionHistory(
   state: CodingAgentTuiState,
   branchPoints: readonly SessionBranchPoint[],
   replay: SessionReplayState
 ): CodingAgentTuiState {
   if (branchPoints.length === 0) return state;
   const terminals = new Map<string, AgentTerminalSnapshot>(
-    replay.terminalProjections.map((projection) => [projection.throughEntryId, projection.terminal])
+    replay.runFinalizations.map((finalization) => [finalization.throughEntryId, finalization.terminal])
   );
   const retained = branchPoints.slice(-100);
   const lines = retained.map((point) => {
@@ -93,11 +93,11 @@ function projectSessionHistory(
     const identity = `final ${point.entryId}${point.runId === undefined ? '' : ` · run ${point.runId}`}`;
     return terminal === undefined
       ? `${identity} · terminal outside active replay · ${point.timestamp}`
-      : `${identity} · ${terminal.executionStatus} · verification ${terminal.verificationStatus} · candidate ${terminal.candidate.status}`;
+      : `${identity} · ${terminal.executionStatus} · verification ${terminal.verificationStatus} · model output ${terminal.modelOutput.status}`;
   });
   if (branchPoints.length > retained.length) lines.unshift(`${String(branchPoints.length - retained.length)} earlier branch points omitted`);
   const details = lines.join('\n');
-  const priorRuns = branchPoints.filter((point) => point.kind === 'final').length;
+  const priorRuns = branchPoints.filter((point) => point.kind === 'run_finalization').length;
   return upsertActivity(state, {
     id: 'session:history',
     kind: 'activity',
@@ -109,7 +109,7 @@ function projectSessionHistory(
   });
 }
 
-function projectBranchEntry(
+function applyBranchEntry(
   state: CodingAgentTuiState,
   entry: SessionBranchEntry
 ): CodingAgentTuiState {
@@ -154,20 +154,20 @@ function projectBranchEntry(
   }
 }
 
-function projectSessionRunState(
+function restoreSessionRunState(
   state: CodingAgentTuiState,
   hydration: CodingAgentTuiHydration
 ): CodingAgentTuiState {
   const session = hydration.session;
-  const operation = selectedOperation(hydration);
+  const run = selectedRun(hydration);
   if (session.phase === 'suspended') {
-    if (operation === undefined) throw new Error('Restored suspended session has no durable operation.');
-    if (session.suspension?.runId !== operation.state.runId) {
+    if (run === undefined) throw new Error('Restored suspended session has no durable run.');
+    if (session.suspension?.runId !== run.state.runId) {
       throw new Error('Restored session suspension has no matching durable descriptor.');
     }
-    const suspension = operationSuspension(operation.state);
+    const suspension = runSuspension(run.state);
     if (suspension.reason !== session.suspension.reason) {
-      throw new Error('Restored session suspension contradicts its durable operation.');
+      throw new Error('Restored session suspension contradicts its durable run.');
     }
     if (suspension.reason === 'approval_required') {
       return { ...state, run: { kind: 'waiting_for_approval', suspension } };
@@ -183,8 +183,8 @@ function projectSessionRunState(
     });
   }
   if (session.phase === 'running') {
-    if (operation === undefined) throw new Error('Restored running session has no durable operation.');
-    return { ...state, run: { kind: 'working', label: operationLabel(operation.state) } };
+    if (run === undefined) throw new Error('Restored running session has no durable run.');
+    return { ...state, run: { kind: 'working', label: runLabel(run.state) } };
   }
   if (session.phase === 'compacting') {
     return { ...state, run: { kind: 'working', label: 'Compacting session' } };
@@ -195,55 +195,55 @@ function projectSessionRunState(
       ...state,
       run: {
         kind: 'working',
-        label: recovering ? 'Recovered operation queued' : `${String(session.queuedInputs)} queued`
+        label: recovering ? 'Recovered run queued' : `${String(session.queuedInputs)} queued`
       }
     };
   }
   return state;
 }
 
-function selectedOperation(hydration: CodingAgentTuiHydration): AgentOperationInspection | undefined {
+function selectedRun(hydration: CodingAgentTuiHydration): AgentRunInspection | undefined {
   const activeRunId = hydration.session.activeRunId;
   if (activeRunId !== undefined) {
-    return hydration.operations.find((operation) => operation.state.runId === activeRunId);
+    return hydration.runs.find((run) => run.state.runId === activeRunId);
   }
   const pendingRunIds = new Set(hydration.pendingSubmissions.map((submission) => submission.runId));
-  return hydration.operations.find((operation) => pendingRunIds.has(operation.state.runId));
+  return hydration.runs.find((run) => pendingRunIds.has(run.state.runId));
 }
 
-function operationSuspension(
-  operation: AgentOperationState
-): AgentApprovalSuspension | AgentOperationSuspension {
-  if (operation.budget === undefined) {
-    throw new Error(`Suspended operation ${operation.runId} has no durable budget.`);
+function runSuspension(
+  run: AgentRunState
+): AgentApprovalSuspension | AgentRunSuspension {
+  if (run.budget === undefined) {
+    throw new Error(`Suspended run ${run.runId} has no durable budget.`);
   }
-  if (operation.phase.kind === 'approval') {
+  if (run.phase.kind === 'approval') {
     return {
       state: 'suspended',
       reason: 'approval_required',
-      runId: operation.runId,
-      finalizationId: operation.finalizationId,
-      pendingApprovals: [operation.phase.approval],
-      budget: operation.budget
+      runId: run.runId,
+      finalizationId: run.finalizationId,
+      pendingApprovals: [run.phase.approval],
+      budget: run.budget
     };
   }
-  const reason = operationSuspensionReason(operation);
-  if (reason === undefined) throw new Error(`Operation ${operation.runId} is not suspended.`);
-  const effectId = operationEffectId(operation);
+  const reason = runSuspensionReason(run);
+  if (reason === undefined) throw new Error(`Run ${run.runId} is not suspended.`);
+  const effectId = runEffectId(run);
   return {
     state: 'suspended',
     reason,
-    runId: operation.runId,
-    finalizationId: operation.finalizationId,
+    runId: run.runId,
+    finalizationId: run.finalizationId,
     ...(effectId === undefined ? {} : { effectId }),
-    budget: operation.budget
+    budget: run.budget
   };
 }
 
-function operationSuspensionReason(
-  operation: AgentOperationState
-): AgentOperationSuspension['reason'] | undefined {
-  const phase = operation.phase;
+function runSuspensionReason(
+  run: AgentRunState
+): AgentRunSuspension['reason'] | undefined {
+  const phase = run.phase;
   if (phase.kind === 'provider' && phase.stage === 'outcome_unknown') return 'provider_outcome_unknown';
   if (phase.kind === 'tools' && phase.callStates.some((call) => call.stage === 'outcome_unknown')) return 'tool_outcome_unknown';
   if (phase.kind === 'disposition' && phase.stage === 'outcome_unknown') return 'disposition_outcome_unknown';
@@ -251,8 +251,8 @@ function operationSuspensionReason(
   return undefined;
 }
 
-function operationEffectId(operation: AgentOperationState): string | undefined {
-  const phase = operation.phase;
+function runEffectId(run: AgentRunState): string | undefined {
+  const phase = run.phase;
   if (phase.kind === 'provider' && phase.stage === 'outcome_unknown') return phase.effect.intent.effectId;
   if (phase.kind === 'tools') {
     return phase.callStates.find((call) => call.stage === 'outcome_unknown')?.effect.intent.effectId;
@@ -262,15 +262,15 @@ function operationEffectId(operation: AgentOperationState): string | undefined {
   return undefined;
 }
 
-function operationLabel(operation: AgentOperationState): string {
-  const control = operation.control.status === 'detached'
+function runLabel(run: AgentRunState): string {
+  const control = run.control.status === 'detached'
     ? 'detached'
-    : operation.control.status === 'abort_requested' ? 'abort requested' : `driver generation ${String(operation.driverGeneration)}`;
-  const phase = operation.phase.kind === 'preparing'
-    ? operation.phase.step.replaceAll('_', ' ')
-    : operation.phase.kind === 'provider' || operation.phase.kind === 'verification' || operation.phase.kind === 'disposition'
-      ? `${operation.phase.kind} ${operation.phase.stage.replaceAll('_', ' ')}`
-      : operation.phase.kind;
+    : run.control.status === 'abort_requested' ? 'abort requested' : `driver generation ${String(run.driverGeneration)}`;
+  const phase = run.phase.kind === 'initializing'
+    ? run.phase.step.replaceAll('_', ' ')
+    : run.phase.kind === 'provider' || run.phase.kind === 'verification' || run.phase.kind === 'disposition'
+      ? `${run.phase.kind} ${run.phase.stage.replaceAll('_', ' ')}`
+      : run.phase.kind;
   return `Recovered ${phase} · ${control}`;
 }
 
@@ -285,13 +285,13 @@ function assertHydration(hydration: CodingAgentTuiHydration): void {
     throw new Error('TUI hydration session does not match its replay state.');
   }
   const pendingRunIds = new Set(hydration.pendingSubmissions.map((submission) => submission.runId));
-  for (const operation of hydration.operations) {
-    if (!pendingRunIds.has(operation.state.runId)) {
-      throw new Error(`TUI hydration contains an operation outside the session pending set: ${operation.state.runId}.`);
+  for (const run of hydration.runs) {
+    if (!pendingRunIds.has(run.state.runId)) {
+      throw new Error(`TUI hydration contains an run outside the session pending set: ${run.state.runId}.`);
     }
   }
   for (const report of hydration.changeReports) {
-    if (!hydration.replay.terminalProjections.some((projection) => projection.runId === report.runId)) {
+    if (!hydration.replay.runFinalizations.some((finalization) => finalization.runId === report.runId)) {
       throw new Error(`TUI hydration contains a change report outside the session replay: ${report.runId}.`);
     }
   }

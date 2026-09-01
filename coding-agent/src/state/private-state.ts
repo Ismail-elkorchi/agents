@@ -78,7 +78,10 @@ export class PrivateStateDirectory {
   async delete(relativePath: string): Promise<void> {
     const target = this.target(relativePath);
     try { await unlink(target); }
-    catch (error) { if (nodeCode(error) !== 'ENOENT') throw error; }
+    catch (error) {
+      if (nodeCode(error) === 'ENOENT') return;
+      throw error;
+    }
     await syncDirectory(path.dirname(target));
   }
 

@@ -1,7 +1,7 @@
 import type { AgentTerminalSnapshot } from '@agent-core/runtime';
 import type { RunChangeReport } from '../changes/run-change-report.js';
 
-/** Derives remaining coding-run uncertainty exclusively from terminal and change evidence. */
+/** Derives remaining coding-run uncertainty exclusively from terminal state and observed changes. */
 export function codingRunUncertainties(
   terminal: AgentTerminalSnapshot,
   changeReport: RunChangeReport
@@ -10,8 +10,8 @@ export function codingRunUncertainties(
     throw new Error(`Terminal run ${terminal.runId} cannot summarize change report ${changeReport.runId}.`);
   }
   const uncertainties = new Set<string>();
-  if (terminal.candidate.status === 'partial') uncertainties.add('The candidate is partial.');
-  if (terminal.candidate.status === 'indeterminate') uncertainties.add('The candidate is indeterminate.');
+  if (terminal.modelOutput.status === 'partial') uncertainties.add('The model output is partial.');
+  if (terminal.modelOutput.status === 'indeterminate') uncertainties.add('The model output is indeterminate.');
   const unknownChecks = terminal.checkResults.filter((check) => check.verdict === 'unknown');
   for (const check of unknownChecks) uncertainties.add(`Check ${check.id} is unknown: ${compact(check.summary)}`);
   if (terminal.verificationStatus === 'inconclusive' && unknownChecks.length === 0) {

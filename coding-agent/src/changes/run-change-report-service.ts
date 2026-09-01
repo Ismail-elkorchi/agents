@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { EventRepository } from '@agent-core/evidence';
+import type { EventRepository } from '@agent-core/persistence';
 import type { AgentEndedRunResult, AgentEvent } from '@agent-core/runtime';
 import type { RootedFileAuthority } from '@agent-core/tools-local';
 import { PrivateStateDirectory } from '../state/private-state.js';

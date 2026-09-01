@@ -1,17 +1,16 @@
 import {
-  prepareCandidateWorkspaceAcceptance,
-  type AgentCandidateWorkspace,
   type AgentCheckResult,
   type AgentDispositionInput,
   type AgentDispositionPolicy
 } from '@agent-core/runtime';
-import type { AdmittedCodingCheckPlan } from './configured-checks.js';
+import { createWorkingCopyDisposition, type CodingWorkingCopy } from '../changes/isolated-working-copy.js';
+import type { AdmittedCodingCheckPlan } from './candidate-acceptance-checks.js';
 
 const MAX_REPORTED_FAILURES = 20;
 
-/** Required verification owns repair/inconclusive decisions; acceptance owns candidate publication. */
+/** Required verification owns repair/inconclusive decisions; acceptance owns working-copy application. */
 export function createCodingDisposition(input: {
-  readonly candidateWorkspace?: AgentCandidateWorkspace;
+  readonly workingCopy?: CodingWorkingCopy;
   readonly mutable: boolean;
   readonly requiredCoverage: AdmittedCodingCheckPlan['requiredCoverage'];
 }): AgentDispositionPolicy {
@@ -23,38 +22,38 @@ export function createCodingDisposition(input: {
   });
   return Object.freeze({
     kind: 'effect' as const,
-    implementationId: 'coding-agent.disposition.verify-and-promote@3',
+    implementationId: 'coding-agent.disposition.verify-and-apply@3',
     policyIdentity: Object.freeze({
-      strategy: 'required-checks-then-candidate-promotion',
+      strategy: 'required-checks-then-working-copy-application',
       version: 3,
       requiredCoverage: input.requiredCoverage,
-      ...(input.candidateWorkspace ? { candidateWorkspace: Object.freeze({
-        implementationId: input.candidateWorkspace.descriptor.implementationId,
-        workspaceId: input.candidateWorkspace.descriptor.workspaceId,
-        runId: input.candidateWorkspace.descriptor.runId,
-        sourceId: input.candidateWorkspace.descriptor.sourceId
+      ...(input.workingCopy ? { workingCopy: Object.freeze({
+        implementationId: input.workingCopy.descriptor.implementationId,
+        workingCopyId: input.workingCopy.descriptor.workingCopyId,
+        runId: input.workingCopy.descriptor.runId,
+        sourceId: input.workingCopy.descriptor.sourceId
       }) } : {})
     }),
-    async prepare(disposition: AgentDispositionInput) {
+    async planEffect(disposition: AgentDispositionInput) {
       const decision = verificationDecision(disposition);
       if (decision.kind !== 'accept') return decision;
-      if (input.candidateWorkspace === undefined) return Object.freeze({ kind: 'inconclusive' as const, reason: 'The mutable run has no isolated candidate workspace to publish.' });
+      if (input.workingCopy === undefined) return Object.freeze({ kind: 'inconclusive' as const, reason: 'The mutable run has no isolated working copy to apply.' });
       if (input.requiredCoverage === 'missing') {
-        const diff = await input.candidateWorkspace.diff();
+        const diff = await input.workingCopy.diff();
         if (diff.coverage !== 'complete') {
           return Object.freeze({
             kind: 'inconclusive' as const,
-            reason: `Required verification coverage is unknown because the candidate diff is incomplete: ${diff.causes.join(', ')}.`
+            reason: `Required verification coverage is unknown because the working-copy diff is incomplete: ${diff.causes.join(', ')}.`
           });
         }
         if (diff.entries.length > 0) {
           return Object.freeze({
             kind: 'inconclusive' as const,
-            reason: 'Required verification coverage is unknown; the changed candidate cannot be completed or published because no required verification command was admitted.'
+            reason: 'Required verification coverage is unknown; the changed working copy cannot be accepted or applied because no required verification command was admitted.'
           });
         }
       }
-      return prepareCandidateWorkspaceAcceptance(input.candidateWorkspace);
+      return createWorkingCopyDisposition(input.workingCopy);
     }
   });
 }
@@ -72,8 +71,8 @@ function repairInstruction(failed: readonly AgentCheckResult[]): string {
   const lines = retained.map((check) => `- ${compact(check.id, 120)}: ${compact(check.summary, 240)}`);
   if (retained.length < failed.length) lines.push(`- ${String(failed.length - retained.length)} additional failed required checks omitted.`);
   return [
-    'Required baseline-aware verification proves that this candidate introduced or changed a failure.',
-    'Inspect the exact candidate and check evidence, repair the underlying defect without weakening the admitted verifier, then return the revised candidate.',
+    'Required pre-change comparison proves that this working copy introduced or changed a failure.',
+    'Inspect the exact working copy and check results, repair the underlying defect without weakening the admitted verifier, then return the revised result.',
     'Failed required checks:',
     ...lines
   ].join('\n');
@@ -82,7 +81,7 @@ function repairInstruction(failed: readonly AgentCheckResult[]): string {
 function inconclusiveReason(unknown: readonly AgentCheckResult[]): string {
   const retained = unknown.slice(0, MAX_REPORTED_FAILURES);
   return [
-    'Required verification coverage is unknown; the candidate cannot be completed or published.',
+    'Required verification coverage is unknown; the working copy cannot be accepted or applied.',
     ...retained.map((check) => `- ${compact(check.id, 120)}: ${compact(check.summary, 240)}`),
     ...(retained.length < unknown.length ? [`- ${String(unknown.length - retained.length)} additional unknown required checks omitted.`] : [])
   ].join('\n');

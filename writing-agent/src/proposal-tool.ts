@@ -12,7 +12,7 @@ import {
   relationEdgeSchema,
   revisionProposalSchema,
   semanticChangeDeclarationSchema,
-  type ContextReceipt,
+  type WritingContextSelection,
   type LocalizedTextEdit,
   type RevisionProposal,
   type StructuralChange,
@@ -21,7 +21,7 @@ import {
 } from './domain.js';
 import { canonicalJson, canonicalSha256, contentId, nowTimestamp } from './canonical.js';
 import type { WritingProject } from './project.js';
-import { prepareProposalMaterial } from './quality.js';
+import { assembleProposalVerificationMaterial } from './quality.js';
 
 export const PROPOSE_REVISION_IMPLEMENTATION_ID = 'writing-agent.propose-revision@2';
 export const WRITING_OPERATION_SERVICE = 'writingOperation';
@@ -70,30 +70,30 @@ const operationServices = new WeakSet();
 export class WritingOperationService {
   readonly project: WritingProject;
   readonly operation: WritingOperation;
-  readonly contextReceipt: ContextReceipt;
+  readonly contextSelection: WritingContextSelection;
 
   constructor(input: {
     readonly project: WritingProject;
     readonly operation: WritingOperation;
-    readonly contextReceipt: ContextReceipt;
+    readonly contextSelection: WritingContextSelection;
   }) {
     this.project = input.project;
     this.operation = input.operation;
-    this.contextReceipt = input.contextReceipt;
-    assertTargetDescriptors(input.operation, input.contextReceipt);
+    this.contextSelection = input.contextSelection;
+    assertTargetDescriptors(input.operation, input.contextSelection);
     operationServices.add(this);
     Object.freeze(this);
   }
 
   canonicalize(input: ProposeRevisionInput): CanonicalProposalInput {
-    const parsed = proposalInputSchema(this.operation, this.contextReceipt).parse(input);
+    const parsed = proposalInputSchema(this.operation, this.contextSelection).parse(input);
     const textByResource = new Map<string, LocalizedTextEdit['edits'][number][]>();
     const structuralChanges: StructuralChange[] = [];
     for (const intentOperation of parsed.operations) {
       const intent = requireIntent(this.operation, intentOperation.intentId);
       for (const textChange of intentOperation.textChanges ?? []) {
         if (!intent.targetResourceIds.includes(textChange.resourceId)) throw new Error(`Proposal intent expands beyond its resource targets: ${intent.intentId}/${textChange.resourceId}`);
-        const descriptor = requireDescriptor(this.contextReceipt, textChange.resourceId);
+        const descriptor = requireDescriptor(this.contextSelection, textChange.resourceId);
         const edits = textByResource.get(textChange.resourceId) ?? [];
         for (const replacement of textChange.replacements) {
           const anchor = descriptor.anchors.find((candidate) => candidate.anchorId === replacement.anchorId);
@@ -111,7 +111,7 @@ export class WritingOperationService {
     const textEdits = [...textByResource]
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([resourceId, edits]) => {
-        const descriptor = requireDescriptor(this.contextReceipt, resourceId);
+        const descriptor = requireDescriptor(this.contextSelection, resourceId);
         return {
           resourceId,
           baseSha256: descriptor.baseSha256,
@@ -132,19 +132,19 @@ export class WritingOperationService {
 
   async createProposal(input: CanonicalProposalInput): Promise<RevisionProposal> {
     if (input.operationId !== this.operation.operationId || input.baseProjectRevisionId !== this.operation.baseProjectRevisionId) throw new Error('Proposal input does not match its operation-scoped service.');
-    const existing = await this.project.store.proposalReceipt(input.proposalId);
+    const existing = await this.project.store.getProposal(input.proposalId);
     if (existing !== undefined) {
       if (!sameProposalIntent(existing, input)) throw new Error(`Proposal identity conflicts with a different canonical intent: ${input.proposalId}`);
       return existing;
     }
-    const materialPreparation = await prepareProposalMaterial({
+    const materialPreparation = await assembleProposalVerificationMaterial({
       project: this.project,
       operation: this.operation,
       proposalId: input.proposalId,
       textEdits: input.textEdits,
       structuralChanges: input.structuralChanges,
       declaration: input.semanticChangeDeclaration,
-      contextReceipt: this.contextReceipt
+      contextSelection: this.contextSelection
     });
     const material = {
       proposalId: input.proposalId,
@@ -158,7 +158,7 @@ export class WritingOperationService {
       preservationContract: materialPreparation.preservationContract,
       semanticChangeDeclaration: input.semanticChangeDeclaration,
       proposedAuthorshipProvenance: materialPreparation.proposedAuthorshipProvenance,
-      contextReceiptId: this.contextReceipt.contextReceiptId,
+      contextSelectionId: this.contextSelection.contextSelectionId,
       status: 'proposed' as const,
       boundedRationale: input.rationale,
       createdAt: nowTimestamp()
@@ -171,7 +171,7 @@ export class WritingOperationService {
 }
 
 export function createProposeRevisionTool(service: WritingOperationService): CompiledToolDefinition<ProposeRevisionInput, CanonicalProposalInput, ProposeRevisionOutput> {
-  const proposeRevisionInputSchema = proposalInputSchema(service.operation, service.contextReceipt);
+  const proposeRevisionInputSchema = proposalInputSchema(service.operation, service.contextSelection);
   return defineTool({
     name: 'propose_revision',
     implementationId: PROPOSE_REVISION_IMPLEMENTATION_ID,
@@ -211,7 +211,7 @@ export function createProposeRevisionTool(service: WritingOperationService): Com
         || capability.reconcilerId !== PROPOSE_REVISION_IMPLEMENTATION_ID || capability.transactionId !== input.proposalId) {
         return { status: 'parameter_mismatch', reason: 'Proposal recovery identity does not match the operation-scoped project store.' };
       }
-      const proposal = await bound.project.store.proposalReceipt(input.proposalId);
+      const proposal = await bound.project.store.getProposal(input.proposalId);
       if (proposal === undefined) return { status: 'not_found', reason: 'No durable proposal-creation record exists; the started append outcome is unknown.' };
       if (!sameProposalIntent(proposal, input)) return { status: 'parameter_mismatch', reason: 'Durable proposal content conflicts with the recovered canonical intent.' };
       return { status: 'settled', observation: proposalObservation(proposal) };
@@ -224,8 +224,8 @@ export function createProposeRevisionTool(service: WritingOperationService): Com
   });
 }
 
-function proposalInputSchema(operation: WritingOperation, receipt: ContextReceipt): z.ZodType<ProposeRevisionInput> {
-  const intentSchemas = operation.intents.map((intent) => intentOperationSchema(intent, receipt));
+function proposalInputSchema(operation: WritingOperation, selection: WritingContextSelection): z.ZodType<ProposeRevisionInput> {
+  const intentSchemas = operation.intents.map((intent) => intentOperationSchema(intent, selection));
   const operationSchema = oneOf(intentSchemas);
   return z.strictObject({
     operations: z.array(operationSchema).min(1),
@@ -243,10 +243,10 @@ function proposalInputSchema(operation: WritingOperation, receipt: ContextReceip
   });
 }
 
-function intentOperationSchema(intent: WritingIntent, receipt: ContextReceipt): z.ZodType<ModelIntentOperation> {
+function intentOperationSchema(intent: WritingIntent, selection: WritingContextSelection): z.ZodType<ModelIntentOperation> {
   if (textIntent(intent)) {
     const resources = intent.targetResourceIds.map((resourceId) => {
-      const descriptor = requireDescriptor(receipt, resourceId);
+      const descriptor = requireDescriptor(selection, resourceId);
       const anchors = intent.targetRangeIds.length === 0
         ? descriptor.anchors
         : descriptor.anchors.filter((anchor) => anchor.targetRangeId !== undefined && intent.targetRangeIds.includes(anchor.targetRangeId));
@@ -319,17 +319,17 @@ function requireIntent(operation: WritingOperation, intentId: string): WritingIn
   return intent;
 }
 
-function requireDescriptor(receipt: ContextReceipt, resourceId: string): ContextReceipt['targetDescriptors'][number] {
-  const descriptor = receipt.targetDescriptors.find((candidate) => candidate.resourceId === resourceId);
-  if (descriptor === undefined) throw new Error(`Context receipt lacks an application-owned target descriptor: ${resourceId}`);
+function requireDescriptor(selection: WritingContextSelection, resourceId: string): WritingContextSelection['targetDescriptors'][number] {
+  const descriptor = selection.targetDescriptors.find((candidate) => candidate.resourceId === resourceId);
+  if (descriptor === undefined) throw new Error(`Context selection lacks an application-owned target descriptor: ${resourceId}`);
   return descriptor;
 }
 
-function assertTargetDescriptors(operation: WritingOperation, receipt: ContextReceipt): void {
-  if (receipt.operationId !== operation.operationId) throw new Error('Target descriptors do not belong to the operation-scoped context receipt.');
-  const descriptorIds = receipt.targetDescriptors.map((descriptor) => descriptor.resourceId);
-  if (new Set(descriptorIds).size !== descriptorIds.length) throw new Error('Context receipt repeats an application-owned target descriptor.');
-  for (const resourceId of operation.targetResourceIds) requireDescriptor(receipt, resourceId);
+function assertTargetDescriptors(operation: WritingOperation, selection: WritingContextSelection): void {
+  if (selection.operationId !== operation.operationId) throw new Error('Target descriptors do not belong to the operation-scoped context selection.');
+  const descriptorIds = selection.targetDescriptors.map((descriptor) => descriptor.resourceId);
+  if (new Set(descriptorIds).size !== descriptorIds.length) throw new Error('Context selection repeats an application-owned target descriptor.');
+  for (const resourceId of operation.targetResourceIds) requireDescriptor(selection, resourceId);
 }
 
 function comparePositions(left: { readonly line: number; readonly column: number }, right: { readonly line: number; readonly column: number }): number {

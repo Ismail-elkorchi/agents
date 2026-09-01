@@ -161,7 +161,7 @@ function updateCodingAgentTui(
       overlay: { kind: 'none' },
       modalOffsetRow: 0
     }, context, { kind: 'element', elementId: 'approval-deny' });
-    case 'operation.suspended': return updated({
+    case 'run.suspended': return updated({
       ...state,
       run: { kind: 'waiting_for_recovery', suspension: message.suspension },
       overlay: { kind: 'none' }
@@ -983,7 +983,7 @@ function errorText(value: string): InlineContent {
 
 function effectSummary(approval: AgentApprovalRequest): string {
   const accesses = approval.effects.accesses;
-  if (accesses.length === 0) return 'tool operation';
+  if (accesses.length === 0) return 'tool run';
   const summary = accesses.map((access) => `${access.mode.replaceAll('_', ' ')} · ${access.scope}`).join(', ');
   const execution = sandboxExecutionSummary(approval.input);
   return execution ? `${summary}. ${execution}` : summary;
@@ -1024,7 +1024,7 @@ function approvalSubject(approval: AgentApprovalRequest): string {
 function debugText(state: CodingAgentTuiState, runtimeState?: string): string {
   return JSON.stringify({
     runtimeDetails: state.runtimeDetails,
-    eventProjection: state.debug,
+    eventState: state.debug,
     ...(runtimeState === undefined ? {} : { runtimeState: parseDebugRuntimeState(runtimeState) })
   }, null, 2);
 }

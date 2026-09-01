@@ -33,8 +33,8 @@ function queueLabel(state: CodingAgentTuiState): string | undefined {
 function driverLabel(state: CodingAgentTuiState): string | undefined {
   const activeRunId = state.debug.session?.activeRunId ?? state.debug.runId;
   const operation = activeRunId === undefined
-    ? state.debug.operations.find((candidate) => candidate.state.phase.kind !== 'terminal')
-    : state.debug.operations.find((candidate) => candidate.state.runId === activeRunId);
+    ? state.debug.runs.find((candidate) => candidate.state.phase.kind !== 'terminal')
+    : state.debug.runs.find((candidate) => candidate.state.runId === activeRunId);
   if (operation === undefined) return undefined;
   const control = operation.state.control;
   if (control.status === 'detached') return 'driver detached';

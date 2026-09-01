@@ -5,7 +5,7 @@
   "references": [
     { "path": "../../agent-core/packages/auth" },
     { "path": "../../agent-core/packages/runtime" },
-    { "path": "../../agent-core/packages/evidence" },
+    { "path": "../../agent-core/packages/persistence" },
     { "path": "../../agent-core/packages/json" },
     { "path": "../../agent-core/packages/model" },
     { "path": "../../agent-core/packages/providers/ollama" },

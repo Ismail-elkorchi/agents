@@ -45,10 +45,10 @@ export interface WritingOperationAdmissionInput {
   readonly intents: readonly WritingIntent[];
   readonly baseProjectRevisionId: string;
   readonly mode: WritingOperationMode;
-  readonly applicationAuthorization?: WritingOperation['applicationAuthorization'];
+  readonly applyAuthorization?: WritingOperation['applyAuthorization'];
   readonly sessionId: string;
   readonly runId: string;
-  readonly snapshot: WritingOperation['snapshot'];
+  readonly executionBinding: WritingOperation['executionBinding'];
 }
 
 export function admitWritingOperation(input: WritingOperationAdmissionInput, control: {
@@ -81,11 +81,11 @@ export function admitWritingOperation(input: WritingOperationAdmissionInput, con
     effectiveConstraints,
     baseProjectRevisionId: input.baseProjectRevisionId,
     mode,
-    ...(input.applicationAuthorization === undefined ? {} : { applicationAuthorization: input.applicationAuthorization }),
+    ...(input.applyAuthorization === undefined ? {} : { applyAuthorization: input.applyAuthorization }),
     sessionId: input.sessionId,
     runId: input.runId,
     lifecycleState: 'admitted' as const,
-    snapshot: input.snapshot,
+    executionBinding: input.executionBinding,
     admittedAt
   };
   const operation = deepFreeze(writingOperationSchema.parse({ operationId: contentId('operation', material), ...material }));

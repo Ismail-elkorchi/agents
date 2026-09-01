@@ -33,7 +33,7 @@ export class CodingAgentTuiProgressRenderer {
   showSuspension(suspension: Extract<AgentRunResult, { state: 'suspended' }>): Promise<void> {
     return this.enqueue(suspension.reason === 'approval_required'
       ? { type: 'approval.required', suspension }
-      : { type: 'operation.suspended', suspension });
+      : { type: 'run.suspended', suspension });
   }
   showFailure(message: string): Promise<void> { return this.enqueue({ type: 'failure', message }); }
   showCompaction(compaction: import('@agent-core/runtime').SessionCompactionEntry): Promise<void> {

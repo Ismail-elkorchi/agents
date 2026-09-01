@@ -4,8 +4,8 @@ import { decodeRunChangeReport, deriveRunChangeReport } from '../dist/changes/ru
 
 const hash = (character) => character.repeat(64);
 
-test('change reports preserve user baselines and distinguish exact mutations from concurrent changes', () => {
-  const baseline = {
+test('change reports preserve pre-change state and distinguish exact mutations from concurrent changes', () => {
+  const preChange = {
     workspace: snapshot('a', [
       file('source.txt', hash('a'), 10),
       file('user.txt', hash('b'), 20),
@@ -32,7 +32,7 @@ test('change reports preserve user baselines and distinguish exact mutations fro
     file('renamed.txt', hash('3'), 41),
     file('external.bin', hash('4'), 2, 'binary')
   ]);
-  const report = deriveRunChangeReport('run-one', baseline, final, [
+  const report = deriveRunChangeReport('run-one', preChange, final, [
     receipt(10, [mutation('source.txt', 'update', hash('a'), hash('1'), 10, 11)]),
     receipt(20, [mutation('user.txt', 'update', hash('b'), hash('2'), 20, 21)]),
     receipt(30, [mutation('removed.txt', 'delete', hash('c'), undefined, 30, 0)]),
@@ -43,7 +43,7 @@ test('change reports preserve user baselines and distinguish exact mutations fro
   assert.equal(report.coverage, 'complete');
   assert.deepEqual(report.facts.structuredMutationPaths, ['added.txt', 'moved.txt', 'removed.txt', 'renamed.txt', 'source.txt', 'user.txt']);
   assert.deepEqual(report.facts.externalOrConcurrentPaths, ['external.bin']);
-  assert.equal(report.changes.find((change) => change.path === 'user.txt').versionControlBaseline, 'changed');
+  assert.equal(report.changes.find((change) => change.path === 'user.txt').preChangeVersionControl, 'changed');
   assert.equal(report.changes.find((change) => change.path === 'user.txt').initial, 'existing');
   assert.equal(report.changes.find((change) => change.path === 'external.bin').content, 'binary');
   assert.equal(report.mutationReceipts[0].patchSha256, hash('9'));
@@ -51,14 +51,14 @@ test('change reports preserve user baselines and distinguish exact mutations fro
   assert.deepEqual(decodeRunChangeReport(JSON.parse(JSON.stringify(report)), 'run-one'), report);
 });
 
-test('change reports expose receipt conflicts and partial large-file evidence', () => {
-  const baseline = { workspace: snapshot('a', [file('source.txt', hash('a'), 10)]), versionControl: { kind: 'none' } };
+test('change reports expose receipt conflicts and partial large-file observations', () => {
+  const preChange = { workspace: snapshot('a', [file('source.txt', hash('a'), 10)]), versionControl: { kind: 'none' } };
   const final = {
     ...snapshot('b', [file('source.txt', hash('3'), 12), { path: 'large.dat', kind: 'file', bytes: 70_000_000 }]),
     coverage: 'partial',
     causes: ['file_size_limit']
   };
-  const report = deriveRunChangeReport('run-conflict', baseline, final, [
+  const report = deriveRunChangeReport('run-conflict', preChange, final, [
     receipt(10, [mutation('source.txt', 'update', hash('a'), hash('2'), 10, 11)])
   ]);
   const source = report.changes.find((change) => change.path === 'source.txt');
@@ -96,7 +96,7 @@ function receipt(sequence, files) {
     toolAttempt: 1,
     fingerprint: `fingerprint-${sequence}`,
     patchSha256: hash('9'),
-    operationStatus: 'applied',
+    applicationStatus: 'applied',
     transactionOutcome: 'committed',
     rootState: 'known',
     files

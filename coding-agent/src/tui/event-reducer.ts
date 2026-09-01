@@ -49,7 +49,7 @@ export function applyProgress(state: CodingAgentTuiState, event: AgentProgressEv
 
 function reduceTurnStarted(state: CodingAgentTuiState, event: ProgressEvent<'turn.started'>): CodingAgentTuiState {
   return {
-    ...withWorking(state, 'Preparing'),
+    ...withWorking(state, 'Initializing'),
     debug: {
       ...state.debug,
       runId: event.runId,
@@ -104,7 +104,7 @@ function reduceReasoning(state: CodingAgentTuiState, event: ProgressEvent<'assis
 
 function reduceToolCall(state: CodingAgentTuiState, event: ProgressEvent<'tool.call.received'>): CodingAgentTuiState {
   return upsertActivity(
-    withWorking(state, 'Preparing tool'),
+    withWorking(state, 'Planning tool'),
     pendingToolActivity(toolActivityId({ ...event, runId: currentRunId(state) }), event.toolCall)
   );
 }
@@ -271,7 +271,7 @@ function applyTerminal(
     }
   };
   if (presentation.message.trim().length > 0 && !hasVisibleMessage(next, presentation.message)) {
-    next = terminal.candidate.status === 'absent'
+    next = terminal.modelOutput.status === 'absent'
       ? appendNotice(next, presentation.message, presentation.status === 'error' ? 'error' : 'warning')
       : upsertAssistant(next, `terminal:${terminal.finalizationId}`, presentation.message, 'complete');
   }
@@ -313,12 +313,12 @@ function currentRunId(state: CodingAgentTuiState): string {
 
 function phaseLabel(phase: AgentRunPhase): string {
   switch (phase) {
-    case 'preparing': return 'Preparing';
+    case 'initializing': return 'Initializing';
     case 'requesting_model': return 'Thinking';
     case 'executing_tools': return 'Using tools';
     case 'waiting_for_approval': return 'Approval required';
     case 'verifying': return 'Verifying';
-    case 'deciding': return 'Evaluating candidate';
+    case 'deciding': return 'Evaluating result';
     case 'finalizing': return 'Finishing';
     case 'ended': return 'Completed';
   }

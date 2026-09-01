@@ -25,7 +25,7 @@ test('taskless exec resume rejects a session without unfinished work', async () 
     assert.equal(completed.code, 0, completed.stderr);
     const output = await runCli(fixture, ['exec', '--resume']);
     assert.equal(output.code, 1);
-    assert.match(output.stderr, /no unfinished operation/u);
+    assert.match(output.stderr, /no unfinished run/u);
   } finally {
     await provider.close();
     await fixture.close();
@@ -67,7 +67,7 @@ test('review-only diagnosis handles a non-Git root and hostile repository guidan
   }
 });
 
-test('a denied restricted-workspace mutation remains unapplied and resumes to an evidence-backed terminal result', async () => {
+test('a denied restricted-workspace mutation remains unapplied and resumes to an observation-backed terminal result', async () => {
   const sourceBefore = 'export const enabled = false;\n';
   const provider = await scriptedOllama([
     toolResponse('read_files', { files: [{ path: 'src/feature.js' }] }),
@@ -228,7 +228,7 @@ test('resilient CLI slice recovers before generation and completes one confined 
     assert.equal(await readFile(path.join(fixture.root, 'src/note.txt'), 'utf8'), 'beta\n');
     assert.equal(await readFile(path.join(fixture.root, 'untouched.txt'), 'utf8'), 'keep\n');
     assert.match(resumed.stdout, /Verification: Passed/u);
-    assert.match(resumed.stdout, /- note:candidate: required\/passed/u);
+    assert.match(resumed.stdout, /- note:modelOutput: required\/passed/u);
     assert.match(resumed.stdout, /Workspace changes: 1 \(complete\)/u);
     assert.match(resumed.stdout, /- modified src\/note\.txt \[agent\]/u);
     assert.match(resumed.stdout, /Remaining uncertainty: none/u);
@@ -278,11 +278,11 @@ test('a failed required check drives a bounded repair without weakening the veri
     assert.equal(output.code, 0, `${output.stdout}\n${output.stderr}`);
     assert.equal(await readFile(path.join(fixture.root, 'src/note.txt'), 'utf8'), 'beta\n');
     assert.match(output.stdout, /Verification: Passed/u);
-    assert.match(output.stdout, /- note-value:candidate: required\/passed/u);
+    assert.match(output.stdout, /- note-value:modelOutput: required\/passed/u);
     assert.match(output.stdout, /Remaining uncertainty: none/u);
     assert.equal(provider.chatRequests.length, 5);
     const revisionRequest = JSON.stringify(provider.chatRequests[3]);
-    assert.match(revisionRequest, /Required baseline-aware verification proves that this candidate introduced or changed a failure/u);
+    assert.match(revisionRequest, /Required pre-change comparison proves that this working copy introduced or changed a failure/u);
     assert.match(revisionRequest, /repair the underlying defect without weakening the admitted verifier/u);
     assert.match(revisionRequest, /note-value/u);
   } finally {

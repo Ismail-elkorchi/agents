@@ -9,7 +9,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const npmCli = process.env.npm_execpath;
 if (!npmCli) throw new Error('npm_execpath is required to verify packed consumers.');
 const core = path.resolve(root, '../agent-core');
-const packageDirs = ['packages/auth', 'packages/json', 'packages/effects', 'packages/evidence', 'packages/model', 'packages/runtime', 'packages/tools', 'packages/tools-local', 'packages/providers/ollama', 'packages/providers/openai-responses', 'packages/providers/openai', 'packages/providers/openai-codex', 'packages/providers/openrouter'];
+const packageDirs = ['packages/auth', 'packages/json', 'packages/effects', 'packages/persistence', 'packages/model', 'packages/runtime', 'packages/tools', 'packages/tools-local', 'packages/providers/ollama', 'packages/providers/openai-responses', 'packages/providers/openai', 'packages/providers/openai-codex', 'packages/providers/openrouter'];
 const temporary = await mkdtemp(path.join(tmpdir(), 'coding-agent-packed-consumer-'));
 try {
   const packs = path.join(temporary, 'packs');

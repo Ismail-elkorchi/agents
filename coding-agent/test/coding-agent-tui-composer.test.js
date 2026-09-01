@@ -81,7 +81,7 @@ test('non-approval suspensions remain distinct recovery decisions', async () => 
   });
   await runtime.start();
   await runtime.dispatch({
-    type: 'operation.suspended',
+    type: 'run.suspended',
     suspension: {
       state: 'suspended',
       reason: 'tool_outcome_unknown',
@@ -107,6 +107,6 @@ function approvalSuspension() {
       policyHash: 'policy-hash', reason: 'Shell execution requires approval.',
       turnIndex: 1, turnId: 'turn-1', requestAttempt: 1, toolBatchId: 'batch-1', callIndex: 0, callId: 'call-1'
     }],
-    budget: { modelTurns: 1, totalToolCalls: 1, repeatedIdenticalToolCalls: 1, candidateRevisions: 0, elapsedMs: 1, promptTokens: 0, completionTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, knownCosts: {}, pricingStatus: 'unknown', unknownPricedTokens: 0, consecutiveProviderFailures: 0, consecutiveToolFailures: 0 }
+    budget: { modelTurns: 1, totalToolCalls: 1, repeatedIdenticalToolCalls: 1, revisionAttempts: 0, elapsedMs: 1, promptTokens: 0, completionTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, knownCosts: {}, pricingStatus: 'unknown', unknownPricedTokens: 0, consecutiveProviderFailures: 0, consecutiveToolFailures: 0 }
   };
 }

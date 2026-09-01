@@ -107,7 +107,7 @@ export function completedToolActivity(
   const details = [
     current?.details,
     formatOutput(observation.output),
-    formatEvidence(observation)
+    formatObservedFacts(observation)
   ].filter((part): part is string => part !== undefined && part.length > 0).join('\n\n');
   return {
     id,
@@ -185,14 +185,14 @@ function formatOutput(output: ToolObservation['output']): string | undefined {
   return formatted.length === 0 ? undefined : `Output\n${formatted}`;
 }
 
-function formatEvidence(observation: ToolObservation): string | undefined {
-  const items = observation.evidence?.items ?? [];
+function formatObservedFacts(observation: ToolObservation): string | undefined {
+  const items = observation.observedFacts?.items ?? [];
   if (items.length === 0) return undefined;
   const lines = items.slice(0, 12).map((item) => {
     const resources = (item.resources ?? []).map((resource) => resource.uri).join(', ');
     return `- ${humanize(item.action)}${resources.length === 0 ? '' : `: ${resources}`}${item.summary === undefined ? '' : ` — ${compact(item.summary)}`}`;
   });
-  return `Evidence\n${lines.join('\n')}${items.length > lines.length ? `\n… ${String(items.length - lines.length)} more` : ''}`;
+  return `Observed facts\n${lines.join('\n')}${items.length > lines.length ? `\n… ${String(items.length - lines.length)} more` : ''}`;
 }
 
 function formatValue(value: ToolDisplayValue): string {

@@ -57,9 +57,9 @@ test('CLI rejects retired presentation flags', async () => {
   }
 });
 
-test('CLI exit codes distinguish success, candidate completeness, verification, failure, and abort', () => {
+test('CLI exit codes distinguish success, model output completeness, verification, failure, and abort', () => {
   assert.equal(resultExitCode(result()), 0);
-  assert.equal(resultExitCode(result({ candidate: { status: 'partial', message: 'part', source: 'content', turnIndex: 1 }, terminationReason: 'model_output_limit', modelTerminationReason: 'output_limit' })), 2);
+  assert.equal(resultExitCode(result({ modelOutput: { status: 'partial', message: 'part', source: 'content', turnIndex: 1 }, terminationReason: 'model_output_limit', modelTerminationReason: 'output_limit' })), 2);
   assert.equal(resultExitCode(result({ verificationStatus: 'failed' })), 3);
   assert.equal(resultExitCode(result({ verificationStatus: 'inconclusive' })), 4);
   assert.equal(resultExitCode(failed()), 1);
@@ -139,7 +139,7 @@ test('workspace trust and explicit model setup are enforced before provider I/O'
 });
 
 function result(overrides = {}) { return { state: 'ended', terminal: decodeAgentTerminalSnapshot({ ...base(), ...overrides }), deliveryDiagnostics: [] }; }
-function failed() { const { modelTerminationReason: _reason, ...input } = base(); return { state: 'ended', terminal: decodeAgentTerminalSnapshot({ ...input, executionStatus: 'failed', verificationStatus: 'not_run', terminationReason: 'runtime_error', errorMessage: 'failed', candidate: { status: 'absent' } }), deliveryDiagnostics: [] }; }
-function aborted() { const { modelTerminationReason: _reason, ...input } = base(); return { state: 'ended', terminal: decodeAgentTerminalSnapshot({ ...input, executionStatus: 'aborted', verificationStatus: 'not_run', terminationReason: 'aborted', errorMessage: 'stopped', candidate: { status: 'absent' } }), deliveryDiagnostics: [] }; }
-function base() { return { runId: 'run', finalizationId: 'final', phase: 'ended', executionStatus: 'completed', verificationStatus: 'not_required', terminationReason: 'model_completed', modelTerminationReason: 'stop', candidate: { status: 'complete', message: 'done', source: 'content', turnIndex: 1 }, turnCount: 1, checkResults: [], budget: { modelTurns: 1, totalToolCalls: 0, repeatedIdenticalToolCalls: 0, candidateRevisions: 0, elapsedMs: 1, promptTokens: 0, completionTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, knownCosts: {}, pricingStatus: 'unknown', unknownPricedTokens: 0, consecutiveProviderFailures: 0, consecutiveToolFailures: 0 } }; }
+function failed() { const { modelTerminationReason: _reason, ...input } = base(); return { state: 'ended', terminal: decodeAgentTerminalSnapshot({ ...input, executionStatus: 'failed', verificationStatus: 'not_run', terminationReason: 'runtime_error', errorMessage: 'failed', modelOutput: { status: 'absent' } }), deliveryDiagnostics: [] }; }
+function aborted() { const { modelTerminationReason: _reason, ...input } = base(); return { state: 'ended', terminal: decodeAgentTerminalSnapshot({ ...input, executionStatus: 'aborted', verificationStatus: 'not_run', terminationReason: 'aborted', errorMessage: 'stopped', modelOutput: { status: 'absent' } }), deliveryDiagnostics: [] }; }
+function base() { return { runId: 'run', finalizationId: 'final', phase: 'ended', executionStatus: 'completed', verificationStatus: 'not_required', terminationReason: 'model_completed', modelTerminationReason: 'stop', modelOutput: { status: 'complete', message: 'done', source: 'content', turnIndex: 1 }, turnCount: 1, checkResults: [], budget: { modelTurns: 1, totalToolCalls: 0, repeatedIdenticalToolCalls: 0, revisionAttempts: 0, elapsedMs: 1, promptTokens: 0, completionTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, knownCosts: {}, pricingStatus: 'unknown', unknownPricedTokens: 0, consecutiveProviderFailures: 0, consecutiveToolFailures: 0 } }; }
 function run(file, args, options = {}) { return new Promise((resolve, reject) => { const child = spawn(process.execPath, [file, ...args], { stdio: ['ignore', 'pipe', 'pipe'], ...options }); let stdout = ''; let stderr = ''; child.stdout.on('data', chunk => { stdout += chunk; }); child.stderr.on('data', chunk => { stderr += chunk; }); child.on('error', reject); child.on('close', code => resolve({ code, stdout, stderr })); }); }

@@ -12,26 +12,26 @@ export function terminalPresentation(terminal: AgentTerminalSnapshot): CodingAge
     return {
       status: 'warning',
       headline: 'Aborted',
-      message: terminal.candidate.status === 'absent' ? terminal.errorMessage : terminal.candidate.message
+      message: terminal.modelOutput.status === 'absent' ? terminal.errorMessage : terminal.modelOutput.message
     };
   }
   if (terminal.executionStatus === 'failed') {
     return {
       status: 'error',
       headline: failureHeadline(terminal.terminationReason),
-      message: terminal.candidate.status === 'absent' ? terminal.errorMessage : terminal.candidate.message
+      message: terminal.modelOutput.status === 'absent' ? terminal.errorMessage : terminal.modelOutput.message
     };
   }
   if (terminal.verificationStatus === 'passed') {
-    return { status: 'success', headline: 'Verified', message: terminal.candidate.message };
+    return { status: 'success', headline: 'Verified', message: terminal.modelOutput.message };
   }
   if (terminal.verificationStatus === 'failed') {
-    return { status: 'warning', headline: 'Verification failed', message: terminal.candidate.message };
+    return { status: 'warning', headline: 'Verification failed', message: terminal.modelOutput.message };
   }
   if (terminal.verificationStatus === 'inconclusive') {
-    return { status: 'warning', headline: 'Verification inconclusive', message: terminal.candidate.message };
+    return { status: 'warning', headline: 'Verification inconclusive', message: terminal.modelOutput.message };
   }
-  return { status: 'success', headline: 'Completed', message: terminal.candidate.message };
+  return { status: 'success', headline: 'Completed', message: terminal.modelOutput.message };
 }
 
 function failureHeadline(reason: AgentTerminalSnapshot['terminationReason']): string {
@@ -45,8 +45,8 @@ function failureHeadline(reason: AgentTerminalSnapshot['terminationReason']): st
     case 'empty_response': return 'No answer';
     case 'malformed_response': return 'Malformed answer';
     case 'limit_exhausted': return 'Run limit reached';
-    case 'candidate_rejected': return 'Candidate rejected';
-    case 'disposition_inconclusive': return 'Candidate evaluation inconclusive';
+    case 'model_output_rejected': return 'Model output rejected';
+    case 'disposition_inconclusive': return 'Acceptance decision inconclusive';
     default: return 'Run failed';
   }
 }

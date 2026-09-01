@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { hashJson } from '@agent-core/evidence';
+import { hashJson } from '@agent-core/persistence';
 import { normalizeJsonSafe, type JsonValue } from '@agent-core/json';
 import type * as z from 'zod';
 

@@ -8,13 +8,13 @@ import {
   authorshipProvenanceSchema,
   claimEvidenceRelationSchema,
   claimSchema,
-  contextReceiptSchema,
+  writingContextSelectionSchema,
   deterministicCheckSchema,
   editorialDecisionSchema,
   editorialFindingSchema,
   identifierSchema,
   projectSnapshotSchema,
-  proposalQualityEvaluationSchema,
+  proposalProductionVerificationSchema,
   revisionProposalSchema,
   sha256Schema,
   sourceRecordSchema,
@@ -24,12 +24,12 @@ import {
   type AuthorshipProvenance,
   type Claim,
   type ClaimEvidenceRelation,
-  type ContextReceipt,
+  type WritingContextSelection,
   type DeterministicCheck,
   type EditorialDecision,
   type EditorialFinding,
   type ProjectSnapshot,
-  type ProposalQualityEvaluation,
+  type ProposalProductionVerification,
   type RevisionProposal,
   type SourceRecord,
   type WritingBriefRevision,
@@ -129,9 +129,9 @@ const eventPayloadSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('assumption.status-changed'), change: assumptionStatusChangeSchema }),
   z.strictObject({ kind: z.literal('operation.admitted'), operation: writingOperationSchema }),
   z.strictObject({ kind: z.literal('operation.lifecycle'), lifecycle: operationLifecycleSchema }),
-  z.strictObject({ kind: z.literal('context.recorded'), receipt: contextReceiptSchema }),
+  z.strictObject({ kind: z.literal('context.selected'), selection: writingContextSelectionSchema }),
   z.strictObject({ kind: z.literal('proposal.created'), proposal: revisionProposalSchema }),
-  z.strictObject({ kind: z.literal('proposal.quality-evaluated'), evaluation: proposalQualityEvaluationSchema }),
+  z.strictObject({ kind: z.literal('proposal.production-verified'), verification: proposalProductionVerificationSchema }),
   z.strictObject({ kind: z.literal('proposal.lifecycle'), lifecycle: proposalLifecycleSchema }),
   z.strictObject({ kind: z.literal('mutation.settled'), settlement: mutationSettlementSchema }),
   z.strictObject({ kind: z.literal('revision.committed'), snapshot: projectSnapshotSchema, cause: z.enum(['initial', 'brief', 'proposal', 'direct', 'structure', 'undo', 'source', 'evidence', 'provenance']) }),
@@ -178,10 +178,10 @@ export interface ProjectView {
   readonly records: readonly ProjectLogRecord[];
   readonly current: ProjectSnapshot;
   readonly proposals: ReadonlyMap<string, { readonly proposal: RevisionProposal; readonly status: ProposalStatus }>;
-  readonly qualityEvaluations: ReadonlyMap<string, ProposalQualityEvaluation>;
+  readonly productionVerifications: ReadonlyMap<string, ProposalProductionVerification>;
   readonly operations: ReadonlyMap<string, WritingOperation>;
   readonly operationLifecycles: ReadonlyMap<string, WritingOperationLifecycle>;
-  readonly contexts: ReadonlyMap<string, ContextReceipt>;
+  readonly contextSelections: ReadonlyMap<string, WritingContextSelection>;
   readonly settlements: ReadonlyMap<string, ProjectMutationSettlement>;
 }
 
@@ -305,7 +305,7 @@ export class WritingProjectStore {
 
   async appendOperationLifecycle(input: z.input<typeof operationLifecycleSchema>, expectedRevisionId: string): Promise<void> {
     const lifecycle = adoptSchema(operationLifecycleSchema, input);
-    const existing = await this.operationLifecycleReceipt(lifecycle.operationId);
+    const existing = await this.getOperationLifecycle(lifecycle.operationId);
     if (existing !== undefined && existing.status !== 'suspended') {
       if (sameOperationSettlement(existing, lifecycle)) return;
       throw new Error(`Writing operation already has a conflicting terminal settlement: ${lifecycle.operationId}`);
@@ -314,8 +314,8 @@ export class WritingProjectStore {
     await this.appendMany([{ payload: { kind: 'operation.lifecycle', lifecycle }, projectRevisionId: expectedRevisionId }], { expectedRevisionId });
   }
 
-  async appendContext(receipt: ContextReceipt, expectedRevisionId: string): Promise<void> {
-    await this.appendMany([{ payload: { kind: 'context.recorded', receipt }, projectRevisionId: expectedRevisionId }], { expectedRevisionId });
+  async appendContextSelection(selection: WritingContextSelection, expectedRevisionId: string): Promise<void> {
+    await this.appendMany([{ payload: { kind: 'context.selected', selection }, projectRevisionId: expectedRevisionId }], { expectedRevisionId });
   }
 
   async appendProposal(proposal: RevisionProposal): Promise<void> {
@@ -339,14 +339,14 @@ export class WritingProjectStore {
     ], { expectedRevisionId: proposal.baseProjectRevisionId });
   }
 
-  async appendProposalQuality(evaluation: ProposalQualityEvaluation): Promise<void> {
-    const parsed = proposalQualityEvaluationSchema.parse(evaluation);
-    const existing = await this.qualityEvaluationReceipt(parsed.proposalId);
+  async appendProposalProductionVerification(verification: ProposalProductionVerification): Promise<void> {
+    const parsed = proposalProductionVerificationSchema.parse(verification);
+    const existing = await this.getProposalProductionVerification(parsed.proposalId);
     if (existing !== undefined) {
-      if (canonicalSha256(existing) !== canonicalSha256(parsed)) throw new Error(`Proposal quality evaluation conflicts with its durable receipt: ${parsed.proposalId}`);
+      if (canonicalSha256(existing) !== canonicalSha256(parsed)) throw new Error(`Proposal production verification conflicts with its durable record: ${parsed.proposalId}`);
       return;
     }
-    await this.appendMany([{ payload: { kind: 'proposal.quality-evaluated', evaluation: parsed }, projectRevisionId: parsed.baseProjectRevisionId }], { expectedRevisionId: parsed.baseProjectRevisionId });
+    await this.appendMany([{ payload: { kind: 'proposal.production-verified', verification: parsed }, projectRevisionId: parsed.baseProjectRevisionId }], { expectedRevisionId: parsed.baseProjectRevisionId });
   }
 
   async appendProposalLifecycle(input: z.input<typeof proposalLifecycleSchema>, expectedRevisionId: string): Promise<void> {
@@ -460,15 +460,27 @@ export class WritingProjectStore {
     await this.assertOrRebuildHead(await this.records(), true);
   }
 
-  async proposalReceipt(proposalId: string): Promise<RevisionProposal | undefined> {
+  async getProposal(proposalId: string): Promise<RevisionProposal | undefined> {
     return (await this.view()).proposals.get(proposalId)?.proposal;
   }
 
-  async qualityEvaluationReceipt(proposalId: string): Promise<ProposalQualityEvaluation | undefined> {
-    return (await this.view()).qualityEvaluations.get(proposalId);
+  async getOperation(operationId: string): Promise<WritingOperation | undefined> {
+    return (await this.view()).operations.get(operationId);
   }
 
-  async operationLifecycleReceipt(operationId: string): Promise<WritingOperationLifecycle | undefined> {
+  async getOperationByRunId(runId: string): Promise<WritingOperation | undefined> {
+    return [...(await this.view()).operations.values()].find((operation) => operation.runId === runId);
+  }
+
+  async getContextSelectionForOperation(operationId: string): Promise<WritingContextSelection | undefined> {
+    return [...(await this.view()).contextSelections.values()].find((selection) => selection.operationId === operationId);
+  }
+
+  async getProposalProductionVerification(proposalId: string): Promise<ProposalProductionVerification | undefined> {
+    return (await this.view()).productionVerifications.get(proposalId);
+  }
+
+  async getOperationLifecycle(operationId: string): Promise<WritingOperationLifecycle | undefined> {
     return (await this.view()).operationLifecycles.get(operationId);
   }
 
@@ -533,7 +545,7 @@ function validateConcurrentTransition(
   identity: WritingProjectIdentity
 ): void {
   const payload = candidate.payload;
-  if (payload.kind !== 'operation.lifecycle' && payload.kind !== 'proposal.quality-evaluated' && payload.kind !== 'proposal.lifecycle') return;
+  if (payload.kind !== 'operation.lifecycle' && payload.kind !== 'proposal.production-verified' && payload.kind !== 'proposal.lifecycle') return;
   const view = projectView(records, identity);
   if (payload.kind === 'operation.lifecycle') {
     const operation = view.operations.get(payload.lifecycle.operationId);
@@ -542,10 +554,10 @@ function validateConcurrentTransition(
     if (previous !== undefined && previous.status !== 'suspended') throw new Error(`Operation lifecycle changes a terminal settlement: ${payload.lifecycle.operationId}`);
     return;
   }
-  if (payload.kind === 'proposal.quality-evaluated') {
-    const proposal = view.proposals.get(payload.evaluation.proposalId);
-    if (proposal?.proposal.operationId !== payload.evaluation.operationId) throw new Error(`Proposal quality evaluation precedes or contradicts its proposal: ${payload.evaluation.proposalId}`);
-    if (view.qualityEvaluations.has(payload.evaluation.proposalId)) throw new Error(`Proposal quality evaluation already exists: ${payload.evaluation.proposalId}`);
+  if (payload.kind === 'proposal.production-verified') {
+    const proposal = view.proposals.get(payload.verification.proposalId);
+    if (proposal?.proposal.operationId !== payload.verification.operationId) throw new Error(`Proposal quality verification precedes or contradicts its proposal: ${payload.verification.proposalId}`);
+    if (view.productionVerifications.has(payload.verification.proposalId)) throw new Error(`Proposal quality verification already exists: ${payload.verification.proposalId}`);
     return;
   }
   const proposal = view.proposals.get(payload.lifecycle.proposalId);
@@ -593,10 +605,10 @@ async function readLogEnvelopesIfPresent(directory: string): Promise<readonly z.
 
 function projectView(records: readonly ProjectLogRecord[], identity: WritingProjectIdentity): ProjectView {
   const proposals = new Map<string, { proposal: RevisionProposal; status: ProposalStatus }>();
-  const qualityEvaluations = new Map<string, ProposalQualityEvaluation>();
+  const productionVerifications = new Map<string, ProposalProductionVerification>();
   const operations = new Map<string, WritingOperation>();
   const operationLifecycles = new Map<string, WritingOperationLifecycle>();
-  const contexts = new Map<string, ContextReceipt>();
+  const contextSelections = new Map<string, WritingContextSelection>();
   const settlements = new Map<string, ProjectMutationSettlement>();
   for (const record of records) {
     if (record.projectId !== identity.projectId) throw new Error(`Project log mixes project identities at record ${record.recordId}.`);
@@ -609,12 +621,12 @@ function projectView(records: readonly ProjectLogRecord[], identity: WritingProj
       if (previous !== undefined && previous.status !== 'suspended') throw new Error(`Operation lifecycle changes a terminal settlement: ${payload.lifecycle.operationId}`);
       operationLifecycles.set(payload.lifecycle.operationId, payload.lifecycle);
     }
-    else if (payload.kind === 'context.recorded') uniqueSet(contexts, payload.receipt.contextReceiptId, payload.receipt, 'context receipt');
+    else if (payload.kind === 'context.selected') uniqueSet(contextSelections, payload.selection.contextSelectionId, payload.selection, 'context selection');
     else if (payload.kind === 'proposal.created') uniqueSet(proposals, payload.proposal.proposalId, { proposal: payload.proposal, status: 'proposed' }, 'proposal');
-    else if (payload.kind === 'proposal.quality-evaluated') {
-      const proposal = proposals.get(payload.evaluation.proposalId);
-      if (proposal?.proposal.operationId !== payload.evaluation.operationId) throw new Error(`Proposal quality evaluation precedes or contradicts its proposal: ${payload.evaluation.proposalId}`);
-      uniqueSet(qualityEvaluations, payload.evaluation.proposalId, payload.evaluation, 'proposal quality evaluation');
+    else if (payload.kind === 'proposal.production-verified') {
+      const proposal = proposals.get(payload.verification.proposalId);
+      if (proposal?.proposal.operationId !== payload.verification.operationId) throw new Error(`Proposal quality verification precedes or contradicts its proposal: ${payload.verification.proposalId}`);
+      uniqueSet(productionVerifications, payload.verification.proposalId, payload.verification, 'proposal quality verification');
     }
     else if (payload.kind === 'proposal.lifecycle') {
       const proposal = proposals.get(payload.lifecycle.proposalId);
@@ -625,7 +637,7 @@ function projectView(records: readonly ProjectLogRecord[], identity: WritingProj
   }
   const current = latestSnapshot(records);
   if (current === undefined) throw new Error(`Writing project ${identity.projectId} has no current revision.`);
-  return deepFreeze({ identity, records: Object.freeze([...records]), current, proposals, qualityEvaluations, operations, operationLifecycles, contexts, settlements });
+  return deepFreeze({ identity, records: Object.freeze([...records]), current, proposals, productionVerifications, operations, operationLifecycles, contextSelections, settlements });
 }
 
 function sameOperationSettlement(left: WritingOperationLifecycle, right: WritingOperationLifecycle): boolean {

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { EventRepository } from '@agent-core/evidence';
+import type { EventRepository } from '@agent-core/persistence';
 import type { AgentEvent, AgentRunResult, AgentVerificationStatus } from '@agent-core/runtime';
 import {
   applyPatchOutputSchema,
@@ -10,7 +10,7 @@ import {
   type WorkspaceSnapshotEntry
 } from '@agent-core/tools-local';
 import { PrivateStateDirectory } from '../state/private-state.js';
-import { loadRunWorkspaceBaseline, type RunWorkspaceBaseline } from './workspace-baseline-store.js';
+import { loadPreChangeSnapshot, type PreChangeSnapshot } from './pre-change-snapshot-store.js';
 
 const MAX_REPORT_CHANGES = 200;
 const MAX_REPORT_RECEIPTS = 200;
@@ -25,7 +25,7 @@ export interface StructuredMutationReceipt {
   readonly toolAttempt: number;
   readonly fingerprint: string;
   readonly patchSha256: string;
-  readonly operationStatus: ApplyPatchOutput['operationStatus'];
+  readonly applicationStatus: ApplyPatchOutput['applicationStatus'];
   readonly transactionOutcome?: ApplyPatchOutput['transactionOutcome'];
   readonly rootState: ApplyPatchOutput['rootState'];
 }
@@ -56,7 +56,7 @@ export interface WorkspaceChange {
   readonly kind: 'added' | 'modified' | 'deleted' | 'replaced';
   readonly attribution: 'structured_mutation' | 'external_or_concurrent';
   readonly initial: 'existing' | 'absent';
-  readonly versionControlBaseline: 'changed' | 'not_reported' | 'not_applicable' | 'unavailable';
+  readonly preChangeVersionControl: 'changed' | 'not_reported' | 'not_applicable' | 'unavailable';
   readonly content: 'text' | 'binary' | 'large' | 'non_file' | 'unknown';
   readonly beforeSha256?: string;
   readonly afterSha256?: string;
@@ -69,7 +69,7 @@ export interface WorkspaceChange {
 export interface RunChangeReport {
   readonly schemaVersion: 1;
   readonly runId: string;
-  readonly baselineDigest: string;
+  readonly preChangeDigest: string;
   readonly finalDigest: string;
   readonly coverage: 'complete' | 'partial';
   readonly causes: readonly string[];
@@ -98,23 +98,23 @@ export async function createRunChangeReport(input: {
   if (input.result?.state === 'ended' && input.result.terminal.runId !== input.runId) {
     throw new Error(`Run result ${input.result.terminal.runId} cannot finalize change report ${input.runId}.`);
   }
-  const [baseline, final, mutations] = await Promise.all([
-    loadRunWorkspaceBaseline(input.state, input.runId),
+  const [preChange, final, mutations] = await Promise.all([
+    loadPreChangeSnapshot(input.state, input.runId),
     captureWorkspaceSnapshot(input.root),
     readMutationReceipts(input.events, input.runId)
   ]);
-  return deriveRunChangeReport(input.runId, baseline, final, mutations.receipts, input.result, mutations.causes);
+  return deriveRunChangeReport(input.runId, preChange, final, mutations.receipts, input.result, mutations.causes);
 }
 
 export function deriveRunChangeReport(
   runId: string,
-  baseline: RunWorkspaceBaseline,
+  preChange: PreChangeSnapshot,
   final: WorkspaceSnapshot,
   receipts: readonly DecodedMutationReceipt[],
   result?: AgentRunResult,
   mutationCauses: readonly string[] = []
 ): RunChangeReport {
-  const before = new Map(baseline.workspace.entries.map((entry) => [entry.path, entry]));
+  const before = new Map(preChange.workspace.entries.map((entry) => [entry.path, entry]));
   const after = new Map(final.entries.map((entry) => [entry.path, entry]));
   const predicted = new Map<string, PredictedState>();
   const receiptSequences = new Map<string, Set<number>>();
@@ -127,7 +127,7 @@ export function deriveRunChangeReport(
     if (!predictedMatches(expected, after.get(path))) addConflict(conflicts, path, 'final_state_does_not_match_structured_mutation_receipts');
   }
 
-  const versionControlBaseline = initialVersionControlPaths(baseline);
+  const preChangeVersionControl = initialVersionControlPaths(preChange);
   const changedPaths = [...new Set([...before.keys(), ...after.keys()])]
     .filter((path) => changedEntry(before.get(path), after.get(path)))
     .filter((path) => !directoryOnlyChange(before.get(path), after.get(path)))
@@ -142,9 +142,9 @@ export function deriveRunChangeReport(
       kind: changeKind(beforeEntry, afterEntry),
       attribution: attributed ? 'structured_mutation' : 'external_or_concurrent',
       initial: beforeEntry === undefined ? 'absent' : 'existing',
-      versionControlBaseline: versionControlBaseline.kind === 'observed'
-        ? versionControlBaseline.paths.has(path) ? 'changed' : 'not_reported'
-        : versionControlBaseline.kind,
+      preChangeVersionControl: preChangeVersionControl.kind === 'observed'
+        ? preChangeVersionControl.paths.has(path) ? 'changed' : 'not_reported'
+        : preChangeVersionControl.kind,
       content: changeContent(beforeEntry, afterEntry),
       ...(beforeEntry?.sha256 ? { beforeSha256: beforeEntry.sha256 } : {}),
       ...(afterEntry?.sha256 ? { afterSha256: afterEntry.sha256 } : {}),
@@ -156,14 +156,14 @@ export function deriveRunChangeReport(
   });
   const retainedChanges = Object.freeze(changes.slice(0, MAX_REPORT_CHANGES));
   const retainedReceipts = Object.freeze(receipts.slice(0, MAX_REPORT_RECEIPTS).map(publicReceipt));
-  const causes = new Set([...baseline.workspace.causes.map((cause) => `baseline:${cause}`), ...final.causes.map((cause) => `final:${cause}`)]);
+  const causes = new Set([...preChange.workspace.causes.map((cause) => `preChange:${cause}`), ...final.causes.map((cause) => `final:${cause}`)]);
   for (const cause of mutationCauses) causes.add(`mutation_receipts:${cause}`);
-  if (baseline.workspace.coverage === 'partial') causes.add('baseline:partial');
+  if (preChange.workspace.coverage === 'partial') causes.add('preChange:partial');
   if (final.coverage === 'partial') causes.add('final:partial');
-  if (baseline.versionControl.kind === 'unavailable') causes.add('version_control:unavailable');
-  else if (baseline.versionControl.kind === 'git') {
-    if (baseline.versionControl.status.kind === 'unavailable') causes.add('version_control:unavailable');
-    else if (baseline.versionControl.status.coverage === 'partial') causes.add('version_control:partial');
+  if (preChange.versionControl.kind === 'unavailable') causes.add('version_control:unavailable');
+  else if (preChange.versionControl.kind === 'git') {
+    if (preChange.versionControl.status.kind === 'unavailable') causes.add('version_control:unavailable');
+    else if (preChange.versionControl.status.coverage === 'partial') causes.add('version_control:partial');
   }
   if (changes.length > retainedChanges.length) causes.add('changes:retention_limit');
   if (receipts.length > retainedReceipts.length) causes.add('mutation_receipts:retention_limit');
@@ -172,7 +172,7 @@ export function deriveRunChangeReport(
   return Object.freeze({
     schemaVersion: 1,
     runId,
-    baselineDigest: baseline.workspace.digest,
+    preChangeDigest: preChange.workspace.digest,
     finalDigest: final.digest,
     coverage: causes.size === 0 ? 'complete' : 'partial',
     causes: Object.freeze([...causes].sort(compareCodeUnits)),
@@ -193,10 +193,10 @@ export function deriveRunChangeReport(
 
 export function decodeRunChangeReport(value: unknown, expectedRunId?: string): RunChangeReport {
   if (!record(value)
-    || Object.keys(value).some((key) => !['schemaVersion', 'runId', 'baselineDigest', 'finalDigest', 'coverage', 'causes', 'changes', 'totalChanges', 'omittedChanges', 'mutationReceipts', 'totalMutationReceipts', 'omittedMutationReceipts', 'facts'].includes(key))
+    || Object.keys(value).some((key) => !['schemaVersion', 'runId', 'preChangeDigest', 'finalDigest', 'coverage', 'causes', 'changes', 'totalChanges', 'omittedChanges', 'mutationReceipts', 'totalMutationReceipts', 'omittedMutationReceipts', 'facts'].includes(key))
     || value.schemaVersion !== 1
     || typeof value.runId !== 'string' || (expectedRunId !== undefined && value.runId !== expectedRunId)
-    || !sha256(value.baselineDigest) || !sha256(value.finalDigest)
+    || !sha256(value.preChangeDigest) || !sha256(value.finalDigest)
     || (value.coverage !== 'complete' && value.coverage !== 'partial')
     || !stringList(value.causes)
     || !Array.isArray(value.changes) || value.changes.length > MAX_REPORT_CHANGES
@@ -212,7 +212,7 @@ export function decodeRunChangeReport(value: unknown, expectedRunId?: string): R
   return Object.freeze({
     schemaVersion: 1,
     runId: value.runId,
-    baselineDigest: value.baselineDigest,
+    preChangeDigest: value.preChangeDigest,
     finalDigest: value.finalDigest,
     coverage: value.coverage,
     causes: Object.freeze([...value.causes]),
@@ -228,13 +228,13 @@ export function decodeRunChangeReport(value: unknown, expectedRunId?: string): R
 
 function decodeWorkspaceChange(value: unknown): WorkspaceChange {
   if (!record(value)
-    || Object.keys(value).some((key) => !['path', 'kind', 'attribution', 'initial', 'versionControlBaseline', 'content', 'beforeSha256', 'afterSha256', 'beforeBytes', 'afterBytes', 'receiptSequences', 'conflicts'].includes(key))
+    || Object.keys(value).some((key) => !['path', 'kind', 'attribution', 'initial', 'preChangeVersionControl', 'content', 'beforeSha256', 'afterSha256', 'beforeBytes', 'afterBytes', 'receiptSequences', 'conflicts'].includes(key))
     || typeof value.path !== 'string'
     || !changeKindValue(value.kind)
     || (value.attribution !== 'structured_mutation' && value.attribution !== 'external_or_concurrent')
     || (value.initial !== 'existing' && value.initial !== 'absent')
-    || (value.versionControlBaseline !== 'changed' && value.versionControlBaseline !== 'not_reported'
-      && value.versionControlBaseline !== 'not_applicable' && value.versionControlBaseline !== 'unavailable')
+    || (value.preChangeVersionControl !== 'changed' && value.preChangeVersionControl !== 'not_reported'
+      && value.preChangeVersionControl !== 'not_applicable' && value.preChangeVersionControl !== 'unavailable')
     || !changeContentValue(value.content)
     || (value.beforeSha256 !== undefined && !sha256(value.beforeSha256))
     || (value.afterSha256 !== undefined && !sha256(value.afterSha256))
@@ -247,7 +247,7 @@ function decodeWorkspaceChange(value: unknown): WorkspaceChange {
     kind: value.kind,
     attribution: value.attribution,
     initial: value.initial,
-    versionControlBaseline: value.versionControlBaseline,
+    preChangeVersionControl: value.preChangeVersionControl,
     content: value.content,
     ...(typeof value.beforeSha256 === 'string' ? { beforeSha256: value.beforeSha256 } : {}),
     ...(typeof value.afterSha256 === 'string' ? { afterSha256: value.afterSha256 } : {}),
@@ -260,12 +260,12 @@ function decodeWorkspaceChange(value: unknown): WorkspaceChange {
 
 function decodeMutationReceipt(value: unknown): StructuredMutationReceipt {
   if (!record(value)
-    || Object.keys(value).some((key) => !['eventId', 'sequence', 'turnId', 'toolBatchId', 'callIndex', 'callId', 'toolAttempt', 'fingerprint', 'patchSha256', 'operationStatus', 'transactionOutcome', 'rootState'].includes(key))
+    || Object.keys(value).some((key) => !['eventId', 'sequence', 'turnId', 'toolBatchId', 'callIndex', 'callId', 'toolAttempt', 'fingerprint', 'patchSha256', 'applicationStatus', 'transactionOutcome', 'rootState'].includes(key))
     || typeof value.eventId !== 'string' || !nonNegativeInteger(value.sequence)
     || typeof value.turnId !== 'string' || typeof value.toolBatchId !== 'string'
     || !nonNegativeInteger(value.callIndex) || (value.callId !== undefined && typeof value.callId !== 'string')
     || !nonNegativeInteger(value.toolAttempt) || typeof value.fingerprint !== 'string' || !sha256(value.patchSha256)
-    || !operationStatus(value.operationStatus)
+    || !applicationStatus(value.applicationStatus)
     || (value.transactionOutcome !== undefined && !transactionOutcome(value.transactionOutcome))
     || (value.rootState !== 'known' && value.rootState !== 'uncertain')) throw new Error('Persisted structured mutation receipt is invalid.');
   return Object.freeze({
@@ -278,7 +278,7 @@ function decodeMutationReceipt(value: unknown): StructuredMutationReceipt {
     toolAttempt: value.toolAttempt,
     fingerprint: value.fingerprint,
     patchSha256: value.patchSha256,
-    operationStatus: value.operationStatus,
+    applicationStatus: value.applicationStatus,
     ...(transactionOutcome(value.transactionOutcome) ? { transactionOutcome: value.transactionOutcome } : {}),
     rootState: value.rootState
   });
@@ -326,7 +326,7 @@ async function readMutationReceipts(
       toolAttempt: event.toolAttempt,
       fingerprint: started.fingerprint,
       patchSha256: createHash('sha256').update(patch).digest('hex'),
-      operationStatus: parsed.data.operationStatus,
+      applicationStatus: parsed.data.applicationStatus,
       ...(parsed.data.transactionOutcome ? { transactionOutcome: parsed.data.transactionOutcome } : {}),
       rootState: parsed.data.rootState,
       files: Object.freeze(parsed.data.files.map((file): MutationFileReceipt => Object.freeze({
@@ -357,7 +357,7 @@ interface PredictedState { readonly kind: 'absent' | 'file'; readonly sha256?: s
 
 function applyReceipt(
   receipt: DecodedMutationReceipt,
-  baseline: ReadonlyMap<string, WorkspaceSnapshotEntry>,
+  preChange: ReadonlyMap<string, WorkspaceSnapshotEntry>,
   predicted: Map<string, PredictedState>,
   sequences: Map<string, Set<number>>,
   conflicts: Map<string, Set<string>>,
@@ -376,7 +376,7 @@ function applyReceipt(
       if (!values) { values = new Set(); sequences.set(path, values); }
       values.add(receipt.sequence);
     }
-    const source = predicted.get(file.path) ?? stateFromEntry(baseline.get(file.path));
+    const source = predicted.get(file.path) ?? stateFromEntry(preChange.get(file.path));
     if (file.operation === 'add') {
       if (source.kind !== 'absent') addConflict(conflicts, file.path, 'add_source_was_not_absent');
       predicted.set(file.path, predictedFile(file, undefined));
@@ -387,7 +387,7 @@ function applyReceipt(
     if (file.operation === 'move') {
       const destination = file.destinationPath;
       if (!destination) { addConflict(conflicts, file.path, 'move_destination_missing'); continue; }
-      const destinationState = predicted.get(destination) ?? stateFromEntry(baseline.get(destination));
+      const destinationState = predicted.get(destination) ?? stateFromEntry(preChange.get(destination));
       if (destinationState.kind !== 'absent') addConflict(conflicts, destination, 'move_destination_was_not_absent');
       predicted.set(file.path, Object.freeze({ kind: 'absent' }));
       predicted.set(destination, predictedFile(file, source.mode));
@@ -426,13 +426,13 @@ function stateFromEntry(entry: WorkspaceSnapshotEntry | undefined): PredictedSta
   });
 }
 
-function initialVersionControlPaths(baseline: RunWorkspaceBaseline):
+function initialVersionControlPaths(preChange: PreChangeSnapshot):
   | { readonly kind: 'observed'; readonly paths: ReadonlySet<string> }
   | { readonly kind: 'not_applicable' }
   | { readonly kind: 'unavailable' } {
-  if (baseline.versionControl.kind === 'none') return Object.freeze({ kind: 'not_applicable' });
-  if (baseline.versionControl.kind !== 'git' || baseline.versionControl.status.kind !== 'observed') return Object.freeze({ kind: 'unavailable' });
-  return Object.freeze({ kind: 'observed', paths: new Set(baseline.versionControl.status.entries.map((entry) => entry.path)) });
+  if (preChange.versionControl.kind === 'none') return Object.freeze({ kind: 'not_applicable' });
+  if (preChange.versionControl.kind !== 'git' || preChange.versionControl.status.kind !== 'observed') return Object.freeze({ kind: 'unavailable' });
+  return Object.freeze({ kind: 'observed', paths: new Set(preChange.versionControl.status.entries.map((entry) => entry.path)) });
 }
 
 function changedEntry(before: WorkspaceSnapshotEntry | undefined, after: WorkspaceSnapshotEntry | undefined): boolean {
@@ -488,7 +488,7 @@ function publicReceipt(receipt: DecodedMutationReceipt): StructuredMutationRecei
     toolAttempt: receipt.toolAttempt,
     fingerprint: receipt.fingerprint,
     patchSha256: receipt.patchSha256,
-    operationStatus: receipt.operationStatus,
+    applicationStatus: receipt.applicationStatus,
     ...(receipt.transactionOutcome ? { transactionOutcome: receipt.transactionOutcome } : {}),
     rootState: receipt.rootState
   });
@@ -502,6 +502,6 @@ function stringList(value: unknown): value is readonly string[] { return Array.i
 function integerList(value: unknown): value is readonly number[] { return Array.isArray(value) && value.every(nonNegativeInteger); }
 function changeKindValue(value: unknown): value is WorkspaceChange['kind'] { return value === 'added' || value === 'modified' || value === 'deleted' || value === 'replaced'; }
 function changeContentValue(value: unknown): value is WorkspaceChange['content'] { return value === 'text' || value === 'binary' || value === 'large' || value === 'non_file' || value === 'unknown'; }
-function operationStatus(value: unknown): value is ApplyPatchOutput['operationStatus'] { return value === 'dry_run' || value === 'no_change' || value === 'applied' || value === 'not_applied' || value === 'uncertain'; }
+function applicationStatus(value: unknown): value is ApplyPatchOutput['applicationStatus'] { return value === 'dry_run' || value === 'no_change' || value === 'applied' || value === 'not_applied' || value === 'uncertain'; }
 function transactionOutcome(value: unknown): value is NonNullable<ApplyPatchOutput['transactionOutcome']> { return value === 'committed' || value === 'committed_with_residue' || value === 'rolled_back' || value === 'rollback_failed'; }
 function verificationStatus(value: unknown): value is RunChangeReport['facts']['verificationStatus'] { return value === 'not_available' || value === 'not_required' || value === 'not_run' || value === 'passed' || value === 'failed' || value === 'inconclusive'; }
