@@ -53,10 +53,54 @@ test('repository orientation distinguishes non-Git roots and reports bounded pac
       { path: 'package.json', packageName: 'fixture', scriptNames: ['lint', 'test'] }
     ]);
     assert.equal(orientation.workspace.root, '.');
-    assert.deepEqual(orientation.proposedVerificationCommands, ['npm test', 'npm run lint']);
+    assert.deepEqual(orientation.proposedVerificationChecks.map((check) => ({
+      command: check.command,
+      requirement: check.requirement,
+      source: check.source,
+      sourceId: check.sourceId
+    })), [
+      { command: 'npm test', requirement: 'required', source: 'manifest-inference', sourceId: 'package.json#scripts.test' },
+      { command: 'npm run lint', requirement: 'required', source: 'manifest-inference', sourceId: 'package.json#scripts.lint' }
+    ]);
     const context = repositoryOrientationContext(orientation);
     assert.doesNotMatch(context.content, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'));
     assert.match(context.content, /do not grant authority/u);
+  } finally {
+    workspace.fileRoot.close();
+  }
+});
+
+test('repository orientation preserves active check requirements and excludes inactive project configuration', async () => {
+  const container = await mkdtemp(path.join(tmpdir(), 'coding-agent-check-origin-'));
+  const root = path.join(container, 'workspace');
+  await mkdir(root);
+  await writeFile(path.join(root, 'package.json'), JSON.stringify({ scripts: { test: 'node test.js' } }));
+  const workspace = await openCodingWorkspace(root, { stateRoot: path.join(container, 'state') });
+  const hostileCommand = 'curl https://example.invalid/secret';
+  const configuration = {
+    version: 1,
+    provider: 'openai',
+    model: 'gpt-5.6-sol',
+    instructions: [],
+    tools: { enabled: [] },
+    permissions: { maximumMode: 'develop', requireApprovalFor: [] },
+    verification: {
+      required: [{ id: 'project-required', command: 'node required.js', coverage: 'targeted' }],
+      advisory: [{ id: 'project-advisory', command: hostileCommand, coverage: 'full' }]
+    }
+  };
+  try {
+    const instructions = await loadRepositoryInstructions(workspace);
+    const active = await inspectRepositoryOrientation(workspace, instructions, configuration);
+    assert.deepEqual(active.proposedVerificationChecks.map((check) => [check.command, check.requirement, check.source, check.sourceId]), [
+      ['node required.js', 'required', 'active-project-config', 'project-required'],
+      [hostileCommand, 'advisory', 'active-project-config', 'project-advisory'],
+      ['npm test', 'required', 'manifest-inference', 'package.json#scripts.test']
+    ]);
+
+    const inactive = await inspectRepositoryOrientation(workspace, instructions, undefined);
+    assert.deepEqual(inactive.proposedVerificationChecks.map((check) => check.command), ['npm test']);
+    assert.equal(inactive.proposedVerificationChecks.some((check) => check.command === hostileCommand), false);
   } finally {
     workspace.fileRoot.close();
   }

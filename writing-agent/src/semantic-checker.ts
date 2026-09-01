@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { JsonObject } from '@agent-core/json';
+import { parseJsonObject, type JsonObject } from '@agent-core/json';
 import type { ModelProvider, ModelReasoningRequest } from '@agent-core/model';
 import * as z from 'zod';
 import { canonicalSha256, contentId, textSha256 } from './canonical.js';
@@ -93,8 +93,8 @@ export function createDefaultWritingEditorialChecker(input: {
     implementationId,
     verificationPolicyId,
     async evaluate(evaluation: Parameters<WritingEditorialChecker['evaluate']>[0]) {
-      const semanticScopes = Object.freeze(evaluation.operation.intents.map((intent) => intent.intentId));
-      const editorialCriteria = evaluation.base.brief.acceptanceCriteria.filter((criterion) => criterion.verificationKind === 'editorial');
+      const semanticScopes = Object.freeze(evaluation.operationContract.intents.map((intent) => intent.intentId));
+      const editorialCriteria = evaluation.operationContract.applicableCriteria.filter((criterion) => criterion.verificationKind === 'editorial');
       const payload = evaluationPayload(evaluation, semanticScopes, editorialCriteria.map((criterion) => criterion.criterionId));
       const response = await input.provider.complete({
         model: input.model,
@@ -128,7 +128,7 @@ export function createDefaultWritingEditorialChecker(input: {
         return Object.freeze({ resourceId, range: completeTextRange(content), sha256: textSha256(content) });
       });
       const intendedChanges = evaluation.declaration.kind === 'changes' ? evaluation.declaration.items.map((item) => item.itemId) : [];
-      const intents = new Map(evaluation.operation.intents.map((intent) => [intent.intentId, intent]));
+      const intents = new Map(evaluation.operationContract.intents.map((intent) => [intent.intentId, intent]));
       const semanticPreservationFindings: SemanticPreservationFinding[] = parsed.semantic.map((item) => {
         const intent = intents.get(item.scope);
         if (intent === undefined) throw new Error(`Semantic verifier returned an unrequested intent scope: ${item.scope}`);
@@ -181,7 +181,7 @@ function evaluationPayload(
   semanticScopes: readonly string[],
   editorialCriterionIds: readonly string[]
 ): JsonObject {
-  const targetIds = new Set(evaluation.operation.targetResourceIds);
+  const targetIds = new Set(evaluation.operationContract.targets.resources.map((resource) => resource.resourceId));
   const baselines = evaluation.comparisonBaselines.map((baseline) => Object.freeze({
     revisionId: baseline.snapshot.revision.revisionId,
     resources: Object.freeze([...baseline.text]
@@ -196,26 +196,20 @@ function evaluationPayload(
     evaluationInputSha256: evaluation.evaluationInputSha256,
     semanticScopes,
     editorialCriterionIds,
-    semanticIntents: evaluation.operation.intents,
-    operation: evaluation.operation,
+    operationContract: evaluation.operationContract,
     declaration: evaluation.declaration,
     preservationContract: evaluation.preservationContract,
-    acceptanceCriteria: evaluation.base.brief.acceptanceCriteria.filter((criterion) => editorialCriterionIds.includes(criterion.criterionId)),
-    sources: evaluation.base.sources,
-    claims: evaluation.base.claims,
-    evidenceRelations: evaluation.base.evidenceRelations,
-    priorEditorialDecisions: evaluation.base.editorialDecisions,
     evidenceExcerpts: evidenceExcerpts(evaluation),
     comparisonBaselines: baselines,
     candidateResources
   };
   const encoded = JSON.stringify(payload);
   if (Buffer.byteLength(encoded) > 1_500_000) throw new Error('Semantic verification input exceeds its complete-evaluation bound.');
-  return payload as JsonObject;
+  return parseJsonObject(payload, { maxDepth: 32, maxCollectionEntries: 100_000, maxStringBytes: 1_000_000, maxTotalBytes: 1_500_000 });
 }
 
 function evidenceExcerpts(evaluation: Parameters<WritingEditorialChecker['evaluate']>[0]): readonly JsonObject[] {
-  return Object.freeze(evaluation.base.sources.flatMap((source) => source.excerpts.map((excerpt) => {
+  return Object.freeze(evaluation.operationContract.evidenceRequirements.sources.flatMap((source) => source.excerpts.map((excerpt) => {
     const resourceId = source.localResourceId;
     const content = resourceId === undefined ? undefined : evaluation.candidateText.get(resourceId);
     if (resourceId === undefined || content === undefined) return Object.freeze({

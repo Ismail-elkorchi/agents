@@ -8,6 +8,7 @@ import { agentEventCodec } from '@agent-core/runtime';
 import { ResourceLeaseCoordinator, adoptCommandExecution, createCommandExecutionPreparation } from '@agent-core/tools';
 import { RootedFileAuthority, captureWorkspaceSnapshot, changedWorkspacePaths, materializeWorkspaceSnapshot } from '@agent-core/tools-local';
 import { deriveAdmittedCheckPlan, createAuthoritativeChecks, verifierDefinitionPaths } from '../dist/verification/configured-checks.js';
+import { loadOrAdmitCheckPlan } from '../dist/verification/check-plan-store.js';
 import { loadOrCaptureRunWorkspaceBaseline } from '../dist/changes/workspace-baseline-store.js';
 import { PrivateStateDirectory } from '../dist/state/private-state.js';
 import { DEFAULT_CODING_CONTRACT } from '../dist/instructions/coding-contract.js';
@@ -73,15 +74,39 @@ test('run baseline capture rejects a changing version-control observation', asyn
 });
 
 test('admitted plans freeze explicit and inferred checks and expose missing required coverage', () => {
-  const plan = deriveAdmittedCheckPlan(configuration('node test/source.test.js'), ['npm test', 'node test/source.test.js']);
-  assert.equal(plan.requiredCoverage, 'admitted');
-  assert.deepEqual(plan.checks.map((check) => [check.command, check.requirement, check.origin]), [
-    ['node test/source.test.js', 'required', 'project'],
-    ['npm test', 'required', 'inferred']
+  const plan = deriveAdmittedCheckPlan([
+    checkCandidate('node test/source.test.js', 'required', 'active-project-config', 'tests'),
+    checkCandidate('npm test', 'required', 'manifest-inference', 'package.json#scripts.test'),
+    checkCandidate('node test/source.test.js', 'required', 'manifest-inference', 'package.json#scripts.test')
   ]);
-  const missing = deriveAdmittedCheckPlan(undefined, []);
+  assert.equal(plan.requiredCoverage, 'admitted');
+  assert.deepEqual(plan.checks.map((check) => [check.command, check.requirement, check.source, check.sourceId]), [
+    ['node test/source.test.js', 'required', 'active-project-config', 'tests'],
+    ['npm test', 'required', 'manifest-inference', 'package.json#scripts.test']
+  ]);
+  const missing = deriveAdmittedCheckPlan([]);
   assert.equal(missing.requiredCoverage, 'missing');
   assert.deepEqual(missing.checks, []);
+});
+
+test('admitted check recovery preserves source and requirement without reconstructing them from commands', async () => {
+  const stateDirectory = await mkdtemp(path.join(tmpdir(), 'coding-agent-check-plan-'));
+  const state = await PrivateStateDirectory.create(stateDirectory);
+  const proposed = deriveAdmittedCheckPlan([
+    checkCandidate('node advisory.js', 'advisory', 'active-project-config', 'project-advisory'),
+    checkCandidate('npm test', 'required', 'manifest-inference', 'package.json#scripts.test')
+  ]);
+  try {
+    await loadOrAdmitCheckPlan({ state, runId: 'run-check-origin', resuming: false, proposed });
+    const recovered = await loadOrAdmitCheckPlan({ state, runId: 'run-check-origin', resuming: true, proposed: deriveAdmittedCheckPlan([]) });
+    assert.deepEqual(recovered, proposed);
+    assert.deepEqual(recovered.checks.map((check) => [check.requirement, check.source, check.sourceId]), [
+      ['advisory', 'active-project-config', 'project-advisory'],
+      ['required', 'manifest-inference', 'package.json#scripts.test']
+    ]);
+  } finally {
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
 });
 
 test('authoritative checks reject changed or self-mutating verification definitions', async () => {
@@ -158,7 +183,7 @@ async function verificationFixture() {
 
 function createChecks(fixture, createCommandExecution) {
   return createAuthoritativeChecks({
-    plan: deriveAdmittedCheckPlan(configuration('node test/source.test.js'), []), sourceRoot: fixture.sourceRoot, candidateRoot: fixture.candidateRoot,
+    plan: deriveAdmittedCheckPlan([checkCandidate('node test/source.test.js', 'required', 'active-project-config', 'tests')]), sourceRoot: fixture.sourceRoot, candidateRoot: fixture.candidateRoot,
     baseline: fixture.baseline, runtimeDirectory: path.join(fixture.parent, 'runtime'), events: fixture.events, createCommandExecution, commandYieldMs: 0
   });
 }
@@ -177,11 +202,8 @@ async function appendCheck(events, check, observation) {
   });
 }
 
-function configuration(command) {
-  return {
-    version: 1, provider: 'openai', model: 'gpt-5.6-sol', instructions: [], tools: { enabled: [] }, permissions: { maximumMode: 'develop', requireApprovalFor: [] },
-    verification: { required: [{ id: 'tests', command, coverage: 'full' }], advisory: [] }
-  };
+function checkCandidate(command, requirement, source, sourceId) {
+  return { id: source === 'active-project-config' ? sourceId : `inferred-${sourceId}`, command, coverage: 'full', requirement, source, sourceId, timeoutMs: 120_000, maxOutputBytes: 128_000 };
 }
 
 function context() {

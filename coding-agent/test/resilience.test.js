@@ -100,16 +100,12 @@ test('a denied restricted-workspace mutation remains unapplied and resumes to an
     const denied = await runCli(fixture, [
       'approval', 'deny', runId, approvalId, fingerprint, '--permissions', 'edit', '--provider', 'ollama', '--model', 'v0-scripted'
     ]);
-    assert.equal(denied.code, sandboxAvailable ? 0 : 1, `${denied.stdout}\n${denied.stderr}`);
+    assert.equal(denied.code, 0, `${denied.stdout}\n${denied.stderr}`);
     assert.equal(await readFile(path.join(fixture.root, 'src/feature.js'), 'utf8'), sourceBefore);
     assert.match(denied.stdout, /workspace remains unchanged/u);
     assert.match(denied.stdout, /Workspace changes: 0 \(complete\)/u);
-    if (sandboxAvailable) {
-      assert.match(denied.stdout, /Verification: Passed/u);
-      assert.match(denied.stdout, /Remaining uncertainty: none/u);
-    } else {
-      assert.match(denied.stdout, /Required verification coverage is unknown/u);
-    }
+    assert.match(denied.stdout, /Verification: Not required/u);
+    assert.match(denied.stdout, /Remaining uncertainty: none/u);
     assert.equal(provider.chatRequests.length, 3);
   } finally {
     await provider.close();

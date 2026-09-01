@@ -4,6 +4,7 @@ export * from './context.js';
 export * from './domain.js';
 export * from './evaluation.js';
 export * from './operations.js';
+export * from './operation-contract.js';
 export * from './private-state.js';
 export * from './project-store.js';
 export * from './project.js';

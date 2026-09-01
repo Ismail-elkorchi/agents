@@ -595,7 +595,7 @@ class CodingAgentInteractiveController implements CodingAgentInteractiveControll
               enabledTools: activeConfiguration.tools.enabled
             }
           } : {}),
-          hasVerificationChecks: deriveAdmittedCheckPlan(activeConfiguration, []).checks.length > 0
+          hasVerificationChecks: (activeConfiguration?.verification.required.length ?? 0) + (activeConfiguration?.verification.advisory.length ?? 0) > 0
         }).permissions);
     const runtimeDetails: CodingAgentTuiRuntimeDetails = Object.freeze({
       ...(runtime?.tuiDetails ?? {}),
@@ -847,8 +847,8 @@ async function createRuntime(
   const activeConfiguration = projectExecutionPolicy ? options.configuration : undefined;
   const instructionSet = await loadRepositoryInstructions(openedWorkspace, options.configuration?.instructions.map((instruction) => instruction.path));
   const gitObserver = await createGitObserver(workspace.runtimeDir);
-  const orientation = await inspectRepositoryOrientation(openedWorkspace, instructionSet, options.configuration, gitObserver);
-  const checkPlan = deriveAdmittedCheckPlan(activeConfiguration, orientation.proposedVerificationCommands);
+  const orientation = await inspectRepositoryOrientation(openedWorkspace, instructionSet, activeConfiguration, gitObserver);
+  const checkPlan = deriveAdmittedCheckPlan(orientation.proposedVerificationChecks);
   const authority = resolveCodingAuthority({
     requestedMode: options.permissionMode,
     trust: admittedTrustLevel(openedWorkspace.security.trustLevel),

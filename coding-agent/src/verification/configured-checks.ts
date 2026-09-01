@@ -25,15 +25,26 @@ import {
   materializeWorkspaceSnapshot,
   type WorkspaceSnapshot
 } from '@agent-core/tools-local';
-import type { CodingAgentCheckConfiguration, CodingAgentConfiguration } from '../configuration.js';
 import type { SandboxCommandExecution } from '../execution/sandbox-command-execution.js';
+
+export interface VerificationCheckCandidate {
+  readonly id: string;
+  readonly command: string;
+  readonly coverage: 'targeted' | 'full';
+  readonly requirement: 'required' | 'advisory';
+  readonly source: 'active-project-config' | 'manifest-inference';
+  readonly sourceId: string;
+  readonly timeoutMs: number;
+  readonly maxOutputBytes: number;
+}
 
 export interface AdmittedCodingCheck {
   readonly id: string;
   readonly command: string;
   readonly coverage: 'targeted' | 'full';
   readonly requirement: 'required' | 'advisory';
-  readonly origin: 'project' | 'inferred';
+  readonly source: 'active-project-config' | 'manifest-inference';
+  readonly sourceId: string;
   readonly timeoutMs: number;
   readonly maxOutputBytes: number;
 }
@@ -44,31 +55,14 @@ export interface AdmittedCodingCheckPlan {
   readonly requiredCoverage: 'admitted' | 'missing';
 }
 
-/** Freezes project checks and application-recognized manifest proposals into one run plan. */
-export function deriveAdmittedCheckPlan(configuration: CodingAgentConfiguration | undefined, inferredCommands: readonly string[]): AdmittedCodingCheckPlan {
+/** Admits typed, already-authorized check candidates into one immutable run plan. */
+export function deriveAdmittedCheckPlan(candidates: readonly VerificationCheckCandidate[]): AdmittedCodingCheckPlan {
   const checks: AdmittedCodingCheck[] = [];
   const commands = new Set<string>();
-  for (const [requirement, configured] of [
-    ['required', configuration?.verification.required ?? []],
-    ['advisory', configuration?.verification.advisory ?? []]
-  ] as const) {
-    for (const check of configured) {
-      checks.push(admittedConfiguredCheck(check, requirement));
-      commands.add(check.command);
-    }
-  }
-  for (const command of inferredCommands) {
-    if (commands.has(command)) continue;
-    checks.push(Object.freeze({
-      id: `inferred-${sha256(command).slice(0, 16)}`,
-      command,
-      coverage: 'full',
-      requirement: 'required',
-      origin: 'inferred',
-      timeoutMs: 120_000,
-      maxOutputBytes: 128_000
-    }));
-    commands.add(command);
+  for (const candidate of candidates) {
+    if (commands.has(candidate.command)) continue;
+    checks.push(Object.freeze({ ...candidate }));
+    commands.add(candidate.command);
   }
   const implementationId = `coding-agent.check-plan@2:${sha256(JSON.stringify(checks))}`;
   return Object.freeze({
@@ -290,9 +284,6 @@ function parseBaselineOutcome(result: AgentCheckResult | undefined): { readonly 
 
 function unknownObservation(check: Pick<AdmittedCodingCheck, 'command' | 'coverage'>, classification: string, message: string, details: Readonly<Record<string, unknown>> = {}): AgentCheckObservation {
   return Object.freeze({ verdict: 'unknown' as const, summary: `${check.command} is inconclusive: ${message}`, output: Object.freeze({ classification, command: check.command, coverage: check.coverage, ...details }), diagnostic: Object.freeze({ kind: 'unavailable' as const, message }) });
-}
-function admittedConfiguredCheck(check: CodingAgentCheckConfiguration, requirement: 'required' | 'advisory'): AdmittedCodingCheck {
-  return Object.freeze({ id: check.id, command: check.command, coverage: check.coverage, requirement, origin: 'project', timeoutMs: check.timeoutMs ?? 120_000, maxOutputBytes: check.maxOutputBytes ?? 128_000 });
 }
 function checkImplementationId(check: AdmittedCodingCheck, phase: 'baseline' | 'candidate'): string { return `coding-agent.authoritative-command-check@2:${sha256(JSON.stringify({ ...check, phase }))}`; }
 function baselineCheckId(id: string): string { return `${id}:baseline`; }

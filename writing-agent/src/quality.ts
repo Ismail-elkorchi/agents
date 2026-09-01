@@ -29,6 +29,7 @@ import {
 import type { WritingProject } from './project.js';
 import { readRootedText } from './project.js';
 import type { ProjectLogRecord } from './project-store.js';
+import { createWritingOperationContract, type WritingOperationContract } from './operation-contract.js';
 import { applyLocalizedTextEdits, offsetRange, rangeFromOffsets, rangesOverlap, rebaseProtectedRanges } from './text-ranges.js';
 
 export interface EditorialComparisonBaseline {
@@ -42,6 +43,7 @@ export interface WritingEditorialChecker {
   readonly calibrationId?: string;
   evaluate(input: {
     readonly operation: WritingOperation;
+    readonly operationContract: WritingOperationContract;
     readonly base: ProjectSnapshot;
     readonly comparisonBaselines: readonly EditorialComparisonBaseline[];
     readonly candidateRevisionId: string;
@@ -60,6 +62,7 @@ export interface PreparedProposalMaterial {
   readonly candidateText: ReadonlyMap<string, string>;
   readonly baseText: ReadonlyMap<string, string>;
   readonly base: ProjectSnapshot;
+  readonly operationContract: WritingOperationContract;
   readonly comparisonBaselines: readonly EditorialComparisonBaseline[];
   readonly preservationContract: PreservationContract;
   readonly proposedAuthorshipProvenance: readonly AuthorshipProvenance[];
@@ -153,6 +156,7 @@ export async function prepareProposalMaterial(input: ProposalPreparationInput): 
   if (resourceEdits.size === 0 && input.structuralChanges.length === 0) throw new Error('A revision proposal requires at least one text edit or structural change.');
   validateSemanticDeclaration(input.declaration, input.operation);
   const preservationContract = derivePreservationContract(base, input.operation, input.textEdits, input.structuralChanges, view.proposals, view.records);
+  const operationContract = createWritingOperationContract(input.operation, base);
   const comparisonBaselines = await loadComparisonBaselines(input.project, base, baseText, preservationContract.comparisonBaselineRevisionIds, view.records);
   const candidateRevisionId = contentId('candidate', {
     baseRevisionId: base.revision.revisionId,
@@ -162,6 +166,7 @@ export async function prepareProposalMaterial(input: ProposalPreparationInput): 
   });
   const evaluationInputSha256 = editorialEvaluationInputSha256({
     operation: input.operation,
+    operationContract,
     base,
     candidateRevisionId,
     candidateText,
@@ -173,6 +178,7 @@ export async function prepareProposalMaterial(input: ProposalPreparationInput): 
     candidateText,
     baseText,
     base,
+    operationContract,
     comparisonBaselines,
     preservationContract,
     proposedAuthorshipProvenance: Object.freeze(proposedAuthorship),
@@ -220,6 +226,7 @@ export async function evaluateProposalQuality(input: {
   }
   const editorial = await input.checker.evaluate({
     operation: input.operation,
+    operationContract: prepared.operationContract,
     base: prepared.base,
     comparisonBaselines: prepared.comparisonBaselines,
     candidateRevisionId: prepared.candidateRevisionId,
@@ -723,6 +730,7 @@ function syntaxVerdict(base: ProjectSnapshot, text: ReadonlyMap<string, string>)
 
 function editorialEvaluationInputSha256(input: {
   readonly operation: WritingOperation;
+  readonly operationContract: WritingOperationContract;
   readonly base: ProjectSnapshot;
   readonly candidateRevisionId: string;
   readonly candidateText: ReadonlyMap<string, string>;
@@ -732,13 +740,9 @@ function editorialEvaluationInputSha256(input: {
 }): string {
   return canonicalSha256({
     operationId: input.operation.operationId,
+    operationContractSha256: canonicalSha256(input.operationContract),
     baseVerificationContext: {
-      revisionId: input.base.revision.revisionId,
-      acceptanceCriteria: input.base.brief.acceptanceCriteria,
-      sources: input.base.sources,
-      claims: input.base.claims,
-      evidenceRelations: input.base.evidenceRelations,
-      editorialDecisions: input.base.editorialDecisions
+      revisionId: input.base.revision.revisionId
     },
     candidateRevisionId: input.candidateRevisionId,
     comparisonBaselines: input.comparisonBaselines.map((baseline) => ({

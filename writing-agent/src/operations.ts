@@ -13,6 +13,7 @@ import {
   type WritingOperationKind,
   type WritingOperationMode
 } from './domain.js';
+import { createWritingOperationContract } from './operation-contract.js';
 
 export const WRITING_INTENT_SCHEMA_ID = 'writing-agent/intents';
 export const WRITING_INTENT_SCHEMA_VERSION = 2;
@@ -87,7 +88,9 @@ export function admitWritingOperation(input: WritingOperationAdmissionInput, con
     snapshot: input.snapshot,
     admittedAt
   };
-  return deepFreeze(writingOperationSchema.parse({ operationId: contentId('operation', material), ...material }));
+  const operation = deepFreeze(writingOperationSchema.parse({ operationId: contentId('operation', material), ...material }));
+  createWritingOperationContract(operation, control.project);
+  return operation;
 }
 
 export function validateIntentGraph(intents: readonly WritingIntent[], operationKind: WritingOperationKind, project: ProjectSnapshot): void {

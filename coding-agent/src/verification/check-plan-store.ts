@@ -38,19 +38,21 @@ function decodeCheckPlan(value: unknown): AdmittedCodingCheckPlan {
 
 function decodeCheck(value: unknown): AdmittedCodingCheck {
   if (!record(value)
-    || Object.keys(value).some((key) => !['id', 'command', 'coverage', 'requirement', 'origin', 'timeoutMs', 'maxOutputBytes'].includes(key))
+    || Object.keys(value).some((key) => !['id', 'command', 'coverage', 'requirement', 'source', 'sourceId', 'timeoutMs', 'maxOutputBytes'].includes(key))
     || typeof value.id !== 'string' || value.id.length === 0
     || typeof value.command !== 'string' || value.command.length === 0
     || (value.coverage !== 'targeted' && value.coverage !== 'full')
     || (value.requirement !== 'required' && value.requirement !== 'advisory')
-    || (value.origin !== 'project' && value.origin !== 'inferred')
+    || (value.source !== 'active-project-config' && value.source !== 'manifest-inference')
+    || typeof value.sourceId !== 'string' || value.sourceId.length === 0
     || !positive(value.timeoutMs) || !positive(value.maxOutputBytes)) throw new Error('Persisted admitted check is invalid.');
   return Object.freeze({
     id: value.id,
     command: value.command,
     coverage: value.coverage,
     requirement: value.requirement,
-    origin: value.origin,
+    source: value.source,
+    sourceId: value.sourceId,
     timeoutMs: value.timeoutMs,
     maxOutputBytes: value.maxOutputBytes
   });

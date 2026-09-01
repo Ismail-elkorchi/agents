@@ -16,6 +16,7 @@ import {
   assertWritingRegressionLock,
   createEvaluationTrialRecord,
   createManagedTextResource,
+  createWritingOperationContract,
   createProjectRevision,
   createSingleIntent,
   createWritingProject,
@@ -212,6 +213,12 @@ test('suggest mode creates one durable proposal and cannot mutate user-owned tex
     assert.equal(result.contextReceipt.targetDescriptors[0].relativePath, 'draft.md');
     assert.equal(result.contextReceipt.targetDescriptors[0].baseSha256, resource.currentSha256);
     assert.equal(result.contextReceipt.items.some((item) => item.kind === 'operation-target-descriptor' && item.trust === 'trusted-control'), true);
+    const producerPrompt = provider.requests[0].messages.find((message) => message.role === 'user').content;
+    assert.match(producerPrompt, /complete authoritative producer contract/u);
+    assert.match(producerPrompt, /"contract":"writing-agent\.operation-contract@1"/u);
+    assert.match(producerPrompt, /"operationHash":"[a-f0-9]{64}"/u);
+    assert.match(producerPrompt, /"instruction":"Tighten only the first line\."/u);
+    assert.match(producerPrompt, /"applicableCriteria":/u);
     const view = await project.store.view();
     const proposal = view.proposals.get(result.proposalId).proposal;
     assert.equal('deterministicChecks' in proposal, false);
@@ -226,6 +233,11 @@ test('default semantic checker verifies every exact intent and persists reproduc
     'Proposal prepared.',
     (request) => {
       const payload = JSON.parse(request.messages.find((message) => message.role === 'user').content);
+      assert.equal(payload.operationContract.contract, 'writing-agent.operation-contract@1');
+      assert.match(payload.operationContract.operationHash, /^[a-f0-9]{64}$/u);
+      assert.deepEqual(payload.operationContract.intents.map((item) => item.intentId), ['intent-default-checker']);
+      assert.equal('operation' in payload, false);
+      assert.equal('sources' in payload, false);
       return JSON.stringify({
         semantic: payload.semanticScopes.map((scope) => ({ scope, verdict: 'passed', coverage: 'complete', observedChanges: [], unexplainedChanges: [], lostPriorEditIds: [], explanation: 'Exact intent scope is preserved.' })),
         editorial: payload.editorialCriterionIds.map((criterionId) => ({ criterionId, scope: 'whole document', verdict: 'passed', coverage: 'complete', explanation: 'Criterion passed.' }))
@@ -538,6 +550,29 @@ test('manual source evidence keeps semantic unknown separate from deterministic 
     const quote = await adoptClaim(project, { statement: 'Quoted fact.', scope: 'paragraph', origin: 'user' });
     const direct = await verifyClaimEvidence(project, { claimId: quote.claimId, claimVersion: quote.version, sourceId: source.sourceId, excerptId: source.excerpts[0].excerptId, kind: 'direct-quotation' });
     assert.equal(direct.verdict, 'supported');
+    const evidenceView = await project.store.view();
+    const evidenceIntent = {
+      ...createSingleIntent({ intentId: 'intent-evidence-contract', kind: 'text.revise', instruction: 'Preserve the supported quotation.', targetResourceIds: [resource.resourceId] }),
+      affectedClaimIds: [quote.claimId],
+      affectedRelationIds: [direct.relationId]
+    };
+    const evidenceOperation = admitWritingOperation({
+      projectId: evidenceView.identity.projectId,
+      briefRevisionId: evidenceView.current.brief.briefRevisionId,
+      kind: 'revise',
+      instruction: 'Preserve the supported quotation.',
+      intents: [evidenceIntent],
+      baseProjectRevisionId: evidenceView.current.revision.revisionId,
+      mode: 'suggest',
+      sessionId: 'session-evidence-contract',
+      runId: 'run-evidence-contract',
+      snapshot: operationSnapshot()
+    }, { channel: 'direct-user', project: evidenceView.current });
+    const evidenceContract = createWritingOperationContract(evidenceOperation, evidenceView.current);
+    assert.deepEqual(evidenceContract.evidenceRequirements.claims.map((claim) => claim.claimId), [quote.claimId]);
+    assert.deepEqual(evidenceContract.evidenceRequirements.claimEvidenceRelations.map((relation) => relation.relationId), [direct.relationId]);
+    assert.deepEqual(evidenceContract.evidenceRequirements.sources.map((item) => item.sourceId), [source.sourceId]);
+    assert.deepEqual(evidenceContract.evidenceRequirements.readableSourceResourceIds, [resource.resourceId]);
     const inference = await adoptClaim(project, { statement: 'A broader inference.', scope: 'paragraph', origin: 'user' });
     const unknown = await verifyClaimEvidence(project, { claimId: inference.claimId, claimVersion: inference.version, sourceId: source.sourceId, excerptId: source.excerpts[0].excerptId, kind: 'inference' });
     assert.equal(unknown.verdict, 'unknown');
@@ -572,6 +607,8 @@ test('structured intent admission rejects unsupported remove-and-edit compositio
     assert.throws(() => admitWritingOperation({ projectId: view.identity.projectId, briefRevisionId: view.current.brief.briefRevisionId, kind: 'revise', instruction: 'Unknown domain reference.', intents: [unknownClaim], baseProjectRevisionId: view.current.revision.revisionId, mode: 'suggest', sessionId: 'session-unknown', runId: 'run-unknown', snapshot: operationSnapshot() }, { channel: 'direct-user', project: view.current }), /unknown claim/u);
     const unscopedConstraint = createSingleIntent({ intentId: 'unscoped-constraint', kind: 'structure.purpose', instruction: 'Change purpose.', targetNodeIds: [node.nodeId], lengthConstraints: [{ constraintId: 'unscoped-length', unit: 'words', maximum: 10, requirement: 'required', criterionIds: [], origin: 'user' }] });
     assert.throws(() => admitWritingOperation({ projectId: view.identity.projectId, briefRevisionId: view.current.brief.briefRevisionId, kind: 'plan', instruction: 'Invalid unscoped text constraint.', intents: [unscopedConstraint], baseProjectRevisionId: view.current.revision.revisionId, mode: 'suggest', sessionId: 'session-unscoped', runId: 'run-unscoped', snapshot: operationSnapshot() }, { channel: 'direct-user', project: view.current }), /without an exact resource target/u);
+    const oversized = createSingleIntent({ intentId: 'oversized-contract', kind: 'text.revise', instruction: 'x'.repeat(100_000), targetResourceIds: [resource.resourceId] });
+    assert.throws(() => admitWritingOperation({ projectId: view.identity.projectId, briefRevisionId: view.current.brief.briefRevisionId, kind: 'revise', instruction: 'y'.repeat(100_000), intents: [oversized], baseProjectRevisionId: view.current.revision.revisionId, mode: 'suggest', sessionId: 'session-oversized', runId: 'run-oversized', snapshot: operationSnapshot() }, { channel: 'direct-user', project: view.current }), /operation contract exceeds/u);
   } finally { project.close(); }
 });
 
@@ -580,10 +617,14 @@ test('multi-intent proposals preserve admitted order and bind each change to its
   const secondResource = await createManagedTextResource(project, { relativePath: 'second.md', initialContent: 'Second line.\n', mediaType: 'text/markdown', role: 'draft' });
   try {
     const view = await project.store.view();
-    const first = createSingleIntent({
-      intentId: 'intent-first', kind: 'text.revise', instruction: 'Revise the first resource.', targetResourceIds: [resource.resourceId],
-      lengthConstraints: [{ constraintId: 'first-length', unit: 'words', maximum: 3, requirement: 'required', criterionIds: [], origin: 'user' }]
-    });
+    const first = {
+      ...createSingleIntent({
+        intentId: 'intent-first', kind: 'text.revise', instruction: 'Revise the first resource.', targetResourceIds: [resource.resourceId],
+        preservationRequirements: [{ constraintId: 'preserve-opening', statement: 'Preserve the original referent.', origin: 'user' }],
+        lengthConstraints: [{ constraintId: 'first-length', unit: 'words', maximum: 3, requirement: 'required', criterionIds: [], origin: 'user' }]
+      }),
+      affectedCriterionIds: ['criterion-user-instruction']
+    };
     const second = {
       ...createSingleIntent({
         intentId: 'intent-second', kind: 'review.editorial', instruction: 'Review the second resource.', targetResourceIds: [secondResource.resourceId],
@@ -595,6 +636,16 @@ test('multi-intent proposals preserve admitted order and bind each change to its
       projectId: view.identity.projectId, briefRevisionId: view.current.brief.briefRevisionId, kind: 'revise', instruction: 'Execute both ordered intents.', intents: [first, second],
       baseProjectRevisionId: view.current.revision.revisionId, mode: 'suggest', sessionId: 'session-multi', runId: 'run-multi', snapshot: operationSnapshot()
     }, { channel: 'direct-user', project: view.current });
+    const contract = createWritingOperationContract(operation, view.current);
+    assert.equal(contract.operationHash.length, 64);
+    assert.deepEqual(contract.intents.map((intent) => ({ id: intent.intentId, dependencies: intent.dependencies })), [
+      { id: first.intentId, dependencies: [] },
+      { id: second.intentId, dependencies: [first.intentId] }
+    ]);
+    assert.deepEqual(contract.intents[0].preservationRequirements.map((requirement) => requirement.constraintId), ['preserve-opening']);
+    assert.deepEqual(contract.intents[0].affectedCriterionIds, ['criterion-user-instruction']);
+    assert.equal(contract.applicableCriteria.some((criterion) => criterion.criterionId === 'criterion-user-instruction'), true);
+    assert.equal(contract.effectiveConstraints.lengthConstraints.length, 2);
     assert.deepEqual(operation.effectiveConstraints.lengthConstraints.map((constraint) => constraint.targetResourceIds).sort(), [[resource.resourceId], [secondResource.resourceId]].sort());
     await project.store.appendOperation(operation, operation.baseProjectRevisionId);
     const receipt = await selectWritingContext({ project, operation });
