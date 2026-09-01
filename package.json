@@ -5,7 +5,7 @@
   "type": "module",
   "engines": { "node": ">=24.8.0" },
   "workspaces": ["coding-agent", "writing-agent", "research-agent"],
-  "agentCore": { "path": "../agent-core", "commit": "1638b7082a9bb97cda2a9384bfbe5db90971c97d" },
+  "agentCore": { "path": "../agent-core", "commit": "aaa3f2ceb3acc050eac36e6db28c8a4381114916" },
   "sandbox": { "path": "../sandbox", "commit": "d18b5eb44b500bebf6531761b9f0bb26beddfef9" },
   "scripts": {
     "check:conformance": "node --test scripts/coding-agent-conformance-metrics.test.mjs && node scripts/check-coding-agent-conformance.mjs",
