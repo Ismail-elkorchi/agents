@@ -17,6 +17,7 @@ import {
   evaluateCodingAgentConformance,
   hasPassedRequiredCandidateCheck
 } from './coding-agent-conformance-metrics.mjs';
+import { decodeCodingHandoff } from '../coding-agent/dist/changes/coding-handoff.js';
 
 if (!sandboxAvailable) {
   process.stdout.write(`${JSON.stringify({
@@ -88,7 +89,7 @@ async function runResilientMutationCase() {
       'approval', 'allow', runId, approvalId, fingerprint, '--permissions', 'develop'
     ]);
     if (ended.code !== 0) throw new Error(`Conformance task did not complete.\n${ended.stdout}\n${ended.stderr}`);
-    const report = await readChangeReport(fixture);
+    const report = await readChangeReport(fixture, runId);
     const prompt = provider.chatRequests[0].messages.map((message) => message.content).join('\n');
     const target = await readFile(path.join(fixture.root, 'src/note.txt'), 'utf8');
     const untouched = await readFile(path.join(fixture.root, 'untouched.txt'), 'utf8');
@@ -141,7 +142,8 @@ async function runClarificationCase() {
     await trust(fixture);
     const ended = await runCli(fixture, ['exec', 'Fix the issue.', '--permissions', 'edit']);
     if (ended.code !== 0) throw new Error(`Clarification task did not complete.\n${ended.stdout}\n${ended.stderr}`);
-    const report = await readChangeReport(fixture);
+    const runId = match(ended.stdout, /Run: (\S+)/u, 'run id');
+    const report = await readChangeReport(fixture, runId);
     const clarificationRequested = /identify the exact target and acceptable blast radius/u.test(ended.stdout);
     return {
       specification: {
@@ -173,11 +175,11 @@ async function runClarificationCase() {
   }
 }
 
-async function readChangeReport(fixture) {
-  const directory = path.join(fixture.stateRoot, 'run-change-reports');
+async function readChangeReport(fixture, runId) {
+  const directory = path.join(fixture.stateRoot, 'coding-handoffs');
   const entries = (await readdir(directory)).filter((entry) => entry.endsWith('.json'));
-  if (entries.length !== 1) throw new Error(`Expected one conformance change report, found ${String(entries.length)}.`);
-  return JSON.parse(await readFile(path.join(directory, entries[0]), 'utf8'));
+  if (entries.length !== 1) throw new Error(`Expected one conformance coding handoff, found ${String(entries.length)}.`);
+  return decodeCodingHandoff(JSON.parse(await readFile(path.join(directory, entries[0]), 'utf8')), runId).changeReport;
 }
 
 function summaryContradictions(output, report) {
