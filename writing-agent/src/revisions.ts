@@ -9,24 +9,27 @@ import {
   editTextRecoveryPayloadSchema,
   type TextTransactionResult
 } from '@agent-core/tools-local';
-import { contentId, nowTimestamp, textSha256 } from './canonical.js';
+import { canonicalSha256, contentId, nowTimestamp, textSha256 } from './canonical.js';
 import {
   authorshipProvenanceSchema,
   documentNodeSchema,
   editorialDecisionSchema,
   humanCriterionDecisionSchema,
+  WRITING_APPLY_AUTHORIZATION_POLICY_ID,
+  writingApplyAuthorizationSchema,
   relationEdgeSchema,
   type AuthorshipProvenance,
   type EditorialDecision,
   type HumanCriterionDecision,
   type LocalizedTextEdit,
   type ProjectSnapshot,
-  type StructuralChange
+  type StructuralChange,
+  type WritingApplyAuthorization
 } from './domain.js';
 import type { WritingProject } from './project.js';
 import { completeTextRange, readRootedText, snapshotParts } from './project.js';
 import { createProjectRevision, type ProjectMutationSettlement } from './project-store.js';
-import { proposalCanApply } from './quality.js';
+import { proposalSatisfiesRequiredVerification } from './verification.js';
 import { applyLocalizedTextEdits, offsetRange, rebaseProtectedRanges } from './text-ranges.js';
 
 export interface AppliedWritingRevision {
@@ -64,11 +67,11 @@ export async function acceptRevisionProposal(project: WritingProject, input: {
   if (proposal.baseProjectRevisionId !== view.current.revision.revisionId) throw new Error(`Writing proposal base is stale: ${proposal.proposalId}`);
   if (operation.briefRevisionId !== view.current.brief.briefRevisionId) throw new Error(`Writing proposal brief is stale: ${proposal.proposalId}`);
   const verification = view.productionVerifications.get(proposal.proposalId);
-  if (verification === undefined) throw new Error(`Writing proposal has no durable Agent Core quality verification: ${proposal.proposalId}`);
+  if (verification === undefined) throw new Error(`Writing proposal has no durable production verification through Agent Core: ${proposal.proposalId}`);
   const humanCriteria = new Set(verification.criterionCoverage.filter((criterion) => criterion.verificationKind === 'human').map((criterion) => criterion.criterionId));
   const criterionDecisions = input.humanCriterionDecisions.map((decision) => humanCriterionDecisionSchema.parse(decision));
   for (const decision of criterionDecisions) if (!humanCriteria.has(decision.criterionId)) throw new Error(`Human decision targets a criterion that is not human-verified: ${decision.criterionId}`);
-  const applicability = proposalCanApply({
+  const applicability = proposalSatisfiesRequiredVerification({
     deterministicChecks: verification.deterministicChecks,
     semanticPreservationFindings: verification.semanticPreservationFindings,
     editorialFindings: verification.editorialFindings,
@@ -121,8 +124,53 @@ export async function rejectRevisionProposal(project: WritingProject, proposalId
   return decision;
 }
 
+export async function authorizeRevisionApplication(project: WritingProject, input: {
+  readonly proposalId: string;
+}): Promise<WritingApplyAuthorization> {
+  const existing = await project.store.getWritingApplyAuthorization(input.proposalId);
+  if (existing !== undefined) return existing;
+  const view = await project.store.view();
+  const proposalView = view.proposals.get(input.proposalId);
+  if (proposalView === undefined) throw new Error(`Unknown writing proposal: ${input.proposalId}`);
+  if (proposalView.status !== 'accepted') throw new Error(`Writing apply authorization requires an accepted proposal: ${input.proposalId} is ${proposalView.status}.`);
+  const proposal = proposalView.proposal;
+  if (view.current.revision.revisionId !== proposal.baseProjectRevisionId) throw new Error(`Writing apply authorization cannot bind a stale project revision: ${proposal.proposalId}`);
+  const verification = view.productionVerifications.get(proposal.proposalId);
+  if (verification === undefined) throw new Error(`Writing apply authorization requires durable production verification: ${proposal.proposalId}`);
+  const decision = requireProposalDecision(view.records, proposal.proposalId, 'accepted');
+  const applicability = proposalSatisfiesRequiredVerification({
+    deterministicChecks: verification.deterministicChecks,
+    semanticPreservationFindings: verification.semanticPreservationFindings,
+    editorialFindings: verification.editorialFindings,
+    criterionCoverage: verification.criterionCoverage
+  }, decision.criterionDecisions);
+  if (!applicability.allowed) throw new Error(`Writing apply authorization cannot bind non-passing verification: ${applicability.reasons.join(', ')}.`);
+  const transactionId = writingTransactionId(proposal.proposalId, proposal.textEdits);
+  const material = {
+    authorizationPolicyId: WRITING_APPLY_AUTHORIZATION_POLICY_ID,
+    projectId: project.store.identity.projectId,
+    operationId: proposal.operationId,
+    proposalId: proposal.proposalId,
+    projectRevisionId: proposal.baseProjectRevisionId,
+    resourcePreimages: proposal.expectedBaseHashes,
+    productionVerificationId: verification.verificationId,
+    verificationInputSha256: verification.verificationInputSha256,
+    editorialDecisionId: decision.decisionId,
+    humanCriterionDecisionsSha256: canonicalCriterionDecisionsSha256(decision.criterionDecisions),
+    transactionId
+  };
+  const authorization = writingApplyAuthorizationSchema.parse({
+    authorizationId: contentId('writing-apply-authorization', material),
+    ...material,
+    authorizedAt: decision.createdAt
+  });
+  await project.store.appendWritingApplyAuthorization(authorization);
+  return authorization;
+}
+
 export async function applyRevisionProposal(project: WritingProject, input: {
   readonly proposalId: string;
+  readonly authorization: WritingApplyAuthorization;
   readonly clock?: () => Date;
 }): Promise<AppliedWritingRevision> {
   const clock = input.clock ?? (() => new Date());
@@ -130,6 +178,14 @@ export async function applyRevisionProposal(project: WritingProject, input: {
   const proposalView = view.proposals.get(input.proposalId);
   if (proposalView === undefined) throw new Error(`Unknown writing proposal: ${input.proposalId}`);
   const proposal = proposalView.proposal;
+  const verification = view.productionVerifications.get(proposal.proposalId);
+  if (verification === undefined) throw new Error(`Writing proposal production verification is unavailable: ${proposal.proposalId}`);
+  const acceptanceDecision = requireProposalDecision(view.records, proposal.proposalId, 'accepted');
+  const durableAuthorization = view.applyAuthorizations.get(proposal.proposalId);
+  if (durableAuthorization === undefined || canonicalSha256(durableAuthorization) !== canonicalSha256(input.authorization)) {
+    throw new Error(`Writing proposal has no matching durable apply authorization: ${proposal.proposalId}`);
+  }
+  assertWritingApplyAuthorization(project, input.authorization, proposal, verification, acceptanceDecision);
   const existingRevision = findCommittedProposalRevision(view.records, proposal.operationId, proposal.proposalId);
   if (proposalView.status === 'applied' && existingRevision !== undefined) {
     const settlement = view.settlements.get(proposal.proposalId);
@@ -141,12 +197,9 @@ export async function applyRevisionProposal(project: WritingProject, input: {
   const operation = view.operations.get(proposal.operationId);
   if (operation === undefined) throw new Error(`Writing proposal operation is unavailable: ${proposal.operationId}`);
   if (operation.briefRevisionId !== view.current.brief.briefRevisionId) throw new Error(`Writing proposal brief is stale: ${proposal.proposalId}`);
-  const verification = view.productionVerifications.get(proposal.proposalId);
-  if (verification === undefined) throw new Error(`Writing proposal quality verification is unavailable: ${proposal.proposalId}`);
-  const acceptanceDecision = requireProposalDecision(view.records, proposal.proposalId, 'accepted');
   const textEdits = proposal.textEdits;
   const plan = await planTextTransaction(project, view.current, textEdits);
-  const transactionId = contentId('writing-edit', { proposalId: proposal.proposalId, textEdits });
+  const transactionId = input.authorization.transactionId;
   const journalDirectory = path.join(project.state.projectDirectory(project.store.identity.projectId), 'transactions');
   await mkdir(journalDirectory, { recursive: true, mode: 0o700 });
   const journal = TextPatchJournal.adopt(journalDirectory);
@@ -251,6 +304,7 @@ export async function applyRevisionProposal(project: WritingProject, input: {
     mutationId: proposal.proposalId,
     operationId: proposal.operationId,
     transactionId,
+    applyAuthorizationId: input.authorization.authorizationId,
     outcome: transactionResult.outcome,
     oldAndNewHashes: fileChanges,
     changedPaths: fileChanges.filter((change) => change.oldSha256 !== change.newSha256).map((change) => change.path),
@@ -269,6 +323,53 @@ export async function applyRevisionProposal(project: WritingProject, input: {
     expectedRevisionId: proposal.baseProjectRevisionId
   });
   return Object.freeze({ proposalId: proposal.proposalId, revisionId: snapshot.revision.revisionId, transactionId, fileChanges, provenance: Object.freeze(committedProvenance), recoveredFinalization });
+}
+
+function assertWritingApplyAuthorization(
+  project: WritingProject,
+  authorization: WritingApplyAuthorization,
+  proposal: import('./domain.js').RevisionProposal,
+  verification: import('./domain.js').ProposalProductionVerification,
+  decision: EditorialDecision
+): void {
+  const parsed = writingApplyAuthorizationSchema.parse(authorization);
+  const transactionId = writingTransactionId(proposal.proposalId, proposal.textEdits);
+  const expected = {
+    authorizationPolicyId: WRITING_APPLY_AUTHORIZATION_POLICY_ID,
+    projectId: project.store.identity.projectId,
+    operationId: proposal.operationId,
+    proposalId: proposal.proposalId,
+    projectRevisionId: proposal.baseProjectRevisionId,
+    resourcePreimages: proposal.expectedBaseHashes,
+    productionVerificationId: verification.verificationId,
+    verificationInputSha256: verification.verificationInputSha256,
+    editorialDecisionId: decision.decisionId,
+    humanCriterionDecisionsSha256: canonicalCriterionDecisionsSha256(decision.criterionDecisions),
+    transactionId
+  };
+  if (parsed.authorizationId !== contentId('writing-apply-authorization', expected) || canonicalSha256({
+    authorizationPolicyId: parsed.authorizationPolicyId,
+    projectId: parsed.projectId,
+    operationId: parsed.operationId,
+    proposalId: parsed.proposalId,
+    projectRevisionId: parsed.projectRevisionId,
+    resourcePreimages: parsed.resourcePreimages,
+    productionVerificationId: parsed.productionVerificationId,
+    verificationInputSha256: parsed.verificationInputSha256,
+    editorialDecisionId: parsed.editorialDecisionId,
+    humanCriterionDecisionsSha256: parsed.humanCriterionDecisionsSha256,
+    transactionId: parsed.transactionId
+  }) !== canonicalSha256(expected)) {
+    throw new Error(`Writing apply authorization does not bind the exact verified proposal transaction: ${proposal.proposalId}`);
+  }
+}
+
+function writingTransactionId(proposalId: string, textEdits: readonly LocalizedTextEdit[]): string {
+  return contentId('writing-edit', { proposalId, textEdits });
+}
+
+function canonicalCriterionDecisionsSha256(decisions: readonly HumanCriterionDecision[]): string {
+  return canonicalSha256(decisions);
 }
 
 export async function undoWritingRevision(project: WritingProject, input: {
@@ -385,6 +486,7 @@ export async function undoWritingRevision(project: WritingProject, input: {
     resourceId,
     range: completeTextRange(item.newContent),
     operationId,
+    intentIds: [],
     classification: 'user-modified',
     supersedesProvenanceIds: refreshed.current.authorshipProvenance.filter((record) => record.resourceId === resourceId).map((record) => record.provenanceId),
     createdAt: nowTimestamp(clock)

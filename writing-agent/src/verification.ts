@@ -24,6 +24,7 @@ import {
   type SemanticChangeDeclaration,
   type SemanticPreservationFinding,
   type StructuralChange,
+  type WritingFindingCitation,
   type WritingOperation
 } from './domain.js';
 import type { WritingProject } from './project.js';
@@ -50,6 +51,7 @@ export interface WritingEditorialChecker {
     readonly proposedText: ReadonlyMap<string, string>;
     readonly declaration: SemanticChangeDeclaration;
     readonly preservationContract: PreservationContract;
+    readonly citationCatalog: readonly WritingFindingCitation[];
     readonly verificationInputSha256: string;
     readonly signal?: AbortSignal;
   }): Promise<{
@@ -67,6 +69,7 @@ export interface ProposalVerificationMaterial {
   readonly preservationContract: PreservationContract;
   readonly proposedAuthorshipProvenance: readonly AuthorshipProvenance[];
   readonly proposedRevisionId: string;
+  readonly citationCatalog: readonly WritingFindingCitation[];
   readonly verificationInputSha256: string;
 }
 
@@ -98,6 +101,7 @@ export async function assembleProposalVerificationMaterial(input: ProposalVerifi
   const proposedText = new Map<string, string>();
   const proposedAuthorship: AuthorshipProvenance[] = [];
   const activeAuthorship = activeProvenance(base.authorshipProvenance);
+  assertIntentChangeBindings(input.operation, input.contextSelection, input.textEdits, input.structuralChanges);
   for (const resource of base.resources) {
     const file = await readRootedText(input.project.authority, resource.relativePath, 64 * 1024 * 1024);
     if (file.sha256 !== resource.currentSha256) throw new Error(`Managed resource changed before proposal verification: ${resource.resourceId}`);
@@ -117,6 +121,8 @@ export async function assembleProposalVerificationMaterial(input: ProposalVerifi
     proposedText.set(request.resourceId, applied.content);
     resourceEdits.set(request.resourceId, request);
     for (const offset of applied.offsets) {
+      const edit = request.edits.find((candidate) => candidate.anchorId === offset.anchorId);
+      if (edit === undefined) throw new Error(`Applied edit offset has no canonical intent binding: ${request.resourceId}/${offset.anchorId}`);
       proposedAuthorship.push(authorshipProvenanceSchema.parse({
         provenanceId: contentId('provenance', { proposalId: input.proposalId, resourceId: request.resourceId, anchorId: offset.anchorId }),
         projectRevisionId: base.revision.revisionId,
@@ -124,6 +130,7 @@ export async function assembleProposalVerificationMaterial(input: ProposalVerifi
         range: rangeFromOffsets(applied.content, offset.adjustedStart, offset.replacementEnd),
         operationId: input.operation.operationId,
         proposalId: input.proposalId,
+        intentIds: edit.intentIds,
         classification: 'model-suggested',
         supersedesProvenanceIds: coveringProvenance(base, request.resourceId, currentContent, request),
         createdAt: nowTimestamp(input.clock)
@@ -148,6 +155,7 @@ export async function assembleProposalVerificationMaterial(input: ProposalVerifi
       structuralObjectId: change.changeId,
       operationId: input.operation.operationId,
       proposalId: input.proposalId,
+      intentIds: change.intentIds,
       classification: 'model-suggested',
       supersedesProvenanceIds: [],
       createdAt: nowTimestamp(input.clock)
@@ -164,6 +172,13 @@ export async function assembleProposalVerificationMaterial(input: ProposalVerifi
     structuralChanges: input.structuralChanges,
     declaration: input.declaration
   });
+  const citationCatalog = buildVerificationCitationCatalog({
+    operation: input.operation,
+    operationContract,
+    proposedRevisionId,
+    proposedText,
+    comparisonBaselines
+  });
   const verificationInputSha256 = editorialVerificationInputSha256({
     operation: input.operation,
     operationContract,
@@ -171,6 +186,7 @@ export async function assembleProposalVerificationMaterial(input: ProposalVerifi
     proposedRevisionId,
     proposedText,
     comparisonBaselines,
+    citationCatalog,
     declaration: input.declaration,
     preservationContract
   });
@@ -183,6 +199,7 @@ export async function assembleProposalVerificationMaterial(input: ProposalVerifi
     preservationContract,
     proposedAuthorshipProvenance: Object.freeze(proposedAuthorship),
     proposedRevisionId,
+    citationCatalog,
     verificationInputSha256
   });
 }
@@ -222,7 +239,7 @@ export async function verifyProposalProduction(input: {
     ...(input.clock === undefined ? {} : { clock: input.clock })
   });
   if (canonicalSha256(verificationMaterial.preservationContract) !== canonicalSha256(input.proposal.preservationContract)) {
-    throw new Error(`Proposal quality inputs no longer reproduce their durable deterministic verification material: ${input.proposal.proposalId}`);
+    throw new Error(`Proposal inputs no longer reproduce their durable deterministic verification material: ${input.proposal.proposalId}`);
   }
   const editorial = await input.checker.verify({
     operation: input.operation,
@@ -233,6 +250,7 @@ export async function verifyProposalProduction(input: {
     proposedText: verificationMaterial.proposedText,
     declaration: input.proposal.semanticChangeDeclaration,
     preservationContract: verificationMaterial.preservationContract,
+    citationCatalog: verificationMaterial.citationCatalog,
     verificationInputSha256: verificationMaterial.verificationInputSha256,
     ...(input.signal === undefined ? {} : { signal: input.signal })
   });
@@ -243,12 +261,13 @@ export async function verifyProposalProduction(input: {
     base: verificationMaterial.base,
     proposedRevisionId: verificationMaterial.proposedRevisionId,
     proposedText: verificationMaterial.proposedText,
+    citationCatalog: verificationMaterial.citationCatalog,
     verificationInputSha256: verificationMaterial.verificationInputSha256,
     checker: input.checker
   });
   const criterionCoverage = acceptanceCriterionCoverage(verificationMaterial.base, verificationMaterial.deterministicChecks, editorial.editorialFindings);
   return proposalProductionVerificationSchema.parse({
-    verificationId: contentId('proposal-quality', {
+    verificationId: contentId('proposal-production-verification', {
       proposalId: input.proposal.proposalId,
       evaluatorImplementationId: input.checker.implementationId,
       verificationPolicyId: input.checker.verificationPolicyId,
@@ -272,7 +291,7 @@ export async function verifyProposalProduction(input: {
   });
 }
 
-export function proposalCanApply(quality: {
+export function proposalSatisfiesRequiredVerification(verification: {
   readonly deterministicChecks: readonly DeterministicCheck[];
   readonly semanticPreservationFindings: readonly SemanticPreservationFinding[];
   readonly editorialFindings: readonly EditorialFinding[];
@@ -281,16 +300,16 @@ export function proposalCanApply(quality: {
   const decisions = new Map(humanCriterionDecisions.map((decision) => [decision.criterionId, decision]));
   if (decisions.size !== humanCriterionDecisions.length) throw new Error('Human acceptance criterion decisions must be unique.');
   const reasons: string[] = [];
-  for (const check of quality.deterministicChecks) {
+  for (const check of verification.deterministicChecks) {
     if (check.requirement === 'required' && check.verdict !== 'passed') reasons.push(`check:${check.checkId}:${check.verdict}`);
   }
-  for (const finding of quality.semanticPreservationFindings) {
+  for (const finding of verification.semanticPreservationFindings) {
     if (finding.requirement === 'required' && (finding.verdict !== 'passed' || finding.coverage !== 'complete')) reasons.push(`semantic:${finding.findingId}:${finding.verdict}/${finding.coverage}`);
   }
-  for (const finding of quality.editorialFindings) {
+  for (const finding of verification.editorialFindings) {
     if (finding.severity === 'required' && (finding.verdict !== 'passed' || finding.coverage !== 'complete')) reasons.push(`editorial:${finding.findingId}:${finding.verdict}/${finding.coverage}`);
   }
-  for (const coverage of quality.criterionCoverage) {
+  for (const coverage of verification.criterionCoverage) {
     if (coverage.requirement !== 'required') continue;
     if (coverage.verificationKind === 'human') {
       const decision = decisions.get(coverage.criterionId);
@@ -506,6 +525,7 @@ function carryForwardProvenance(input: {
         range,
         operationId: input.operation.operationId,
         proposalId: input.proposalId,
+        intentIds: prior.intentIds,
         classification: prior.classification,
         supersedesProvenanceIds: [prior.provenanceId],
         createdAt: nowTimestamp(input.clock)
@@ -513,6 +533,54 @@ function carryForwardProvenance(input: {
     }
   }
   return Object.freeze(records);
+}
+
+function assertIntentChangeBindings(
+  operation: WritingOperation,
+  contextSelection: WritingContextSelection,
+  textEdits: readonly LocalizedTextEdit[],
+  structuralChanges: readonly StructuralChange[]
+): void {
+  const intents = new Map(operation.intents.map((intent) => [intent.intentId, intent]));
+  const admittedOrder = operation.intents.map((intent) => intent.intentId);
+  const assertOrdered = (intentIds: readonly string[], label: string): void => {
+    if (new Set(intentIds).size !== intentIds.length) throw new Error(`Canonical change repeats an intent identity: ${label}`);
+    const indexes = intentIds.map((intentId) => admittedOrder.indexOf(intentId));
+    if (indexes.some((index) => index < 0) || indexes.some((index, position) => position > 0 && index < (indexes[position - 1] ?? -1))) {
+      throw new Error(`Canonical change intent identities are unknown or out of admitted order: ${label}`);
+    }
+  };
+  for (const request of textEdits) {
+    const descriptor = contextSelection.targetDescriptors.find((candidate) => candidate.resourceId === request.resourceId);
+    if (descriptor === undefined) throw new Error(`Canonical text change has no application-owned target descriptor: ${request.resourceId}`);
+    for (const edit of request.edits) {
+      assertOrdered(edit.intentIds, `${request.resourceId}/${edit.anchorId}`);
+      const anchor = descriptor.anchors.find((candidate) => candidate.anchorId === edit.anchorId);
+      if (anchor?.textSha256 !== edit.expectedTextSha256 || canonicalSha256(anchor.range) !== canonicalSha256(edit.range)) {
+        throw new Error(`Canonical text change does not match its application-owned anchor: ${request.resourceId}/${edit.anchorId}`);
+      }
+      for (const intentId of edit.intentIds) {
+        const intent = intents.get(intentId);
+        if (!intent?.targetResourceIds.includes(request.resourceId)
+          || (intent.targetRangeIds.length > 0 && (anchor.targetRangeId === undefined || !intent.targetRangeIds.includes(anchor.targetRangeId)))) {
+          throw new Error(`Canonical text change is not authorized by its admitted intent: ${request.resourceId}/${edit.anchorId}/${intentId}`);
+        }
+      }
+    }
+  }
+  for (const change of structuralChanges) {
+    assertOrdered(change.intentIds, change.changeId);
+    for (const intentId of change.intentIds) {
+      const intent = intents.get(intentId);
+      if (intent === undefined || structuralKindForIntent(intent.kind) !== change.kind || (change.kind !== 'create' && change.targetIds.some((targetId) => !intent.targetNodeIds.includes(targetId)))) {
+        throw new Error(`Canonical structural change is not authorized by its admitted intent: ${change.changeId}/${intentId}`);
+      }
+    }
+  }
+}
+
+function structuralKindForIntent(kind: string): StructuralChange['kind'] | undefined {
+  return kind.startsWith('structure.') ? kind.slice('structure.'.length) as StructuralChange['kind'] : undefined;
 }
 
 function survivingProvenanceSegments(
@@ -735,6 +803,7 @@ function editorialVerificationInputSha256(input: {
   readonly proposedRevisionId: string;
   readonly proposedText: ReadonlyMap<string, string>;
   readonly comparisonBaselines: readonly EditorialComparisonBaseline[];
+  readonly citationCatalog: readonly WritingFindingCitation[];
   readonly declaration: SemanticChangeDeclaration;
   readonly preservationContract: PreservationContract;
 }): string {
@@ -754,6 +823,7 @@ function editorialVerificationInputSha256(input: {
     proposedResources: [...input.proposedText]
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([resourceId, content]) => ({ resourceId, sha256: textSha256(content) })),
+    citationCatalog: input.citationCatalog,
     declaration: input.declaration,
     preservationContract: input.preservationContract
   });
@@ -815,6 +885,7 @@ function assertEditorialBindings(input: {
   readonly base: ProjectSnapshot;
   readonly proposedRevisionId: string;
   readonly proposedText: ReadonlyMap<string, string>;
+  readonly citationCatalog: readonly WritingFindingCitation[];
   readonly verificationInputSha256: string;
   readonly checker?: WritingEditorialChecker;
 }): void {
@@ -822,13 +893,13 @@ function assertEditorialBindings(input: {
     semanticPreservationFindingSchema.parse(finding);
     assertFindingComparison(finding, input);
     assertFindingEvaluator(finding, input.checker);
-    assertSupportingRanges(finding, input.proposedText);
+    assertSupportingCitations(finding, input.citationCatalog, ['proposed', 'base']);
   }
   for (const finding of input.editorialFindings) {
     editorialFindingSchema.parse(finding);
     assertFindingComparison(finding, input);
     assertFindingEvaluator(finding, input.checker);
-    assertSupportingRanges(finding, input.proposedText);
+    assertSupportingCitations(finding, input.citationCatalog, ['proposed']);
   }
 }
 
@@ -848,11 +919,101 @@ function assertFindingEvaluator(finding: Pick<SemanticPreservationFinding, 'find
   }
 }
 
-function assertSupportingRanges(finding: Pick<SemanticPreservationFinding, 'findingId' | 'supportingRanges'>, proposedText: ReadonlyMap<string, string>): void {
-  for (const range of finding.supportingRanges) {
-    const content = proposedText.get(range.resourceId);
-    if (content === undefined) throw new Error(`Finding support targets an unknown proposed resource: ${finding.findingId}`);
-    const offsets = offsetRange(content, range.range);
-    if (textSha256(content.slice(offsets.start, offsets.end)) !== range.sha256) throw new Error(`Finding support hash does not match the exact proposed range: ${finding.findingId}`);
+function assertSupportingCitations(
+  finding: Pick<SemanticPreservationFinding, 'findingId' | 'verdict' | 'supportingCitations'>,
+  citationCatalog: readonly WritingFindingCitation[],
+  requiredKinds: readonly WritingFindingCitation['kind'][]
+): void {
+  if (finding.verdict !== 'unknown' && finding.supportingCitations.length === 0) {
+    throw new Error(`A conclusive finding requires at least one exact host-issued citation: ${finding.findingId}`);
   }
+  const catalog = new Map(citationCatalog.map((citation) => [citation.citationId, citation]));
+  if (new Set(finding.supportingCitations.map((citation) => citation.citationId)).size !== finding.supportingCitations.length) {
+    throw new Error(`Finding repeats a supporting citation: ${finding.findingId}`);
+  }
+  for (const citation of finding.supportingCitations) {
+    const admitted = catalog.get(citation.citationId);
+    if (admitted === undefined || canonicalSha256(admitted) !== canonicalSha256(citation)) {
+      throw new Error(`Finding support is not an exact host-issued citation: ${finding.findingId}/${citation.citationId}`);
+    }
+  }
+  if (finding.verdict !== 'unknown') {
+    const kinds = new Set(finding.supportingCitations.map((citation) => citation.kind));
+    for (const kind of requiredKinds) if (!kinds.has(kind)) throw new Error(`A conclusive finding lacks required ${kind} support: ${finding.findingId}`);
+  }
+}
+
+function buildVerificationCitationCatalog(input: {
+  readonly operation: WritingOperation;
+  readonly operationContract: WritingOperationContract;
+  readonly proposedRevisionId: string;
+  readonly proposedText: ReadonlyMap<string, string>;
+  readonly comparisonBaselines: readonly EditorialComparisonBaseline[];
+}): readonly WritingFindingCitation[] {
+  const targetIds = new Set(input.operation.targetResourceIds);
+  const citations: WritingFindingCitation[] = [];
+  for (const [resourceId, content] of [...input.proposedText].filter(([id]) => targetIds.has(id)).sort(([left], [right]) => left.localeCompare(right))) {
+    for (const range of paragraphRanges(content)) {
+      const offsets = offsetRange(content, range);
+      const textHash = textSha256(content.slice(offsets.start, offsets.end));
+      const material = { kind: 'proposed' as const, proposedRevisionId: input.proposedRevisionId, resourceId, range, textSha256: textHash };
+      citations.push({ citationId: contentId('verification-citation', material), ...material });
+    }
+  }
+  for (const baseline of input.comparisonBaselines) {
+    for (const [resourceId, content] of [...baseline.text].filter(([id]) => targetIds.has(id)).sort(([left], [right]) => left.localeCompare(right))) {
+      for (const range of paragraphRanges(content)) {
+        const offsets = offsetRange(content, range);
+        const textHash = textSha256(content.slice(offsets.start, offsets.end));
+        const material = { kind: 'base' as const, revisionId: baseline.snapshot.revision.revisionId, resourceId, range, textSha256: textHash };
+        citations.push({ citationId: contentId('verification-citation', material), ...material });
+      }
+    }
+  }
+  for (const source of input.operationContract.evidenceRequirements.sources) {
+    const resourceId = source.localResourceId;
+    if (resourceId === undefined) continue;
+    const content = input.comparisonBaselines
+      .map((baseline) => baseline.text.get(resourceId))
+      .find((candidate) => candidate !== undefined && textSha256(candidate) === source.exactSha256);
+    if (content === undefined || textSha256(content) !== source.exactSha256) continue;
+    for (const excerpt of source.excerpts) {
+      try {
+        const offsets = offsetRange(content, excerpt.range);
+        if (textSha256(content.slice(offsets.start, offsets.end)) !== excerpt.textSha256 || excerpt.sourceRevisionSha256 !== source.exactSha256) continue;
+        const material = {
+          kind: 'source' as const,
+          sourceId: source.sourceId,
+          excerptId: excerpt.excerptId,
+          resourceId,
+          range: excerpt.range,
+          sourceRevisionSha256: excerpt.sourceRevisionSha256,
+          textSha256: excerpt.textSha256
+        };
+        citations.push({ citationId: contentId('verification-citation', material), ...material });
+      } catch {
+        continue;
+      }
+    }
+  }
+  const ids = citations.map((citation) => citation.citationId);
+  if (new Set(ids).size !== ids.length) throw new Error('Verification citation identities are not unique.');
+  return Object.freeze(citations);
+}
+
+function paragraphRanges(content: string): readonly ReturnType<typeof rangeFromOffsets>[] {
+  const offsets: { start: number; end: number }[] = [];
+  const separator = /(?:\r\n|\r|\n)[\t ]*(?:\r\n|\r|\n)+/gu;
+  let start = 0;
+  for (const match of content.matchAll(separator)) {
+    let end = match.index;
+    while (end > start && (content[end - 1] === '\n' || content[end - 1] === '\r')) end -= 1;
+    if (end > start && content.slice(start, end).trim().length > 0) offsets.push({ start, end });
+    start = match.index + match[0].length;
+  }
+  let end = content.length;
+  while (end > start && (content[end - 1] === '\n' || content[end - 1] === '\r')) end -= 1;
+  if (end > start && content.slice(start, end).trim().length > 0) offsets.push({ start, end });
+  if (offsets.length === 0) offsets.push({ start: 0, end: content.length });
+  return Object.freeze(offsets.map((range) => rangeFromOffsets(content, range.start, range.end)));
 }

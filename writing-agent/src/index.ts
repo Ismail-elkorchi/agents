@@ -9,7 +9,7 @@ export * from './project-store.js';
 export * from './project.js';
 export * from './proposal-tool.js';
 export * from './provider.js';
-export * from './quality.js';
+export * from './verification.js';
 export * from './revisions.js';
 export * from './runtime.js';
 export * from './semantic-checker.js';

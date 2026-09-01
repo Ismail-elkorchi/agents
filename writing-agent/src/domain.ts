@@ -113,11 +113,29 @@ export const humanCriterionDecisionSchema = z.strictObject({
   explanation: z.string().trim().min(1).max(100_000)
 });
 
-export const writingApplyAuthorizationSchema = z.strictObject({
+export const WRITING_APPLY_AUTHORIZATION_POLICY_ID = 'writing-agent.apply-authorization@1';
+
+export const writingDelegatedApplyPolicySchema = z.strictObject({
   channel: z.literal('direct-user'),
   decision: z.literal('accept-and-apply'),
   explanation: z.string().trim().min(1).max(100_000),
   humanCriterionDecisions: z.array(humanCriterionDecisionSchema)
+});
+
+export const writingApplyAuthorizationSchema = z.strictObject({
+  authorizationId: identifierSchema,
+  authorizationPolicyId: z.literal(WRITING_APPLY_AUTHORIZATION_POLICY_ID),
+  projectId: identifierSchema,
+  operationId: identifierSchema,
+  proposalId: identifierSchema,
+  projectRevisionId: identifierSchema,
+  resourcePreimages: z.record(identifierSchema, sha256Schema),
+  productionVerificationId: identifierSchema,
+  verificationInputSha256: sha256Schema,
+  editorialDecisionId: identifierSchema,
+  humanCriterionDecisionsSha256: sha256Schema,
+  transactionId: identifierSchema,
+  authorizedAt: timestampSchema
 });
 
 export const writingIntentSchema = z.strictObject({
@@ -195,15 +213,15 @@ export const writingOperationSchema = z.strictObject({
   effectiveConstraints: effectiveConstraintSetSchema,
   baseProjectRevisionId: identifierSchema,
   mode: writingOperationModeSchema,
-  applyAuthorization: writingApplyAuthorizationSchema.optional(),
+  delegatedApplyPolicy: writingDelegatedApplyPolicySchema.optional(),
   sessionId: identifierSchema,
   runId: identifierSchema,
   lifecycleState: z.literal('admitted'),
   executionBinding: executionBindingSchema,
   admittedAt: timestampSchema
 }).superRefine((operation, context) => {
-  if ((operation.mode === 'apply') !== (operation.applyAuthorization !== undefined)) {
-    context.addIssue({ code: 'custom', message: 'Apply operations require durable direct-user application authorization, and suggest operations must not carry it.' });
+  if ((operation.mode === 'apply') !== (operation.delegatedApplyPolicy !== undefined)) {
+    context.addIssue({ code: 'custom', message: 'Apply operations require an explicit direct-user delegated apply policy, and suggest operations must not carry it.' });
   }
 });
 
@@ -336,6 +354,7 @@ export const authorshipProvenanceSchema = z.strictObject({
   structuralObjectId: identifierSchema.optional(),
   operationId: identifierSchema,
   proposalId: identifierSchema.optional(),
+  intentIds: z.array(identifierSchema),
   classification: z.enum(['human-authored', 'imported', 'model-suggested', 'user-accepted-unchanged', 'user-modified']),
   supersedesProvenanceIds: z.array(identifierSchema),
   createdAt: timestampSchema
@@ -349,6 +368,7 @@ export const localizedTextEditSchema = z.strictObject({
   baseSha256: sha256Schema,
   edits: z.array(z.strictObject({
     anchorId: identifierSchema,
+    intentIds: z.array(identifierSchema).min(1),
     range: textRangeSchema,
     expectedTextSha256: sha256Schema,
     replacementText: z.string()
@@ -357,6 +377,7 @@ export const localizedTextEditSchema = z.strictObject({
 
 export const structuralChangeSchema = z.strictObject({
   changeId: identifierSchema,
+  intentIds: z.array(identifierSchema).min(1),
   kind: z.enum(['create', 'remove', 'reorder', 'split', 'merge', 'purpose', 'relation']),
   targetIds: z.array(identifierSchema).min(1),
   value: z.record(z.string(), z.json())
@@ -398,13 +419,42 @@ export const criterionCoverageSchema = z.strictObject({
   explanation: z.string().trim().min(1).max(100_000)
 });
 
+export const writingFindingCitationSchema = z.discriminatedUnion('kind', [
+  z.strictObject({
+    citationId: identifierSchema,
+    kind: z.literal('proposed'),
+    proposedRevisionId: identifierSchema,
+    resourceId: identifierSchema,
+    range: textRangeSchema,
+    textSha256: sha256Schema
+  }),
+  z.strictObject({
+    citationId: identifierSchema,
+    kind: z.literal('base'),
+    revisionId: identifierSchema,
+    resourceId: identifierSchema,
+    range: textRangeSchema,
+    textSha256: sha256Schema
+  }),
+  z.strictObject({
+    citationId: identifierSchema,
+    kind: z.literal('source'),
+    sourceId: identifierSchema,
+    excerptId: identifierSchema,
+    resourceId: identifierSchema,
+    range: textRangeSchema,
+    sourceRevisionSha256: sha256Schema,
+    textSha256: sha256Schema
+  })
+]);
+
 export const editorialFindingSchema = z.strictObject({
   findingId: identifierSchema,
   criterionId: identifierSchema,
   scope: z.string().trim().min(1).max(10_000),
   severity: z.enum(['required', 'advisory']),
   verdict: z.enum(['passed', 'failed', 'unknown']),
-  supportingRanges: z.array(z.strictObject({ resourceId: identifierSchema, range: textRangeSchema, sha256: sha256Schema })),
+  supportingCitations: z.array(writingFindingCitationSchema),
   explanation: z.string().trim().min(1).max(100_000),
   evaluatorId: identifierSchema,
   calibrationId: identifierSchema.optional(),
@@ -421,7 +471,7 @@ export const semanticPreservationFindingSchema = z.strictObject({
   requirement: z.enum(['required', 'advisory']),
   verdict: z.enum(['passed', 'failed', 'unknown']),
   coverage: z.enum(['complete', 'partial', 'unknown']),
-  supportingRanges: z.array(z.strictObject({ resourceId: identifierSchema, range: textRangeSchema, sha256: sha256Schema })),
+  supportingCitations: z.array(writingFindingCitationSchema),
   intendedChanges: z.array(identifierSchema),
   observedChanges: z.array(z.string().max(100_000)),
   unexplainedChanges: z.array(z.string().max(100_000)),
@@ -617,6 +667,7 @@ export type WritingIntent = z.infer<typeof writingIntentSchema>;
 export type WritingOperation = z.infer<typeof writingOperationSchema>;
 export type WritingOperationKind = z.infer<typeof writingOperationKindSchema>;
 export type WritingOperationMode = z.infer<typeof writingOperationModeSchema>;
+export type WritingDelegatedApplyPolicy = z.infer<typeof writingDelegatedApplyPolicySchema>;
 export type WritingApplyAuthorization = z.infer<typeof writingApplyAuthorizationSchema>;
 export type DocumentNode = z.infer<typeof documentNodeSchema>;
 export type RelationEdge = z.infer<typeof relationEdgeSchema>;
@@ -632,6 +683,7 @@ export type SemanticChangeDeclaration = z.infer<typeof semanticChangeDeclaration
 export type SemanticPreservationFinding = z.infer<typeof semanticPreservationFindingSchema>;
 export type DeterministicCheck = z.infer<typeof deterministicCheckSchema>;
 export type CriterionCoverage = z.infer<typeof criterionCoverageSchema>;
+export type WritingFindingCitation = z.infer<typeof writingFindingCitationSchema>;
 export type HumanCriterionDecision = z.infer<typeof humanCriterionDecisionSchema>;
 export type EditorialFinding = z.infer<typeof editorialFindingSchema>;
 export type EditorialDecision = z.infer<typeof editorialDecisionSchema>;

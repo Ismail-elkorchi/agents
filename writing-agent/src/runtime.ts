@@ -26,7 +26,7 @@ import {
   type EditorialFinding,
   type SemanticPreservationFinding,
   type WritingIntent,
-  type WritingApplyAuthorization,
+  type WritingDelegatedApplyPolicy,
   type WritingOperation,
   type WritingOperationKind,
   type WritingOperationMode,
@@ -38,14 +38,14 @@ import { createWritingOperationContract, type WritingOperationContract } from '.
 import type { WritingProject } from './project.js';
 import { writingProjectSessionBinding } from './project.js';
 import { assertProposalToolOnlyPrivateMutation, createProposeRevisionTool, PROPOSE_REVISION_IMPLEMENTATION_ID, WritingOperationService, WRITING_OPERATION_SERVICE } from './proposal-tool.js';
-import { acceptRevisionProposal, applyRevisionProposal, type AppliedWritingRevision } from './revisions.js';
-import { verifyProposalProduction, runDeterministicProposalVerification, type WritingEditorialChecker } from './quality.js';
+import { acceptRevisionProposal, applyRevisionProposal, authorizeRevisionApplication, type AppliedWritingRevision } from './revisions.js';
+import { verifyProposalProduction, runDeterministicProposalVerification, type WritingEditorialChecker } from './verification.js';
 import { ensurePrivateDirectory } from './private-state.js';
 import { createDefaultWritingEditorialChecker } from './semantic-checker.js';
 
 export const WRITING_PROPOSAL_CHECK_IMPLEMENTATION_ID = 'writing-agent.check.proposal-integrity@3';
 export const WRITING_CRITERION_CHECK_IMPLEMENTATION_ID = 'writing-agent.check.criterion-coverage@3';
-export const WRITING_DISPOSITION_IMPLEMENTATION_ID = 'writing-agent.disposition.quality@3';
+export const WRITING_DISPOSITION_IMPLEMENTATION_ID = 'writing-agent.disposition.production-verification@3';
 export const WRITING_AUTHORIZATION_POLICY_ID = 'writing-agent.operation-authority@2';
 const WRITING_RUNTIME_INSTRUCTION_ID = 'writing-agent.project-operation@2';
 const READ_TOOLS = Object.freeze(['read_files', 'search_text']);
@@ -73,7 +73,7 @@ export interface RunWritingOperationInput {
   readonly temperature?: number;
   readonly contextTokenBudget?: number;
   readonly editorialChecker?: WritingEditorialChecker;
-  readonly directAuthorization?: WritingApplyAuthorization;
+  readonly delegatedApplyPolicy?: WritingDelegatedApplyPolicy;
   readonly onProgress?: (event: AgentProgressEvent) => void | Promise<void>;
   readonly clock?: () => Date;
 }
@@ -104,7 +104,7 @@ export async function runTransientWriting(input: TransientWritingInput): Promise
 }
 
 export async function runWritingOperation(input: RunWritingOperationInput): Promise<WritingOperationResult> {
-  if (input.mode === 'apply' && input.directAuthorization === undefined) throw new Error('Apply-mode model work requires an explicit direct-user authorization.');
+  if (input.mode === 'apply' && input.delegatedApplyPolicy === undefined) throw new Error('Apply-mode model work requires an explicit direct-user delegated apply policy.');
   const editorialChecker = input.editorialChecker ?? createDefaultWritingEditorialChecker({
     provider: input.provider,
     model: requiredModel(input.model),
@@ -135,7 +135,7 @@ export async function runWritingOperation(input: RunWritingOperationInput): Prom
       intents: input.intents,
       baseProjectRevisionId: view.current.revision.revisionId,
       mode: input.mode ?? 'suggest',
-      ...(input.directAuthorization === undefined ? {} : { applyAuthorization: input.directAuthorization }),
+      ...(input.delegatedApplyPolicy === undefined ? {} : { delegatedApplyPolicy: input.delegatedApplyPolicy }),
       sessionId: composition.descriptor.id,
       runId,
       executionBinding: executionBinding(input.provider, input.model, input.reasoning, input.temperature, editorialChecker)
@@ -387,17 +387,17 @@ function writingQualityChecks(
       return {
         verdict: failed.length > 0 ? 'failed' as const : unknown.length > 0 ? 'unknown' as const : 'passed' as const,
         summary: failed.length > 0
-          ? `Proposal ${proposal.proposalId} failed deterministic quality: ${failed.map((check) => check.checkId).join(', ')}.`
+          ? `Proposal ${proposal.proposalId} failed required deterministic verification: ${failed.map((check) => check.checkId).join(', ')}.`
           : unknown.length > 0
-            ? `Proposal ${proposal.proposalId} has unknown deterministic quality: ${unknown.map((check) => check.checkId).join(', ')}.`
-            : `Proposal ${proposal.proposalId} passed all required deterministic quality checks.`,
+            ? `Proposal ${proposal.proposalId} has unknown deterministic verification: ${unknown.map((check) => check.checkId).join(', ')}.`
+            : `Proposal ${proposal.proposalId} passed all required deterministic verification checks.`,
         output: { proposalId: proposal.proposalId, deterministicChecks: verificationMaterial.deterministicChecks }
       };
     }
   });
   const interpretive: AgentCheckDefinition = Object.freeze({
     kind: 'effect' as const,
-    id: 'writing-interpretive-quality',
+    id: 'writing-semantic-production-verification',
     implementationId: interpretiveCheckImplementationId(checker),
     requirement: 'required' as const,
     description: 'Verify semantic preservation, evidence use, prior accepted edits, and editorial criteria against the exact proposed revision.',
@@ -418,7 +418,7 @@ function writingQualityChecks(
       });
       return createAgentCheckEffectPlan({
         authorization: {
-          contract: 'writing-agent.interpretive-quality@3',
+          contract: 'writing-agent.semantic-production-verification@3',
           proposalId: proposal.proposalId,
           operationId: operation.operationId,
           proposedRevisionId: verificationMaterial.proposedRevisionId,
@@ -478,15 +478,15 @@ function writingProposalDisposition() {
   return Object.freeze({
     kind: 'deterministic' as const,
     implementationId: WRITING_DISPOSITION_IMPLEMENTATION_ID,
-    policyIdentity: Object.freeze({ strategy: 'required-proposal-quality', version: 3 }),
+    policyIdentity: Object.freeze({ strategy: 'required-production-verification', version: 3 }),
     evaluate(input: Parameters<Extract<import('@agent-core/runtime').AgentDispositionPolicy, { kind: 'deterministic' }>['evaluate']>[0]) {
       const failed = input.checkResults.filter((check) => check.requirement === 'required' && check.verdict === 'failed');
       if (failed.length > 0) return Object.freeze({
         kind: 'revise' as const,
-        instruction: `The active proposal failed required quality verification. Create one revised proposal with propose_revision without weakening the verifier. Failures:\n${failed.map((check) => `- ${check.id}: ${check.summary}`).join('\n')}`
+        instruction: `The active proposal failed required production verification. Create one revised proposal with propose_revision without weakening the verifier. Failures:\n${failed.map((check) => `- ${check.id}: ${check.summary}`).join('\n')}`
       });
       const unknown = input.checkResults.filter((check) => check.requirement === 'required' && check.verdict === 'unknown');
-      if (unknown.length > 0) return Object.freeze({ kind: 'inconclusive' as const, reason: `Required proposal quality remains unknown:\n${unknown.map((check) => `- ${check.id}: ${check.summary}`).join('\n')}` });
+      if (unknown.length > 0) return Object.freeze({ kind: 'inconclusive' as const, reason: `Required production verification remains unknown:\n${unknown.map((check) => `- ${check.id}: ${check.summary}`).join('\n')}` });
       return Object.freeze({ kind: 'accept' as const });
     }
   });
@@ -523,7 +523,7 @@ function productionVerificationObservation(verification: import('./domain.js').P
 }
 
 function interpretiveCheckImplementationId(checker: WritingEditorialChecker): string {
-  return `writing-agent.check.interpretive-quality@3:${canonicalSha256({ implementationId: checker.implementationId, verificationPolicyId: checker.verificationPolicyId, calibrationId: checker.calibrationId }).slice(0, 32)}`;
+  return `writing-agent.check.semantic-production-verification@3:${canonicalSha256({ implementationId: checker.implementationId, verificationPolicyId: checker.verificationPolicyId, calibrationId: checker.calibrationId }).slice(0, 32)}`;
 }
 
 function authorizeWritingTool(request: ToolAuthorizationRequest, project: WritingProject, operation: WritingOperation) {
@@ -617,21 +617,25 @@ async function finishWritingOperation(
   let applied: AppliedWritingRevision | undefined;
   if (execution.state === 'ended' && execution.terminal.executionStatus === 'completed' && operation.mode === 'apply') {
     if (proposal === undefined) throw new Error(`Completed apply operation has no revision proposal: ${operation.operationId}`);
-    const authorization = operation.applyAuthorization;
-    if (authorization === undefined) throw new Error(`Apply operation has no durable direct-user authorization: ${operation.operationId}`);
+    const delegatedPolicy = operation.delegatedApplyPolicy;
+    if (delegatedPolicy === undefined) throw new Error(`Apply operation has no durable direct-user delegated apply policy: ${operation.operationId}`);
     const proposalState = view.proposals.get(proposal.proposalId)?.status;
     if (proposalState === 'proposed') {
       await acceptRevisionProposal(project, {
         proposalId: proposal.proposalId,
-        explanation: authorization.explanation,
-        humanCriterionDecisions: authorization.humanCriterionDecisions,
+        explanation: delegatedPolicy.explanation,
+        humanCriterionDecisions: delegatedPolicy.humanCriterionDecisions,
         ...(clock === undefined ? {} : { clock })
       });
     } else if (proposalState !== 'accepted' && proposalState !== 'applied') {
       throw new Error(`Completed apply operation has a non-applicable proposal state: ${proposalState ?? 'missing'}.`);
     }
+    const authorization = await authorizeRevisionApplication(project, {
+      proposalId: proposal.proposalId
+    });
     applied = await applyRevisionProposal(project, {
       proposalId: proposal.proposalId,
+      authorization,
       ...(clock === undefined ? {} : { clock })
     });
     view = await project.store.view();
@@ -695,7 +699,7 @@ function operationResult(
     ...(settlement?.remainingUncertainty ?? []),
     ...(execution.state === 'suspended' ? [`suspended:${execution.reason}`] : [])
   ];
-  const disposition = operationQualityDisposition(execution);
+  const disposition = operationVerificationDisposition(execution);
   return Object.freeze({
     projectId: operation.projectId,
     operationId: operation.operationId,
@@ -734,7 +738,7 @@ function operationResult(
   });
 }
 
-function operationQualityDisposition(execution: AgentRunResult): WritingOperationResult['disposition'] {
+function operationVerificationDisposition(execution: AgentRunResult): WritingOperationResult['disposition'] {
   if (execution.state !== 'ended') return 'inconclusive';
   if (execution.terminal.executionStatus !== 'completed') return execution.terminal.terminationReason === 'disposition_inconclusive' ? 'inconclusive' : 'invalid';
   return 'valid';

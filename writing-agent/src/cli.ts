@@ -7,7 +7,7 @@ import { createSingleIntent } from './operations.js';
 import { amendProjectBriefInstruction, createManagedTextResource, createWritingProject, openWritingProject, type WritingProject } from './project.js';
 import { createWritingProvider, createWritingReasoningRequest, parseWritingProviderId, type WritingProviderConfiguration } from './provider.js';
 import { abortWritingOperation, decideWritingSuspension, inspectWritingSuspension, resolveWritingApproval, resumeWritingSuspension, runTransientWriting, runWritingOperation } from './runtime.js';
-import { acceptRevisionProposal, applyRevisionProposal, rejectRevisionProposal, undoWritingRevision } from './revisions.js';
+import { acceptRevisionProposal, applyRevisionProposal, authorizeRevisionApplication, rejectRevisionProposal, undoWritingRevision } from './revisions.js';
 import { addManualSource } from './sources.js';
 
 interface CliOptions {
@@ -83,7 +83,7 @@ async function runProjectCommand(project: WritingProject, command: string | unde
     const proposalView = (await project.store.view()).proposals.get(proposalId);
     if (proposalView?.status === 'proposed') {
       const verification = (await project.store.view()).productionVerifications.get(proposalId);
-      if (verification === undefined) throw new Error(`Proposal has no durable Agent Core quality verification: ${proposalId}`);
+      if (verification === undefined) throw new Error(`Proposal has no durable production verification through Agent Core: ${proposalId}`);
       const humanCriterionIds = new Set(verification.criterionCoverage
         .filter((criterion) => criterion.verificationKind === 'human')
         .map((criterion) => criterion.criterionId));
@@ -96,7 +96,8 @@ async function runProjectCommand(project: WritingProject, command: string | unde
           .map((criterionId) => ({ criterionId, verdict: 'passed' as const, explanation }))
       });
     }
-    print(await applyRevisionProposal(project, { proposalId })); return;
+    const authorization = await authorizeRevisionApplication(project, { proposalId });
+    print(await applyRevisionProposal(project, { proposalId, authorization })); return;
   }
   if (command === 'reject') {
     const proposalId = requiredArgument(subcommand, 'reject requires a proposal ID');

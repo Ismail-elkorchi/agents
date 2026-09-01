@@ -130,6 +130,7 @@ export async function recordAuthorshipTransformation(project: WritingProject, in
     records.push(authorshipProvenanceSchema.parse({
       provenanceId: contentId('provenance', { operationId: input.operationId, index, target, supersedes: input.supersedesProvenanceIds }),
       projectRevisionId: view.current.revision.revisionId, ...target, operationId: input.operationId,
+      intentIds: [],
       ...(input.proposalId === undefined ? {} : { proposalId: input.proposalId }),
       classification: input.classification, supersedesProvenanceIds: input.supersedesProvenanceIds, createdAt: nowTimestamp(input.clock)
     }));

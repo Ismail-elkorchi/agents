@@ -21,7 +21,7 @@ import {
 } from './domain.js';
 import { canonicalJson, canonicalSha256, contentId, nowTimestamp } from './canonical.js';
 import type { WritingProject } from './project.js';
-import { assembleProposalVerificationMaterial } from './quality.js';
+import { assembleProposalVerificationMaterial } from './verification.js';
 
 export const PROPOSE_REVISION_IMPLEMENTATION_ID = 'writing-agent.propose-revision@2';
 export const WRITING_OPERATION_SERVICE = 'writingOperation';
@@ -35,7 +35,7 @@ interface ModelTextChange {
 interface ModelIntentOperation {
   readonly intentId: string;
   readonly textChanges?: readonly ModelTextChange[];
-  readonly structuralChanges?: readonly StructuralChange[];
+  readonly structuralChanges?: readonly Omit<StructuralChange, 'intentIds'>[];
 }
 
 interface ProposeRevisionInput {
@@ -98,14 +98,30 @@ export class WritingOperationService {
         for (const replacement of textChange.replacements) {
           const anchor = descriptor.anchors.find((candidate) => candidate.anchorId === replacement.anchorId);
           if (anchor === undefined) throw new Error(`Proposal references an unknown application-owned edit anchor: ${replacement.anchorId}`);
-          if (edits.some((edit) => edit.anchorId === anchor.anchorId)) throw new Error(`Proposal repeats an edit anchor: ${anchor.anchorId}`);
-          edits.push({ anchorId: anchor.anchorId, range: anchor.range, expectedTextSha256: anchor.textSha256, replacementText: replacement.replacementText });
+          const existing = edits.find((edit) => edit.anchorId === anchor.anchorId);
+          if (existing !== undefined) {
+            if (existing.replacementText !== replacement.replacementText || existing.expectedTextSha256 !== anchor.textSha256) {
+              throw new Error(`Proposal has conflicting replacements for edit anchor: ${anchor.anchorId}`);
+            }
+            existing.intentIds.push(intent.intentId);
+            continue;
+          }
+          if (edits.some((edit) => rangesOverlap(edit.range, anchor.range))) throw new Error(`Proposal has overlapping text replacements: ${anchor.anchorId}`);
+          edits.push({ anchorId: anchor.anchorId, intentIds: [intent.intentId], range: anchor.range, expectedTextSha256: anchor.textSha256, replacementText: replacement.replacementText });
         }
         textByResource.set(textChange.resourceId, edits);
       }
       for (const change of intentOperation.structuralChanges ?? []) {
         if (change.kind !== structuralKind(intent)) throw new Error(`Proposal structural change does not match intent ${intent.intentId}: ${change.kind}`);
-        structuralChanges.push(change);
+        const existing = structuralChanges.find((candidate) => candidate.changeId === change.changeId);
+        if (existing !== undefined) {
+          if (canonicalSha256({ kind: existing.kind, targetIds: existing.targetIds, value: existing.value }) !== canonicalSha256(change)) {
+            throw new Error(`Proposal has conflicting structural changes with identity: ${change.changeId}`);
+          }
+          existing.intentIds.push(intent.intentId);
+          continue;
+        }
+        structuralChanges.push({ ...change, intentIds: [intent.intentId] });
       }
     }
     const textEdits = [...textByResource]
@@ -336,6 +352,10 @@ function comparePositions(left: { readonly line: number; readonly column: number
   return left.line - right.line || left.column - right.column;
 }
 
+function rangesOverlap(left: WritingContextSelection['targetDescriptors'][number]['anchors'][number]['range'], right: WritingContextSelection['targetDescriptors'][number]['anchors'][number]['range']): boolean {
+  return comparePositions(left.start, right.end) < 0 && comparePositions(right.start, left.end) < 0;
+}
+
 function requireOperationService(context: ToolExecutionContext): WritingOperationService {
   return requireToolService(context, WRITING_OPERATION_SERVICE, isOperationService, 'adopted WritingOperationService');
 }
@@ -363,7 +383,7 @@ function proposalObservation(proposal: RevisionProposal) {
 }
 
 function boundedSummary(proposal: RevisionProposal): string {
-  const summary = `${String(proposal.textEdits.length)} resource edit group(s) and ${String(proposal.structuralChanges.length)} structural change(s); deterministic and interpretive quality verification follows in Agent Core.`;
+  const summary = `${String(proposal.textEdits.length)} resource edit group(s) and ${String(proposal.structuralChanges.length)} structural change(s); deterministic and semantic production verification follows through Agent Core.`;
   return summary.slice(0, 4_000);
 }
 

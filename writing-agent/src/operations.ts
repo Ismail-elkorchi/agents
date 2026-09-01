@@ -45,7 +45,7 @@ export interface WritingOperationAdmissionInput {
   readonly intents: readonly WritingIntent[];
   readonly baseProjectRevisionId: string;
   readonly mode: WritingOperationMode;
-  readonly applyAuthorization?: WritingOperation['applyAuthorization'];
+  readonly delegatedApplyPolicy?: WritingOperation['delegatedApplyPolicy'];
   readonly sessionId: string;
   readonly runId: string;
   readonly executionBinding: WritingOperation['executionBinding'];
@@ -81,7 +81,7 @@ export function admitWritingOperation(input: WritingOperationAdmissionInput, con
     effectiveConstraints,
     baseProjectRevisionId: input.baseProjectRevisionId,
     mode,
-    ...(input.applyAuthorization === undefined ? {} : { applyAuthorization: input.applyAuthorization }),
+    ...(input.delegatedApplyPolicy === undefined ? {} : { delegatedApplyPolicy: input.delegatedApplyPolicy }),
     sessionId: input.sessionId,
     runId: input.runId,
     lifecycleState: 'admitted' as const,

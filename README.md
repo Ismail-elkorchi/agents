@@ -12,7 +12,7 @@ Agent Core owns causal model windows, logical requests, inference invocation,
 tool/effect truth, persistence, and recovery. Coding Agent owns target-scoped
 repository guidance, isolated working copies, revision-bound acceptance checks,
 review handoffs, and publication; Writing Agent owns operations, context selection,
-claim evidence, proposals, production verification, and application. Offline
+claim evidence, proposals, production verification, exact apply authorization, and revision application. Offline
 product/model measurement infrastructure is intentionally outside this
 production workspace.
 

@@ -8,15 +8,18 @@ import {
   WRITING_INTENT_REGISTRY_IMPLEMENTATION_ID,
   WritingOperationService,
   acceptRevisionProposal,
+  authorizeRevisionApplication,
   addManualSource,
   admitWritingOperation,
   amendProjectBrief,
   applyRevisionProposal,
   createManagedTextResource,
   createWritingOperationContract,
+  createDefaultWritingEditorialChecker,
   createProjectRevision,
   createSingleIntent,
   createWritingProject,
+  openWritingProject,
   createWritingProvider,
   createWritingReasoningRequest,
   verifyProposalProduction,
@@ -61,11 +64,11 @@ const passingChecker = Object.freeze({
   implementationId: 'tests.semantic-checker@1',
   verificationPolicyId: 'tests.semantic-policy@1',
   calibrationId: 'tests.semantic-calibration@1',
-  async verify({ operation, declaration, base, proposedRevisionId, verificationInputSha256 }) {
+  async verify({ operation, declaration, base, proposedRevisionId, citationCatalog, verificationInputSha256 }) {
     return {
       semanticPreservationFindings: [{
         findingId: `semantic-${operation.operationId}`, scope: operation.intents[0].intentId, requirement: 'required', verdict: 'passed', coverage: 'complete',
-        supportingRanges: [],
+        supportingCitations: citationCatalog.filter((citation) => citation.kind === 'proposed' || citation.kind === 'base'),
         intendedChanges: declaration.kind === 'changes' ? declaration.items.map((item) => item.itemId) : [], observedChanges: [], unexplainedChanges: [], lostPriorEditIds: [],
         evaluatorId: this.implementationId, verificationPolicyId: this.verificationPolicyId, calibrationId: this.calibrationId,
         verificationInputSha256, baseRevisionId: base.revision.revisionId, proposedRevisionId,
@@ -84,7 +87,7 @@ const unknownChecker = Object.freeze({
     return {
       semanticPreservationFindings: [{
         findingId: `semantic-unknown-${operation.operationId}`, scope: operation.intents[0].intentId, requirement: 'required', verdict: 'unknown', coverage: 'unknown',
-        supportingRanges: [],
+        supportingCitations: [],
         intendedChanges: declaration.kind === 'changes' ? declaration.items.map((item) => item.itemId) : [], observedChanges: [], unexplainedChanges: [], lostPriorEditIds: [],
         evaluatorId: this.implementationId, verificationPolicyId: this.verificationPolicyId, calibrationId: this.calibrationId,
         verificationInputSha256, baseRevisionId: base.revision.revisionId, proposedRevisionId,
@@ -234,8 +237,8 @@ test('default semantic checker verifies every exact intent and persists reproduc
       assert.equal('operation' in payload, false);
       assert.equal('sources' in payload, false);
       return JSON.stringify({
-        semantic: payload.semanticScopes.map((scope) => ({ scope, verdict: 'passed', coverage: 'complete', observedChanges: [], unexplainedChanges: [], lostPriorEditIds: [], explanation: 'Exact intent scope is preserved.' })),
-        editorial: payload.editorialCriterionIds.map((criterionId) => ({ criterionId, scope: 'whole document', verdict: 'passed', coverage: 'complete', explanation: 'Criterion passed.' }))
+        semantic: payload.semanticScopes.map((scope) => ({ scope, verdict: 'passed', coverage: 'complete', observedChanges: [], unexplainedChanges: [], lostPriorEditIds: [], citationIds: payload.citationCatalog.filter((citation) => citation.kind === 'proposed' || citation.kind === 'base').map((citation) => citation.citationId), explanation: 'Exact intent scope is preserved.' })),
+        editorial: payload.editorialCriterionIds.map((criterionId) => ({ criterionId, scope: 'whole document', verdict: 'passed', coverage: 'complete', citationIds: [payload.citationCatalog.find((citation) => citation.kind === 'proposed').citationId], explanation: 'Criterion passed.' }))
       });
     }
   ]);
@@ -248,6 +251,8 @@ test('default semantic checker verifies every exact intent and persists reproduc
     const verification = (await project.store.view()).productionVerifications.get(result.proposalId);
     assert.equal(verification.verificationInputSha256, result.semanticPreservationFindings[0].verificationInputSha256);
     assert.equal(verification.deterministicChecks.length, result.checkResults.length);
+    assert.deepEqual(new Set(verification.semanticPreservationFindings[0].supportingCitations.map((citation) => citation.kind)), new Set(['proposed', 'base']));
+    assert.equal(verification.semanticPreservationFindings[0].supportingCitations.find((citation) => citation.kind === 'proposed').proposedRevisionId, verification.proposedRevisionId);
   } finally { project.close(); }
 });
 
@@ -265,7 +270,7 @@ test('terminal operation reconciliation completes one durable apply after caller
     };
     await assert.rejects(runWritingOperation({
       project, provider, model: 'writing-test', kind: 'revise', instruction: 'Apply the exact revision.', intents: [intent], mode: 'apply', editorialChecker: passingChecker,
-      directAuthorization: {
+      delegatedApplyPolicy: {
         channel: 'direct-user', decision: 'accept-and-apply', explanation: 'Apply this exact verified operation result.',
         humanCriterionDecisions: [{ criterionId, verdict: 'passed', explanation: 'The exact proposed revision satisfies the user instruction.' }]
       }
@@ -279,6 +284,8 @@ test('terminal operation reconciliation completes one durable apply after caller
     const operation = [...view.operations.values()].find((candidate) => candidate.mode === 'apply');
     assert.equal(view.operationLifecycles.get(operation.operationId).status, 'completed');
     assert.equal(view.proposals.get(view.operationLifecycles.get(operation.operationId).proposalId).status, 'applied');
+    assert.equal(view.applyAuthorizations.size, 1);
+    assert.equal(view.records.filter((record) => record.payload.kind === 'proposal.apply-authorized').length, 1);
     assert.equal(view.records.filter((record) => record.payload.kind === 'operation.lifecycle' && record.payload.lifecycle.operationId === operation.operationId).length, 1);
   } finally {
     project.store.appendOperationLifecycle = appendLifecycle;
@@ -303,18 +310,18 @@ test('operation reconciliation serializes conflicting terminal settlements', asy
   } finally { project.close(); }
 });
 
-test('operation result disposition reflects required proposal-quality failures', async () => {
+test('operation result disposition reflects required production-verification failures', async () => {
   const { project, resource } = await fixture();
-  const provider = new ScriptedWritingProvider(Array.from({ length: 4 }, () => [proposalCall(resource, 'intent-quality', 'New line 43.'), 'Proposal recorded.']).flat());
+  const provider = new ScriptedWritingProvider(Array.from({ length: 4 }, () => [proposalCall(resource, 'intent-exact-numbers', 'New line 43.'), 'Proposal recorded.']).flat());
   try {
     const intent = createSingleIntent({
-      intentId: 'intent-quality', kind: 'text.revise', instruction: 'Use only the admitted number.', targetResourceIds: [resource.resourceId],
-      exactConstraints: [{ constraintId: 'numbers-quality', matcher: 'number', allowedValues: ['42'], baselinePolicy: 'exclude', requirement: 'required', criterionIds: [], origin: 'user' }]
+      intentId: 'intent-exact-numbers', kind: 'text.revise', instruction: 'Use only the admitted number.', targetResourceIds: [resource.resourceId],
+      exactConstraints: [{ constraintId: 'admitted-numbers', matcher: 'number', allowedValues: ['42'], baselinePolicy: 'exclude', requirement: 'required', criterionIds: [], origin: 'user' }]
     });
     const result = await runWritingOperation({ project, provider, model: 'writing-test', kind: 'revise', instruction: 'Use only the admitted number.', intents: [intent], editorialChecker: passingChecker });
     assert.equal(result.execution.state, 'ended');
     assert.equal(result.execution.terminal.executionStatus, 'failed');
-    assert.equal(result.checkResults.find((check) => check.checkId === 'exact-numbers-quality').verdict, 'failed');
+    assert.equal(result.checkResults.find((check) => check.checkId === 'exact-admitted-numbers').verdict, 'failed');
     assert.equal(result.disposition, 'invalid');
   } finally { project.close(); }
 });
@@ -346,6 +353,13 @@ test('structural proposals cannot replace an admitted creation identity', async 
     const selection = await selectWritingContext({ project, operation });
     await project.store.appendContextSelection(selection, operation.baseProjectRevisionId);
     const service = new WritingOperationService({ project, operation, contextSelection: selection });
+    const canonical = service.canonicalize({
+      operations: [{ intentId: intent.intentId, structuralChanges: [{
+        changeId: 'change-create-admitted', kind: 'create', targetIds: ['node-admitted'],
+        value: { node: { nodeId: 'node-admitted', kind: 'section', parentId: view.current.nodes[0].nodeId, siblingOrder: 0, purpose: 'Admitted target.', status: 'planned' } }
+      }]}], semanticChangeDeclaration: { kind: 'none' }, rationale: 'Create the exact admitted node.'
+    });
+    assert.deepEqual(canonical.structuralChanges[0].intentIds, [intent.intentId]);
     assert.throws(() => service.canonicalize({
       operations: [{ intentId: intent.intentId, structuralChanges: [{
         changeId: 'change-create-other', kind: 'create', targetIds: ['node-other'],
@@ -361,6 +375,7 @@ test('required unknown semantic preservation blocks acceptance without rewriting
     const { proposal, verification } = await stagedProposal(project, resource, unknownChecker);
     assert.equal(verification.semanticPreservationFindings[0].verdict, 'unknown');
     await assert.rejects(() => acceptProposal(project, proposal.proposalId, 'Accept anyway.'), /required verification is non-passing/u);
+    await assert.rejects(() => authorizeRevisionApplication(project, { proposalId: proposal.proposalId }), /requires an accepted proposal/u);
     assert.equal((await project.store.view()).proposals.get(proposal.proposalId).status, 'proposed');
   } finally { project.close(); }
 });
@@ -405,7 +420,7 @@ test('effective operation constraints intersect length bounds and reject closed-
 });
 
 test('acceptance criterion coverage stays explicit and direct human decisions are durable', async () => {
-  const { project, resource } = await fixture();
+  const { project, root, stateRoot, resource } = await fixture();
   try {
     const { proposal, verification } = await stagedProposal(project, resource);
     const coverage = verification.criterionCoverage.find((item) => item.criterionId === 'criterion-user-instruction');
@@ -414,6 +429,19 @@ test('acceptance criterion coverage stays explicit and direct human decisions ar
     const decision = await acceptProposal(project, proposal.proposalId, 'Reviewed the exact proposed revision against the user criterion.');
     assert.deepEqual(decision.criterionDecisions.map((item) => item.criterionId), ['criterion-user-instruction']);
     assert.equal(decision.criterionDecisions[0].verdict, 'passed');
+    const concurrent = await Promise.allSettled([
+      authorizeRevisionApplication(project, { proposalId: proposal.proposalId }),
+      authorizeRevisionApplication(project, { proposalId: proposal.proposalId })
+    ]);
+    assert.equal(concurrent.filter((result) => result.status === 'fulfilled').length, 1);
+    assert.equal(concurrent.filter((result) => result.status === 'rejected').length, 1);
+    const recovered = await authorizeRevisionApplication(project, { proposalId: proposal.proposalId });
+    assert.equal(recovered.authorizationId, concurrent.find((result) => result.status === 'fulfilled').value.authorizationId);
+    assert.equal((await project.store.records()).filter((record) => record.payload.kind === 'proposal.apply-authorized').length, 1);
+    const reopened = await openWritingProject({ rootDirectory: root, stateRoot });
+    try {
+      assert.deepEqual(await reopened.store.getWritingApplyAuthorization(proposal.proposalId), recovered);
+    } finally { reopened.close(); }
   } finally { project.close(); }
 });
 
@@ -431,6 +459,21 @@ test('proposal acceptance rejects a stale project or brief snapshot', async () =
     await assert.rejects(() => acceptProposal(project, proposal.proposalId), /proposal (?:base|brief) is stale/u);
     assert.equal((await project.store.view()).proposals.get(proposal.proposalId).status, 'proposed');
   } finally { project.close(); }
+});
+
+test('project persistence rejects an apply authorization that does not bind the exact transaction', async () => {
+  const { project, resource } = await fixture();
+  const appendAuthorization = project.store.appendWritingApplyAuthorization.bind(project.store);
+  try {
+    const { proposal } = await stagedProposal(project, resource);
+    await acceptProposal(project, proposal.proposalId);
+    project.store.appendWritingApplyAuthorization = (authorization) => appendAuthorization({ ...authorization, transactionId: 'writing-edit-wrong-transaction' });
+    await assert.rejects(() => authorizeRevisionApplication(project, { proposalId: proposal.proposalId }), /does not bind the exact verified proposal transaction/u);
+    assert.equal((await project.store.view()).applyAuthorizations.size, 0);
+  } finally {
+    project.store.appendWritingApplyAuthorization = appendAuthorization;
+    project.close();
+  }
 });
 
 test('protected content rejects edits without the exact admitted range decision', async () => {
@@ -482,15 +525,26 @@ test('apply recovers a committed text transaction when project finalization init
     const original = project.store.appendAppliedRevision.bind(project.store);
     let injected = false;
     project.store.appendAppliedRevision = async (...args) => { if (!injected) { injected = true; throw new Error('injected finalization crash'); } return original(...args); };
-    await assert.rejects(() => applyRevisionProposal(project, { proposalId: proposal.proposalId }), /injected finalization crash/u);
+    await assert.rejects(() => applyRevisionProposal(project, { proposalId: proposal.proposalId }), /matching durable apply authorization/u);
+    const authorization = await authorizeRevisionApplication(project, { proposalId: proposal.proposalId });
+    assert.equal(authorization.proposalId, proposal.proposalId);
+    assert.equal(authorization.projectRevisionId, proposal.baseProjectRevisionId);
+    assert.deepEqual(authorization.resourcePreimages, proposal.expectedBaseHashes);
+    assert.equal((await project.store.view()).applyAuthorizations.get(proposal.proposalId).authorizationId, authorization.authorizationId);
+    await assert.rejects(
+      () => applyRevisionProposal(project, { proposalId: proposal.proposalId, authorization: { ...authorization, transactionId: 'writing-edit-tampered' } }),
+      /matching durable apply authorization/u
+    );
+    await assert.rejects(() => applyRevisionProposal(project, { proposalId: proposal.proposalId, authorization }), /injected finalization crash/u);
     assert.equal(await readFile(path.join(root, 'draft.md'), 'utf8'), 'New line.\n');
     project.store.appendAppliedRevision = original;
-    const applied = await applyRevisionProposal(project, { proposalId: proposal.proposalId });
+    const applied = await applyRevisionProposal(project, { proposalId: proposal.proposalId, authorization });
     assert.equal(applied.recoveredFinalization, true);
     assert.equal((await project.store.view()).proposals.get(proposal.proposalId).status, 'applied');
     assert.equal(applied.provenance.some((record) => record.classification === 'model-suggested'), true);
     assert.equal(applied.provenance.some((record) => record.classification === 'user-accepted-unchanged'), true);
     assert.equal(applied.provenance.some((record) => record.classification === 'human-authored'), true);
+    assert.deepEqual(new Set(applied.provenance.filter((record) => record.classification === 'model-suggested' || record.classification === 'user-accepted-unchanged').flatMap((record) => record.intentIds)), new Set(['intent-revise']));
   } finally { project.close(); }
 });
 
@@ -500,7 +554,8 @@ test('undo appends a compensating revision and superseding authorship provenance
     const baseRevisionId = (await project.store.view()).current.revision.revisionId;
     const { proposal } = await stagedProposal(project, resource);
     await acceptProposal(project, proposal.proposalId, 'Accept exact revision.');
-    const applied = await applyRevisionProposal(project, { proposalId: proposal.proposalId });
+    const authorization = await authorizeRevisionApplication(project, { proposalId: proposal.proposalId });
+    const applied = await applyRevisionProposal(project, { proposalId: proposal.proposalId, authorization });
     const undone = await undoWritingRevision(project, { revisionId: baseRevisionId, explanation: 'Restore the selected prior content.' });
     assert.notEqual(undone.revisionId, baseRevisionId);
     assert.notEqual(undone.revisionId, applied.revisionId);
@@ -516,7 +571,8 @@ test('semantic preservation receives exact current and prior accepted revision b
   try {
     const { proposal } = await stagedProposal(project, resource, passingChecker, { expectedText: 'Old line.', replacementText: 'A much newer line.' });
     await acceptProposal(project, proposal.proposalId, 'Accept first revision.');
-    const applied = await applyRevisionProposal(project, { proposalId: proposal.proposalId });
+    const authorization = await authorizeRevisionApplication(project, { proposalId: proposal.proposalId });
+    const applied = await applyRevisionProposal(project, { proposalId: proposal.proposalId, authorization });
     const afterApply = (await project.store.view()).current;
     await amendProjectBrief(project, {
       ...afterApply.brief,
@@ -575,6 +631,103 @@ test('manual source evidence keeps semantic unknown separate from deterministic 
   } finally { project.close(); }
 });
 
+test('production verification persists exact host-issued proposed, base, and source citations', async () => {
+  const { project, root, stateRoot, resource } = await fixture('Quoted fact.\n\nSecond line.\n');
+  try {
+    const source = await addManualSource(project, {
+      kind: 'manual', localResourceId: resource.resourceId,
+      excerpts: [{ range: { start: { line: 1, column: 1 }, end: { line: 1, column: 13 } }, expectedText: 'Quoted fact.' }]
+    });
+    const claim = await adoptClaim(project, { statement: 'Quoted fact.', scope: 'paragraph', origin: 'user' });
+    const relation = await verifyClaimEvidence(project, { claimId: claim.claimId, claimVersion: claim.version, sourceId: source.sourceId, excerptId: source.excerpts[0].excerptId, kind: 'direct-quotation' });
+    const view = await project.store.view();
+    const intent = {
+      ...createSingleIntent({ intentId: 'intent-citations', kind: 'text.revise', instruction: 'Revise the second line while preserving the source-backed claim.', targetResourceIds: [resource.resourceId] }),
+      affectedClaimIds: [claim.claimId], affectedRelationIds: [relation.relationId]
+    };
+    const operation = admitWritingOperation({
+      projectId: view.identity.projectId, briefRevisionId: view.current.brief.briefRevisionId, kind: 'revise', instruction: intent.instruction, intents: [intent],
+      baseProjectRevisionId: view.current.revision.revisionId, mode: 'suggest', sessionId: 'session-citations', runId: 'run-citations', executionBinding: executionBinding()
+    }, { channel: 'direct-user', project: view.current });
+    await project.store.appendOperation(operation, operation.baseProjectRevisionId);
+    const selection = await selectWritingContext({ project, operation });
+    await project.store.appendContextSelection(selection, operation.baseProjectRevisionId);
+    const secondHash = createHash('sha256').update('Second line.', 'utf8').digest('hex');
+    const anchor = selection.targetDescriptors[0].anchors.find((candidate) => candidate.textSha256 === secondHash);
+    assert.ok(anchor);
+    const service = new WritingOperationService({ project, operation, contextSelection: selection });
+    const canonical = service.canonicalize({
+      operations: [{ intentId: intent.intentId, textChanges: [{ resourceId: resource.resourceId, replacements: [{ anchorId: anchor.anchorId, replacementText: 'Revised second line.' }] }] }],
+      semanticChangeDeclaration: { kind: 'none' }, rationale: 'Preserve the cited claim and revise only the second paragraph.'
+    });
+    const proposal = await service.createProposal(canonical);
+    const verifierProvider = new ScriptedWritingProvider([(request) => {
+      const payload = JSON.parse(request.messages.find((message) => message.role === 'user').content);
+      assert.deepEqual(new Set(payload.citationCatalog.map((citation) => citation.kind)), new Set(['proposed', 'base', 'source']));
+      const citationIds = payload.citationCatalog.map((citation) => citation.citationId);
+      return JSON.stringify({
+        semantic: payload.semanticScopes.map((scope) => ({ scope, verdict: 'passed', coverage: 'complete', observedChanges: ['Only the second paragraph changed.'], unexplainedChanges: [], lostPriorEditIds: [], citationIds, explanation: 'The exact proposed, base, and source passages support the finding.' })),
+        editorial: payload.editorialCriterionIds.map((criterionId) => ({ criterionId, scope: 'target document', verdict: 'passed', coverage: 'complete', citationIds, explanation: 'The cited passages satisfy the criterion.' }))
+      });
+    }]);
+    const checker = createDefaultWritingEditorialChecker({ provider: verifierProvider, model: 'writing-test' });
+    const verification = await verifyProposalProduction({ project, operation, proposal, contextSelection: selection, checker });
+    const citations = verification.semanticPreservationFindings[0].supportingCitations;
+    assert.deepEqual(new Set(citations.map((citation) => citation.kind)), new Set(['proposed', 'base', 'source']));
+    assert.equal(citations.find((citation) => citation.kind === 'proposed').proposedRevisionId, verification.proposedRevisionId);
+    assert.equal(citations.find((citation) => citation.kind === 'base').revisionId, operation.baseProjectRevisionId);
+    assert.equal(citations.find((citation) => citation.kind === 'source').excerptId, source.excerpts[0].excerptId);
+    await project.store.appendProposalProductionVerification(verification);
+    assert.deepEqual((await project.store.getProposalProductionVerification(proposal.proposalId)).semanticPreservationFindings[0].supportingCitations, citations);
+    const reopened = await openWritingProject({ rootDirectory: root, stateRoot });
+    try {
+      assert.deepEqual((await reopened.store.getProposalProductionVerification(proposal.proposalId)).semanticPreservationFindings[0].supportingCitations, citations);
+    } finally { reopened.close(); }
+  } finally { project.close(); }
+});
+
+test('production verification rejects invented citations and model requests that do not fit the profile', async () => {
+  const first = await fixture();
+  try {
+    const inventedCitationChecker = Object.freeze({
+      ...passingChecker,
+      implementationId: 'tests.invented-citation-checker@1',
+      async verify(input) {
+        const result = await passingChecker.verify.call(this, input);
+        return {
+          ...result,
+          semanticPreservationFindings: result.semanticPreservationFindings.map((finding) => ({
+            ...finding,
+            evaluatorId: this.implementationId,
+            supportingCitations: [{ ...finding.supportingCitations[0], textSha256: 'f'.repeat(64) }]
+          }))
+        };
+      }
+    });
+    await assert.rejects(() => stagedProposal(first.project, first.resource, inventedCitationChecker), /not an exact host-issued citation/u);
+  } finally { first.project.close(); }
+
+  const second = await fixture();
+  try {
+    const tinyProvider = new ScriptedWritingProvider([]);
+    tinyProvider.describeModel = async () => ({
+      ...(await ScriptedWritingProvider.prototype.describeModel.call(tinyProvider)),
+      limits: { contextTokens: 200, maxInputTokens: 150, outputTokens: 50 }
+    });
+    const checker = createDefaultWritingEditorialChecker({ provider: tinyProvider, model: 'writing-test' });
+    await assert.rejects(() => stagedProposal(second.project, second.resource, checker), /does not fit/u);
+    assert.equal(tinyProvider.requests.length, 0);
+  } finally { second.project.close(); }
+
+  const third = await fixture();
+  try {
+    const incompleteProvider = new ScriptedWritingProvider([{ content: '', terminationReason: 'output_limit' }]);
+    const checker = createDefaultWritingEditorialChecker({ provider: incompleteProvider, model: 'writing-test' });
+    await assert.rejects(() => stagedProposal(third.project, third.resource, checker), /did not complete normally: output_limit/u);
+    assert.equal((await third.project.store.view()).productionVerifications.size, 0);
+  } finally { third.project.close(); }
+});
+
 test('session replay fails closed when a session ledger is copied to another physical project', async () => {
   const first = await fixture(); const second = await fixture();
   const provider = new ScriptedWritingProvider([proposalCall(first.resource, 'intent-session'), 'Staged.']);
@@ -608,7 +761,7 @@ test('structured intent admission rejects unsupported remove-and-edit compositio
 });
 
 test('multi-intent proposals preserve admitted order and bind each change to its own intent', async () => {
-  const { project, resource } = await fixture();
+  const { project, root, stateRoot, resource } = await fixture();
   const secondResource = await createManagedTextResource(project, { relativePath: 'second.md', initialContent: 'Second line.\n', mediaType: 'text/markdown', role: 'draft' });
   try {
     const view = await project.store.view();
@@ -659,9 +812,54 @@ test('multi-intent proposals preserve admitted order and bind each change to its
     ];
     const canonical = service.canonicalize({ operations: entries, semanticChangeDeclaration: { kind: 'none' }, rationale: 'Execute exact ordered intents.' });
     assert.equal(canonical.textEdits.length, 2);
+    assert.deepEqual(Object.fromEntries(canonical.textEdits.map((edit) => [edit.resourceId, edit.edits[0].intentIds])), {
+      [resource.resourceId]: [first.intentId], [secondResource.resourceId]: [second.intentId]
+    });
     assert.deepEqual(canonical.textEdits.map((edit) => edit.baseSha256), selection.targetDescriptors.map((descriptor) => descriptor.baseSha256));
+    const proposal = await service.createProposal(canonical);
+    assert.deepEqual(new Set(proposal.proposedAuthorshipProvenance.filter((record) => record.classification === 'model-suggested').map((record) => record.intentIds[0])), new Set([first.intentId, second.intentId]));
+    assert.deepEqual(Object.fromEntries((await project.store.getProposal(proposal.proposalId)).textEdits.map((edit) => [edit.resourceId, edit.edits[0].intentIds])), {
+      [resource.resourceId]: [first.intentId], [secondResource.resourceId]: [second.intentId]
+    });
+    const reopened = await openWritingProject({ rootDirectory: root, stateRoot });
+    try {
+      assert.deepEqual(Object.fromEntries((await reopened.store.getProposal(proposal.proposalId)).textEdits.map((edit) => [edit.resourceId, edit.edits[0].intentIds])), {
+        [resource.resourceId]: [first.intentId], [secondResource.resourceId]: [second.intentId]
+      });
+    } finally { reopened.close(); }
     assert.throws(() => service.canonicalize({ operations: [entries[1], entries[0]], semanticChangeDeclaration: { kind: 'none' }, rationale: '' }), /dependency order/u);
     assert.throws(() => service.canonicalize({ operations: [entries[0]], semanticChangeDeclaration: { kind: 'none' }, rationale: '' }), /exact admitted intent set/u);
+  } finally { project.close(); }
+});
+
+test('canonical changes merge identical intent contributions and reject conflicting overlap', async () => {
+  const { project, resource } = await fixture();
+  try {
+    const view = await project.store.view();
+    const first = createSingleIntent({ intentId: 'intent-shared-first', kind: 'text.revise', instruction: 'Tighten the line.', targetResourceIds: [resource.resourceId] });
+    const second = { ...createSingleIntent({ intentId: 'intent-shared-second', kind: 'text.revise', instruction: 'Confirm the same revision.', targetResourceIds: [resource.resourceId] }), dependencies: [first.intentId] };
+    const operation = admitWritingOperation({
+      projectId: view.identity.projectId, briefRevisionId: view.current.brief.briefRevisionId, kind: 'revise', instruction: 'Apply the shared revision.', intents: [first, second],
+      baseProjectRevisionId: view.current.revision.revisionId, mode: 'suggest', sessionId: 'session-shared', runId: 'run-shared', executionBinding: executionBinding()
+    }, { channel: 'direct-user', project: view.current });
+    await project.store.appendOperation(operation, operation.baseProjectRevisionId);
+    const selection = await selectWritingContext({ project, operation });
+    await project.store.appendContextSelection(selection, operation.baseProjectRevisionId);
+    const anchor = selection.targetDescriptors[0].anchors.find((candidate) => candidate.kind === 'paragraph');
+    assert.ok(anchor);
+    const service = new WritingOperationService({ project, operation, contextSelection: selection });
+    const operationFor = (intentId, replacementText) => ({ intentId, textChanges: [{ resourceId: resource.resourceId, replacements: [{ anchorId: anchor.anchorId, replacementText }] }] });
+    const canonical = service.canonicalize({
+      operations: [operationFor(first.intentId, 'Shared line.'), operationFor(second.intentId, 'Shared line.')], semanticChangeDeclaration: { kind: 'none' }, rationale: ''
+    });
+    assert.deepEqual(canonical.textEdits[0].edits[0].intentIds, [first.intentId, second.intentId]);
+    await assert.rejects(() => service.createProposal({
+      ...canonical,
+      textEdits: canonical.textEdits.map((request) => ({ ...request, edits: request.edits.map((edit) => ({ ...edit, intentIds: ['intent-not-admitted'] })) }))
+    }), /unknown or out of admitted order/u);
+    assert.throws(() => service.canonicalize({
+      operations: [operationFor(first.intentId, 'First line.'), operationFor(second.intentId, 'Second line.')], semanticChangeDeclaration: { kind: 'none' }, rationale: ''
+    }), /conflicting replacements/u);
   } finally { project.close(); }
 });
 

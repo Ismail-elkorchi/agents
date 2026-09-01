@@ -10,8 +10,7 @@ import {
   type EditorialFinding,
   type SemanticPreservationFinding
 } from './domain.js';
-import { completeTextRange } from './project.js';
-import type { WritingEditorialChecker } from './quality.js';
+import type { WritingEditorialChecker } from './verification.js';
 import { offsetRange } from './text-ranges.js';
 
 const semanticVerificationSchema = z.strictObject({
@@ -21,6 +20,7 @@ const semanticVerificationSchema = z.strictObject({
   observedChanges: z.array(z.string().max(100_000)),
   unexplainedChanges: z.array(z.string().max(100_000)),
   lostPriorEditIds: z.array(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/@-]*$/u)),
+  citationIds: z.array(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/@-]*$/u)),
   explanation: z.string().trim().min(1).max(100_000)
 });
 
@@ -29,6 +29,7 @@ const editorialVerificationSchema = z.strictObject({
   scope: z.string().trim().min(1).max(10_000),
   verdict: z.enum(['passed', 'failed', 'unknown']),
   coverage: z.enum(['complete', 'partial', 'unknown']),
+  citationIds: z.array(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/@-]*$/u)),
   explanation: z.string().trim().min(1).max(100_000)
 });
 
@@ -46,7 +47,7 @@ const RESPONSE_SCHEMA: JsonObject = Object.freeze({
       type: 'array',
       items: Object.freeze({
         type: 'object', additionalProperties: false,
-        required: Object.freeze(['scope', 'verdict', 'coverage', 'observedChanges', 'unexplainedChanges', 'lostPriorEditIds', 'explanation']),
+        required: Object.freeze(['scope', 'verdict', 'coverage', 'observedChanges', 'unexplainedChanges', 'lostPriorEditIds', 'citationIds', 'explanation']),
         properties: Object.freeze({
           scope: Object.freeze({ type: 'string' }),
           verdict: Object.freeze({ type: 'string', enum: Object.freeze(['passed', 'failed', 'unknown']) }),
@@ -54,6 +55,7 @@ const RESPONSE_SCHEMA: JsonObject = Object.freeze({
           observedChanges: Object.freeze({ type: 'array', items: Object.freeze({ type: 'string' }) }),
           unexplainedChanges: Object.freeze({ type: 'array', items: Object.freeze({ type: 'string' }) }),
           lostPriorEditIds: Object.freeze({ type: 'array', items: Object.freeze({ type: 'string' }) }),
+          citationIds: Object.freeze({ type: 'array', items: Object.freeze({ type: 'string' }) }),
           explanation: Object.freeze({ type: 'string' })
         })
       })
@@ -62,12 +64,13 @@ const RESPONSE_SCHEMA: JsonObject = Object.freeze({
       type: 'array',
       items: Object.freeze({
         type: 'object', additionalProperties: false,
-        required: Object.freeze(['criterionId', 'scope', 'verdict', 'coverage', 'explanation']),
+        required: Object.freeze(['criterionId', 'scope', 'verdict', 'coverage', 'citationIds', 'explanation']),
         properties: Object.freeze({
           criterionId: Object.freeze({ type: 'string' }),
           scope: Object.freeze({ type: 'string' }),
           verdict: Object.freeze({ type: 'string', enum: Object.freeze(['passed', 'failed', 'unknown']) }),
           coverage: Object.freeze({ type: 'string', enum: Object.freeze(['complete', 'partial', 'unknown']) }),
+          citationIds: Object.freeze({ type: 'array', items: Object.freeze({ type: 'string' }) }),
           explanation: Object.freeze({ type: 'string' })
         })
       })
@@ -111,6 +114,7 @@ export function createDefaultWritingEditorialChecker(input: {
               'For each exact semantic intent ID, compare its admitted targets, the base, prior accepted baselines, declared intended changes, preservation contract, and proposed revision.',
               'Fail unexplained changes, lost prior accepted edits, unsupported factual additions, altered obligations/referents/stance, or evidence claims not supported by the supplied source and claim-evidence records.',
               'For each exact editorial criterion, verify its statement and scope against the proposed revision. Use unknown or partial coverage when the supplied evidence cannot justify a complete judgment.',
+              'Support each conclusive semantic finding with both proposed and base citationIds from the host-issued citation catalog. Support each conclusive editorial finding with a proposed citation. Add source citations when source excerpts support the judgment. Never invent or alter a citation.',
               'Return exactly one semantic item per requested semantic scope and exactly one editorial item per requested editorial criterion. Do not add scopes or criteria.'
             ].join(' ')
           }),
@@ -131,11 +135,6 @@ export function createDefaultWritingEditorialChecker(input: {
       const parsed = modelVerificationSchema.parse(JSON.parse(response.content));
       exactSet(parsed.semantic.map((item) => item.scope), semanticScopes, 'semantic scopes');
       exactSet(parsed.editorial.map((item) => item.criterionId), editorialCriteria.map((criterion) => criterion.criterionId), 'editorial criteria');
-      const supportingRanges = verification.operation.targetResourceIds.map((resourceId) => {
-        const content = verification.proposedText.get(resourceId);
-        if (content === undefined) throw new Error(`Semantic verifier proposed-resource scope is unavailable: ${resourceId}`);
-        return Object.freeze({ resourceId, range: completeTextRange(content), sha256: textSha256(content) });
-      });
       const intendedChanges = verification.declaration.kind === 'changes' ? verification.declaration.items.map((item) => item.itemId) : [];
       const intents = new Map(verification.operationContract.intents.map((intent) => [intent.intentId, intent]));
       const semanticPreservationFindings: SemanticPreservationFinding[] = parsed.semantic.map((item) => {
@@ -147,7 +146,7 @@ export function createDefaultWritingEditorialChecker(input: {
           requirement: 'required',
           verdict: item.verdict,
           coverage: item.coverage,
-          supportingRanges: supportingRanges.filter((range) => intent.targetResourceIds.includes(range.resourceId)),
+          supportingCitations: resolveCitations(item.citationIds, verification.citationCatalog, new Set(intent.targetResourceIds)),
           intendedChanges,
           observedChanges: item.observedChanges,
           unexplainedChanges: item.unexplainedChanges,
@@ -170,7 +169,7 @@ export function createDefaultWritingEditorialChecker(input: {
           scope: item.scope,
           severity: criterion.requirement,
           verdict: item.verdict,
-          supportingRanges,
+          supportingCitations: resolveCitations(item.citationIds, verification.citationCatalog),
           explanation: item.explanation,
           evaluatorId: implementationId,
           verificationPolicyId,
@@ -208,6 +207,7 @@ function verificationPayload(
     operationContract: verification.operationContract,
     declaration: verification.declaration,
     preservationContract: verification.preservationContract,
+    citationCatalog: verification.citationCatalog,
     evidenceExcerpts: evidenceExcerpts(verification),
     comparisonBaselines: baselines,
     proposedResources
@@ -217,10 +217,29 @@ function verificationPayload(
   return parseJsonObject(payload, { maxDepth: 32, maxCollectionEntries: 100_000, maxStringBytes: 1_000_000, maxTotalBytes: 1_500_000 });
 }
 
+function resolveCitations(
+  citationIds: readonly string[],
+  catalog: Parameters<WritingEditorialChecker['verify']>[0]['citationCatalog'],
+  targetResourceIds?: ReadonlySet<string>
+) {
+  if (new Set(citationIds).size !== citationIds.length) throw new Error('Semantic verifier repeated a citation identity.');
+  const byId = new Map(catalog.map((citation) => [citation.citationId, citation]));
+  return Object.freeze(citationIds.map((citationId) => {
+    const citation = byId.get(citationId);
+    if (citation === undefined) throw new Error(`Semantic verifier returned an unknown host-issued citation: ${citationId}`);
+    if (targetResourceIds !== undefined && citation.kind !== 'source' && !targetResourceIds.has(citation.resourceId)) {
+      throw new Error(`Semantic verifier cited text outside the intent's admitted resources: ${citationId}`);
+    }
+    return citation;
+  }));
+}
+
 function evidenceExcerpts(verification: Parameters<WritingEditorialChecker['verify']>[0]): readonly JsonObject[] {
   return Object.freeze(verification.operationContract.evidenceRequirements.sources.flatMap((source) => source.excerpts.map((excerpt) => {
     const resourceId = source.localResourceId;
-    const content = resourceId === undefined ? undefined : verification.proposedText.get(resourceId);
+    const content = resourceId === undefined ? undefined : verification.comparisonBaselines
+      .map((baseline) => baseline.text.get(resourceId))
+      .find((candidate) => candidate !== undefined && textSha256(candidate) === source.exactSha256);
     if (resourceId === undefined || content === undefined) return Object.freeze({
       sourceId: source.sourceId,
       excerptId: excerpt.excerptId,

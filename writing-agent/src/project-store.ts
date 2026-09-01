@@ -20,6 +20,8 @@ import {
   sourceRecordSchema,
   timestampSchema,
   writingBriefRevisionSchema,
+  writingApplyAuthorizationSchema,
+  WRITING_APPLY_AUTHORIZATION_POLICY_ID,
   writingOperationSchema,
   type AuthorshipProvenance,
   type Claim,
@@ -33,6 +35,7 @@ import {
   type RevisionProposal,
   type SourceRecord,
   type WritingBriefRevision,
+  type WritingApplyAuthorization,
   type WritingOperation
 } from './domain.js';
 import {
@@ -96,6 +99,7 @@ const mutationSettlementSchema = z.strictObject({
   mutationId: identifierSchema,
   operationId: identifierSchema,
   transactionId: identifierSchema,
+  applyAuthorizationId: identifierSchema.optional(),
   outcome: z.enum(['committed', 'committed_with_residue', 'rolled_back', 'rollback_failed']),
   oldAndNewHashes: z.array(z.strictObject({ resourceId: identifierSchema, path: z.string().trim().min(1).max(4_096), oldSha256: sha256Schema.optional(), newSha256: sha256Schema.optional(), changedAnchorIds: z.array(identifierSchema) })),
   changedPaths: z.array(z.string().trim().min(1).max(4_096)),
@@ -132,6 +136,7 @@ const eventPayloadSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('context.selected'), selection: writingContextSelectionSchema }),
   z.strictObject({ kind: z.literal('proposal.created'), proposal: revisionProposalSchema }),
   z.strictObject({ kind: z.literal('proposal.production-verified'), verification: proposalProductionVerificationSchema }),
+  z.strictObject({ kind: z.literal('proposal.apply-authorized'), authorization: writingApplyAuthorizationSchema }),
   z.strictObject({ kind: z.literal('proposal.lifecycle'), lifecycle: proposalLifecycleSchema }),
   z.strictObject({ kind: z.literal('mutation.settled'), settlement: mutationSettlementSchema }),
   z.strictObject({ kind: z.literal('revision.committed'), snapshot: projectSnapshotSchema, cause: z.enum(['initial', 'brief', 'proposal', 'direct', 'structure', 'undo', 'source', 'evidence', 'provenance']) }),
@@ -179,6 +184,7 @@ export interface ProjectView {
   readonly current: ProjectSnapshot;
   readonly proposals: ReadonlyMap<string, { readonly proposal: RevisionProposal; readonly status: ProposalStatus }>;
   readonly productionVerifications: ReadonlyMap<string, ProposalProductionVerification>;
+  readonly applyAuthorizations: ReadonlyMap<string, WritingApplyAuthorization>;
   readonly operations: ReadonlyMap<string, WritingOperation>;
   readonly operationLifecycles: ReadonlyMap<string, WritingOperationLifecycle>;
   readonly contextSelections: ReadonlyMap<string, WritingContextSelection>;
@@ -349,6 +355,16 @@ export class WritingProjectStore {
     await this.appendMany([{ payload: { kind: 'proposal.production-verified', verification: parsed }, projectRevisionId: parsed.baseProjectRevisionId }], { expectedRevisionId: parsed.baseProjectRevisionId });
   }
 
+  async appendWritingApplyAuthorization(authorization: WritingApplyAuthorization): Promise<void> {
+    const parsed = writingApplyAuthorizationSchema.parse(authorization);
+    const existing = await this.getWritingApplyAuthorization(parsed.proposalId);
+    if (existing !== undefined) {
+      if (canonicalSha256(existing) !== canonicalSha256(parsed)) throw new Error(`Writing apply authorization conflicts with its durable record: ${parsed.proposalId}`);
+      return;
+    }
+    await this.appendMany([{ payload: { kind: 'proposal.apply-authorized', authorization: parsed }, projectRevisionId: parsed.projectRevisionId }], { expectedRevisionId: parsed.projectRevisionId });
+  }
+
   async appendProposalLifecycle(input: z.input<typeof proposalLifecycleSchema>, expectedRevisionId: string): Promise<void> {
     const lifecycle = adoptSchema(proposalLifecycleSchema, input);
     await this.appendMany([{ payload: { kind: 'proposal.lifecycle', lifecycle }, projectRevisionId: expectedRevisionId }], { expectedRevisionId });
@@ -376,6 +392,9 @@ export class WritingProjectStore {
     readonly expectedRevisionId: string;
     readonly cause?: 'proposal' | 'direct' | 'structure' | 'undo' | 'source' | 'evidence' | 'provenance';
   }): Promise<void> {
+    if ((input.cause ?? 'proposal') === 'proposal' && input.settlement.applyAuthorizationId === undefined) {
+      throw new Error('A proposal revision requires an exact writing apply authorization identity.');
+    }
     const records: AppendRecordInput[] = [
       { payload: { kind: 'mutation.settled', settlement: input.settlement }, projectRevisionId: input.snapshot.revision.revisionId },
       ...(input.provenance.length > 0 ? [{ payload: { kind: 'authorship.recorded' as const, provenance: [...input.provenance] }, projectRevisionId: input.snapshot.revision.revisionId }] : []),
@@ -480,6 +499,10 @@ export class WritingProjectStore {
     return (await this.view()).productionVerifications.get(proposalId);
   }
 
+  async getWritingApplyAuthorization(proposalId: string): Promise<WritingApplyAuthorization | undefined> {
+    return (await this.view()).applyAuthorizations.get(proposalId);
+  }
+
   async getOperationLifecycle(operationId: string): Promise<WritingOperationLifecycle | undefined> {
     return (await this.view()).operationLifecycles.get(operationId);
   }
@@ -545,7 +568,7 @@ function validateConcurrentTransition(
   identity: WritingProjectIdentity
 ): void {
   const payload = candidate.payload;
-  if (payload.kind !== 'operation.lifecycle' && payload.kind !== 'proposal.production-verified' && payload.kind !== 'proposal.lifecycle') return;
+  if (payload.kind !== 'operation.lifecycle' && payload.kind !== 'proposal.production-verified' && payload.kind !== 'proposal.apply-authorized' && payload.kind !== 'proposal.lifecycle') return;
   const view = projectView(records, identity);
   if (payload.kind === 'operation.lifecycle') {
     const operation = view.operations.get(payload.lifecycle.operationId);
@@ -556,8 +579,17 @@ function validateConcurrentTransition(
   }
   if (payload.kind === 'proposal.production-verified') {
     const proposal = view.proposals.get(payload.verification.proposalId);
-    if (proposal?.proposal.operationId !== payload.verification.operationId) throw new Error(`Proposal quality verification precedes or contradicts its proposal: ${payload.verification.proposalId}`);
-    if (view.productionVerifications.has(payload.verification.proposalId)) throw new Error(`Proposal quality verification already exists: ${payload.verification.proposalId}`);
+    if (proposal?.proposal.operationId !== payload.verification.operationId) throw new Error(`Proposal production verification precedes or contradicts its proposal: ${payload.verification.proposalId}`);
+    if (view.productionVerifications.has(payload.verification.proposalId)) throw new Error(`Proposal production verification already exists: ${payload.verification.proposalId}`);
+    return;
+  }
+  if (payload.kind === 'proposal.apply-authorized') {
+    const proposal = view.proposals.get(payload.authorization.proposalId);
+    const verification = view.productionVerifications.get(payload.authorization.proposalId);
+    if (proposal?.status !== 'accepted' || proposal.proposal.operationId !== payload.authorization.operationId) throw new Error(`Writing apply authorization requires the exact accepted proposal: ${payload.authorization.proposalId}`);
+    if (verification?.verificationId !== payload.authorization.productionVerificationId || verification.verificationInputSha256 !== payload.authorization.verificationInputSha256) throw new Error(`Writing apply authorization requires the exact production verification: ${payload.authorization.proposalId}`);
+    assertExactApplyAuthorization(payload.authorization, proposal.proposal, verification, view.records, identity);
+    if (view.applyAuthorizations.has(payload.authorization.proposalId)) throw new Error(`Writing apply authorization already exists: ${payload.authorization.proposalId}`);
     return;
   }
   const proposal = view.proposals.get(payload.lifecycle.proposalId);
@@ -606,11 +638,12 @@ async function readLogEnvelopesIfPresent(directory: string): Promise<readonly z.
 function projectView(records: readonly ProjectLogRecord[], identity: WritingProjectIdentity): ProjectView {
   const proposals = new Map<string, { proposal: RevisionProposal; status: ProposalStatus }>();
   const productionVerifications = new Map<string, ProposalProductionVerification>();
+  const applyAuthorizations = new Map<string, WritingApplyAuthorization>();
   const operations = new Map<string, WritingOperation>();
   const operationLifecycles = new Map<string, WritingOperationLifecycle>();
   const contextSelections = new Map<string, WritingContextSelection>();
   const settlements = new Map<string, ProjectMutationSettlement>();
-  for (const record of records) {
+  for (const [recordIndex, record] of records.entries()) {
     if (record.projectId !== identity.projectId) throw new Error(`Project log mixes project identities at record ${record.recordId}.`);
     const payload = record.payload;
     if (payload.kind === 'operation.admitted') uniqueSet(operations, payload.operation.operationId, payload.operation, 'operation');
@@ -625,19 +658,81 @@ function projectView(records: readonly ProjectLogRecord[], identity: WritingProj
     else if (payload.kind === 'proposal.created') uniqueSet(proposals, payload.proposal.proposalId, { proposal: payload.proposal, status: 'proposed' }, 'proposal');
     else if (payload.kind === 'proposal.production-verified') {
       const proposal = proposals.get(payload.verification.proposalId);
-      if (proposal?.proposal.operationId !== payload.verification.operationId) throw new Error(`Proposal quality verification precedes or contradicts its proposal: ${payload.verification.proposalId}`);
-      uniqueSet(productionVerifications, payload.verification.proposalId, payload.verification, 'proposal quality verification');
+      if (proposal?.proposal.operationId !== payload.verification.operationId) throw new Error(`Proposal production verification precedes or contradicts its proposal: ${payload.verification.proposalId}`);
+      uniqueSet(productionVerifications, payload.verification.proposalId, payload.verification, 'proposal production verification');
+    }
+    else if (payload.kind === 'proposal.apply-authorized') {
+      const proposal = proposals.get(payload.authorization.proposalId);
+      const verification = productionVerifications.get(payload.authorization.proposalId);
+      if (proposal?.status !== 'accepted' || proposal.proposal.operationId !== payload.authorization.operationId) throw new Error(`Writing apply authorization precedes or contradicts accepted proposal: ${payload.authorization.proposalId}`);
+      if (verification?.verificationId !== payload.authorization.productionVerificationId || verification.verificationInputSha256 !== payload.authorization.verificationInputSha256) throw new Error(`Writing apply authorization precedes or contradicts production verification: ${payload.authorization.proposalId}`);
+      assertExactApplyAuthorization(payload.authorization, proposal.proposal, verification, records.slice(0, recordIndex), identity);
+      uniqueSet(applyAuthorizations, payload.authorization.proposalId, payload.authorization, 'writing apply authorization');
     }
     else if (payload.kind === 'proposal.lifecycle') {
       const proposal = proposals.get(payload.lifecycle.proposalId);
       if (proposal === undefined) throw new Error(`Proposal lifecycle precedes creation: ${payload.lifecycle.proposalId}`);
       if (proposal.status !== payload.lifecycle.expectedStatus) throw new Error(`Proposal lifecycle expected ${payload.lifecycle.expectedStatus}, found ${proposal.status}: ${payload.lifecycle.proposalId}`);
       proposals.set(payload.lifecycle.proposalId, { proposal: proposal.proposal, status: payload.lifecycle.status });
-    } else if (payload.kind === 'mutation.settled') uniqueSet(settlements, payload.settlement.mutationId, payload.settlement, 'mutation settlement');
+    } else if (payload.kind === 'mutation.settled') {
+      if (payload.settlement.applyAuthorizationId !== undefined) {
+        const authorization = applyAuthorizations.get(payload.settlement.mutationId);
+        if (authorization?.authorizationId !== payload.settlement.applyAuthorizationId || authorization.transactionId !== payload.settlement.transactionId || authorization.operationId !== payload.settlement.operationId) {
+          throw new Error(`Mutation settlement does not match its writing apply authorization: ${payload.settlement.mutationId}`);
+        }
+      }
+      uniqueSet(settlements, payload.settlement.mutationId, payload.settlement, 'mutation settlement');
+    }
   }
   const current = latestSnapshot(records);
   if (current === undefined) throw new Error(`Writing project ${identity.projectId} has no current revision.`);
-  return deepFreeze({ identity, records: Object.freeze([...records]), current, proposals, productionVerifications, operations, operationLifecycles, contextSelections, settlements });
+  return deepFreeze({ identity, records: Object.freeze([...records]), current, proposals, productionVerifications, applyAuthorizations, operations, operationLifecycles, contextSelections, settlements });
+}
+
+function assertExactApplyAuthorization(
+  authorization: WritingApplyAuthorization,
+  proposal: RevisionProposal,
+  verification: ProposalProductionVerification,
+  records: readonly ProjectLogRecord[],
+  identity: WritingProjectIdentity
+): void {
+  const decisionRecord = [...records].reverse().find((record) => record.payload.kind === 'editorial.decision'
+    && record.payload.decision.decisionId === authorization.editorialDecisionId);
+  if (decisionRecord?.payload.kind !== 'editorial.decision' || decisionRecord.payload.decision.proposalId !== proposal.proposalId || decisionRecord.payload.decision.decision !== 'accepted') {
+    throw new Error(`Writing apply authorization requires the exact accepted editorial decision: ${proposal.proposalId}`);
+  }
+  const decision = decisionRecord.payload.decision;
+  const transactionId = contentId('writing-edit', { proposalId: proposal.proposalId, textEdits: proposal.textEdits });
+  const material = {
+    authorizationPolicyId: WRITING_APPLY_AUTHORIZATION_POLICY_ID,
+    projectId: identity.projectId,
+    operationId: proposal.operationId,
+    proposalId: proposal.proposalId,
+    projectRevisionId: proposal.baseProjectRevisionId,
+    resourcePreimages: proposal.expectedBaseHashes,
+    productionVerificationId: verification.verificationId,
+    verificationInputSha256: verification.verificationInputSha256,
+    editorialDecisionId: decision.decisionId,
+    humanCriterionDecisionsSha256: canonicalSha256(decision.criterionDecisions),
+    transactionId
+  };
+  if (authorization.authorizationId !== contentId('writing-apply-authorization', material)
+    || authorization.authorizedAt !== decision.createdAt
+    || canonicalSha256({
+      authorizationPolicyId: authorization.authorizationPolicyId,
+      projectId: authorization.projectId,
+      operationId: authorization.operationId,
+      proposalId: authorization.proposalId,
+      projectRevisionId: authorization.projectRevisionId,
+      resourcePreimages: authorization.resourcePreimages,
+      productionVerificationId: authorization.productionVerificationId,
+      verificationInputSha256: authorization.verificationInputSha256,
+      editorialDecisionId: authorization.editorialDecisionId,
+      humanCriterionDecisionsSha256: authorization.humanCriterionDecisionsSha256,
+      transactionId: authorization.transactionId
+    }) !== canonicalSha256(material)) {
+    throw new Error(`Writing apply authorization does not bind the exact verified proposal transaction: ${proposal.proposalId}`);
+  }
 }
 
 function sameOperationSettlement(left: WritingOperationLifecycle, right: WritingOperationLifecycle): boolean {

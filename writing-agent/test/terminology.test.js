@@ -10,8 +10,8 @@ const sources = readdirSync(sourceRoot, { recursive: true, withFileTypes: true }
 
 test('Writing Agent reserves evidence for claim and source support', () => {
   const violations = [];
-  const prohibitedExport = /export\s+(?:interface|type|class|function|const)\s+[A-Za-z0-9_]*(?:Projection|Prepare|Prepared|Evaluation|Candidate)[A-Za-z0-9_]*/gu;
-  const prohibitedPersistedTag = /(?:kind|type):\s*(?:z\.literal\()?['"][^'"]*(?:projection|prepared|candidate|evaluation)[^'"]*['"]/gu;
+  const prohibitedExport = /export\s+(?:interface|type|class|function|const)\s+[A-Za-z0-9_]*(?:Projection|Prepare|Prepared|Evaluation|Candidate|Quality)[A-Za-z0-9_]*/gu;
+  const prohibitedPersistedTag = /(?:kind|type):\s*(?:z\.literal\()?['"][^'"]*(?:projection|prepared|candidate|evaluation|quality)[^'"]*['"]/gu;
   for (const file of sources) {
     const source = readFileSync(file, 'utf8');
     for (const match of source.matchAll(prohibitedExport)) violations.push(`${file}: ${match[0]}`);

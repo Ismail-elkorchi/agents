@@ -25,13 +25,13 @@ ProposalProductionVerification combines:
 - exact claim/source evidence excerpts relevant to the admitted operation;
 - criterion-level human decisions where machine verification is insufficient.
 
-Unknown, stale, partially covered, or failed required verification blocks acceptance. Semantic findings cannot override deterministic failures. Findings bind the proposed revision, base revision, operation contract, exact supporting ranges, and verification-input hash.
+Unknown, stale, partially covered, or failed required verification blocks acceptance. Semantic findings cannot override deterministic failures. Findings bind the proposed revision, base revision, operation contract, verification-input hash, and exact host-issued proposed/base/source citations.
 
 The CLI requires one --human-criterion option for every human criterion the user explicitly passes when applying a proposal. An apply command alone does not imply those decisions.
 
 ## Apply and recovery
 
-Applying an accepted proposal is a separate application action. WritingApplyAuthorization binds the proposal, project/base revisions, resource preimages, production verification, human decisions, and recoverable transaction identity.
+Applying an accepted proposal is a separate application action. A pre-run delegated apply policy may ask the application to accept a future passing result, but it is not mutation authority. After verification and acceptance, the application persists a WritingApplyAuthorization bound to the exact proposal, project revision, resource preimages, production verification, human decisions, and recoverable transaction identity. The revision service rejects missing, altered, or stale authorization.
 
 Initial execution, user decisions, recovery, and abort converge through the same idempotent finalization path. A run that outlives its caller is reconciled from durable run events. A committed text transaction is recovered before one terminal writing lifecycle is appended. Stale content is never force-overwritten, and rejection leaves managed files unchanged.
 

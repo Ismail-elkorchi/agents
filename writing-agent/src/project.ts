@@ -55,6 +55,7 @@ export async function createWritingProject(input: {
       nodeId: rootNode.nodeId,
       structuralObjectId: rootNode.nodeId,
       operationId: initializationOperationId,
+      intentIds: [],
       classification: 'human-authored',
       supersedesProvenanceIds: [],
       createdAt: nowTimestamp(clock)
@@ -181,6 +182,7 @@ export async function registerManagedTextResource(project: WritingProject, input
     resourceId,
     range: fullRange,
     operationId,
+    intentIds: [],
     classification: input.ownership === 'imported-source' ? 'imported' : 'human-authored',
     supersedesProvenanceIds: [],
     createdAt: nowTimestamp(clock)
