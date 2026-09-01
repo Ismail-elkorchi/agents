@@ -62,6 +62,12 @@ A trusted project may propose a narrower boundary:
 
 The repository cannot activate this policy or raise trust. Restricted workspaces treat configuration as attributed data and independently require approval for every mutation and command.
 
+## Repository guidance
+
+Coding Agent loads the root `AGENTS.md` and explicitly configured guidance at run start. It does not recursively place unrelated descendant guidance in the initial model request. When a read enters a deeper target, Coding Agent walks that target's root-to-directory ancestry, securely loads any newly applicable `AGENTS.md`, persists the active set with the run, and includes it in the next model request. A command working directory is treated as a concrete target in the same way.
+
+The first write, delete, or command entering a scope whose guidance has not yet been delivered is denied without starting the effect. The resulting observation names the newly active guidance; the model retries after that guidance is present. Hidden and ignored paths do not bypass ancestry lookup, symbolic-link guidance is never followed, and guidance content cannot grant filesystem, shell, network, credential, approval, or publication authority.
+
 ## Approvals
 
 Input is parsed and canonicalized before authorization. When a call requires approval, `run()` returns a durable suspension:
@@ -110,6 +116,8 @@ Deterministic Core checks inspect their admitted model output and observations. 
 
 Mutable tools operate only in a persistent `IsolatedWorkingCopy` owned by Coding Agent. Coding Agent owns its `PreChangeSnapshot`, checkpoints, diffs, rollback, apply authorization, and journaled application. Agent Core owns run/effect truth but no coding workspace policy. The source workspace changes only after accepting disposition and required candidate acceptance checks pass; application refuses a source workspace that changed after isolation.
 
+Every passed required check records the exact working-copy digest it examined. Disposition compares those digests with the revision selected for application and refuses publication if any required result is missing that binding or describes an older revision.
+
 ## Result semantics
 
 - Normal stop with visible content: completed execution and complete model output.
@@ -118,9 +126,9 @@ Mutable tools operate only in a persistent `IsolatedWorkingCopy` owned by Coding
 - Failure before visible content: absent model output.
 - Missing or unknown required check: inconclusive verification.
 
-For every ended run, Coding Agent compares the exact root-bound state captured in the `PreChangeSnapshot` with the final working-copy state and reduces `apply_patch` ledger receipts into a bounded durable change report. The CLI prints changed paths and distinguishes structured mutations from external or concurrent changes. A path already reported by the initial Git observation remains marked as changed before the run; Coding Agent never assumes the workspace started clean. Binary, oversized, aliased, unreadable, or truncated observations make coverage explicitly partial. Model prose is not authority for changed paths or verification status, and command effects are never described as undoable.
+For every ended run, Coding Agent emits one persisted `CodingHandoff` for both CLI and TUI. It binds the admitted task, model summary, exact reviewed working-copy digest, changed files, bounded change artifact, candidate acceptance results, usage, publication status, unresolved facts, and unknown effects. The underlying change report compares the `PreChangeSnapshot` with the private working copy—even when publication is rejected—so a failed apply never erases the revision the user is reviewing. `apply_patch` ledger observations distinguish structured mutations from unaccounted working-copy changes. A path already reported by the initial Git observation remains marked as changed before the run; Coding Agent never assumes the workspace started clean. Binary, oversized, aliased, unreadable, or truncated observations make coverage explicitly partial. Model prose is not authority for changed paths, checks, publication, or usage.
 
-The interactive TUI renders before runtime activation, then restores durable conversation, terminal checks and changes, queued work, driver control, approvals, and unknown-effect recovery. Its status line retains the active provider, model, trust, sandbox, and permission boundary. Provider, model, permission mode, and trust changes are admitted only while the session is idle with no queued submissions. Use Ctrl+P for commands. Use Up and Down at the first or last composer line to browse sent messages; the current draft is restored when history browsing ends.
+The interactive TUI renders before runtime activation, then restores durable conversation, terminal checks and Coding handoffs, queued work, driver control, approvals, and unknown-effect recovery. Its status line retains the active provider, model, trust, sandbox, and permission boundary. Provider, model, permission mode, and trust changes are admitted only while the session is idle with no queued submissions. Use Ctrl+P for commands. Use Up and Down at the first or last composer line to browse sent messages; the current draft is restored when history browsing ends.
 
 Run `npm run verify:release` for the full repository gate.
 

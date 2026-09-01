@@ -40,7 +40,7 @@ import {
 } from './tui/index.js';
 import { parseJsonValue } from '@agent-core/json';
 import { createTrustDecision } from './security/workspace-trust.js';
-import { loadRepositoryInstructions } from './instructions/repository-instructions.js';
+import { loadInitialRepositoryGuidance, loadInitialRepositoryGuidanceFromRoot, RepositoryGuidanceSession } from './instructions/repository-guidance.js';
 import { inspectRepositoryOrientation, inspectRepositoryVersionControl, repositoryOrientationContext } from './workspace/repository-orientation.js';
 import { openSandboxExecutionRepository } from '@ismail-elkorchi/sandbox';
 import { SandboxGitRepositoryObserver } from './workspace/git/sandbox-git-observer.js';
@@ -53,9 +53,8 @@ import { loadOrAdmitCheckPlan } from './verification/check-plan-store.js';
 import { loadOrObservePreChangeCommands } from './verification/pre-change-command-observation-store.js';
 import { loadOrCapturePreChangeSnapshot } from './changes/pre-change-snapshot-store.js';
 import { IsolatedWorkingCopy } from './changes/isolated-working-copy.js';
-import { RunChangeReportService } from './changes/run-change-report-service.js';
-import type { RunChangeReport } from './changes/run-change-report.js';
-import { codingRunUncertainties } from './presentation/run-summary.js';
+import { CodingHandoffService } from './changes/coding-handoff-service.js';
+import type { CodingHandoff } from './changes/coding-handoff.js';
 import { ModelSelectionStore, type CodingAgentModelSelection } from './state/model-selection-store.js';
 
 export {
@@ -66,6 +65,7 @@ export type { CodingAgentCheckConfiguration, CodingAgentConfiguration, CodingAge
 export { codingWorkspaceSessionBinding, describeWorkspace, loadWorkspace, openCodingWorkspace, type OpenCodingWorkspace, type WorkspaceLayout } from './workspace.js';
 export { resolveCodingAuthority, type CodingApprovalKind, type CodingAuthority, type CodingPermissionMode } from './security/permission-mode.js';
 export type { RunChangeReport, StructuredMutationReceipt, WorkspaceChange } from './changes/run-change-report.js';
+export type { CodingHandoff, CodingPublicationStatus } from './changes/coding-handoff.js';
 
 type CliProviderId = CodingAgentProviderId;
 type CliAuthProviderId = 'openai' | 'openai-codex';
@@ -133,7 +133,7 @@ interface CodingAgentRuntimeComposition {
   session: SessionDescriptor;
   tuiDetails: CodingAgentTuiRuntimeDetails;
   gitObserver: GitRepositoryObserver;
-  changeReports: RunChangeReportService;
+  handoffs: CodingHandoffService;
 }
 
 export async function main(argv: string[]): Promise<void> {
@@ -193,8 +193,8 @@ export async function main(argv: string[]): Promise<void> {
           const result = resumeOnly
             ? await resumeAcceptedRun(runtime.agent, () => resumedResult, () => resumedFailure)
             : await submitTask(runtime.agent, task);
-          const changeReport = result.state === 'ended' ? await runtime.changeReports.finalize(result.terminal.runId, result) : undefined;
-          printResult(result, progress, process.stdout, changeReport);
+          const handoff = result.state === 'ended' ? await runtime.handoffs.finalize(result.terminal.runId, result) : undefined;
+          printResult(result, progress, process.stdout, handoff);
           printPersistenceLocations(runtime, result);
           process.exitCode = resultExitCode(result);
         } finally {
@@ -410,8 +410,8 @@ class CodingAgentInteractiveController implements CodingAgentInteractiveControll
     if (this.runtime !== runtime) return;
     await this.emit(event);
     if (event.type === 'run.completed' && event.result.state === 'ended') {
-      const report = await runtime.changeReports.finalize(event.runId, event.result);
-      await this.emit({ type: 'change.reported', report });
+      const handoff = await runtime.handoffs.finalize(event.runId, event.result);
+      await this.emit({ type: 'handoff.ready', handoff });
     }
     await this.publishState('ready', []);
   }
@@ -759,7 +759,7 @@ async function loadRuntimeHydration(runtime: CodingAgentRuntimeComposition) {
   ]);
   const [runs, reports] = await Promise.all([
     Promise.all(pendingSubmissions.map((submission) => runtime.runs.inspect(submission.runId))),
-    Promise.all(replay.runFinalizations.map((finalization) => runtime.changeReports.read(finalization.runId)))
+    Promise.all(replay.runFinalizations.map((finalization) => runtime.handoffs.read(finalization.runId)))
   ]);
   return {
     session: runtime.agent.state(),
@@ -767,13 +767,13 @@ async function loadRuntimeHydration(runtime: CodingAgentRuntimeComposition) {
     branchPoints,
     pendingSubmissions,
     runs,
-    changeReports: reports.filter((report): report is RunChangeReport => report !== undefined)
+    handoffs: reports.filter((handoff): handoff is CodingHandoff => handoff !== undefined)
   };
 }
 
 async function closeRuntimeComposition(runtime: CodingAgentRuntimeComposition): Promise<void> {
   const failures: unknown[] = [];
-  try { await runtime.changeReports.close(); } catch (error) { failures.push(error); }
+  try { await runtime.handoffs.close(); } catch (error) { failures.push(error); }
   try { await runtime.gitObserver.close(); } catch (error) { failures.push(error); }
   if (failures.length > 0) throw new AggregateError(failures, 'Coding Agent runtime cleanup failed.');
 }
@@ -846,9 +846,9 @@ async function createRuntime(
   const events = new JsonlEventRepository<AgentEvent>({ rootDir: workspace.runsDir, codec: agentEventCodec });
   const existingRunIds = new Set(await events.listRunIds());
   const activeConfiguration = projectExecutionPolicy ? options.configuration : undefined;
-  const instructionSet = await loadRepositoryInstructions(openedWorkspace, options.configuration?.instructions.map((instruction) => instruction.path));
+  const orientationGuidance = await loadInitialRepositoryGuidance(openedWorkspace);
   const gitObserver = await createGitObserver(workspace.runtimeDir);
-  const orientation = await inspectRepositoryOrientation(openedWorkspace, instructionSet, activeConfiguration, gitObserver);
+  const orientation = await inspectRepositoryOrientation(openedWorkspace, orientationGuidance, activeConfiguration, gitObserver);
   const checkPlan = deriveAdmittedCheckPlan(orientation.proposedVerificationChecks);
   const authority = resolveCodingAuthority({
     requestedMode: options.permissionMode,
@@ -860,11 +860,12 @@ async function createRuntime(
     await fs.mkdir(workspace.artifactsDir, { recursive: true, mode: 0o700 });
     const artifactStore = new LocalArtifactRepository({ rootDir: workspace.artifactsDir });
     const estimator = new SimpleTokenEstimator();
-    const changeReports = new RunChangeReportService({
+    const handoffs = new CodingHandoffService({
       state: openedWorkspace.privateState,
       runtimeDirectory: workspace.runtimeDir,
       root: openedWorkspace.fileRoot,
-      events
+      events,
+      artifacts: artifactStore
     });
     const runs = new AgentRunCoordinator(events);
     const agent = new AgentSession({
@@ -906,6 +907,17 @@ async function createRuntime(
         if (patchEnabled) await fs.mkdir(patchJournalPath, { recursive: true, mode: 0o700 });
         let localHost: ReturnType<typeof createLocalToolHost> | undefined;
         try {
+          const initialGuidance = runtimeContext.resuming
+            ? undefined
+            : await loadInitialRepositoryGuidanceFromRoot(runRoot, openedWorkspace.security, options.configuration?.instructions.map((instruction) => instruction.path));
+          const repositoryGuidance = await RepositoryGuidanceSession.open({
+            root: runRoot,
+            security: openedWorkspace.security,
+            state: openedWorkspace.privateState,
+            runId: runtimeContext.runId,
+            ...(initialGuidance ? { initial: initialGuidance } : {}),
+            resuming: runtimeContext.resuming
+          });
           const commandExecution = commandEnabled
             ? await createCodingCommandAuthority({
               repositoryDirectory: path.join(workspace.runtimeDir, 'run-tools', runIdentity, 'sandbox-commands'),
@@ -981,17 +993,21 @@ async function createRuntime(
             tools: host.tools,
             toolContext: { services: host.services },
             toolPolicy: authority.toolPolicy,
-            toolAuthorizer: request => {
+            toolAuthorizer: async request => {
               const trustDecision = openedWorkspace.security.authorizeTool(request);
-              if (trustDecision.decision !== 'allow') return trustDecision;
+              if (trustDecision.decision === 'deny') return trustDecision;
+              const guidanceDecision = await repositoryGuidance.authorize(request);
+              if (guidanceDecision) return guidanceDecision;
+              if (trustDecision.decision === 'require_approval') return trustDecision;
               const approvalKinds = request.effects.accesses.map((access) => approvalKind(accessRisk(access.mode)))
                 .filter((kind): kind is CodingApprovalKind => kind !== undefined && authority.requiredApprovals.includes(kind));
               return approvalKinds.length > 0
                 ? { decision: 'require_approval' as const, reason: `The active permission boundary requires approval for ${[...new Set(approvalKinds)].join(', ')}.` }
                 : { decision: 'allow' as const, reason: 'Allowed by workspace policy.' };
             },
-            instructions: instructionSet.instructions,
+            instructions: repositoryGuidance.initialInstructions(),
             contextItems: Object.freeze([repositoryOrientationContext(orientation)]),
+            contextProvider: () => repositoryGuidance.contextItems(),
             ...(checks.length > 0 ? { checks } : {}),
             disposition: createCodingDisposition({
               ...(workingCopy ? { workingCopy } : {}),
@@ -1030,7 +1046,7 @@ async function createRuntime(
       summarizeConversation: request => summarizeConversation(providerRuntime.provider, request.configuration.model, request.conversation)
     });
     agent.subscribe((event) => event.type === 'run.completed' && event.result.state === 'ended'
-      ? changeReports.finalize(event.runId, event.result).then(() => undefined)
+      ? handoffs.finalize(event.runId, event.result).then(() => undefined)
       : undefined);
     if (options.branch) await agent.branchFrom(options.branch, 'cli branch');
     return {
@@ -1049,7 +1065,7 @@ async function createRuntime(
       permissions: authority.permissions
       },
       gitObserver,
-      changeReports
+      handoffs
     };
   } catch (error) {
     await gitObserver.close().catch(() => undefined);
@@ -1277,8 +1293,8 @@ async function runApprovalCommand(args: string[]): Promise<void> {
       const unsubscribe = runtime.agent.subscribe((event) => { if (event.type === 'run.progress') { progress.handle(event.event); } });
       try {
         const result = await runtime.agent.resolveApproval({ runId, approvalId, fingerprint, decision: decisionValue });
-        const changeReport = result.state === 'ended' ? await runtime.changeReports.finalize(result.terminal.runId, result) : undefined;
-        printResult(result, progress, process.stdout, changeReport);
+        const handoff = result.state === 'ended' ? await runtime.handoffs.finalize(result.terminal.runId, result) : undefined;
+        printResult(result, progress, process.stdout, handoff);
         printPersistenceLocations(runtime, result);
         process.exitCode = resultExitCode(result);
       } finally { unsubscribe(); }
@@ -1452,7 +1468,7 @@ function printResult(
   result: AgentRunResult,
   progress?: CodingAgentProgressRenderer,
   output: Writable = process.stdout,
-  changeReport?: RunChangeReport
+  handoff?: CodingHandoff
 ): void {
   if (result.state === 'suspended') {
     if (result.reason !== 'approval_required') {
@@ -1489,7 +1505,11 @@ function printResult(
   }
   const advisoryFailures = terminal.checkResults.filter((check) => check.requirement === 'advisory' && check.verdict !== 'passed').length;
   if (advisoryFailures > 0) writeLine(output, `Advisory checks: ${String(advisoryFailures)} failed or unknown`);
-  if (changeReport) {
+  if (handoff) {
+    const changeReport = handoff.changeReport;
+    writeLine(output, `Reviewed revision: ${handoff.reviewedRevision}`);
+    writeLine(output, `Publication: ${title(handoff.publication.status.replaceAll('_', ' '))}`);
+    writeLine(output, `Change artifact: ${handoff.changeArtifact.artifactId}`);
     writeLine(output, `Workspace changes: ${String(changeReport.totalChanges)} (${changeReport.coverage})`);
     for (const change of changeReport.changes) {
       const origin = change.attribution === 'structured_mutation' ? 'agent' : 'external/concurrent';
@@ -1497,10 +1517,9 @@ function printResult(
       writeLine(output, `- ${change.kind} ${change.path} [${origin}${preChange}]`);
     }
     if (changeReport.omittedChanges > 0) writeLine(output, `- ${String(changeReport.omittedChanges)} additional changes omitted`);
-    const uncertainties = codingRunUncertainties(terminal, changeReport);
-    writeLine(output, uncertainties.length === 0
+    writeLine(output, handoff.unresolved.length === 0
       ? 'Remaining uncertainty: none'
-      : `Remaining uncertainty:\n${uncertainties.map((uncertainty) => `- ${uncertainty}`).join('\n')}`);
+      : `Remaining uncertainty:\n${handoff.unresolved.map((uncertainty) => `- ${uncertainty}`).join('\n')}`);
   }
   for (const diagnostic of result.deliveryDiagnostics) writeLine(output, `Delivery diagnostic (${diagnostic.eventType}): ${diagnostic.message}`);
 }

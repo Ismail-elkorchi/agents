@@ -8,6 +8,14 @@ Concrete products composed from Agent Core:
 
 Runnable applications composed from [Agent Core](https://github.com/Ismail-elkorchi/agent-core).
 
+Agent Core owns causal model windows, logical requests, inference invocation,
+tool/effect truth, persistence, and recovery. Coding Agent owns target-scoped
+repository guidance, isolated working copies, revision-bound acceptance checks,
+review handoffs, and publication; Writing Agent owns operations, context selection,
+claim evidence, proposals, production verification, and application. Offline
+product/model measurement infrastructure is intentionally outside this
+production workspace.
+
 | Package | Status |
 | --- | --- |
 | `@ismail-elkorchi/coding-agent` | Interactive coding agent with local tools and a terminal UI. |

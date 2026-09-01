@@ -3,7 +3,7 @@ import type {
   AgentSessionEvent,
   AgentSessionState
 } from '@agent-core/runtime';
-import type { RunChangeReport } from '../changes/run-change-report.js';
+import type { CodingHandoff } from '../changes/coding-handoff.js';
 import type { CodingAgentTuiHydration } from './hydration.js';
 import type { InteractiveCommandResult } from './interactive-commands.js';
 import type { CodingAgentTuiRuntimeDetails } from './state.js';
@@ -22,7 +22,7 @@ export type CodingAgentInteractiveEvent =
   | { readonly type: 'interactive.state.changed'; readonly state: CodingAgentInteractiveState }
   | { readonly type: 'interactive.notice'; readonly message: string; readonly tone?: 'info' | 'warning' | 'error' }
   | { readonly type: 'session.hydrated'; readonly hydration: CodingAgentTuiHydration }
-  | { readonly type: 'change.reported'; readonly report: RunChangeReport };
+  | { readonly type: 'handoff.ready'; readonly handoff: CodingHandoff };
 
 export interface CodingAgentInteractiveController {
   state(): CodingAgentInteractiveState;

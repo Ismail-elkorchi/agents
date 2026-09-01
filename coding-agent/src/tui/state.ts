@@ -17,7 +17,7 @@ import type {
   SessionReplayState,
   AgentTerminalSnapshot
 } from '@agent-core/runtime';
-import type { RunChangeReport } from '../changes/run-change-report.js';
+import type { CodingHandoff } from '../changes/coding-handoff.js';
 import type { CodingAgentTuiConversationEntry } from './conversation-model.js';
 import type { CodingAgentSetupRequirement } from './interactive-controller.js';
 import type { InteractiveCommandName } from './interactive-commands.js';
@@ -65,7 +65,7 @@ export interface CodingAgentTuiDebugState {
   readonly branchPoints: readonly SessionBranchPoint[];
   readonly pendingSubmissions: readonly SessionPendingSubmission[];
   readonly runs: readonly AgentRunInspection[];
-  readonly changeReports: readonly RunChangeReport[];
+  readonly handoffs: readonly CodingHandoff[];
 }
 
 export type CodingAgentTuiRunState =
@@ -144,7 +144,7 @@ export function createInitialCodingAgentTuiState(
       branchPoints: [],
       pendingSubmissions: [],
       runs: [],
-      changeReports: []
+      handoffs: []
     },
     nextLocalId: 1
   };

@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { decodeRunChangeReport, deriveRunChangeReport } from '../dist/changes/run-change-report.js';
+import { createCodingHandoff, decodeCodingHandoff } from '../dist/changes/coding-handoff.js';
+import { decodeAgentTerminalSnapshot } from '@agent-core/runtime';
 
 const hash = (character) => character.repeat(64);
 
@@ -70,6 +72,45 @@ test('change reports expose receipt conflicts and partial large-file observation
   assert.match(report.causes.join(','), /final:file_size_limit/u);
 });
 
+test('coding handoff binds checks, usage, publication, and review artifact to one revision', () => {
+  const report = deriveRunChangeReport('run-handoff', {
+    workspace: snapshot('a', [file('source.txt', hash('a'), 10)]), versionControl: { kind: 'none' }
+  }, snapshot('b', [file('source.txt', hash('b'), 11)]), [
+    receipt(10, [mutation('source.txt', 'update', hash('a'), hash('b'), 10, 11)])
+  ]);
+  const terminal = decodeAgentTerminalSnapshot({
+    runId: 'run-handoff', finalizationId: 'final-handoff', phase: 'ended', executionStatus: 'completed',
+    verificationStatus: 'passed', terminationReason: 'model_completed', modelTerminationReason: 'stop',
+    modelOutput: { status: 'complete', message: 'Updated source.', source: 'content', turnIndex: 1 }, turnCount: 1,
+    checkResults: [{ id: 'tests', implementationId: 'tests@1', requirement: 'required', verdict: 'passed', summary: 'passed', durationMs: 1 }],
+    budget: budget()
+  });
+  const artifact = {
+    artifactId: `${hash('c')}.json`, sha256: hash('c'), size: 100,
+    mediaType: 'application/json; charset=utf-8', visibility: 'public'
+  };
+  const handoff = createCodingHandoff({
+    task: 'Update source.', result: { state: 'ended', terminal, deliveryDiagnostics: [] },
+    changeReport: report, changeArtifact: artifact,
+    publication: { status: 'applied', revision: report.finalDigest }
+  });
+  assert.equal(handoff.reviewedRevision, report.finalDigest);
+  assert.deepEqual(handoff.changedFiles, ['source.txt']);
+  assert.equal(handoff.checks[0].id, 'tests');
+  assert.equal(handoff.usage.modelTurns, 1);
+  assert.deepEqual(decodeCodingHandoff(JSON.parse(JSON.stringify(handoff)), 'run-handoff'), handoff);
+  assert.throws(() => decodeCodingHandoff({ ...JSON.parse(JSON.stringify(handoff)), unexpected: true }, 'run-handoff'), /invalid/u);
+  assert.throws(() => decodeCodingHandoff({
+    ...JSON.parse(JSON.stringify(handoff)),
+    publication: { ...handoff.publication, reason: 'An applied revision cannot carry a rejection reason.' }
+  }, 'run-handoff'), /publication status is invalid/u);
+  assert.throws(() => createCodingHandoff({
+    task: 'Update source.', result: { state: 'ended', terminal, deliveryDiagnostics: [] },
+    changeReport: report, changeArtifact: artifact,
+    publication: { status: 'applied', revision: hash('d') }
+  }), /does not match the reviewed/u);
+});
+
 function snapshot(digestCharacter, entries) {
   const owned = Object.freeze(entries.map((entry) => Object.freeze(entry)));
   return Object.freeze({
@@ -127,5 +168,14 @@ function gitReceipt() {
     executionDigest: hash('3'),
     backend: 'test',
     backendVersion: '1'
+  };
+}
+
+function budget() {
+  return {
+    modelTurns: 1, totalToolCalls: 1, repeatedIdenticalToolCalls: 0, revisionAttempts: 0,
+    elapsedMs: 1, promptTokens: 2, completionTokens: 3, cacheReadTokens: 0, cacheWriteTokens: 0,
+    reasoningTokens: 0, knownCosts: {}, pricingStatus: 'unknown', unknownPricedTokens: 5,
+    consecutiveProviderFailures: 0, consecutiveToolFailures: 0
   };
 }

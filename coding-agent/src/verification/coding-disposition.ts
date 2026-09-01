@@ -38,8 +38,17 @@ export function createCodingDisposition(input: {
       const decision = verificationDecision(disposition);
       if (decision.kind !== 'accept') return decision;
       if (input.workingCopy === undefined) return Object.freeze({ kind: 'inconclusive' as const, reason: 'The mutable run has no isolated working copy to apply.' });
+      const diff = await input.workingCopy.diff();
+      const staleChecks = disposition.checkResults
+        .filter((check) => check.requirement === 'required' && check.verdict === 'passed')
+        .filter((check) => checkWorkingCopyDigest(check) !== diff.workingCopyDigest);
+      if (staleChecks.length > 0) {
+        return Object.freeze({
+          kind: 'inconclusive' as const,
+          reason: `Required checks do not describe the exact working-copy revision selected for application: ${staleChecks.map((check) => check.id).join(', ')}.`
+        });
+      }
       if (input.requiredCoverage === 'missing') {
-        const diff = await input.workingCopy.diff();
         if (diff.coverage !== 'complete') {
           return Object.freeze({
             kind: 'inconclusive' as const,
@@ -56,6 +65,16 @@ export function createCodingDisposition(input: {
       return createWorkingCopyDisposition(input.workingCopy);
     }
   });
+}
+
+function checkWorkingCopyDigest(check: AgentCheckResult): string | undefined {
+  if (!record(check.output)) return undefined;
+  const digest = check.output.workingCopyDigest;
+  return typeof digest === 'string' && /^[a-f0-9]{64}$/u.test(digest) ? digest : undefined;
+}
+
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function verificationDecision(disposition: AgentDispositionInput) {

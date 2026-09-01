@@ -178,12 +178,15 @@ test('resilient CLI recovery continues the accepted root-bound read and structur
       assert.match(resumed.stdout, /Remaining uncertainty: none/u);
     } else {
       assert.match(resumed.stdout, /Required verification coverage is unknown/u);
-      assert.match(resumed.stdout, /Workspace changes: 0 \(partial\)/u);
+      assert.match(resumed.stdout, /Publication: Not applied/u);
+      assert.match(resumed.stdout, /Workspace changes: 1 \(complete\)/u);
+      assert.match(resumed.stdout, /- modified src\/note\.txt \[agent\]/u);
     }
     assert.equal(provider.chatRequests.length, 3);
     const initialRequest = JSON.stringify(provider.chatRequests[0]);
     assert.match(initialRequest, /ROOT_V0_INSTRUCTION/u);
-    assert.match(initialRequest, /SCOPED_V0_INSTRUCTION/u);
+    assert.doesNotMatch(initialRequest, /SCOPED_V0_INSTRUCTION/u);
+    assert.match(JSON.stringify(provider.chatRequests[1]), /SCOPED_V0_INSTRUCTION/u);
   } finally {
     await provider.close();
     await fixture.close();
@@ -235,7 +238,8 @@ test('resilient CLI slice recovers before generation and completes one confined 
     assert.equal(provider.chatRequests.length, 4);
     const initialRequest = JSON.stringify(provider.chatRequests[0]);
     assert.match(initialRequest, /ROOT_V0_INSTRUCTION/u);
-    assert.match(initialRequest, /SCOPED_V0_INSTRUCTION/u);
+    assert.doesNotMatch(initialRequest, /SCOPED_V0_INSTRUCTION/u);
+    assert.match(JSON.stringify(provider.chatRequests[1]), /SCOPED_V0_INSTRUCTION/u);
     assert.match(resumed.stderr, /read_files/u);
     assert.match(resumed.stderr, /apply_patch/u);
     assert.match(resumed.stderr, /exec_command/u);
@@ -401,7 +405,7 @@ test('a multi-file refactor removes dead code while preserving an unrelated dirt
   }
 });
 
-test('a concurrent file replacement is never attributed to the agent mutation receipt', { timeout: 60_000 }, async () => {
+test('a concurrent source replacement blocks publication without corrupting the reviewed working-copy handoff', { timeout: 60_000 }, async () => {
   const sourceBefore = 'alpha\n';
   const provider = await scriptedOllama([
     toolResponse('read_files', { files: [{ path: 'src/note.txt' }] }),
@@ -428,11 +432,9 @@ test('a concurrent file replacement is never attributed to the agent mutation re
     const output = await running.result;
     assert.equal(output.code, 1, `${output.stdout}\n${output.stderr}`);
     assert.equal(await readFile(path.join(fixture.root, 'src/note.txt'), 'utf8'), 'concurrent-user-value\n');
-    assert.match(output.stdout, /Workspace changes: 1 \(partial\)/u);
-    assert.match(output.stdout, /- modified src\/note\.txt \[external\/concurrent\]/u);
-    assert.match(output.stdout, /Change coverage is partial: mutation receipts — conflict\./u);
-    assert.match(output.stdout, /Change attribution is external or concurrent for: src\/note\.txt\./u);
-    assert.match(output.stdout, /Mutation receipts conflict with src\/note\.txt/u);
+    assert.match(output.stdout, /Publication: Not applied/u);
+    assert.match(output.stdout, /Workspace changes: 1 \(complete\)/u);
+    assert.match(output.stdout, /- modified src\/note\.txt \[agent\]/u);
     assert.equal(provider.chatRequests.length, 3);
   } finally {
     await provider.close();

@@ -5,7 +5,7 @@ import path from 'node:path';
 import type { PromptContextItemInput } from '@agent-core/runtime';
 import { rootedFileIdentitiesEqual } from '@agent-core/tools-local';
 import type { CodingAgentCheckConfiguration, CodingAgentConfiguration } from '../configuration.js';
-import type { RepositoryInstructionSet } from '../instructions/repository-instructions.js';
+import type { RepositoryGuidanceSet } from '../instructions/repository-guidance.js';
 import type { VerificationCheckProposal } from '../verification/candidate-acceptance-checks.js';
 import type { OpenCodingWorkspace } from '../workspace.js';
 import type { GitRepositoryLocation, GitRepositoryObserver } from './git/repository-observer.js';
@@ -72,16 +72,16 @@ export interface RepositoryOrientation {
   };
   readonly versionControl: RepositoryVersionControl;
   readonly manifests: readonly RepositoryManifestSummary[];
-  readonly instructionSources: RepositoryInstructionSet['sources'];
-  readonly instructionCoverage: RepositoryInstructionSet['coverage'];
-  readonly instructionOmissions: RepositoryInstructionSet['omissions'];
+  readonly guidanceSources: RepositoryGuidanceSet['sources'];
+  readonly guidanceCoverage: RepositoryGuidanceSet['coverage'];
+  readonly guidanceOmissions: RepositoryGuidanceSet['omissions'];
   readonly proposedVerificationChecks: readonly VerificationCheckProposal[];
   readonly notes: readonly string[];
 }
 
 export async function inspectRepositoryOrientation(
   workspace: OpenCodingWorkspace,
-  instructions: RepositoryInstructionSet,
+  guidance: RepositoryGuidanceSet,
   configuration: CodingAgentConfiguration | undefined,
   gitObserver?: GitRepositoryObserver
 ): Promise<RepositoryOrientation> {
@@ -97,7 +97,8 @@ export async function inspectRepositoryOrientation(
     ...(versionControl.kind === 'git' && versionControl.status.kind === 'unavailable'
       ? [`Git branch and change status were unavailable through the sandbox (${versionControl.status.reason}); no host-side Git command was executed.`]
       : []),
-    ...(instructions.coverage === 'partial' ? ['Repository instruction discovery was partial; inspect omissions before assuming guidance is complete.'] : [])
+    ...(guidance.coverage === 'partial' ? ['Initial repository guidance loading was partial; inspect omissions before assuming active guidance is complete.'] : []),
+    'Additional AGENTS.md files are activated from a concrete target ancestry when repository work enters that scope.'
   ];
   return Object.freeze({
     workspace: Object.freeze({
@@ -108,9 +109,9 @@ export async function inspectRepositoryOrientation(
     }),
     versionControl,
     manifests: Object.freeze(manifests),
-    instructionSources: instructions.sources,
-    instructionCoverage: instructions.coverage,
-    instructionOmissions: instructions.omissions,
+    guidanceSources: guidance.sources,
+    guidanceCoverage: guidance.coverage,
+    guidanceOmissions: guidance.omissions,
     proposedVerificationChecks: Object.freeze(proposedVerificationChecks),
     notes: Object.freeze(notes)
   });

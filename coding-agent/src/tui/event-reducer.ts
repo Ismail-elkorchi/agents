@@ -5,8 +5,7 @@ import type {
   AgentRunPhase,
   AgentSessionState
 } from '@agent-core/runtime';
-import type { RunChangeReport } from '../changes/run-change-report.js';
-import { codingChangeUncertainties, codingRunUncertainties } from '../presentation/run-summary.js';
+import type { CodingHandoff } from '../changes/coding-handoff.js';
 import type { CodingAgentTuiState } from './state.js';
 import type { CodingAgentTuiActivityEntry } from './conversation-model.js';
 import { appendNotice, upsertActivity, upsertAssistant, upsertReasoning } from './conversation.js';
@@ -204,38 +203,39 @@ export function applySessionState(
   };
 }
 
-export function applyChangeReport(
+export function applyCodingHandoff(
   state: CodingAgentTuiState,
-  report: RunChangeReport
+  handoff: CodingHandoff
 ): CodingAgentTuiState {
+  const report = handoff.changeReport;
   const structured = report.changes.filter((change) => change.attribution === 'structured_mutation').length;
   const external = report.changes.filter((change) => change.attribution === 'external_or_concurrent').length;
-  const terminal = state.debug.terminal?.runId === report.runId ? state.debug.terminal : undefined;
-  const uncertainties = terminal === undefined
-    ? codingChangeUncertainties(report)
-    : codingRunUncertainties(terminal, report);
   const changeSummary = report.totalChanges === 0
     ? 'No workspace changes'
     : `${String(report.totalChanges)} changed path${report.totalChanges === 1 ? '' : 's'} · ${String(structured)} structured · ${String(external)} external/concurrent`;
-  const summary = `${changeSummary} · ${uncertainties.length === 0 ? 'no remaining uncertainty' : `${String(uncertainties.length)} remaining uncertaint${uncertainties.length === 1 ? 'y' : 'ies'}`}`;
+  const summary = `${changeSummary} · ${handoff.publication.status.replaceAll('_', ' ')} · ${handoff.unresolved.length === 0 ? 'no remaining uncertainty' : `${String(handoff.unresolved.length)} remaining uncertaint${handoff.unresolved.length === 1 ? 'y' : 'ies'}`}`;
   const details = [
+    `Reviewed revision ${handoff.reviewedRevision}`,
+    `Publication ${handoff.publication.status}`,
+    `Change artifact ${handoff.changeArtifact.artifactId}`,
+    '',
     ...report.changes.map((change) => `${change.kind} ${change.path} · ${change.attribution}${change.conflicts.length === 0 ? '' : ` · ${change.conflicts.join(', ')}`}`),
     ...(report.omittedChanges === 0 ? [] : [`${String(report.omittedChanges)} additional changes omitted`]),
     '',
-    `Remaining uncertainty\n${uncertainties.length === 0 ? 'none' : uncertainties.join('\n')}`
+    `Remaining uncertainty\n${handoff.unresolved.length === 0 ? 'none' : handoff.unresolved.join('\n')}`
   ].join('\n');
-  const reports = state.debug.changeReports.some((candidate) => candidate.runId === report.runId)
-    ? state.debug.changeReports.map((candidate) => candidate.runId === report.runId ? report : candidate)
-    : [...state.debug.changeReports, report];
+  const handoffs = state.debug.handoffs.some((candidate) => candidate.runId === handoff.runId)
+    ? state.debug.handoffs.map((candidate) => candidate.runId === handoff.runId ? handoff : candidate)
+    : [...state.debug.handoffs, handoff];
   return upsertActivity({
     ...state,
-    debug: { ...state.debug, changeReports: reports }
+    debug: { ...state.debug, handoffs }
   }, {
-    id: `change:${report.runId}`,
+    id: `handoff:${handoff.runId}`,
     kind: 'activity',
     activity: 'change',
-    label: 'Workspace changes',
-    status: report.coverage === 'partial' ? 'warning' : 'success',
+    label: 'Coding handoff',
+    status: report.coverage === 'partial' || handoff.unresolved.length > 0 ? 'warning' : 'success',
     summary,
     ...(details.length === 0 ? {} : { details })
   });

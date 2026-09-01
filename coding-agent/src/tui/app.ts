@@ -48,7 +48,7 @@ import {
 } from './command-surface.js';
 import type { CodingAgentTuiCommandHandler } from './command-surface.js';
 import {
-  applyChangeReport,
+  applyCodingHandoff,
   applyFailure,
   applyProgress,
   applyResult,
@@ -151,7 +151,7 @@ function updateCodingAgentTui(
       tone: 'info',
       text: `Session compacted · ${message.compaction.provider}/${message.compaction.model}\n${message.compaction.summary}`
     }), context);
-    case 'change.reported': return updated(applyChangeReport(state, message.report), context);
+    case 'handoff.ready': return updated(applyCodingHandoff(state, message.handoff), context);
     case 'interactive.state.changed': return updated(applyInteractiveState(state, message.state), context);
     case 'interactive.notice': return updated(appendNotice(state, message.message, message.tone ?? 'info'), context);
     case 'session.hydrated': return updated(hydrateCodingAgentTuiState(state, message.hydration), context);

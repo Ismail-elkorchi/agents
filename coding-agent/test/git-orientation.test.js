@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { createSandbox, openSandboxExecutionRepository } from '@ismail-elkorchi/sandbox';
-import { loadRepositoryInstructions } from '../dist/instructions/repository-instructions.js';
+import { loadInitialRepositoryGuidance } from '../dist/instructions/repository-guidance.js';
 import { SandboxGitRepositoryObserver } from '../dist/workspace/git/sandbox-git-observer.js';
 import { inspectRepositoryOrientation } from '../dist/workspace/repository-orientation.js';
 import { openCodingWorkspace } from '../dist/workspace.js';
@@ -76,7 +76,7 @@ test('repository orientation resolves linked worktree metadata and makes hostile
     async close() {}
   };
   try {
-    const instructions = await loadRepositoryInstructions(workspace);
+    const instructions = await loadInitialRepositoryGuidance(workspace);
     const orientation = await inspectRepositoryOrientation(workspace, instructions, undefined, observer);
     assert.equal(orientation.versionControl.kind, 'git');
     assert.equal(orientation.versionControl.status.kind, 'observed');
@@ -117,7 +117,7 @@ test('repository orientation identifies bare repositories without invoking Git',
   execFileSync('git', ['init', '--bare', '-q', root]);
   const workspace = await openCodingWorkspace(root, { stateRoot: path.join(container, 'state') });
   try {
-    const orientation = await inspectRepositoryOrientation(workspace, await loadRepositoryInstructions(workspace), undefined);
+    const orientation = await inspectRepositoryOrientation(workspace, await loadInitialRepositoryGuidance(workspace), undefined);
     assert.deepEqual(orientation.versionControl, { kind: 'git', status: { kind: 'unavailable', reason: 'bare_repository' } });
   } finally {
     workspace.fileRoot.close();
@@ -143,7 +143,7 @@ test('sandboxed Git status confines hostile repository helpers', { skip: !sandbo
   const repository = await openSandboxExecutionRepository({ directory: repositoryPath, maxRetainedOutputBytes: 2 * 1024 * 1024 });
   const observer = new SandboxGitRepositoryObserver({ repository, gitExecutable: '/usr/bin/git' });
   try {
-    const orientation = await inspectRepositoryOrientation(workspace, await loadRepositoryInstructions(workspace), undefined, observer);
+    const orientation = await inspectRepositoryOrientation(workspace, await loadInitialRepositoryGuidance(workspace), undefined, observer);
     assert.equal(orientation.versionControl.kind, 'git');
     assert.ok(orientation.versionControl.status.kind === 'observed'
       || (orientation.versionControl.status.kind === 'unavailable' && orientation.versionControl.status.reason === 'status_failed'));

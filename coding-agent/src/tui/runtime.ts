@@ -14,7 +14,7 @@ import type {
   CodingAgentInteractiveState
 } from './interactive-controller.js';
 import type { CodingAgentTuiHydration } from './hydration.js';
-import type { RunChangeReport } from '../changes/run-change-report.js';
+import type { CodingHandoff } from '../changes/coding-handoff.js';
 
 export class CodingAgentTuiProgressRenderer {
   private readonly dispatchReady = deferred<(message: CodingAgentTuiMessage) => void | Promise<void>>();
@@ -39,7 +39,7 @@ export class CodingAgentTuiProgressRenderer {
   showCompaction(compaction: import('@agent-core/runtime').SessionCompactionEntry): Promise<void> {
     return this.enqueue({ type: 'session.compacted', compaction });
   }
-  showChangeReport(report: RunChangeReport): Promise<void> { return this.enqueue({ type: 'change.reported', report }); }
+  showHandoff(handoff: CodingHandoff): Promise<void> { return this.enqueue({ type: 'handoff.ready', handoff }); }
   showInteractiveState(state: CodingAgentInteractiveState): Promise<void> {
     return this.enqueue({ type: 'interactive.state.changed', state });
   }
@@ -145,7 +145,7 @@ async function presentControllerEvent(
     case 'interactive.state.changed': await progress.showInteractiveState(event.state); return currentResult;
     case 'interactive.notice': await progress.showNotice(event.message, event.tone); return currentResult;
     case 'session.hydrated': await progress.showHydration(event.hydration); return currentResult;
-    case 'change.reported': await progress.showChangeReport(event.report); return currentResult;
+    case 'handoff.ready': await progress.showHandoff(event.handoff); return currentResult;
     case 'run.progress': await progress.handle(event.event); return currentResult;
     case 'configuration.changed': return currentResult;
     case 'input.queued': return currentResult;

@@ -36,7 +36,9 @@ test('mutable acceptance is an authorized working-copy application effect', asyn
   const workingCopy = {
     descriptor: { implementationId: 'tests.workspace@1', workingCopyId: 'workspace', runId: 'run', sourceId: 'source' },
     preChange: { checkpointId: 'pre-change', digest: 'a'.repeat(64), coverage: 'complete', causes: [], fileCount: 1, totalBytes: 1 },
-    async checkpoint() { throw new Error('unused'); }, async diff() { throw new Error('unused'); }, async rollback() { throw new Error('unused'); },
+    async checkpoint() { throw new Error('unused'); },
+    async diff() { return { preChangeDigest: 'a'.repeat(64), workingCopyDigest: 'b'.repeat(64), coverage: 'complete', causes: [], entries: [{ path: 'source.js' }] }; },
+    async rollback() { throw new Error('unused'); },
     async authorizeApply() {
       const result = { status: 'applied', preChangeDigest: 'a'.repeat(64), workingCopyDigest: 'b'.repeat(64), changedPaths: ['source.js'], transactionId: 'transaction' };
       return {
@@ -51,6 +53,23 @@ test('mutable acceptance is an authorized working-copy application effect', asyn
   assert.equal(typeof plan.start, 'function');
   assert.deepEqual(await plan.start(new AbortController().signal), { kind: 'accept' });
   await plan.release();
+});
+
+test('mutable acceptance rejects checks from a stale working-copy revision', async () => {
+  const workingCopy = {
+    descriptor: { implementationId: 'tests.workspace@1', workingCopyId: 'workspace', runId: 'run', sourceId: 'source' },
+    preChange: { checkpointId: 'pre-change', digest: 'a'.repeat(64), coverage: 'complete', causes: [], fileCount: 1, totalBytes: 1 },
+    async checkpoint() { throw new Error('unused'); },
+    async diff() { return { preChangeDigest: 'a'.repeat(64), workingCopyDigest: 'c'.repeat(64), coverage: 'complete', causes: [], entries: [{ path: 'source.js' }] }; },
+    async rollback() { throw new Error('unused'); }, async authorizeApply() { throw new Error('must not apply'); }, async release() {}
+  };
+  const disposition = createCodingDisposition({ mutable: true, workingCopy, requiredCoverage: 'admitted' });
+  const stale = await disposition.planEffect(dispositionInput([{
+    id: 'tests', implementationId: 'tests@1', requirement: 'required', verdict: 'passed', summary: 'passed', durationMs: 1,
+    output: { workingCopyDigest: 'b'.repeat(64) }
+  }]));
+  assert.equal(stale.kind, 'inconclusive');
+  assert.match(stale.reason, /exact working-copy revision/u);
 });
 
 test('missing verification coverage blocks changed publication but permits an unchanged clarification', async () => {

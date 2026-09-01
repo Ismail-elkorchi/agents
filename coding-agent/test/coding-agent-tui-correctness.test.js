@@ -98,7 +98,7 @@ test('completed hydration surfaces terminal checks and persisted workspace chang
   assert.equal(runtime.state().run.kind, 'ended');
   assert.equal(runtime.state().run.terminal.runId, 'run-1');
   assert.equal(runtime.state().conversation.items.find((entry) => entry.id === 'check:run-1:tests').status, 'success');
-  const changes = runtime.state().conversation.items.find((entry) => entry.id === 'change:run-1');
+  const changes = runtime.state().conversation.items.find((entry) => entry.id === 'handoff:run-1');
   assert.equal(changes.status, 'success');
   assert.match(changes.summary, /1 changed path.*no remaining uncertainty/u);
   assert.match(changes.details, /Remaining uncertainty\nnone/u);
@@ -312,6 +312,20 @@ function completedHydration() {
     }],
     budget: budget()
   });
+  const changeReport = {
+    schemaVersion: 1, runId: 'run-1', preChangeDigest: '1'.repeat(64), finalDigest: '2'.repeat(64),
+    coverage: 'complete', causes: [],
+    changes: [{
+      path: 'src/app.ts', kind: 'modified', attribution: 'structured_mutation', initial: 'existing',
+      preChangeVersionControl: 'not_reported', content: 'text', receiptSequences: [4], conflicts: []
+    }],
+    totalChanges: 1, omittedChanges: 0, mutationReceipts: [], totalMutationReceipts: 0,
+    omittedMutationReceipts: 0,
+    facts: {
+      changedPaths: ['src/app.ts'], structuredMutationPaths: ['src/app.ts'],
+      externalOrConcurrentPaths: [], verificationStatus: 'passed'
+    }
+  };
   return {
     session: {
       sessionId: 'session-1', phase: 'idle', queuedInputs: 0,
@@ -335,19 +349,16 @@ function completedHydration() {
     }],
     pendingSubmissions: [],
     runs: [],
-    changeReports: [{
-      schemaVersion: 1, runId: 'run-1', preChangeDigest: '1'.repeat(64), finalDigest: '2'.repeat(64),
-      coverage: 'complete', causes: [],
-      changes: [{
-        path: 'src/app.ts', kind: 'modified', attribution: 'structured_mutation', initial: 'existing',
-        preChangeVersionControl: 'not_reported', content: 'text', receiptSequences: [4], conflicts: []
-      }],
-      totalChanges: 1, omittedChanges: 0, mutationReceipts: [], totalMutationReceipts: 0,
-      omittedMutationReceipts: 0,
-      facts: {
-        changedPaths: ['src/app.ts'], structuredMutationPaths: ['src/app.ts'],
-        externalOrConcurrentPaths: [], verificationStatus: 'passed'
-      }
+    handoffs: [{
+      schemaVersion: 1, runId: 'run-1', taskSummary: 'Existing task', modelSummary: 'Completed answer.',
+      reviewedRevision: '2'.repeat(64), changedFiles: ['src/app.ts'], changeReport,
+      changeArtifact: {
+        artifactId: `${'3'.repeat(64)}.json`, sha256: '3'.repeat(64), size: 100,
+        mediaType: 'application/json; charset=utf-8', visibility: 'public'
+      },
+      checks: terminal.checkResults, usage: terminal.budget,
+      terminal, publication: { status: 'applied', revision: '2'.repeat(64) },
+      unresolved: [], effectsWithUnknownOutcome: []
     }]
   };
 }
@@ -373,7 +384,7 @@ function baseHydration(sessionOverrides, runOverrides) {
       input: { task: 'Existing task' }, configuration: { provider: 'test-provider', model: 'test-model' }
     }],
     runs: [run],
-    changeReports: []
+    handoffs: []
   };
 }
 

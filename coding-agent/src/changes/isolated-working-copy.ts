@@ -344,6 +344,10 @@ export async function deleteIsolatedWorkingCopy(runtimeDirectory: string, runId:
   await rm(path.join(runtimeDirectory, 'working-copies', identity(runId)), { recursive: true, force: true });
 }
 
+export function isolatedWorkingCopyWorkspacePath(runtimeDirectory: string, runId: string): string {
+  return path.join(runtimeDirectory, 'working-copies', identity(runId), 'workspace');
+}
+
 function workspaceDiff(before: WorkspaceSnapshot, after: WorkspaceSnapshot): WorkingCopyDiff {
   const beforeByPath = new Map(before.entries.map((entry) => [entry.path, entry]));
   const afterByPath = new Map(after.entries.map((entry) => [entry.path, entry]));

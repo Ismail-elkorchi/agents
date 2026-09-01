@@ -11,11 +11,11 @@ import type {
   SessionReplayState
 } from '@agent-core/runtime';
 import { decodeToolCall } from '@agent-core/tools';
-import type { RunChangeReport } from '../changes/run-change-report.js';
+import type { CodingHandoff } from '../changes/coding-handoff.js';
 import { upsertActivity, upsertAssistant, upsertConversationEntry } from './conversation.js';
 import type { CodingAgentTuiActivityEntry } from './conversation-model.js';
 import {
-  applyChangeReport,
+  applyCodingHandoff,
   applyCheckResult,
   applyHydratedTerminal,
   applySessionState
@@ -34,7 +34,7 @@ export interface CodingAgentTuiHydration {
   readonly branchPoints: readonly SessionBranchPoint[];
   readonly pendingSubmissions: readonly SessionPendingSubmission[];
   readonly runs: readonly AgentRunInspection[];
-  readonly changeReports: readonly RunChangeReport[];
+  readonly handoffs: readonly CodingHandoff[];
 }
 
 export function hydrateCodingAgentTuiState(
@@ -60,7 +60,7 @@ export function hydrateCodingAgentTuiState(
       branchPoints: Object.freeze([...hydration.branchPoints]),
       pendingSubmissions: Object.freeze([...hydration.pendingSubmissions]),
       runs: Object.freeze([...hydration.runs]),
-      changeReports: []
+      handoffs: []
     }
   };
   for (const entry of hydration.replay.branch) next = applyBranchEntry(next, entry);
@@ -72,7 +72,7 @@ export function hydrateCodingAgentTuiState(
   }
   const latestTerminal = hydration.replay.runFinalizations.at(-1)?.terminal;
   if (latestTerminal !== undefined) next = applyHydratedTerminal(next, latestTerminal);
-  for (const report of hydration.changeReports) next = applyChangeReport(next, report);
+  for (const handoff of hydration.handoffs) next = applyCodingHandoff(next, handoff);
   next = restoreSessionHistory(next, hydration.branchPoints, hydration.replay);
   return restoreSessionRunState(next, hydration);
 }
@@ -290,9 +290,9 @@ function assertHydration(hydration: CodingAgentTuiHydration): void {
       throw new Error(`TUI hydration contains an run outside the session pending set: ${run.state.runId}.`);
     }
   }
-  for (const report of hydration.changeReports) {
-    if (!hydration.replay.runFinalizations.some((finalization) => finalization.runId === report.runId)) {
-      throw new Error(`TUI hydration contains a change report outside the session replay: ${report.runId}.`);
+  for (const handoff of hydration.handoffs) {
+    if (!hydration.replay.runFinalizations.some((finalization) => finalization.runId === handoff.runId)) {
+      throw new Error(`TUI hydration contains a coding handoff outside the session replay: ${handoff.runId}.`);
     }
   }
 }

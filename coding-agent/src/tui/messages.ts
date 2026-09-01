@@ -5,7 +5,7 @@ import type {
   AgentProgressEvent,
   SessionCompactionEntry
 } from '@agent-core/runtime';
-import type { RunChangeReport } from '../changes/run-change-report.js';
+import type { CodingHandoff } from '../changes/coding-handoff.js';
 import type {
   ScrollTransition,
   SearchPickerAcceptEvent,
@@ -23,7 +23,7 @@ export type CodingAgentTuiMessage =
   | { readonly type: 'failure'; readonly message: string }
   | { readonly type: 'delivery.failed'; readonly message: string }
   | { readonly type: 'session.compacted'; readonly compaction: SessionCompactionEntry }
-  | { readonly type: 'change.reported'; readonly report: RunChangeReport }
+  | { readonly type: 'handoff.ready'; readonly handoff: CodingHandoff }
   | { readonly type: 'interactive.state.changed'; readonly state: CodingAgentInteractiveState }
   | { readonly type: 'interactive.notice'; readonly message: string; readonly tone?: 'info' | 'warning' | 'error' }
   | { readonly type: 'session.hydrated'; readonly hydration: CodingAgentTuiHydration }
