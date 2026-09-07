@@ -231,7 +231,7 @@ test('resilient CLI slice recovers before generation and completes one confined 
     assert.equal(await readFile(path.join(fixture.root, 'src/note.txt'), 'utf8'), 'beta\n');
     assert.equal(await readFile(path.join(fixture.root, 'untouched.txt'), 'utf8'), 'keep\n');
     assert.match(resumed.stdout, /Verification: Passed/u);
-    assert.match(resumed.stdout, /- note:modelOutput: required\/passed/u);
+    assert.match(resumed.stdout, /- note:working-copy: required\/passed/u);
     assert.match(resumed.stdout, /Workspace changes: 1 \(complete\)/u);
     assert.match(resumed.stdout, /- modified src\/note\.txt \[agent\]/u);
     assert.match(resumed.stdout, /Remaining uncertainty: none/u);
@@ -282,7 +282,7 @@ test('a failed required check drives a bounded repair without weakening the veri
     assert.equal(output.code, 0, `${output.stdout}\n${output.stderr}`);
     assert.equal(await readFile(path.join(fixture.root, 'src/note.txt'), 'utf8'), 'beta\n');
     assert.match(output.stdout, /Verification: Passed/u);
-    assert.match(output.stdout, /- note-value:modelOutput: required\/passed/u);
+    assert.match(output.stdout, /- note-value:working-copy: required\/passed/u);
     assert.match(output.stdout, /Remaining uncertainty: none/u);
     assert.equal(provider.chatRequests.length, 5);
     const revisionRequest = JSON.stringify(provider.chatRequests[3]);

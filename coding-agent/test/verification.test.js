@@ -135,15 +135,15 @@ test('authoritative checks reject changed or self-mutating verification definiti
 
 test('pre-change and working-copy outcomes distinguish regressions from pre-existing failures and repairs', async () => {
   for (const scenario of [
-    { baseline: commandResult(), modelOutput: commandResult({ exitCode: 1, stderr: 'new failure' }), verdict: 'failed', classification: 'working_copy_regression' },
-    { baseline: commandResult({ exitCode: 1, stderr: 'same failure' }), modelOutput: commandResult({ exitCode: 1, stderr: 'same failure' }), verdict: 'passed', classification: 'pre_existing_failure' },
-    { baseline: commandResult({ exitCode: 1, stderr: 'partial failure', stderrOmittedBytes: 10 }), modelOutput: commandResult({ exitCode: 1, stderr: 'partial failure' }), verdict: 'unknown', classification: 'failure_comparison_incomplete' },
-    { baseline: commandResult({ exitCode: 1, stderr: 'old failure' }), modelOutput: commandResult(), verdict: 'passed', classification: 'pre_existing_failure_repaired' }
+    { baseline: commandResult(), workingCopy: commandResult({ exitCode: 1, stderr: 'new failure' }), verdict: 'failed', classification: 'working_copy_regression' },
+    { baseline: commandResult({ exitCode: 1, stderr: 'same failure' }), workingCopy: commandResult({ exitCode: 1, stderr: 'same failure' }), verdict: 'passed', classification: 'pre_existing_failure' },
+    { baseline: commandResult({ exitCode: 1, stderr: 'partial failure', stderrOmittedBytes: 10 }), workingCopy: commandResult({ exitCode: 1, stderr: 'partial failure' }), verdict: 'unknown', classification: 'failure_comparison_incomplete' },
+    { baseline: commandResult({ exitCode: 1, stderr: 'old failure' }), workingCopy: commandResult(), verdict: 'passed', classification: 'pre_existing_failure_repaired' }
   ]) {
     const fixture = await verificationFixture();
     let invocation = 0;
     try {
-      const outcomes = [scenario.baseline, scenario.modelOutput];
+      const outcomes = [scenario.baseline, scenario.workingCopy];
       const checks = await createChecks(fixture, async () => commandAuthority(async () => outcomes[invocation++]));
       const workingCopyResult = await settleCheck(checks[0]);
       assert.equal(workingCopyResult.verdict, scenario.verdict);
