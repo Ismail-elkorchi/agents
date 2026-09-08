@@ -6,19 +6,21 @@ Private state defaults to the platform user-state directory ($XDG_STATE_HOME/wri
 
 ## Model and authority boundary
 
-A direct user request is admitted as an immutable writing operation. Domain schemas capture readonly objects and collections at admission, including nested JSON metadata. Content identities hash complete JSON; unsupported data is rejected instead of coerced or truncated. WritingExecutionBinding freezes the operation, base project revision, context selection, and proposal vocabulary used by one run.
+A direct user request is admitted as an immutable writing operation. Domain schemas capture readonly objects and collections at admission, including nested JSON metadata. Content identities hash complete JSON; unsupported data is rejected instead of coerced or truncated. WritingExecutionAttempt binds each run and model to that operation. Continuing an operation can select a new model while retaining original history, exact project anchors and proposal revisions.
 
 The producer receives the complete applicable WritingOperationContract: every intent instruction, dependency, target, preservation requirement, affected criterion, affected claim/evidence relation, prior decision, and exact machine constraint that may affect acceptance. Project text, sources, excerpts, and tool output remain data. Host-owned target descriptors bind admitted resource IDs to rooted paths, hashes, media types, and stable document/range anchors.
 
-In suggest mode, the model can read only admitted target resources and affected local source resources. propose_revision is its only write-shaped capability. The model supplies admitted IDs and replacement prose; it cannot choose paths, hashes, preimages, verification verdicts, criterion coverage, or mutation authority. The host validates and stores one private proposal without modifying managed files.
+In suggest mode, the model can read only explicitly granted readable resources and affected local source resources; read grants are independent of edit targets. propose_revision is its only write-shaped capability. The model supplies admitted IDs and replacement prose; it cannot choose paths, hashes, preimages, verification verdicts, criterion coverage, or mutation authority. The host validates proposals and retains immutable predecessors with one selected successor without modifying managed files.
 
-All model calls, including semantic verification, pass through Agent Core's governed InferenceService and share the owning run's budget. Writing performs one ordered WritingContextSelection; Core preserves that order in PromptMaterial and does not run another relevance selector.
+All model calls, including semantic verification, pass through Agent Core's governed InferenceService and share the owning operation's budget across attempts. Writing performs one ordered WritingContextSelection; Core preserves that order in PromptMaterial and does not run another relevance selector.
+
+Blocking deterministic failures stop semantic work. Operations with no semantic preservation or editorial criteria require no semantic model call. Verification reuse binds the exact deterministic implementation, checker, policy, material and selected proposal. Each attempt records the verification ID it used; historical checks retain their original attribution. Caller cancellation reaches model work and application verification through the same signal.
 
 ## Verification and evidence
 
 Evidence means material that supports or contradicts a claim. Tool outputs are observations, deterministic check details are observations, and model-returned prose is model output.
 
-ProposalProductionVerification combines:
+ProposalProductionVerification records applicable operation-derived checks:
 
 - deterministic structural, range, hash, provenance, length, citation, number, and named-entity checks;
 - semantic-preservation and editorial findings against the exact proposed revision;

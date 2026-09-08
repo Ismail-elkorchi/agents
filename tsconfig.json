@@ -1,1 +1,14 @@
-{ "files": [], "references": [{ "path": "coding-agent" }, { "path": "writing-agent" }] }
+{
+  "files": [],
+  "references": [
+    {
+      "path": "verification"
+    },
+    {
+      "path": "coding-agent"
+    },
+    {
+      "path": "writing-agent"
+    }
+  ]
+}

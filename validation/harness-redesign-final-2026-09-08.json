@@ -1,0 +1,401 @@
+{
+  "format": "agents.redesign-evaluation/1",
+  "createdAt": "2026-09-08T17:02:57.005Z",
+  "measurement": "live-application-workloads",
+  "source": {
+    "sourceTreeSha256": "46d9178a6523204c3fb953ca09f204880b733aaa74aa0a70b18135a2dbd644fd",
+    "declaredCoreCommit": "af50d0041ebbd068a68e3ec13be6d042333f1dca",
+    "applicationCommit": "2760fc02708981411b40981c585cded5c7f753a8"
+  },
+  "configuration": {
+    "workloads": [
+      "coding-review",
+      "writing-correction"
+    ],
+    "provider": "codex",
+    "model": "gpt-5.6-sol",
+    "modelVersion": null,
+    "trials": 1,
+    "timeoutMs": 180000,
+    "maxInvocations": 24,
+    "maxPromptTokens": 200000,
+    "maxCompletionTokens": 8000
+  },
+  "trials": [
+    {
+      "name": "coding-review",
+      "trial": 0,
+      "status": "completed",
+      "success": true,
+      "unchanged": true,
+      "answer": "{\"database\":\"PostgreSQL\",\"interface\":\"total(values)\",\"defect\":\"total.js returns values.length - 1 instead of summing the supplied values.\"}",
+      "acceptance": "not_required",
+      "runs": [
+        {
+          "runId": "259be38a-6d98-4b6c-8028-d64db2006c35",
+          "workId": "3a9993c1-9355-4fb9-b6d5-5aa498f0e8ef",
+          "executionStatus": "completed",
+          "budget": {
+            "modelTurns": 3,
+            "totalToolCalls": 3,
+            "repeatedIdenticalToolCalls": 1,
+            "promptTokens": 12584,
+            "completionTokens": 511,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "reasoningTokens": 171,
+            "knownCosts": {},
+            "pricingStatus": "unknown",
+            "unknownPricedTokens": 13095,
+            "consecutiveProviderFailures": 0,
+            "consecutiveToolFailures": 0,
+            "elapsedMs": 31547
+          }
+        },
+        {
+          "runId": "bfe35a34-492e-489b-b272-0c17c80c6e8f",
+          "workId": "3a9993c1-9355-4fb9-b6d5-5aa498f0e8ef",
+          "executionStatus": "completed",
+          "budget": {
+            "modelTurns": 1,
+            "totalToolCalls": 0,
+            "repeatedIdenticalToolCalls": 0,
+            "promptTokens": 4421,
+            "completionTokens": 61,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "reasoningTokens": 0,
+            "knownCosts": {},
+            "pricingStatus": "unknown",
+            "unknownPricedTokens": 4482,
+            "consecutiveProviderFailures": 0,
+            "consecutiveToolFailures": 0,
+            "elapsedMs": 5291
+          }
+        },
+        {
+          "runId": "9e7566e7-25a1-42ca-a49d-4357af57ddbf",
+          "workId": "3a9993c1-9355-4fb9-b6d5-5aa498f0e8ef",
+          "executionStatus": "completed",
+          "budget": {
+            "modelTurns": 1,
+            "totalToolCalls": 0,
+            "repeatedIdenticalToolCalls": 0,
+            "promptTokens": 4506,
+            "completionTokens": 36,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "reasoningTokens": 0,
+            "knownCosts": {},
+            "pricingStatus": "unknown",
+            "unknownPricedTokens": 4542,
+            "consecutiveProviderFailures": 0,
+            "consecutiveToolFailures": 0,
+            "elapsedMs": 4155
+          }
+        },
+        {
+          "runId": "87256a6e-c933-4940-8fb6-3770926b8726",
+          "workId": "3a9993c1-9355-4fb9-b6d5-5aa498f0e8ef",
+          "executionStatus": "completed",
+          "budget": {
+            "modelTurns": 1,
+            "totalToolCalls": 0,
+            "repeatedIdenticalToolCalls": 0,
+            "promptTokens": 4561,
+            "completionTokens": 35,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "reasoningTokens": 0,
+            "knownCosts": {},
+            "pricingStatus": "unknown",
+            "unknownPricedTokens": 4596,
+            "consecutiveProviderFailures": 0,
+            "consecutiveToolFailures": 0,
+            "elapsedMs": 4625
+          }
+        },
+        {
+          "runId": "cf409171-0f91-4285-843c-0ad3ff6b56c1",
+          "workId": "3a9993c1-9355-4fb9-b6d5-5aa498f0e8ef",
+          "executionStatus": "completed",
+          "budget": {
+            "modelTurns": 1,
+            "totalToolCalls": 0,
+            "repeatedIdenticalToolCalls": 0,
+            "promptTokens": 4621,
+            "completionTokens": 36,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "reasoningTokens": 0,
+            "knownCosts": {},
+            "pricingStatus": "unknown",
+            "unknownPricedTokens": 4657,
+            "consecutiveProviderFailures": 0,
+            "consecutiveToolFailures": 0,
+            "elapsedMs": 3863
+          }
+        },
+        {
+          "runId": "31a6c8dc-7122-4d5e-a583-d635ddb6706b",
+          "workId": "3a9993c1-9355-4fb9-b6d5-5aa498f0e8ef",
+          "executionStatus": "completed",
+          "budget": {
+            "modelTurns": 1,
+            "totalToolCalls": 0,
+            "repeatedIdenticalToolCalls": 0,
+            "promptTokens": 4670,
+            "completionTokens": 36,
+            "cacheReadTokens": 2432,
+            "cacheWriteTokens": 0,
+            "reasoningTokens": 0,
+            "knownCosts": {},
+            "pricingStatus": "unknown",
+            "unknownPricedTokens": 4706,
+            "consecutiveProviderFailures": 0,
+            "consecutiveToolFailures": 0,
+            "elapsedMs": 3967
+          }
+        },
+        {
+          "runId": "4b0a6270-8568-4916-9b2f-b7a47fb0ef31",
+          "workId": "3a9993c1-9355-4fb9-b6d5-5aa498f0e8ef",
+          "executionStatus": "completed",
+          "budget": {
+            "modelTurns": 1,
+            "totalToolCalls": 0,
+            "repeatedIdenticalToolCalls": 0,
+            "promptTokens": 4737,
+            "completionTokens": 36,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "reasoningTokens": 0,
+            "knownCosts": {},
+            "pricingStatus": "unknown",
+            "unknownPricedTokens": 4773,
+            "consecutiveProviderFailures": 0,
+            "consecutiveToolFailures": 0,
+            "elapsedMs": 5861
+          }
+        },
+        {
+          "runId": "6cf966a7-7e52-4edb-83aa-df64ae3007ce",
+          "workId": "3a9993c1-9355-4fb9-b6d5-5aa498f0e8ef",
+          "executionStatus": "completed",
+          "budget": {
+            "modelTurns": 1,
+            "totalToolCalls": 0,
+            "repeatedIdenticalToolCalls": 0,
+            "promptTokens": 4801,
+            "completionTokens": 37,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "reasoningTokens": 0,
+            "knownCosts": {},
+            "pricingStatus": "unknown",
+            "unknownPricedTokens": 4838,
+            "consecutiveProviderFailures": 0,
+            "consecutiveToolFailures": 0,
+            "elapsedMs": 8122
+          }
+        }
+      ],
+      "latencyMs": 73946.04405899999
+    },
+    {
+      "name": "writing-correction",
+      "trial": 0,
+      "status": "completed",
+      "success": true,
+      "unchanged": true,
+      "confined": true,
+      "first": {
+        "operationId": "operation-6b9cf857a5e382bc859d1a8e5471045bde0a355b9d534b1072f7524d4fbb0b24",
+        "runId": "run-4b6e0b80-74c5-49f2-9d69-2c89b1f40535",
+        "proposalId": "proposal-4c13a49b18925943d973610340ba92ff4e66a5ecabeaea75045bfc0cef12ecd4",
+        "disposition": "valid",
+        "budget": {
+          "modelTurns": 3,
+          "totalToolCalls": 2,
+          "repeatedIdenticalToolCalls": 1,
+          "promptTokens": 12042,
+          "completionTokens": 693,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": 289,
+          "knownCosts": {},
+          "pricingStatus": "unknown",
+          "unknownPricedTokens": 12735,
+          "consecutiveProviderFailures": 0,
+          "consecutiveToolFailures": 0,
+          "elapsedMs": 33077
+        }
+      },
+      "second": {
+        "operationId": "operation-6b9cf857a5e382bc859d1a8e5471045bde0a355b9d534b1072f7524d4fbb0b24",
+        "runId": "run-93d85b1d-1768-49df-b49a-3e2d61288542",
+        "proposalId": "proposal-9113b125aec0774954dc16d6d5e5e49d5a8ea667c1e9f9454a25a284b3cc357e",
+        "disposition": "valid",
+        "budget": {
+          "modelTurns": 3,
+          "totalToolCalls": 2,
+          "repeatedIdenticalToolCalls": 1,
+          "promptTokens": 17651,
+          "completionTokens": 627,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": 192,
+          "knownCosts": {},
+          "pricingStatus": "unknown",
+          "unknownPricedTokens": 18278,
+          "consecutiveProviderFailures": 0,
+          "consecutiveToolFailures": 0,
+          "elapsedMs": 39050
+        }
+      },
+      "replacement": "1. Alpha.\n2. Beta.",
+      "verificationHistory": [
+        {
+          "verificationId": "proposal-production-verification-f82ab23abb4a92693cdaa594bcd9d1b8b0d0f650741c6b19225ad757a1fe37c2",
+          "deterministicImplementationId": "writing-agent.deterministic-verification@1",
+          "semanticExecution": "not_required"
+        },
+        {
+          "verificationId": "proposal-production-verification-cd1cf49be17f16dd8fedcc44a25ea2fa2e77b083cf79bcb2cde82e64e06fadbf",
+          "deterministicImplementationId": "writing-agent.deterministic-verification@1",
+          "semanticExecution": "not_required"
+        }
+      ],
+      "latencyMs": 74912.81304500002
+    }
+  ],
+  "limitations": [
+    "These authored workloads measure application behavior separately from scripted invariant tests and the Core memory-policy comparison.",
+    "The caller-selected endpoint may expose only a deployment alias; no immutable model revision or subscription price is invented.",
+    "Coding uses review authority. Sandboxed mutation, baseline command cost and publication are unmeasured on hosts without the required backend.",
+    "Writing measures exact proposal correction and separate read/edit grants. Suggest mode grants no publication authority.",
+    "Concurrent steering, crash recovery, non-process resource leases, stale revisions, verifier weakening and unknown-effect publication are covered by deterministic fault tests; this runner does not claim live measurements for them.",
+    "Small samples and incomplete trials do not select a default memory policy or establish general agent quality."
+  ],
+  "availability": {
+    "status": "available",
+    "implementationId": "agent-core.provider.openai-codex@1",
+    "profile": {
+      "id": "gpt-5.6-sol",
+      "provider": "openai-codex",
+      "displayName": "GPT-5.6 Sol",
+      "capabilities": {
+        "streaming": true,
+        "toolCalling": true,
+        "supportedToolInputs": [
+          {
+            "kind": "json"
+          },
+          {
+            "kind": "text"
+          },
+          {
+            "kind": "grammar",
+            "syntax": "lark"
+          },
+          {
+            "kind": "grammar",
+            "syntax": "regex"
+          }
+        ],
+        "jsonMode": true,
+        "jsonSchema": true,
+        "logprobs": false,
+        "temperature": false,
+        "topP": false,
+        "protocol": {
+          "version": 1,
+          "revision": "codex-responses-2026-09-07-v1",
+          "endpoint": "https://chatgpt.com/backend-api/codex/responses",
+          "roles": [
+            "system",
+            "developer",
+            "user",
+            "assistant"
+          ],
+          "inputKinds": [
+            "text",
+            "image",
+            "tool_call",
+            "tool_result",
+            "protocol"
+          ],
+          "outputKinds": [
+            "text",
+            "tool_call",
+            "protocol",
+            "refusal"
+          ],
+          "toolChoice": [
+            "auto"
+          ],
+          "state": "exact",
+          "continuation": "exact_prefix",
+          "asyncTools": false,
+          "steering": "next_request",
+          "contextTransforms": [],
+          "counting": "estimate",
+          "reasoningAccounting": "included_output"
+        },
+        "reasoning": {
+          "strategies": [
+            "effort"
+          ],
+          "canDisable": false,
+          "separateOutput": true,
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "summaries": [
+            "auto",
+            "concise",
+            "detailed"
+          ]
+        }
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "limits": {
+        "contextTokens": 1050000,
+        "maxInputTokens": 922000,
+        "outputTokens": 128000
+      },
+      "supportedParameters": [
+        "responseFormat",
+        "tools",
+        "reasoning",
+        "metadata",
+        "providerOptions"
+      ],
+      "metadata": {
+        "api": "codex-responses",
+        "auth": "chatgpt-subscription",
+        "defaultReasoningEffort": "medium",
+        "modelTier": "sol"
+      }
+    }
+  },
+  "summary": {
+    "completed": 2,
+    "successful": 2,
+    "measured": 2,
+    "qualityGate": "inconclusive",
+    "costUSD": null
+  }
+}

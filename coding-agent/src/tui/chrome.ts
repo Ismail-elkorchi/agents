@@ -1,12 +1,14 @@
-import { richText, statusBar } from '@ismail-elkorchi/terminal-ui/components';
 import type { Element, InlineContent, StatusBarStatus } from '@ismail-elkorchi/terminal-ui/components';
+import { richText, statusBar } from '@ismail-elkorchi/terminal-ui/components';
 import type { CodingAgentTuiMessage } from './messages.js';
-import type { CodingAgentTuiState } from './state.js';
 import { terminalPresentation } from './run-presentation.js';
+import type { CodingAgentTuiState } from './state.js';
 
 export function statusChrome(state: CodingAgentTuiState): Element {
   const presentation = runPresentation(state);
-  const center = [modelSelectionLabel(state), permissionLabel(state)].filter((value): value is string => value !== undefined).join(' · ');
+  const center = [modelSelectionLabel(state), permissionLabel(state)]
+    .filter((value): value is string => value !== undefined)
+    .join(' · ');
   const runText = [presentation.text, queueLabel(state), driverLabel(state)]
     .filter((value): value is string => value !== undefined)
     .join(' · ');
@@ -32,9 +34,10 @@ function queueLabel(state: CodingAgentTuiState): string | undefined {
 
 function driverLabel(state: CodingAgentTuiState): string | undefined {
   const activeRunId = state.debug.session?.activeRunId ?? state.debug.runId;
-  const operation = activeRunId === undefined
-    ? state.debug.runs.find((candidate) => candidate.state.phase.kind !== 'terminal')
-    : state.debug.runs.find((candidate) => candidate.state.runId === activeRunId);
+  const operation =
+    activeRunId === undefined
+      ? state.debug.runs.find((candidate) => candidate.state.phase.kind !== 'terminal')
+      : state.debug.runs.find((candidate) => candidate.state.runId === activeRunId);
   if (operation === undefined) return undefined;
   const control = operation.state.control;
   if (control.status === 'detached') return 'driver detached';
@@ -51,23 +54,32 @@ function permissionLabel(state: CodingAgentTuiState): string | undefined {
 }
 
 export function hintBar(state: CodingAgentTuiState, columns: number): Element<CodingAgentTuiMessage> {
-  const text = state.run.kind === 'waiting_for_approval'
-    ? 'Tab move · Enter choose · Esc deny'
-    : columns < 50
-      ? 'Ctrl+P commands'
-      : 'Enter send · Ctrl+P commands · F1 help';
+  const text =
+    state.run.kind === 'waiting_for_approval'
+      ? 'Tab move · Enter choose · Esc deny'
+      : columns < 50
+        ? 'Ctrl+P commands'
+        : 'Enter send · Ctrl+P commands · F1 help';
   return richText({ id: 'hints', segments: muted(text), wrap: false });
 }
 
-function runPresentation(state: CodingAgentTuiState): { readonly text: string; readonly status: StatusBarStatus } {
+function runPresentation(state: CodingAgentTuiState): {
+  readonly text: string;
+  readonly status: StatusBarStatus;
+} {
   if (state.setup.status === 'initializing') return { text: 'Initializing', status: 'running' };
   if (state.setup.status === 'setup_required') return { text: 'Setup required', status: 'warning' };
   switch (state.run.kind) {
-    case 'idle': return { text: 'Idle', status: 'idle' };
-    case 'working': return { text: state.run.label, status: 'running' };
-    case 'waiting_for_approval': return { text: 'Approval required', status: 'warning' };
-    case 'waiting_for_recovery': return { text: 'Recovery decision required', status: 'warning' };
-    case 'failed': return { text: 'Failed', status: 'error' };
+    case 'idle':
+      return { text: 'Idle', status: 'idle' };
+    case 'working':
+      return { text: state.run.label, status: 'running' };
+    case 'waiting_for_approval':
+      return { text: 'Approval required', status: 'warning' };
+    case 'waiting_for_recovery':
+      return { text: 'Recovery decision required', status: 'warning' };
+    case 'failed':
+      return { text: 'Failed', status: 'error' };
     case 'ended': {
       const terminal = terminalPresentation(state.run.terminal);
       return { text: terminal.headline, status: terminal.status };

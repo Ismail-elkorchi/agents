@@ -3,14 +3,26 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=24.8.0" },
-  "workspaces": ["coding-agent", "writing-agent", "research-agent"],
-  "agentCore": { "path": "../agent-core", "commit": "393249ae01c8e5d3ed5e2f653655fefe5105db98" },
-  "sandbox": { "path": "../sandbox", "commit": "d18b5eb44b500bebf6531761b9f0bb26beddfef9" },
+  "engines": {
+    "node": ">=24.8.0"
+  },
+  "workspaces": [
+    "verification",
+    "coding-agent",
+    "writing-agent"
+  ],
+  "agentCore": {
+    "path": "../agent-core",
+    "commit": "af50d0041ebbd068a68e3ec13be6d042333f1dca"
+  },
+  "sandbox": {
+    "path": "../sandbox",
+    "commit": "d18b5eb44b500bebf6531761b9f0bb26beddfef9"
+  },
   "scripts": {
     "check:conformance": "node --test scripts/coding-agent-conformance-metrics.test.mjs && node scripts/check-coding-agent-conformance.mjs",
     "build": "node scripts/verify-source-dependencies.mjs && tsc -b && node scripts/post-build.mjs",
-    "lint": "eslint \"coding-agent/src/**/*.ts\" \"writing-agent/src/**/*.ts\"",
+    "lint": "eslint \"verification/src/**/*.ts\" \"coding-agent/src/**/*.ts\" \"writing-agent/src/**/*.ts\"",
     "test": "npm run build && npm run test:unit",
     "test:unit": "node scripts/run-test-suite.mjs",
     "package": "node scripts/test-packed-consumer.mjs",

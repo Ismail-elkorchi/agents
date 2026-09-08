@@ -1,20 +1,21 @@
-import type { AgentEndedRunResult, AgentProgressEvent, AgentRunResult } from '@agent-core/runtime';
-import { createTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
+import type { AgentProgressEvent } from '@agent-core/runtime';
 import type { TerminalHost } from '@ismail-elkorchi/terminal-ui/host';
-import { runTui } from '@ismail-elkorchi/terminal-ui/tui';
+import { createTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import type { TuiExit } from '@ismail-elkorchi/terminal-ui/tui';
-import { normalizeTaskInput } from './task-input.js';
+import { runTui } from '@ismail-elkorchi/terminal-ui/tui';
+import type { CodingHandoff } from '../changes/coding-handoff.js';
+import type { CodingEndedRunResult, CodingRunResult } from '../outcome.js';
 import { createCodingAgentTuiApp } from './app.js';
 import { CodingAgentTuiEventSource } from './event-source.js';
-import type { CodingAgentTuiMessage } from './messages.js';
-import type { CodingAgentTuiState } from './state.js';
+import type { CodingAgentTuiHydration } from './hydration.js';
 import type {
   CodingAgentInteractiveController,
   CodingAgentInteractiveEvent,
   CodingAgentInteractiveState
 } from './interactive-controller.js';
-import type { CodingAgentTuiHydration } from './hydration.js';
-import type { CodingHandoff } from '../changes/coding-handoff.js';
+import type { CodingAgentTuiMessage } from './messages.js';
+import type { CodingAgentTuiState } from './state.js';
+import { normalizeTaskInput } from './task-input.js';
 
 export class CodingAgentTuiProgressRenderer {
   private readonly dispatchReady = deferred<(message: CodingAgentTuiMessage) => void | Promise<void>>();
@@ -33,10 +34,10 @@ export class CodingAgentTuiProgressRenderer {
   flush(): Promise<void> {
     return this.queue;
   }
-  showResult(result: AgentEndedRunResult): Promise<void> {
+  showResult(result: CodingEndedRunResult): Promise<void> {
     return this.enqueue({ type: 'result', result });
   }
-  showSuspension(suspension: Extract<AgentRunResult, { state: 'suspended' }>): Promise<void> {
+  showSuspension(suspension: Extract<CodingRunResult, { state: 'suspended' }>): Promise<void> {
     return this.enqueue(
       suspension.reason === 'approval_required'
         ? { type: 'approval.required', suspension }
@@ -80,7 +81,7 @@ export interface CodingAgentTuiAppRunOptions {
 
 export interface CodingAgentTuiAppRunResult {
   readonly exit: TuiExit<CodingAgentTuiState>;
-  readonly result?: AgentRunResult;
+  readonly result?: CodingRunResult;
 }
 
 export async function runCodingAgentTuiApp(
@@ -92,7 +93,7 @@ export async function runCodingAgentTuiApp(
   const progress = options.progress ?? new CodingAgentTuiProgressRenderer();
   const events = new CodingAgentTuiEventSource();
   const initialTask = normalizeTaskInput(options.initialTask ?? '');
-  let result: AgentRunResult | undefined;
+  let result: CodingRunResult | undefined;
   let unsubscribe: (() => void) | undefined;
   let outcome!: Readonly<
     | { readonly kind: 'returned'; readonly value: CodingAgentTuiAppRunResult }
@@ -165,19 +166,24 @@ export async function runCodingAgentTuiApp(
   const uniqueFailures = [...new Set(cleanupFailures)];
   if (outcome.kind === 'failed') {
     if (uniqueFailures.length === 0) throw outcome.cause;
-    throw new AggregateError([outcome.cause, ...uniqueFailures], 'Coding Agent TUI run and cleanup failed.', {
-      cause: outcome.cause
-    });
+    throw new AggregateError(
+      [outcome.cause, ...uniqueFailures],
+      'Coding Agent TUI run and cleanup failed.',
+      {
+        cause: outcome.cause
+      }
+    );
   }
-  if (uniqueFailures.length > 0) throw new AggregateError(uniqueFailures, 'Coding Agent TUI cleanup failed.');
+  if (uniqueFailures.length > 0)
+    throw new AggregateError(uniqueFailures, 'Coding Agent TUI cleanup failed.');
   return outcome.value;
 }
 
 async function presentControllerEvent(
   event: CodingAgentInteractiveEvent,
   progress: CodingAgentTuiProgressRenderer,
-  currentResult: AgentRunResult | undefined
-): Promise<AgentRunResult | undefined> {
+  currentResult: CodingRunResult | undefined
+): Promise<CodingRunResult | undefined> {
   switch (event.type) {
     case 'interactive.state.changed':
       await progress.showInteractiveState(event.state);

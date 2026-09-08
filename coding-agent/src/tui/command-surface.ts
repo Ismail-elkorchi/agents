@@ -1,17 +1,17 @@
+import type { SearchPickerIndex, TextAreaTransition } from '@ismail-elkorchi/terminal-ui/behavior';
 import {
   createScrollState,
-  createTextAreaState,
   createSearchPickerIndex,
+  createTextAreaState,
   textAreaReducer
 } from '@ismail-elkorchi/terminal-ui/behavior';
-import type { SearchPickerIndex, TextAreaTransition } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { SearchEntry } from '@ismail-elkorchi/terminal-ui/components';
 import { textCaretAt, textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
-import { INTERACTIVE_COMMANDS } from './interactive-commands.js';
-import type { InteractiveCommandResult } from './interactive-commands.js';
-import { normalizeTaskInput } from './task-input.js';
-import type { CodingAgentTuiState } from './state.js';
 import { appendNotice, appendUser } from './conversation.js';
+import type { InteractiveCommandResult } from './interactive-commands.js';
+import { INTERACTIVE_COMMANDS } from './interactive-commands.js';
+import type { CodingAgentTuiState } from './state.js';
+import { normalizeTaskInput } from './task-input.js';
 
 const COMPOSER_HISTORY_LIMIT = 100;
 
@@ -45,7 +45,10 @@ export const COMMAND_ENTRIES: readonly SearchEntry[] = INTERACTIVE_COMMANDS.map(
 
 export const COMMAND_INDEX: SearchPickerIndex = createSearchPickerIndex(COMMAND_ENTRIES);
 
-export function editComposer(state: CodingAgentTuiState, transition: TextAreaTransition): CodingAgentTuiState {
+export function editComposer(
+  state: CodingAgentTuiState,
+  transition: TextAreaTransition
+): CodingAgentTuiState {
   const input = textAreaReducer(state.composer.input, transition).state;
   const preserveHistoryPosition = transition.kind === 'pointer' || transition.kind === 'scroll';
   return {
@@ -79,9 +82,7 @@ export function navigateComposerHistory(
   if (history.length === 0) return state;
   const currentIndex = state.composer.historyIndex;
   if (direction === 'previous') {
-    const historyIndex = currentIndex === null
-      ? history.length - 1
-      : Math.max(0, currentIndex - 1);
+    const historyIndex = currentIndex === null ? history.length - 1 : Math.max(0, currentIndex - 1);
     const value = history[historyIndex];
     if (value === undefined) return state;
     return {
@@ -90,9 +91,10 @@ export function navigateComposerHistory(
         ...state.composer,
         input: composerInput(value),
         historyIndex,
-        historyDraft: currentIndex === null
-          ? textDocumentText(state.composer.input.document)
-          : state.composer.historyDraft
+        historyDraft:
+          currentIndex === null
+            ? textDocumentText(state.composer.input.document)
+            : state.composer.historyDraft
       }
     };
   }

@@ -112,11 +112,13 @@ const checks = [{
 }];
 ```
 
-Deterministic Core checks inspect their admitted model output and observations. Every mutable Coding run also freezes one admitted command-check plan. In `develop` mode, each command first produces a `PreChangeCommandObservation` against an exact private copy of the `PreChangeSnapshot`; the candidate acceptance check then runs against the exact changed working copy through durable no-network Sandbox execution. A changed-working-copy failure is accepted only when its exit result and bounded failure signature match a pre-existing failure; a new or changed failure is a regression. `coverage` is required and must be `targeted` or `full`. Changes to tests, Coding Agent configuration, package scripts, compiler/build configuration, CI workflows, dependencies, or lockfiles make acceptance inconclusive instead of letting a modified verifier certify itself. Missing required checks, unavailable execution, incomplete snapshots, and unknown pre-change observations prevent completion. A lower permission mode leaves command checks explicitly unavailable rather than running them on the host.
+Application checks use `@agents/verification` and the shared Core effect executor. A coding work record owns references to original user contributions, the baseline, private working copy, admitted verifier contract, and budget/resource owner across attempts and model changes. Corrections preserve the source contribution and its other constraints; only an explicit whole-contribution replacement supersedes it. A side question submitted with `relationship: { kind: 'side_question' }` has read-only authority and leaves revision work available for continuation.
 
-Mutable tools operate only in a persistent `IsolatedWorkingCopy` owned by Coding Agent. Coding Agent owns its `PreChangeSnapshot`, checkpoints, diffs, rollback, apply authorization, and journaled application. Agent Core owns run/effect truth but no coding workspace policy. The source workspace changes only after accepting disposition and required candidate acceptance checks pass; application refuses a source workspace that changed after isolation.
+An independent verifier names its protected `verifierInputs` explicitly. These identify the admitted program, tests, fixtures and relevant dependency inputs; command text and a declared coverage label alone are observational. All selected inputs are bound by exact hashes. Test, dependency, build and CI files can change legitimately when the independent verifier covering those changes remains intact. Changing a protected verifier input requires a new admitted contract; filenames do not determine authority.
 
-Every passed required check records the exact working-copy digest it examined. Disposition compares those digests with the revision selected for application and refuses publication if any required result is missing that binding or describes an older revision.
+Commands run against isolated snapshots through no-network Sandbox execution. The system runtime is mutable and is described by an environment policy, not an invented content attestation. New attempts obtain fresh command observations; only an exact invocation may reconcile its recorded result. There is no separate baseline-result cache. Exact baseline output comparison is diagnostic: matching failures never pass a check, and incomplete output cannot establish coverage.
+
+`IsolatedWorkingCopy` and `PreChangeSnapshot` belong to work. Publication requires passed required checks covering the exact private revision and unchanged source content since isolation. The application coordinator records verification, acceptance and publication independently of Core's immutable execution outcome. Unknown effects hold subsequent prompts durably until reconciliation. A later prompt can continue an unaccepted working copy; it does not implicitly reset its baseline or allowance.
 
 ## Result semantics
 
@@ -126,9 +128,9 @@ Every passed required check records the exact working-copy digest it examined. D
 - Failure before visible content: absent model output.
 - Missing or unknown required check: inconclusive verification.
 
-For every ended run, Coding Agent emits one persisted `CodingHandoff` for both CLI and TUI. It binds the admitted task, model summary, exact reviewed working-copy digest, changed files, bounded change artifact, candidate acceptance results, usage, publication status, unresolved facts, and unknown effects. The underlying change report compares the `PreChangeSnapshot` with the private working copy—even when publication is rejected—so a failed apply never erases the revision the user is reviewing. `apply_patch` ledger observations distinguish structured mutations from unaccounted working-copy changes. A path already reported by the initial Git observation remains marked as changed before the run; Coding Agent never assumes the workspace started clean. Binary, oversized, aliased, unreadable, or truncated observations make coverage explicitly partial. Model prose is not authority for changed paths, checks, publication, or usage.
+For settled revision work, Coding Agent emits one persisted `CodingHandoff` for both CLI and TUI. It binds the admitted task, model summary, exact reviewed working-copy digest, changed files, bounded change artifact, revision acceptance results, usage, publication status, unresolved facts, and unknown effects. The underlying change report compares the `PreChangeSnapshot` with the private working copy—even when publication is rejected—so a failed apply never erases the revision the user is reviewing. `apply_patch` ledger observations distinguish structured mutations from unaccounted working-copy changes. A path already reported by the initial Git observation remains marked as changed before the run; Coding Agent never assumes the workspace started clean. Binary, oversized, aliased, unreadable, or truncated observations make coverage explicitly partial. Model prose is not authority for changed paths, checks, publication, or usage.
 
-The interactive TUI renders before runtime activation, then restores durable conversation, terminal checks and Coding handoffs, queued work, driver control, approvals, and unknown-effect recovery. Its status line retains the active provider, model, trust, sandbox, and permission boundary. Provider, model, permission mode, and trust changes are admitted only while the session is idle with no queued submissions. Use Ctrl+P for commands. Use Up and Down at the first or last composer line to browse sent messages; the current draft is restored when history browsing ends.
+The interactive TUI renders before runtime activation, then restores durable conversation, execution outcomes, application checks and Coding handoffs, queued work, driver control, approvals, and unknown-effect recovery. Its status line retains the active provider, model, trust, sandbox, and permission boundary. Provider, model, permission mode, and trust changes are admitted only while the session is idle with no queued submissions. Use Ctrl+P for commands. Use Up and Down at the first or last composer line to browse sent messages; the current draft is restored when history browsing ends.
 
 Run `npm run verify:release` for the full repository gate.
 
@@ -172,7 +174,7 @@ OpenAI Platform authentication comes from `OPENAI_API_KEY`; ChatGPT subscription
 ## Reusable persistent sessions
 
 `createCodingSession` composes the same workspace authority, isolated working copy,
-Sandbox tools, check plans, disposition, and handoff service used by the CLI and TUI.
+Sandbox tools, check plans, work settlement, and handoff service used by the CLI and TUI.
 It accepts an already opened and admitted workspace, a `ModelProvider`, exact session
 settings, and a permission mode. `closeCodingSession` settles application cleanup;
 the caller closes its opened workspace after the session finishes.
@@ -211,7 +213,7 @@ the previous committed window. A provider-native strategy requires an active run
 an explicit provider capability and a governed transform of completed history;
 the current run's source and synchronous tool obligations remain original.
 Primary generation and native transforms share `coding.inference`, durable
-invocation records and one owning run budget. Hosts may set `inferenceBudget`.
+invocation records and one owning work budget. Hosts may set `inferenceBudget`.
 
 Active repository guidance is reread at request and authorization boundaries. Each
 request includes current source and working-copy revision identities, actual

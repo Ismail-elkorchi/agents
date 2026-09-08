@@ -1,4 +1,3 @@
-import path from 'node:path';
 import type { CommandExecutionPlanRequest } from '@agent-core/tools';
 import type { RootedFileAuthority } from '@agent-core/tools-local';
 import {
@@ -7,13 +6,19 @@ import {
   openSandboxExecutionRepository,
   type SandboxDetachedRunOptions
 } from '@ismail-elkorchi/sandbox';
+import path from 'node:path';
 import type { PrivateStateDirectory } from '../state/private-state.js';
 import { SandboxCommandExecution, type SandboxCommandAuthorization } from './sandbox-command-execution.js';
+
+// System tools are mutable: observations may be reconciled only for their exact invocation.
+export const CODING_COMMAND_ENVIRONMENT_POLICY_ID = 'coding-agent.sandbox-system-environment@1';
 
 const TARGET_WORKSPACE = '/workspace';
 const MAX_RETAINED_OUTPUT_BYTES = 8 * 1024 * 1024;
 const MAX_MEMORY_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_PROCESSES = 128;
+
+export class CodingCommandUnavailableError extends Error {}
 
 export async function createCodingCommandAuthority(input: {
   readonly repositoryDirectory: string;
@@ -24,7 +29,8 @@ export async function createCodingCommandAuthority(input: {
   try {
     const probe = await sandbox.probe();
     const backend = probe.backends.find((candidate) => candidate.id === 'linux-namespace-v1');
-    if (!backend?.available) throw new Error('Sandboxed command execution is unavailable on this host.');
+    if (!backend?.available)
+      throw new CodingCommandUnavailableError('Sandboxed command execution is unavailable on this host.');
   } finally {
     await sandbox.dispose();
   }
@@ -42,24 +48,35 @@ export async function createCodingCommandAuthority(input: {
       validateAuthorization
     });
   } catch (error) {
-    await repository.close().catch(() => undefined);
+    try {
+      await repository.close();
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], 'Sandbox composition and release failed.', {
+        cause: cleanupError
+      });
+    }
     throw error;
   }
 }
 
-function commandRun(request: CommandExecutionPlanRequest, hostWorkspaceRoot: string): SandboxDetachedRunOptions {
+function commandRun(
+  request: CommandExecutionPlanRequest,
+  hostWorkspaceRoot: string
+): SandboxDetachedRunOptions {
   return {
     isolation: { kind: 'process' },
     policy: {
       filesystem: {
         runtime: { kind: 'system' },
-        grants: [{
-          hostPath: hostWorkspaceRoot,
-          targetPath: TARGET_WORKSPACE,
-          access: 'read-write',
-          execution: 'allow',
-          rootResolution: 'reject-if-link'
-        }],
+        grants: [
+          {
+            hostPath: hostWorkspaceRoot,
+            targetPath: TARGET_WORKSPACE,
+            access: 'read-write',
+            execution: 'allow',
+            rootResolution: 'reject-if-link'
+          }
+        ],
         privateHome: { enabled: true },
         temporary: { executable: false }
       },
@@ -91,29 +108,41 @@ function commandRun(request: CommandExecutionPlanRequest, hostWorkspaceRoot: str
 
 function validateAuthorization(authorization: SandboxCommandAuthorization): void {
   const { summary, enforcement, request } = authorization;
-  if (summary.isolation.kind !== 'process' || enforcement.boundary.kind !== 'os-process') throw new Error('Sandbox command plan did not establish the required process boundary.');
-  if (summary.network.mode !== 'none') throw new Error('Sandbox command plan unexpectedly permits network access.');
-  if (summary.filesystem.runtimeView !== 'system' || summary.filesystem.grants.length !== 1) throw new Error('Sandbox command plan has an unexpected filesystem view.');
+  if (summary.isolation.kind !== 'process' || enforcement.boundary.kind !== 'os-process')
+    throw new Error('Sandbox command plan did not establish the required process boundary.');
+  if (summary.network.mode !== 'none')
+    throw new Error('Sandbox command plan unexpectedly permits network access.');
+  if (summary.filesystem.runtimeView !== 'system' || summary.filesystem.grants.length !== 1)
+    throw new Error('Sandbox command plan has an unexpected filesystem view.');
   const grant = summary.filesystem.grants[0];
-  if (grant?.targetPath !== TARGET_WORKSPACE || grant.access !== 'read-write' || grant.execution !== 'allow') {
+  if (
+    grant?.targetPath !== TARGET_WORKSPACE ||
+    grant.access !== 'read-write' ||
+    grant.execution !== 'allow'
+  ) {
     throw new Error('Sandbox command plan does not contain the required workspace grant.');
   }
-  if (summary.execution.executable !== '/bin/sh'
-    || summary.execution.args.length !== 2
-    || summary.execution.args[0] !== '-c'
-    || summary.execution.args[1] !== request.command
-    || summary.execution.cwd !== targetDirectory(request.rootedDirectory)) {
+  if (
+    summary.execution.executable !== '/bin/sh' ||
+    summary.execution.args.length !== 2 ||
+    summary.execution.args[0] !== '-c' ||
+    summary.execution.args[1] !== request.command ||
+    summary.execution.cwd !== targetDirectory(request.rootedDirectory)
+  ) {
     throw new Error('Sandbox command plan does not match the requested command identity.');
   }
-  if (summary.execution.sensitiveEnvironmentNames.length !== 0
-    || summary.execution.environmentNames.length !== 2
-    || !summary.execution.environmentNames.includes('PATH')
-    || !summary.execution.environmentNames.includes('CI')) {
+  if (
+    summary.execution.sensitiveEnvironmentNames.length !== 0 ||
+    summary.execution.environmentNames.length !== 2 ||
+    !summary.execution.environmentNames.includes('PATH') ||
+    !summary.execution.environmentNames.includes('CI')
+  ) {
     throw new Error('Sandbox command plan has an unexpected environment.');
   }
   for (const required of LINUX_PROCESS_BASELINE_REQUIREMENTS.required) {
     const fact = enforcement.guarantees.find((candidate) => candidate.id === required);
-    if (fact?.status !== 'satisfied') throw new Error(`Sandbox command plan did not satisfy required guarantee ${required}.`);
+    if (fact?.status !== 'satisfied')
+      throw new Error(`Sandbox command plan did not satisfy required guarantee ${required}.`);
   }
 }
 

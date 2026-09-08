@@ -10,7 +10,7 @@ import type {
   WritingOperation
 } from './domain.js';
 
-export const WRITING_OPERATION_CONTRACT_IMPLEMENTATION_ID = 'writing-agent.operation-contract@1';
+export const WRITING_OPERATION_CONTRACT_IMPLEMENTATION_ID = 'writing-agent.operation-contract@2';
 export const MAX_WRITING_OPERATION_CONTRACT_BYTES = 128 * 1024;
 
 export interface WritingOperationContract {
@@ -36,6 +36,10 @@ export interface WritingOperationContract {
     'projectId' | 'briefRevisionId' | 'parentBriefRevisionId' | 'acceptanceCriteria' | 'createdAt'
   >;
   readonly applicableCriteria: WritingBriefRevision['acceptanceCriteria'];
+  readonly verification: {
+    readonly semanticIntentIds: readonly string[];
+    readonly editorialCriterionIds: readonly string[];
+  };
   readonly effectiveConstraints: WritingOperation['effectiveConstraints'];
   readonly evidenceRequirements: {
     readonly claims: readonly Claim[];
@@ -131,6 +135,26 @@ export function createWritingOperationContract(
     }),
     briefRequirements: Object.freeze(briefRequirements),
     applicableCriteria: snapshot.brief.acceptanceCriteria,
+    verification: Object.freeze({
+      semanticIntentIds: Object.freeze(
+        operation.intents
+          .filter(
+            (intent) =>
+              intent.verification === 'semantic' ||
+              intent.preservationRequirements.length > 0 ||
+              intent.affectedClaimIds.length > 0 ||
+              intent.affectedRelationIds.length > 0 ||
+              intent.affectedEditorialDecisionIds.length > 0 ||
+              intent.kind === 'text.translate'
+          )
+          .map((intent) => intent.intentId)
+      ),
+      editorialCriterionIds: Object.freeze(
+        snapshot.brief.acceptanceCriteria
+          .filter((criterion) => criterion.verificationKind === 'editorial')
+          .map((criterion) => criterion.criterionId)
+      )
+    }),
     effectiveConstraints: operation.effectiveConstraints,
     evidenceRequirements: Object.freeze({
       claims,

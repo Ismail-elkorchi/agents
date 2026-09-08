@@ -28,7 +28,12 @@ export interface CodingAuthority {
 }
 
 const READ_TOOLS = Object.freeze([
-  'list_directory', 'find_files', 'read_files', 'search_text', 'view_image', 'read_artifact'
+  'list_directory',
+  'find_files',
+  'read_files',
+  'search_text',
+  'view_image',
+  'read_artifact'
 ]);
 const EDIT_TOOLS = Object.freeze([...READ_TOOLS, 'apply_patch']);
 const DEVELOP_TOOLS = Object.freeze([...EDIT_TOOLS, 'exec_command', 'write_stdin', 'stop_process']);
@@ -47,15 +52,14 @@ export function resolveCodingAuthority(input: {
   const mode = lesserMode(input.requestedMode, maximum);
   const ceiling = toolsForMode(mode);
   const project = input.project;
-  const selected = project
-    ? ceiling.filter((name) => project.enabledTools.includes(name))
-    : ceiling;
+  const selected = project ? ceiling.filter((name) => project.enabledTools.includes(name)) : ceiling;
   const enabledTools = Object.freeze([...selected]);
-  const allowedRisks: ToolRisk[] = mode === 'review'
-    ? ['read']
-    : mode === 'edit'
-      ? ['read', 'write', 'destructive']
-      : ['read', 'write', 'destructive', 'execute'];
+  const allowedRisks: ToolRisk[] =
+    mode === 'review'
+      ? ['read']
+      : mode === 'edit'
+        ? ['read', 'write', 'destructive']
+        : ['read', 'write', 'destructive', 'execute'];
   const configuredApprovals = input.project?.permissions.requireApprovalFor ?? [];
   const requiredApprovals = new Set<CodingApprovalKind>(configuredApprovals);
   if (input.trust === 'restricted') {
@@ -66,7 +70,9 @@ export function resolveCodingAuthority(input: {
     if (mode === 'develop') requiredApprovals.add('command');
   }
   const verificationCommands = input.hasVerificationChecks && mode !== 'review' ? 'sandboxed' : 'disabled';
-  const commandAvailable = enabledTools.some((name) => name === 'exec_command' || name === 'write_stdin' || name === 'stop_process');
+  const commandAvailable = enabledTools.some(
+    (name) => name === 'exec_command' || name === 'write_stdin' || name === 'stop_process'
+  );
   return Object.freeze({
     mode,
     toolPolicy: Object.freeze({ allowedRisks: Object.freeze(allowedRisks) }),

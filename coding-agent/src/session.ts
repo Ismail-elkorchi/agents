@@ -1,23 +1,28 @@
-import { createHash } from 'node:crypto';
-import { promises as fs } from 'node:fs';
-import path from 'node:path';
+import { CompleteRequestEstimator, type ModelProvider } from '@agent-core/model';
+import { hashJson } from '@agent-core/persistence';
+import { JsonlEventRepository, LocalArtifactRepository } from '@agent-core/persistence/node';
 import {
   AgentRunCoordinator,
   AgentRuntime,
   AgentSession,
-  InferenceService,
   ContextService,
+  EffectExecutor,
   HistoryReader,
+  InferenceService,
+  agentEventCodec,
+  createContextTools,
   createHistoryTools,
   createNotesTools,
-  createContextTools,
+  createObservationAccess,
   createRuntimeContextBootstrapValidator,
+  effectExecutionEventCodec,
   sourceRef,
-  agentEventCodec,
-  type PromptContextItemInput,
+  type AgentEndedRunResult,
   type AgentEvent,
-  type InferenceBudget,
   type AgentSessionConfiguration,
+  type AgentSessionOptions,
+  type InferenceBudget,
+  type PromptContextItemInput,
   type SessionDescriptor
 } from '@agent-core/runtime';
 import {
@@ -25,55 +30,72 @@ import {
   JsonlNoteRepository,
   JsonlSessionRepository
 } from '@agent-core/runtime/node';
-import { JsonlEventRepository, LocalArtifactRepository } from '@agent-core/persistence/node';
-import { type ModelProvider, CompleteRequestEstimator } from '@agent-core/model';
-import { accessRisk, type CompiledToolDefinition } from '@agent-core/tools';
 import {
-  createLocalToolHost,
+  accessRisk,
+  commandExecutionResources,
+  commandReleaseReport,
+  type CompiledToolDefinition
+} from '@agent-core/tools';
+import {
   DEFAULT_LOCAL_TOOL_CONFIGURATION,
   RootedFileAuthority,
-  TextPatchJournal
+  TextPatchJournal,
+  createLocalToolHost
 } from '@agent-core/tools-local';
-import { parseJsonValue } from '@agent-core/json';
 import { openSandboxExecutionRepository } from '@ismail-elkorchi/sandbox';
+import { createHash } from 'node:crypto';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import { CodingHandoffService } from './changes/coding-handoff-service.js';
+import { IsolatedWorkingCopy } from './changes/isolated-working-copy.js';
+import {
+  loadOrCapturePreChangeSnapshot,
+  loadPreChangeSnapshot
+} from './changes/pre-change-snapshot-store.js';
+import { CodingSession } from './coding-session.js';
 import type { CodingAgentConfiguration } from './configuration.js';
+import {
+  CODING_COMMAND_ENVIRONMENT_POLICY_ID,
+  createCodingCommandAuthority
+} from './execution/coding-command-authority.js';
+import { DEFAULT_CODING_CONTRACT } from './instructions/coding-contract.js';
+import {
+  RepositoryGuidanceSession,
+  loadInitialRepositoryGuidance,
+  loadInitialRepositoryGuidanceFromRoot
+} from './instructions/repository-guidance.js';
+import { CodingOutcomeRepository, codingOutcomeEventCodec, type CodingEndedRunResult } from './outcome.js';
+import {
+  resolveCodingAuthority,
+  type CodingApprovalKind,
+  type CodingAuthority,
+  type CodingPermissionMode
+} from './security/permission-mode.js';
+import { codingSessionBoundaryContext } from './session-context.js';
+import {
+  createRevisionAcceptanceChecks,
+  deriveAdmittedCheckPlan,
+  observePreChangeCommands
+} from './verification/revision-acceptance-checks.js';
+import { loadOrAdmitCheckPlan } from './verification/check-plan-store.js';
+import { settleCodingWork } from './verification/settlement.js';
+import {
+  CodingWorkRepository,
+  codingWorkContextAnchors,
+  codingWorkEventCodec,
+  type CodingWork
+} from './work.js';
 import { codingWorkspaceSessionBinding, type OpenCodingWorkspace } from './workspace.js';
 import {
-  loadInitialRepositoryGuidance,
-  loadInitialRepositoryGuidanceFromRoot,
-  RepositoryGuidanceSession
-} from './instructions/repository-guidance.js';
+  unavailableGitRepositoryObserver,
+  type GitRepositoryObserver
+} from './workspace/git/repository-observer.js';
+import { SandboxGitRepositoryObserver } from './workspace/git/sandbox-git-observer.js';
 import {
   inspectRepositoryOrientation,
   inspectRepositoryVersionControl,
   repositoryOrientationContext
 } from './workspace/repository-orientation.js';
-import { SandboxGitRepositoryObserver } from './workspace/git/sandbox-git-observer.js';
-import {
-  unavailableGitRepositoryObserver,
-  type GitRepositoryObserver
-} from './workspace/git/repository-observer.js';
-import { createCodingCommandAuthority } from './execution/coding-command-authority.js';
-import {
-  resolveCodingAuthority,
-  type CodingApprovalKind,
-  type CodingPermissionMode,
-  type CodingAuthority
-} from './security/permission-mode.js';
-import {
-  createCandidateAcceptanceChecks,
-  deriveAdmittedCheckPlan,
-  observePreChangeCommands
-} from './verification/candidate-acceptance-checks.js';
-import { createCodingDisposition } from './verification/coding-disposition.js';
-import { loadOrAdmitCheckPlan } from './verification/check-plan-store.js';
-import { loadOrObservePreChangeCommands } from './verification/pre-change-command-observation-store.js';
-import { loadOrCapturePreChangeSnapshot } from './changes/pre-change-snapshot-store.js';
-import { IsolatedWorkingCopy } from './changes/isolated-working-copy.js';
-import { codingHistoryPressureTransition } from './context-policy.js';
-import { DEFAULT_CODING_CONTRACT } from './instructions/coding-contract.js';
-import { codingSessionBoundaryContext } from './session-context.js';
-import { CodingHandoffService } from './changes/coding-handoff-service.js';
 
 export interface CodingSessionOptions {
   readonly workspace: OpenCodingWorkspace;
@@ -83,6 +105,7 @@ export interface CodingSessionOptions {
   readonly descriptor?: SessionDescriptor;
   readonly maxOutputTokens?: number;
   readonly inferenceBudget?: InferenceBudget;
+  readonly work?: { readonly kind: 'new' } | { readonly kind: 'continue'; readonly workId: string };
   readonly configuration?: CodingAgentConfiguration;
   readonly configurationSource?: {
     readonly sourceUri: string;
@@ -93,7 +116,10 @@ export interface CodingSessionOptions {
 
 /** Reusable application composition shared by CLI, TUI, and programmatic consumers. */
 export interface CodingSessionComposition {
-  readonly agent: AgentSession;
+  readonly agent: CodingSession;
+  readonly outcomes: CodingOutcomeRepository;
+  closeResources(): Promise<void>;
+  readonly work: CodingWorkRepository;
   readonly inference: InferenceService;
   readonly history: HistoryReader;
   readonly notes: JsonlNoteRepository;
@@ -107,7 +133,9 @@ export interface CodingSessionComposition {
   readonly handoffs: CodingHandoffService;
 }
 
-export async function createCodingSession(options: CodingSessionOptions): Promise<CodingSessionComposition> {
+export async function createCodingSession(
+  options: CodingSessionOptions
+): Promise<CodingSessionComposition> {
   const openedWorkspace = options.workspace;
   const workspace = openedWorkspace.layout;
   const sessions = new JsonlSessionRepository({ rootDir: workspace.sessionsDir });
@@ -122,12 +150,19 @@ export async function createCodingSession(options: CodingSessionOptions): Promis
   };
   const session =
     options.descriptor === undefined
-      ? await sessions.create({ binding, provider: providerRuntime.providerId, model: providerRuntime.model })
+      ? await sessions.create({
+          binding,
+          provider: providerRuntime.providerId,
+          model: providerRuntime.model
+        })
       : await sessions.open(options.descriptor.id, binding);
   const projectExecutionPolicy =
     openedWorkspace.security.decide('project_execution_policy').kind === 'allowed';
   const sessionBinding = { repository: sessions, descriptor: session };
-  const events = new JsonlEventRepository<AgentEvent>({ rootDir: workspace.runsDir, codec: agentEventCodec });
+  const events = new JsonlEventRepository<AgentEvent>({
+    rootDir: workspace.runsDir,
+    codec: agentEventCodec
+  });
   const existingRunIds = new Set(await events.listRunIds());
   const activeConfiguration = projectExecutionPolicy ? options.configuration : undefined;
   const orientationGuidance = await loadInitialRepositoryGuidance(openedWorkspace);
@@ -166,7 +201,108 @@ export async function createCodingSession(options: CodingSessionOptions): Promis
         maxCompletionTokens: 256_000
       }
     });
+    const effects = new EffectExecutor(
+      new JsonlEventRepository({
+        rootDir: path.join(workspace.runtimeDir, 'effects'),
+        codec: effectExecutionEventCodec
+      })
+    );
+    const outcomes = new CodingOutcomeRepository(
+      new JsonlEventRepository({
+        rootDir: path.join(workspace.runtimeDir, 'outcomes'),
+        codec: codingOutcomeEventCodec
+      })
+    );
+    const workHosts = new Map<
+      string,
+      {
+        host: ReturnType<typeof createLocalToolHost>;
+        root: RootedFileAuthority;
+        workingCopy: IsolatedWorkingCopy | undefined;
+        ownerId: string;
+      }
+    >();
+    const releaseWorkHost = async (workId: string): Promise<void> => {
+      let owned = workHosts.get(workId);
+      if (!owned) {
+        const repositoryDirectory = path.join(
+          workspace.runtimeDir,
+          'work-tools',
+          createHash('sha256').update(workId).digest('hex'),
+          'sandbox-commands'
+        );
+        try {
+          await fs.stat(repositoryDirectory);
+        } catch (error) {
+          if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return;
+          throw error;
+        }
+        const admitted = await work.read(workId);
+        const preChange = await loadPreChangeSnapshot(openedWorkspace.privateState, workId);
+        const workingCopy = await IsolatedWorkingCopy.open({
+          source: openedWorkspace.fileRoot,
+          preChange: preChange.workspace,
+          runtimeDirectory: workspace.runtimeDir,
+          workId
+        });
+        try {
+          const commandExecution = await createCodingCommandAuthority({
+            repositoryDirectory,
+            rootedFileAuthority: workingCopy.root,
+            state: openedWorkspace.privateState
+          });
+          owned = {
+            host: createLocalToolHost({
+              rootedFileAuthority: workingCopy.root,
+              artifactRepository: artifactStore,
+              commandExecution,
+              enabledTools: []
+            }),
+            root: workingCopy.root,
+            workingCopy,
+            ownerId: admitted.ownerId
+          };
+          workHosts.set(workId, owned);
+        } catch (error) {
+          await workingCopy.release();
+          throw error;
+        }
+      }
+      if (owned.host.commandExecution) {
+        let unknown = false;
+        for (const report of await owned.host.commandExecution.disposeOwner(owned.ownerId)) {
+          const runId = report.result.owner.runId;
+          const release = commandReleaseReport(report);
+          await events.append(
+            runId,
+            { type: 'resource.released', runId, ...release },
+            {
+              idempotencyKey: `${runId}:resource:${report.result.processId}:released:${hashJson(commandReleaseReport(report))}`
+            }
+          );
+          if (release.outcome === 'unknown') unknown = true;
+          else await owned.host.commandExecution.acknowledgeTerminalReport(report.result.processId);
+        }
+        if (unknown) throw new Error('Coding work resources require release reconciliation.');
+      }
+      await owned.host.close();
+      await owned.workingCopy?.release();
+      workHosts.delete(workId);
+    };
+    const settleRuns = new Map<
+      string,
+      (execution: AgentEndedRunResult, signal: AbortSignal) => Promise<CodingEndedRunResult>
+    >();
+    const work = new CodingWorkRepository(
+      new JsonlEventRepository({
+        rootDir: path.join(workspace.runtimeDir, 'work'),
+        codec: codingWorkEventCodec
+      })
+    );
+    let activeWork: CodingWork | undefined;
+    let selection = options.work;
     const handoffs = new CodingHandoffService({
+      work,
       state: openedWorkspace.privateState,
       runtimeDirectory: workspace.runtimeDir,
       root: openedWorkspace.fileRoot,
@@ -207,10 +343,14 @@ export async function createCodingSession(options: CodingSessionOptions): Promis
           isAvailable: () =>
             activeTools.some((tool) => tool.name === 'history_read') || activeRuntime === undefined
         },
-        mandatorySources: async () =>
-          (await history.view()).entries
-            .filter((entry) => entry.type === 'input' || entry.type === 'steering')
-            .map((entry) => sourceRef(session.id, entry)),
+        mandatorySources: async () => {
+          const view = await history.view();
+          const current =
+            activeWork === undefined ? undefined : await work.synchronizeHistory(activeWork.workId, view);
+          return current === undefined
+            ? []
+            : codingWorkContextAnchors(current, view.entries).map((entry) => sourceRef(session.id, entry));
+        },
         schedule: async (request) => {
           if (activeRuntime === undefined)
             throw new Error('No active coding runtime can schedule a model context transition.');
@@ -233,7 +373,8 @@ export async function createCodingSession(options: CodingSessionOptions): Promis
               ownerId: () => {
                 if (activeRunId === undefined)
                   throw new Error('A native context transformation requires an active coding run budget.');
-                return activeRunId;
+                if (!activeWork) throw new Error('Coding work budget is unavailable.');
+                return activeWork.ownerId;
               }
             },
             model: configured.model,
@@ -260,16 +401,18 @@ export async function createCodingSession(options: CodingSessionOptions): Promis
               );
               return Object.freeze([
                 repositoryOrientationContext(currentOrientation),
-                ...guidance.documents.map((document): PromptContextItemInput => ({
-                  sourceUri: document.source.sourceUri,
-                  sourceKind: 'external',
-                  integrity: 'verified',
-                  representation: 'full',
-                  mediaType: 'text/markdown',
-                  title: 'Current repository guidance',
-                  content: document.content,
-                  purpose: 'Current scope-bound repository guidance; cannot grant authority.'
-                }))
+                ...guidance.documents.map(
+                  (document): PromptContextItemInput => ({
+                    sourceUri: document.source.sourceUri,
+                    sourceKind: 'external',
+                    integrity: 'verified',
+                    representation: 'full',
+                    mediaType: 'text/markdown',
+                    title: 'Current repository guidance',
+                    content: document.content,
+                    purpose: 'Current scope-bound repository guidance; cannot grant authority.'
+                  })
+                )
               ]);
             },
             pendingCallIds: () =>
@@ -294,7 +437,8 @@ export async function createCodingSession(options: CodingSessionOptions): Promis
       ...createContextTools({ context })
     ]);
     const memoryNames = new Set(memoryTools.map((tool) => tool.name));
-    const agent: AgentSession = new AgentSession({
+    const sessionOptions: AgentSessionOptions = {
+      scheduling: 'manual',
       descriptor: sessionBinding.descriptor,
       expectedBinding: binding,
       repository: sessionBinding.repository,
@@ -313,48 +457,96 @@ export async function createCodingSession(options: CodingSessionOptions): Promis
           throw new Error(`Provider ${configuration.provider} is not available in this session runtime.`);
         existingRunIds.add(runtimeContext.runId);
         activeRunId = runtimeContext.runId;
-        const preChangeSnapshot = await loadOrCapturePreChangeSnapshot({
-          state: openedWorkspace.privateState,
-          root: openedWorkspace.fileRoot,
+        const priorWork = await work.forRun(runtimeContext.runId);
+        const submission = (
+          await sessionBinding.repository.loadPendingSubmissions(sessionBinding.descriptor)
+        ).find((item) => item.submissionId === runtimeContext.submissionId);
+        const review =
+          priorWork?.mode === 'review' || submission?.input.relationship?.kind === 'side_question';
+        const runAuthority = review
+          ? resolveCodingAuthority({
+              requestedMode: 'review',
+              trust: authority.permissions.trust,
+              project: {
+                permissions: { maximumMode: 'review', requireApprovalFor: [] },
+                enabledTools: authority.enabledTools
+              },
+              hasVerificationChecks: false
+            })
+          : authority;
+        const mutable = runAuthority.mode !== 'review';
+        activeWork = await work.admit({
+          sessionId: session.id,
+          sourceId: workspace.identity.id,
+          mode: mutable ? 'revision' : 'review',
           runId: runtimeContext.runId,
-          resuming: runtimeContext.resuming,
-          observeVersionControl: () => inspectRepositoryVersionControl(openedWorkspace, gitObserver)
+          submissionId: runtimeContext.submissionId,
+          task: runtimeContext.input.task,
+          ...(selection === undefined || review ? {} : { selection })
         });
-        const runCheckPlan = await loadOrAdmitCheckPlan({
-          state: openedWorkspace.privateState,
-          runId: runtimeContext.runId,
-          resuming: runtimeContext.resuming,
-          proposed: deriveAdmittedCheckPlan(
-            (
-              await inspectRepositoryOrientation(
-                openedWorkspace,
-                await loadInitialRepositoryGuidance(openedWorkspace),
-                activeConfiguration,
-                gitObserver
-              )
-            ).proposedVerificationChecks
-          )
-        });
-        const mutable = authority.mode !== 'review';
-        const workingCopy = mutable
-          ? await IsolatedWorkingCopy.open({
-              source: openedWorkspace.fileRoot,
-              preChange: preChangeSnapshot.workspace,
-              runtimeDirectory: workspace.runtimeDir,
-              runId: runtimeContext.runId
+        if (!review) selection = undefined;
+        const currentWork = activeWork;
+        const preChangeSnapshot = mutable
+          ? await loadOrCapturePreChangeSnapshot({
+              state: openedWorkspace.privateState,
+              root: openedWorkspace.fileRoot,
+              workId: currentWork.workId,
+              resuming: currentWork.baselineDigest !== undefined,
+              observeVersionControl: () => inspectRepositoryVersionControl(openedWorkspace, gitObserver)
             })
           : undefined;
+        const runCheckPlan = mutable
+          ? await loadOrAdmitCheckPlan({
+              state: openedWorkspace.privateState,
+              workId: currentWork.workId,
+              resuming: currentWork.checkPlanId !== undefined,
+              proposed: deriveAdmittedCheckPlan(
+                (
+                  await inspectRepositoryOrientation(
+                    openedWorkspace,
+                    await loadInitialRepositoryGuidance(openedWorkspace),
+                    activeConfiguration,
+                    gitObserver
+                  )
+                ).proposedVerificationChecks,
+                preChangeSnapshot === undefined
+                  ? undefined
+                  : {
+                      snapshot: preChangeSnapshot.workspace,
+                      environmentPolicyId: CODING_COMMAND_ENVIRONMENT_POLICY_ID
+                    }
+              )
+            })
+          : deriveAdmittedCheckPlan([]);
+        if (preChangeSnapshot)
+          activeWork = await work.bindRevision(
+            currentWork.workId,
+            preChangeSnapshot.workspace.digest,
+            runCheckPlan.implementationId
+          );
+        const cachedHost = workHosts.get(currentWork.workId);
+        const workingCopy =
+          cachedHost?.workingCopy ??
+          (preChangeSnapshot
+            ? await IsolatedWorkingCopy.open({
+                source: openedWorkspace.fileRoot,
+                preChange: preChangeSnapshot.workspace,
+                runtimeDirectory: workspace.runtimeDir,
+                workId: currentWork.workId
+              })
+            : undefined);
         const runRoot =
+          cachedHost?.root ??
           workingCopy?.root ??
           RootedFileAuthority.adopt(openedWorkspace.fileRoot.identity.canonicalPath, {
             additionalDeniedEntries: ['.git', '.coding-agent']
           });
-        const runIdentity = createHash('sha256').update(runtimeContext.runId).digest('hex');
-        const patchEnabled = authority.enabledTools.includes('apply_patch');
-        const commandEnabled = authority.permissions.commandExecution === 'sandboxed';
+        const runIdentity = createHash('sha256').update(currentWork.workId).digest('hex');
+        const patchEnabled = runAuthority.enabledTools.includes('apply_patch');
+        const commandEnabled = runAuthority.permissions.commandExecution === 'sandboxed';
         const patchJournalPath = path.join(
           workspace.runtimeDir,
-          'run-tools',
+          'work-tools',
           runIdentity,
           'patch-transactions'
         );
@@ -376,43 +568,53 @@ export async function createCodingSession(options: CodingSessionOptions): Promis
             ...(initialGuidance ? { initial: initialGuidance } : {}),
             resuming: runtimeContext.resuming
           });
-          const commandExecution = commandEnabled
-            ? await createCodingCommandAuthority({
-                repositoryDirectory: path.join(
-                  workspace.runtimeDir,
-                  'run-tools',
-                  runIdentity,
-                  'sandbox-commands'
-                ),
-                rootedFileAuthority: runRoot,
-                state: openedWorkspace.privateState
-              })
-            : undefined;
-          localHost = createLocalToolHost({
-            rootedFileAuthority: runRoot,
-            artifactRepository: artifactStore,
-            ...(commandExecution ? { commandExecution } : {}),
-            ...(patchEnabled ? { patchJournal: TextPatchJournal.adopt(patchJournalPath) } : {}),
-            enabledTools: authority.enabledTools,
-            async deliverRecoveredTerminalReport(report) {
-              const runId = report.result.owner.runId;
-              if (!existingRunIds.has(runId)) return false;
-              await events.append(
-                runId,
-                {
-                  type: 'process.ended',
+          const commandExecution =
+            cachedHost?.host.commandExecution ??
+            (commandEnabled
+              ? await createCodingCommandAuthority({
+                  repositoryDirectory: path.join(
+                    workspace.runtimeDir,
+                    'work-tools',
+                    runIdentity,
+                    'sandbox-commands'
+                  ),
+                  rootedFileAuthority: runRoot,
+                  state: openedWorkspace.privateState
+                })
+              : undefined);
+          localHost =
+            cachedHost?.host ??
+            createLocalToolHost({
+              rootedFileAuthority: runRoot,
+              artifactRepository: artifactStore,
+              ...(commandExecution ? { commandExecution } : {}),
+              ...(patchEnabled ? { patchJournal: TextPatchJournal.adopt(patchJournalPath) } : {}),
+              enabledTools: runAuthority.enabledTools,
+              async deliverRecoveredTerminalReport(report) {
+                const runId = report.result.owner.runId;
+                if (!existingRunIds.has(runId)) return false;
+                await events.append(
                   runId,
-                  processId: report.result.processId,
-                  status: report.result.status,
-                  result: parseJsonValue(report)
-                },
-                { idempotencyKey: `${runId}:process:${report.result.processId}:ended` }
-              );
-              const terminal = await events.latestOfType(runId, 'run.ended');
-              return terminal?.event.type === 'run.ended';
-            }
-          });
+                  {
+                    type: 'resource.released',
+                    runId,
+                    ...commandReleaseReport(report)
+                  },
+                  {
+                    idempotencyKey: `${runId}:resource:${report.result.processId}:released:${hashJson(commandReleaseReport(report))}`
+                  }
+                );
+                const terminal = await events.latestOfType(runId, 'run.ended');
+                return terminal?.event.type === 'run.ended';
+              }
+            });
           await localHost.ready();
+          workHosts.set(currentWork.workId, {
+            host: localHost,
+            root: runRoot,
+            workingCopy,
+            ownerId: currentWork.ownerId
+          });
           const reconciliation = await localHost.reconciliation();
           if (reconciliation.unresolved.length > 0) {
             throw new Error(
@@ -432,28 +634,22 @@ export async function createCodingSession(options: CodingSessionOptions): Promis
               rootedFileAuthority: root,
               state: openedWorkspace.privateState
             });
-          const preChangeObservations = !mutable
+          const preChangeObservations = !preChangeSnapshot
             ? Object.freeze([])
-            : await loadOrObservePreChangeCommands({
-                state: openedWorkspace.privateState,
-                runId: runtimeContext.runId,
-                resuming: runtimeContext.resuming,
+            : await observePreChangeCommands({
+                effects,
+                ownerId: currentWork.ownerId,
                 plan: runCheckPlan,
-                preChange: preChangeSnapshot.workspace,
-                observe: () =>
-                  observePreChangeCommands({
-                    plan: runCheckPlan,
-                    runId: runtimeContext.runId,
-                    root: runRoot,
-                    snapshot: preChangeSnapshot.workspace,
-                    runtimeDirectory: workspace.runtimeDir,
-                    createCommandExecution: createCheckCommandExecution,
-                    commandYieldMs: DEFAULT_LOCAL_TOOL_CONFIGURATION.process.maxYieldMs
-                  })
+                runId: runtimeContext.runId,
+                root: runRoot,
+                snapshot: preChangeSnapshot.workspace,
+                runtimeDirectory: workspace.runtimeDir,
+                createCommandExecution: createCheckCommandExecution,
+                commandYieldMs: DEFAULT_LOCAL_TOOL_CONFIGURATION.process.maxYieldMs
               });
-          const checks = !mutable
+          const checks = !preChangeSnapshot
             ? Object.freeze([])
-            : createCandidateAcceptanceChecks({
+            : createRevisionAcceptanceChecks({
                 plan: runCheckPlan,
                 runId: runtimeContext.runId,
                 root: runRoot,
@@ -466,6 +662,7 @@ export async function createCodingSession(options: CodingSessionOptions): Promis
           const host = localHost;
           activeTools = Object.freeze([...host.tools, ...memoryTools]);
           activeContext = async () => {
+            await work.synchronizeHistory(currentWork.workId, await history.view());
             const guidance = await repositoryGuidance.contextItems();
             const currentOrientation = await inspectRepositoryOrientation(
               openedWorkspace,
@@ -482,7 +679,9 @@ export async function createCodingSession(options: CodingSessionOptions): Promis
               sessions,
               session,
               handoffs,
-              checkPlan: runCheckPlan
+              outcomes,
+              checkPlan: runCheckPlan,
+              work: await work.read(currentWork.workId)
             });
             return Object.freeze([
               ...guidance,
@@ -490,15 +689,46 @@ export async function createCodingSession(options: CodingSessionOptions): Promis
               currentState
             ]);
           };
+          settleRuns.set(runtimeContext.runId, async (execution, signal) => {
+            const response = await events.latestOfType(runtimeContext.runId, 'assistant.ended');
+            return settleCodingWork({
+              execution,
+              work: await work.read(currentWork.workId),
+              checks,
+              requiredCoverage: runCheckPlan.requiredCoverage,
+              ...(workingCopy ? { workingCopy } : {}),
+              effects,
+              outcomes,
+              ...(response?.event.type === 'assistant.ended'
+                ? {
+                    context: {
+                      runId: runtimeContext.runId,
+                      task: runtimeContext.input.task,
+                      instructions: [],
+                      turnId: response.event.turnId,
+                      turnIndex: response.event.turnIndex,
+                      requestAttempt: response.event.requestAttempt,
+                      metadata: { workId: currentWork.workId },
+                      signal,
+                      execution: createObservationAccess({
+                        events,
+                        runId: runtimeContext.runId,
+                        artifacts: artifactStore
+                      })
+                    }
+                  }
+                : {})
+            });
+          });
           activeRuntime = new AgentRuntime({
             provider: providerRuntime.provider,
             inferenceService: inference,
             context,
             notes,
-            contextPressurePolicy: async () => codingHistoryPressureTransition(await history.view()),
+            inferenceOwnerId: currentWork.ownerId,
             model: configuration.model,
             toolBoundary: {
-              authorizationPolicyId: `coding-agent/${authority.mode}/${openedWorkspace.security.trustLevel}@2`,
+              authorizationPolicyId: `coding-agent/${runAuthority.mode}/${openedWorkspace.security.trustLevel}@2`,
               executionTargetId:
                 commandExecution?.descriptor.recoveryIdentity ??
                 workingCopy?.descriptor.workingCopyId ??
@@ -509,9 +739,21 @@ export async function createCodingSession(options: CodingSessionOptions): Promis
             ...(options.maxOutputTokens !== undefined ? { maxOutputTokens: options.maxOutputTokens } : {}),
             tools: activeTools,
             toolContext: { services: host.services },
+            ...(host.commandExecution
+              ? {
+                  resources: commandExecutionResources(host.commandExecution, {
+                    kind: 'owner',
+                    ownerId: currentWork.ownerId
+                  })
+                }
+              : {}),
             toolPolicy: {
-              allowedRisks: [...new Set([...authority.toolPolicy.allowedRisks, 'write' as const])]
+              allowedRisks: [...new Set([...runAuthority.toolPolicy.allowedRisks, 'write' as const])]
             },
+            toolContextPrerequisite: (request) =>
+              memoryNames.has(request.call.name)
+                ? Promise.resolve(undefined)
+                : repositoryGuidance.contextPrerequisite(request),
             toolAuthorizer: async (request) => {
               if (memoryNames.has(request.call.name))
                 return {
@@ -528,7 +770,7 @@ export async function createCodingSession(options: CodingSessionOptions): Promis
                 .map((access) => approvalKind(accessRisk(access.mode)))
                 .filter(
                   (kind): kind is CodingApprovalKind =>
-                    kind !== undefined && authority.requiredApprovals.includes(kind)
+                    kind !== undefined && runAuthority.requiredApprovals.includes(kind)
                 );
               return approvalKinds.length > 0
                 ? {
@@ -542,16 +784,11 @@ export async function createCodingSession(options: CodingSessionOptions): Promis
               if (!activeContext) throw new Error('Coding boundary context is unavailable.');
               return activeContext();
             },
-            ...(checks.length > 0 ? { checks } : {}),
-            disposition: createCodingDisposition({
-              ...(workingCopy ? { workingCopy } : {}),
-              mutable,
-              requiredCoverage: runCheckPlan.requiredCoverage
-            }),
             ...(projectExecutionPolicy && options.configuration?.limits
               ? { limits: options.configuration.limits }
               : {}),
             metadata: {
+              workId: currentWork.workId,
               workspaceId: workspace.identity.id,
               workspaceName: workspace.workspaceName,
               workspaceTrust: openedWorkspace.security.trustLevel,
@@ -580,34 +817,105 @@ export async function createCodingSession(options: CodingSessionOptions): Promis
                 providerActive = false;
               await onProgress(event);
             },
-            release: async () => {
-              try {
-                await host.close();
-              } finally {
-                activeRuntime = undefined;
-                activeRunId = undefined;
-                activeContext = undefined;
-                providerActive = false;
-                await workingCopy?.release();
-              }
+            release: () => {
+              activeRuntime = undefined;
+              activeRunId = undefined;
+              activeContext = undefined;
+              providerActive = false;
+              return Promise.resolve();
             }
           });
           return activeRuntime;
         } catch (error) {
-          if (localHost) await localHost.close().catch(() => undefined);
-          else runRoot.close();
-          await workingCopy?.release().catch(() => undefined);
+          if (cachedHost) throw error;
+          workHosts.delete(currentWork.workId);
+          const failures: unknown[] = [error];
+          try {
+            if (localHost) await localHost.close();
+            else runRoot.close();
+          } catch (cleanupError) {
+            failures.push(cleanupError);
+          }
+          try {
+            await workingCopy?.release();
+          } catch (cleanupError) {
+            failures.push(cleanupError);
+          }
+          if (failures.length > 1)
+            throw new AggregateError(failures, 'Coding runtime construction and resource release failed.', {
+              cause: error
+            });
           throw error;
         }
       }
+    };
+    const agent = new CodingSession(new AgentSession(sessionOptions), {
+      async readExecution(runId) {
+        const admitted = await work.forRun(runId);
+        if (admitted?.sessionId !== session.id)
+          throw new Error('Coding execution is outside this session.');
+        const ended = await events.latestOfType(runId, 'run.ended');
+        if (ended?.event.type !== 'run.ended')
+          throw new Error('Coding reconciliation requires its committed execution outcome.');
+        return { state: 'ended', terminal: ended.event.terminal, deliveryDiagnostics: [] };
+      },
+      async settle(execution, signal) {
+        const runId = execution.terminal.runId;
+        const recorded = await outcomes.read(runId);
+        let result: CodingEndedRunResult;
+        if (recorded?.stage === 'settled') result = { ...execution, outcome: recorded };
+        else {
+          if (!settleRuns.has(runId)) {
+            const inspection = await runs.inspect(runId);
+            const admitted = await work.forRun(runId);
+            const contribution = admitted?.requirementSources.find((item) => item.runId === runId);
+            if (contribution === undefined)
+              throw new Error('Coding recovery requires the original admitted contribution.');
+            await sessionOptions.createRuntime(settings, () => undefined, {
+              runId,
+              submissionId: contribution.submissionId,
+              resuming: true,
+              input: { ...inspection.state.input, runId }
+            });
+          }
+          const settle = settleRuns.get(runId);
+          if (settle === undefined) throw new Error('Coding work settlement is unavailable.');
+          result = await settle(execution, signal);
+        }
+        if (result.outcome.publication === 'applied') await releaseWorkHost(result.outcome.workId);
+        if (result.outcome.publication !== 'not_applicable' && result.outcome.stage === 'settled')
+          await handoffs.finalize(runId, result);
+        return result;
+      },
+      async recover() {
+        const results: AgentEndedRunResult[] = [];
+        for (const runId of existingRunIds) {
+          const admitted = await work.forRun(runId);
+          if (admitted?.sessionId !== session.id) continue;
+          if (
+            (await outcomes.read(runId))?.stage === 'settled' &&
+            (admitted.mode === 'review' || (await handoffs.read(runId)))
+          )
+            continue;
+          const ended = await events.latestOfType(runId, 'run.ended');
+          if (ended?.event.type === 'run.ended')
+            results.push({ state: 'ended', terminal: ended.event.terminal, deliveryDiagnostics: [] });
+        }
+        return results;
+      }
     });
-    agent.subscribe((event) =>
-      event.type === 'run.completed' && event.result.state === 'ended'
-        ? handoffs.finalize(event.runId, event.result).then(() => undefined)
-        : undefined
-    );
     return {
       agent,
+      outcomes,
+      async closeResources() {
+        const released = await Promise.allSettled([...workHosts.keys()].map(releaseWorkHost));
+        const failures = released
+          .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+          .map((result) => result.reason as unknown);
+        if (failures.length > 0)
+          throw new AggregateError(failures, 'Coding resource release remains incomplete.');
+      },
+      work,
       inference,
       history,
       notes,
@@ -626,7 +934,9 @@ export async function createCodingSession(options: CodingSessionOptions): Promis
   }
 }
 
-function admittedTrustLevel(value: OpenCodingWorkspace['security']['trustLevel']): 'restricted' | 'trusted' {
+function admittedTrustLevel(
+  value: OpenCodingWorkspace['security']['trustLevel']
+): 'restricted' | 'trusted' {
   if (value === 'restricted' || value === 'trusted') return value;
   throw new Error('Runtime creation requires an admitted workspace.');
 }
@@ -660,6 +970,11 @@ function approvalKind(risk: ReturnType<typeof accessRisk>): CodingApprovalKind |
 
 export async function closeCodingSession(runtime: CodingSessionComposition): Promise<void> {
   const failures: unknown[] = [];
+  try {
+    await runtime.closeResources();
+  } catch (error) {
+    failures.push(error);
+  }
   try {
     await runtime.handoffs.close();
   } catch (error) {

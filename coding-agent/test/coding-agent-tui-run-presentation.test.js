@@ -1,3 +1,4 @@
+import { testResult } from './helpers/results.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
@@ -8,44 +9,84 @@ import { waitFor } from './coding-agent-tui-test-helpers.js';
 
 test('TUI preserves terminal truth and does not duplicate the final answer', async () => {
   const terminal = decodeAgentTerminalSnapshot({
-    ...base(),
-    verificationStatus: 'failed',
-    checkResults: [{ id: 'tests', implementationId: 'coding-agent.test.check.v1', requirement: 'required', verdict: 'failed', summary: 'Tests failed', durationMs: 4 }]
+    ...base()
   });
-  const { host, events, running } = runProjectionApp();
+  const { host, events, running } = runPresentationApp();
   await waitFor(() => host.frames().length > 0);
   await events.enqueue({
     type: 'progress',
     event: {
-      type: 'assistant.ended', turnIndex: 1, turnId: 'turn-1', requestAttempt: 1,
-      content: 'Answer.', modelOutput: { status: 'complete', message: 'Answer.', source: 'content', turnIndex: 1 }
+      type: 'assistant.ended',
+      turnIndex: 1,
+      turnId: 'turn-1',
+      requestAttempt: 1,
+      content: 'Answer.',
+      modelOutput: { status: 'complete', message: 'Answer.', source: 'content', turnIndex: 1 }
     }
   });
-  await events.enqueue({ type: 'result', result: { state: 'ended', terminal, deliveryDiagnostics: [] } });
+  await events.enqueue({
+    type: 'result',
+    result: testResult(terminal, {
+      acceptance: 'rejected',
+      verification: {
+        status: 'failed',
+        checks: [
+          {
+            id: 'tests',
+            implementationId: 'tests@1',
+            requirement: 'required',
+            verdict: 'failed',
+            summary: 'Tests failed',
+            durationMs: 4
+          }
+        ]
+      }
+    })
+  });
   await waitFor(() => host.frames().length > 2);
   host.input('/exit\r');
   const exit = await running;
   await events.close();
 
   assert.equal(exit.state.run.kind, 'ended');
-  assert.equal(exit.state.run.terminal.verificationStatus, 'failed');
-  assert.equal(exit.state.conversation.items.filter((item) => item.kind === 'assistant' && item.text === 'Answer.').length, 1);
-  assert.ok(exit.state.conversation.items.some((item) => item.kind === 'notice' && item.text === 'Verification failed'));
+  assert.equal(exit.state.run.terminal.executionStatus, 'completed');
+  assert.equal('verificationStatus' in exit.state.run.terminal, false);
+  assert.equal(
+    exit.state.conversation.items.filter((item) => item.kind === 'assistant' && item.text === 'Answer.')
+      .length,
+    1
+  );
+  assert.ok(
+    exit.state.conversation.items.some(
+      (item) => item.kind === 'notice' && item.text === 'Verification failed'
+    )
+  );
 });
 
 test('advisory check failures remain visible without becoming required failures', async () => {
-  const { host, events, running } = runProjectionApp();
+  const { host, events, running } = runPresentationApp();
   await waitFor(() => host.frames().length > 0);
   await events.enqueue({
     type: 'progress',
     event: { type: 'turn.started', runId: 'run', turnIndex: 1, turnId: 'turn-1', requestAttempt: 1 }
   });
   await events.enqueue({
-    type: 'progress',
-    event: {
-      type: 'check.ended', turnIndex: 1, turnId: 'turn-1', requestAttempt: 1,
-      result: { id: 'style', implementationId: 'coding-agent.test.check.v1', requirement: 'advisory', verdict: 'failed', summary: 'Style issue', durationMs: 3 }
-    }
+    type: 'result',
+    result: testResult(decodeAgentTerminalSnapshot(base()), {
+      verification: {
+        status: 'not_required',
+        checks: [
+          {
+            id: 'style',
+            implementationId: 'tests@1',
+            requirement: 'advisory',
+            verdict: 'failed',
+            summary: 'Style issue',
+            durationMs: 3
+          }
+        ]
+      }
+    })
   });
   await waitFor(() => host.frames().length > 1);
   host.input('/exit\r');
@@ -57,7 +98,7 @@ test('advisory check failures remain visible without becoming required failures'
   assert.equal(check.summary, 'Style issue');
 });
 
-function runProjectionApp() {
+function runPresentationApp() {
   const host = createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 20 } });
   const events = new CodingAgentTuiEventSource();
   const app = createCodingAgentTuiApp('task', {
@@ -73,8 +114,29 @@ function runProjectionApp() {
 
 function base() {
   return {
-    runId: 'run', finalizationId: 'final', phase: 'ended', executionStatus: 'completed', verificationStatus: 'not_required', terminationReason: 'model_completed', modelTerminationReason: 'stop',
-    modelOutput: { status: 'complete', message: 'Answer.', source: 'content', turnIndex: 1 }, turnCount: 1, checkResults: [],
-    budget: { modelTurns: 1, totalToolCalls: 0, repeatedIdenticalToolCalls: 0, revisionAttempts: 0, elapsedMs: 1, promptTokens: 0, completionTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, knownCosts: {}, pricingStatus: 'unknown', unknownPricedTokens: 0, consecutiveProviderFailures: 0, consecutiveToolFailures: 0 }
+    runId: 'run',
+    finalizationId: 'final',
+    phase: 'ended',
+    executionStatus: 'completed',
+    terminationReason: 'model_completed',
+    modelTerminationReason: 'stop',
+    modelOutput: { status: 'complete', message: 'Answer.', source: 'content', turnIndex: 1 },
+    turnCount: 1,
+    budget: {
+      modelTurns: 1,
+      totalToolCalls: 0,
+      repeatedIdenticalToolCalls: 0,
+      elapsedMs: 1,
+      promptTokens: 0,
+      completionTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      knownCosts: {},
+      pricingStatus: 'unknown',
+      unknownPricedTokens: 0,
+      consecutiveProviderFailures: 0,
+      consecutiveToolFailures: 0
+    }
   };
 }

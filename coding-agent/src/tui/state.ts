@@ -1,29 +1,29 @@
-import { createScrollState, createTextAreaState } from '@ismail-elkorchi/terminal-ui/behavior';
-import type {
-  ScrollState,
-  TextAreaState,
-  UnscrolledSearchPickerState
-} from '@ismail-elkorchi/terminal-ui/behavior';
 import type {
   AgentApprovalSuspension,
-  AgentRunInspection,
-  AgentRunSuspension,
   AgentDeliveryDiagnostic,
   AgentProviderStateSummary,
   AgentReplayPayload,
   AgentRunBudgetState,
   AgentRunConfiguration,
+  AgentRunInspection,
   AgentRunPhase,
+  AgentRunSuspension,
   AgentSessionState,
+  AgentTerminalSnapshot,
   SessionBranchPoint,
   SessionPendingSubmission,
-  SessionReplayState,
-  AgentTerminalSnapshot
+  SessionReplayState
 } from '@agent-core/runtime';
+import type {
+  ScrollState,
+  TextAreaState,
+  UnscrolledSearchPickerState
+} from '@ismail-elkorchi/terminal-ui/behavior';
+import { createScrollState, createTextAreaState } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { CodingHandoff } from '../changes/coding-handoff.js';
 import type { CodingAgentTuiConversationEntry } from './conversation-model.js';
-import type { CodingAgentSetupRequirement } from './interactive-controller.js';
 import type { InteractiveCommandName } from './interactive-commands.js';
+import type { CodingAgentSetupRequirement } from './interactive-controller.js';
 
 export interface CodingAgentTuiRuntimeDetails {
   readonly providerId?: string;

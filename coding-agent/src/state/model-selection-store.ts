@@ -24,10 +24,14 @@ export class ModelSelectionStore {
       maxTotalBytes: 16_384
     });
     const keys = Object.keys(value);
-    if (value.version !== 1 || keys.some((key) => key !== 'version' && key !== 'provider' && key !== 'model')) {
+    if (
+      value.version !== 1 ||
+      keys.some((key) => key !== 'version' && key !== 'provider' && key !== 'model')
+    ) {
       throw new Error('Stored model selection is invalid.');
     }
-    if (!isCodingAgentProviderId(value.provider)) throw new Error('Stored model selection has an invalid provider.');
+    if (!isCodingAgentProviderId(value.provider))
+      throw new Error('Stored model selection has an invalid provider.');
     if (value.model !== undefined && (typeof value.model !== 'string' || value.model.trim().length === 0)) {
       throw new Error('Stored model selection has an invalid model.');
     }
@@ -39,10 +43,13 @@ export class ModelSelectionStore {
 
   write(selection: CodingAgentModelSelection): Promise<void> {
     const model = selection.model?.trim();
-    return this.#state.write('settings/model-selection.json', `${JSON.stringify({
-      version: 1,
-      provider: selection.provider,
-      ...(model === undefined || model.length === 0 ? {} : { model })
-    })}\n`);
+    return this.#state.write(
+      'settings/model-selection.json',
+      `${JSON.stringify({
+        version: 1,
+        provider: selection.provider,
+        ...(model === undefined || model.length === 0 ? {} : { model })
+      })}\n`
+    );
   }
 }

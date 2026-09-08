@@ -1,11 +1,9 @@
 import type {
   AgentApprovalSuspension,
-  AgentEndedRunResult,
-  AgentRunSuspension,
   AgentProgressEvent,
+  AgentRunSuspension,
   ContextWindowRecord
 } from '@agent-core/runtime';
-import type { CodingHandoff } from '../changes/coding-handoff.js';
 import type {
   ScrollTransition,
   SearchPickerAcceptEvent,
@@ -13,13 +11,15 @@ import type {
   TextAreaTransition
 } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { ScrollRequest } from '@ismail-elkorchi/terminal-ui/interaction';
+import type { CodingHandoff } from '../changes/coding-handoff.js';
+import type { CodingEndedRunResult } from '../outcome.js';
 import type { CodingAgentTuiCommandExecution } from './command-surface.js';
-import type { CodingAgentInteractiveState } from './interactive-controller.js';
 import type { CodingAgentTuiHydration } from './hydration.js';
+import type { CodingAgentInteractiveState } from './interactive-controller.js';
 
 export type CodingAgentTuiMessage =
   | { readonly type: 'progress'; readonly event: AgentProgressEvent }
-  | { readonly type: 'result'; readonly result: AgentEndedRunResult }
+  | { readonly type: 'result'; readonly result: CodingEndedRunResult }
   | { readonly type: 'failure'; readonly message: string }
   | { readonly type: 'delivery.failed'; readonly message: string }
   | { readonly type: 'context.transitioned'; readonly window: ContextWindowRecord }

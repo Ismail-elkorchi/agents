@@ -11,9 +11,10 @@ export function commandEffect(
     concurrency: 'parallel',
     async run(context) {
       if (context.signal.aborted) return { kind: 'none' };
-      const execution = handler === undefined
-        ? { message: 'No command handler is attached.', tone: 'error' as const }
-        : await handler.execute(request.value);
+      const execution =
+        handler === undefined
+          ? { message: 'No command handler is attached.', tone: 'error' as const }
+          : await handler.execute(request.value);
       return {
         kind: 'message',
         message: { type: 'command.completed', execution, recordResult: request.recordResult }

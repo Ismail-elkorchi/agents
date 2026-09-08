@@ -1,17 +1,17 @@
 import type { AgentApprovalRequest, AgentApprovalSuspension } from '@agent-core/runtime';
+import type { SearchPickerIndex } from '@ismail-elkorchi/terminal-ui/behavior';
 import {
   applyScrollRequest,
+  createSearchPickerIndex,
   createSearchPickerState,
   normalizeScrollState,
-  createSearchPickerIndex,
-  searchPickerReducer,
+  scrollReducer,
   searchPickerEntryById,
-  searchPickerView,
-  scrollReducer
+  searchPickerReducer,
+  searchPickerView
 } from '@ismail-elkorchi/terminal-ui/behavior';
-import type { SearchPickerIndex } from '@ismail-elkorchi/terminal-ui/behavior';
 import { createMeasuredCollection, measuredWindow } from '@ismail-elkorchi/terminal-ui/collection';
-import type { ScrollGeometry } from '@ismail-elkorchi/terminal-ui/interaction';
+import type { Element, InlineContent } from '@ismail-elkorchi/terminal-ui/components';
 import {
   button,
   dialog,
@@ -22,18 +22,19 @@ import {
   text,
   textArea
 } from '@ismail-elkorchi/terminal-ui/components';
-import type { Element, InlineContent } from '@ismail-elkorchi/terminal-ui/components';
+import type { ScrollGeometry } from '@ismail-elkorchi/terminal-ui/interaction';
 import { column, grid, overlay, row, viewport } from '@ismail-elkorchi/terminal-ui/layout';
 import { textDocumentText, wrapTextCells } from '@ismail-elkorchi/terminal-ui/text';
-import { defineTui } from '@ismail-elkorchi/terminal-ui/tui';
 import type {
   TuiContext,
   TuiEventSource,
   TuiInputBindingContext,
   TuiUpdateResult
 } from '@ismail-elkorchi/terminal-ui/tui';
-import { statusChrome, hintBar } from './chrome.js';
+import { defineTui } from '@ismail-elkorchi/terminal-ui/tui';
+import { hintBar, statusChrome } from './chrome.js';
 import { commandEffect } from './command-effects.js';
+import type { CodingAgentTuiCommandHandler } from './command-surface.js';
 import {
   COMMAND_INDEX,
   applyCommandExecution,
@@ -43,24 +44,6 @@ import {
   setComposerText,
   submitComposer
 } from './command-surface.js';
-import type { CodingAgentTuiCommandHandler } from './command-surface.js';
-import {
-  applyCodingHandoff,
-  applyFailure,
-  applyProgress,
-  applyResult,
-  applySessionState
-} from './event-reducer.js';
-import { hydrateCodingAgentTuiState } from './hydration.js';
-import type { CodingAgentTuiHydration } from './hydration.js';
-import type { CodingAgentTuiMessage } from './messages.js';
-import { createInitialCodingAgentTuiState } from './state.js';
-import type {
-  CodingAgentTuiConversationState,
-  CodingAgentTuiRuntimeDetails,
-  CodingAgentTuiSetupState,
-  CodingAgentTuiState
-} from './state.js';
 import type { CodingAgentTuiActivityEntry, CodingAgentTuiConversationEntry } from './conversation-model.js';
 import {
   appendNotice,
@@ -69,8 +52,25 @@ import {
   toggleActivity,
   upsertConversationEntry
 } from './conversation.js';
+import {
+  applyCodingHandoff,
+  applyFailure,
+  applyProgress,
+  applyResult,
+  applySessionState
+} from './event-reducer.js';
+import type { CodingAgentTuiHydration } from './hydration.js';
+import { hydrateCodingAgentTuiState } from './hydration.js';
 import { INTERACTIVE_COMMANDS } from './interactive-commands.js';
 import type { CodingAgentInteractiveState } from './interactive-controller.js';
+import type { CodingAgentTuiMessage } from './messages.js';
+import type {
+  CodingAgentTuiConversationState,
+  CodingAgentTuiRuntimeDetails,
+  CodingAgentTuiSetupState,
+  CodingAgentTuiState
+} from './state.js';
+import { createInitialCodingAgentTuiState } from './state.js';
 
 export interface CodingAgentTuiAppOptions {
   readonly eventSource?: TuiEventSource<CodingAgentTuiMessage>;
@@ -1115,7 +1115,10 @@ function binding(
   };
 }
 
-function composerBindingEnabled({ state, focusPath }: TuiInputBindingContext<CodingAgentTuiState>): boolean {
+function composerBindingEnabled({
+  state,
+  focusPath
+}: TuiInputBindingContext<CodingAgentTuiState>): boolean {
   return (
     state.overlay.kind === 'none' &&
     state.run.kind !== 'waiting_for_approval' &&

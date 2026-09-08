@@ -1,40 +1,51 @@
 #!/usr/bin/env node
+import { FileCredentialStore } from '@agent-core/auth';
+import {
+  type ModelProvider,
+  type ModelReasoningEffort,
+  type ModelReasoningRequest
+} from '@agent-core/model';
+import { JsonlEventRepository } from '@agent-core/persistence/node';
+import { OllamaProvider } from '@agent-core/provider-ollama';
+import { OpenAIProvider } from '@agent-core/provider-openai';
+import {
+  OpenAICodexProvider,
+  loginOpenAICodexDeviceCode,
+  type OpenAICodexTransport
+} from '@agent-core/provider-openai-codex';
+import { OpenRouterProvider } from '@agent-core/provider-openrouter';
+import {
+  agentEventCodec,
+  sourceRef,
+  type AgentEvent,
+  type AgentProgressEvent,
+  type SessionBindingInput,
+  type SessionDescriptor
+} from '@agent-core/runtime';
+import { JsonlSessionRepository } from '@agent-core/runtime/node';
+import { type ToolCall, type ToolObservation, type ToolProgress } from '@agent-core/tools';
 import { randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import path from 'node:path';
 import type { Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { FileCredentialStore } from '@agent-core/auth';
-import {
-  agentEventCodec,
-  sourceRef,
-  type AgentEvent,
-  type AgentSession,
-  type AgentProgressEvent,
-  type AgentRunResult,
-  type AgentSessionSubmissionResult,
-  type SessionBindingInput,
-  type SessionDescriptor
-} from '@agent-core/runtime';
-import { JsonlEventRepository } from '@agent-core/persistence/node';
-import { JsonlSessionRepository } from '@agent-core/runtime/node';
-import { type ModelProvider, type ModelReasoningEffort, type ModelReasoningRequest } from '@agent-core/model';
+import type { CodingHandoff } from './changes/coding-handoff.js';
+import type { CodingSession, CodingSessionSubmissionResult } from './coding-session.js';
 import {
   isCodingAgentProviderId,
   loadCodingAgentConfiguration,
   type CodingAgentConfiguration,
   type CodingAgentProviderId
 } from './configuration.js';
-import { codingWorkspaceSessionBinding, openCodingWorkspace, type OpenCodingWorkspace } from './workspace.js';
-import { OllamaProvider } from '@agent-core/provider-ollama';
+import type { CodingRunResult } from './outcome.js';
 import {
-  OpenAICodexProvider,
-  loginOpenAICodexDeviceCode,
-  type OpenAICodexTransport
-} from '@agent-core/provider-openai-codex';
-import { OpenAIProvider } from '@agent-core/provider-openai';
-import { OpenRouterProvider } from '@agent-core/provider-openrouter';
-import { type ToolCall, type ToolObservation, type ToolProgress } from '@agent-core/tools';
+  parseCodingPermissionMode,
+  resolveCodingAuthority,
+  type CodingPermissionMode
+} from './security/permission-mode.js';
+import { createTrustDecision } from './security/workspace-trust.js';
+import { closeCodingSession, createCodingSession, type CodingSessionComposition } from './session.js';
+import { ModelSelectionStore, type CodingAgentModelSelection } from './state/model-selection-store.js';
 import {
   CodingAgentTuiProgressRenderer,
   normalizeTaskInput,
@@ -46,40 +57,51 @@ import {
   type CodingAgentInteractiveState,
   type CodingAgentTuiRuntimeDetails
 } from './tui/index.js';
-import { createTrustDecision } from './security/workspace-trust.js';
 import {
-  parseCodingPermissionMode,
-  resolveCodingAuthority,
-  type CodingPermissionMode
-} from './security/permission-mode.js';
-import type { CodingHandoff } from './changes/coding-handoff.js';
-import { createCodingSession, closeCodingSession, type CodingSessionComposition } from './session.js';
+  codingWorkspaceSessionBinding,
+  openCodingWorkspace,
+  type OpenCodingWorkspace
+} from './workspace.js';
+export * from './coding-session.js';
+export {
+  RepositoryGuidanceSession,
+  loadInitialRepositoryGuidance
+} from './instructions/repository-guidance.js';
+export * from './outcome.js';
 export { protectProviderEgress, redactSensitiveText } from './security/provider-egress.js';
 export { createTrustDecision } from './security/workspace-trust.js';
-export { codingHistoryPressureTransition } from './context-policy.js';
 export { codingSessionBoundaryContext } from './session-context.js';
 export {
-  loadInitialRepositoryGuidance,
-  RepositoryGuidanceSession
-} from './instructions/repository-guidance.js';
+  closeCodingSession,
+  createCodingSession,
+  type CodingSessionComposition,
+  type CodingSessionOptions
+} from './session.js';
+export * from './work.js';
+export * from './verification/revision-acceptance-checks.js';
 export {
   inspectRepositoryOrientation,
   repositoryOrientationContext
 } from './workspace/repository-orientation.js';
-export {
-  createCodingSession,
-  closeCodingSession,
-  type CodingSessionOptions,
-  type CodingSessionComposition
-} from './session.js';
-import { ModelSelectionStore, type CodingAgentModelSelection } from './state/model-selection-store.js';
 
+export type { CodingHandoff, CodingPublicationStatus } from './changes/coding-handoff.js';
+export type {
+  RunChangeReport,
+  StructuredMutationReceipt,
+  WorkspaceChange
+} from './changes/run-change-report.js';
 export { loadCodingAgentConfiguration, parseCodingAgentConfiguration } from './configuration.js';
 export type {
   CodingAgentCheckConfiguration,
   CodingAgentConfiguration,
   CodingAgentProviderId
 } from './configuration.js';
+export {
+  resolveCodingAuthority,
+  type CodingApprovalKind,
+  type CodingAuthority,
+  type CodingPermissionMode
+} from './security/permission-mode.js';
 export {
   codingWorkspaceSessionBinding,
   describeWorkspace,
@@ -88,24 +110,14 @@ export {
   type OpenCodingWorkspace,
   type WorkspaceLayout
 } from './workspace.js';
-export {
-  resolveCodingAuthority,
-  type CodingApprovalKind,
-  type CodingAuthority,
-  type CodingPermissionMode
-} from './security/permission-mode.js';
-export type {
-  RunChangeReport,
-  StructuredMutationReceipt,
-  WorkspaceChange
-} from './changes/run-change-report.js';
-export type { CodingHandoff, CodingPublicationStatus } from './changes/coding-handoff.js';
 
 type CliProviderId = CodingAgentProviderId;
 type CliAuthProviderId = 'openai' | 'openai-codex';
 
 type SessionSelection =
-  { readonly kind: 'new' } | { readonly kind: 'latest' } | { readonly kind: 'existing'; readonly id: string };
+  | { readonly kind: 'new' }
+  | { readonly kind: 'latest' }
+  | { readonly kind: 'existing'; readonly id: string };
 
 interface CliOptions {
   root: string;
@@ -232,7 +244,7 @@ export async function main(argv: string[]): Promise<void> {
         options,
         workspace,
         async (runtime) => {
-          let resumedResult: AgentRunResult | undefined;
+          let resumedResult: CodingRunResult | undefined;
           let resumedFailure: Error | undefined;
           const unsubscribe = runtime.agent.subscribe((event) => {
             if (event.type === 'run.progress') progress.handle(event.event);
@@ -248,9 +260,7 @@ export async function main(argv: string[]): Promise<void> {
                 )
               : await submitTask(runtime.agent, task);
             const handoff =
-              result.state === 'ended'
-                ? await runtime.handoffs.finalize(result.terminal.runId, result)
-                : undefined;
+              result.state === 'ended' ? await runtime.handoffs.read(result.terminal.runId) : undefined;
             printResult(result, progress, process.stdout, handoff);
             printPersistenceLocations(runtime, result);
             process.exitCode = resultExitCode(result);
@@ -495,7 +505,9 @@ class CodingAgentInteractiveController implements CodingAgentInteractiveControll
       ...(this.resolvedSettings.temperature === undefined
         ? {}
         : { temperature: this.resolvedSettings.temperature }),
-      ...(this.resolvedSettings.reasoning === undefined ? {} : { reasoning: this.resolvedSettings.reasoning })
+      ...(this.resolvedSettings.reasoning === undefined
+        ? {}
+        : { reasoning: this.resolvedSettings.reasoning })
     };
     const runtime = await createRuntime(activationOptions, this.workspace, this.selectedSessionId);
     this.runtime = runtime;
@@ -519,13 +531,13 @@ class CodingAgentInteractiveController implements CodingAgentInteractiveControll
 
   private async onSessionEvent(
     runtime: CodingAgentRuntimeComposition,
-    event: import('@agent-core/runtime').AgentSessionEvent
+    event: import('./coding-session.js').CodingSessionEvent
   ): Promise<void> {
     if (this.runtime !== runtime) return;
     await this.emit(event);
     if (event.type === 'run.completed' && event.result.state === 'ended') {
-      const handoff = await runtime.handoffs.finalize(event.runId, event.result);
-      await this.emit({ type: 'handoff.ready', handoff });
+      const handoff = await runtime.handoffs.read(event.runId);
+      if (handoff) await this.emit({ type: 'handoff.ready', handoff });
     }
     await this.publishState('ready', []);
   }
@@ -684,6 +696,11 @@ class CodingAgentInteractiveController implements CodingAgentInteractiveControll
 
   private async resumeSuspension() {
     const agent = this.requireRuntime().agent;
+    const pending = agent.state().pendingSettlement;
+    if (pending) {
+      const result = await agent.reconcileWork(pending.runId);
+      return { message: result.outcome.reason ?? `Coding work ${result.outcome.workId} reconciled.` };
+    }
     await agent.restore();
     const suspension = agent.inspectSuspension();
     if (suspension === undefined) throw new Error('The selected session is not suspended.');
@@ -744,7 +761,9 @@ class CodingAgentInteractiveController implements CodingAgentInteractiveControll
           }).permissions);
     const runtimeDetails: CodingAgentTuiRuntimeDetails = Object.freeze({
       ...(runtime?.tuiDetails ?? {}),
-      ...(this.resolvedSettings.provider === undefined ? {} : { providerId: this.resolvedSettings.provider }),
+      ...(this.resolvedSettings.provider === undefined
+        ? {}
+        : { providerId: this.resolvedSettings.provider }),
       ...(this.resolvedSettings.model === undefined ? {} : { modelId: this.resolvedSettings.model }),
       ...(this.resolvedSettings.temperature === undefined
         ? {}
@@ -904,7 +923,7 @@ function interactiveStatus(state: CodingAgentInteractiveState): string {
   return `${sessionStatus} · ${state.runtimeDetails.providerId ?? 'provider'}/${state.runtimeDetails.modelId ?? 'model'}${session?.queuedInputs ? ` · ${String(session.queuedInputs)} queued` : ''}`;
 }
 
-function submissionMessage(result: AgentSessionSubmissionResult) {
+function submissionMessage(result: CodingSessionSubmissionResult) {
   switch (result.kind) {
     case 'started':
       return { message: 'Run started.' };
@@ -917,7 +936,7 @@ function submissionMessage(result: AgentSessionSubmissionResult) {
   }
 }
 
-function requireIdleSession(agent: AgentSession): void {
+function requireIdleSession(agent: CodingSession): void {
   const state = agent.state();
   if (state.phase !== 'idle' || state.queuedInputs > 0) {
     throw new Error(
@@ -946,18 +965,20 @@ async function loadRuntimeHydration(runtime: CodingAgentRuntimeComposition) {
   };
 }
 
-async function submitTask(agent: AgentSession, task: string): Promise<AgentRunResult> {
+async function submitTask(agent: CodingSession, task: string): Promise<CodingRunResult> {
   const submission = await agent.submit({ task });
   if (submission.kind === 'rejected') throw new Error(`Task was rejected: ${submission.reason}.`);
   return submission.completion;
 }
 
 async function resumeAcceptedRun(
-  agent: AgentSession,
-  result: () => AgentRunResult | undefined,
+  agent: CodingSession,
+  result: () => CodingRunResult | undefined,
   failure: () => Error | undefined
-): Promise<AgentRunResult> {
+): Promise<CodingRunResult> {
   await agent.restore();
+  const recovered = result();
+  if (recovered !== undefined) return recovered;
   const restored = agent.state();
   if (restored.phase === 'suspended') {
     const suspension = restored.suspension;
@@ -991,7 +1012,8 @@ async function withRuntimeComposition<T>(
 ): Promise<T> {
   const runtime = await createRuntime(options, workspace, persistedSessionId, requireExistingSession);
   let outcome:
-    { readonly kind: 'returned'; readonly value: T } | { readonly kind: 'failed'; readonly error: unknown };
+    | { readonly kind: 'returned'; readonly value: T }
+    | { readonly kind: 'failed'; readonly error: unknown };
   try {
     outcome = { kind: 'returned', value: await run(runtime) };
   } catch (error) {
@@ -1048,7 +1070,9 @@ async function createRuntime(
     permissionMode: options.permissionMode,
     ...(options.maxOutputTokens === undefined ? {} : { maxOutputTokens: options.maxOutputTokens }),
     ...(options.configuration === undefined ? {} : { configuration: options.configuration }),
-    ...(options.configurationSource === undefined ? {} : { configurationSource: options.configurationSource })
+    ...(options.configurationSource === undefined
+      ? {}
+      : { configurationSource: options.configurationSource })
   });
   if (options.branch) await composition.agent.branchFrom(options.branch, 'cli branch');
   return {
@@ -1065,7 +1089,9 @@ async function createRuntime(
   };
 }
 
-function admittedTrustLevel(value: OpenCodingWorkspace['security']['trustLevel']): 'restricted' | 'trusted' {
+function admittedTrustLevel(
+  value: OpenCodingWorkspace['security']['trustLevel']
+): 'restricted' | 'trusted' {
   if (value === 'restricted' || value === 'trusted') return value;
   throw new Error('Runtime creation requires an admitted workspace.');
 }
@@ -1305,9 +1331,7 @@ async function runApprovalCommand(args: string[]): Promise<void> {
             decision: decisionValue
           });
           const handoff =
-            result.state === 'ended'
-              ? await runtime.handoffs.finalize(result.terminal.runId, result)
-              : undefined;
+            result.state === 'ended' ? await runtime.handoffs.read(result.terminal.runId) : undefined;
           printResult(result, progress, process.stdout, handoff);
           printPersistenceLocations(runtime, result);
           process.exitCode = resultExitCode(result);
@@ -1391,7 +1415,10 @@ async function runTrustCommand(args: string[]): Promise<void> {
   }
 }
 
-function parseTrustOptions(args: readonly string[]): { readonly root: string; readonly stateRoot?: string } {
+function parseTrustOptions(args: readonly string[]): {
+  readonly root: string;
+  readonly stateRoot?: string;
+} {
   let root = process.cwd();
   let stateRoot: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
@@ -1518,7 +1545,7 @@ function writeLine(output: Writable, text: string): void {
 }
 
 function printResult(
-  result: AgentRunResult,
+  result: CodingRunResult,
   progress?: CodingAgentProgressRenderer,
   output: Writable = process.stdout,
   handoff?: CodingHandoff
@@ -1561,15 +1588,17 @@ function printResult(
   writeLine(output, `Model output: ${title(terminal.modelOutput.status)}`);
   if (terminal.modelTerminationReason)
     writeLine(output, `Model termination: ${title(terminal.modelTerminationReason.replaceAll('_', ' '))}`);
-  writeLine(output, `Verification: ${title(terminal.verificationStatus.replaceAll('_', ' '))}`);
+  writeLine(output, `Verification: ${title(result.outcome.verification.status.replaceAll('_', ' '))}`);
+  writeLine(output, `Acceptance: ${title(result.outcome.acceptance.replaceAll('_', ' '))}`);
+  if (result.outcome.reason) writeLine(output, result.outcome.reason);
   if ('errorMessage' in terminal) writeLine(output, `Reason: ${terminal.errorMessage}`);
-  if (terminal.checkResults.length > 0) {
+  if (result.outcome.verification.checks.length > 0) {
     writeLine(
       output,
-      `Checks:\n${terminal.checkResults.map((check) => `- ${check.id}: ${check.requirement}/${check.verdict} - ${check.summary}`).join('\n')}`
+      `Checks:\n${result.outcome.verification.checks.map((check) => `- ${check.id}: ${check.requirement}/${check.verdict} - ${check.summary}`).join('\n')}`
     );
   }
-  const advisoryFailures = terminal.checkResults.filter(
+  const advisoryFailures = result.outcome.verification.checks.filter(
     (check) => check.requirement === 'advisory' && check.verdict !== 'passed'
   ).length;
   if (advisoryFailures > 0)
@@ -1598,7 +1627,7 @@ function printResult(
     writeLine(output, `Delivery diagnostic (${diagnostic.eventType}): ${diagnostic.message}`);
 }
 
-export function resultExitCode(result: AgentRunResult): number {
+export function resultExitCode(result: CodingRunResult): number {
   if (result.state === 'suspended') return 7;
   if (result.terminal.executionStatus === 'aborted') return 130;
   if (result.terminal.executionStatus === 'failed') return 1;
@@ -1607,8 +1636,13 @@ export function resultExitCode(result: AgentRunResult): number {
     result.terminal.modelOutput.status === 'indeterminate'
   )
     return 2;
-  if (result.terminal.verificationStatus === 'failed') return 3;
-  if (result.terminal.verificationStatus === 'inconclusive') return 4;
+  if (result.outcome.acceptance === 'rejected' || result.outcome.verification.status === 'failed') return 3;
+  if (
+    result.outcome.acceptance === 'inconclusive' ||
+    result.outcome.stage === 'awaiting_reconciliation' ||
+    result.outcome.verification.status === 'inconclusive'
+  )
+    return 4;
   return 0;
 }
 
@@ -1616,12 +1650,12 @@ function title(value: string): string {
   return value.length === 0 ? value : `${value[0]?.toUpperCase() ?? ''}${value.slice(1)}`;
 }
 
-function printPersistenceLocations(runtime: CodingAgentRuntimeComposition, result: AgentRunResult): void {
+function printPersistenceLocations(runtime: CodingAgentRuntimeComposition, result: CodingRunResult): void {
   console.error(`\nLedger: ${runtime.events.location(runIdOf(result))}`);
   console.error(`Session: ${runtime.sessions.location(runtime.session.id)}`);
 }
 
-function runIdOf(result: AgentRunResult): string {
+function runIdOf(result: CodingRunResult): string {
   return result.state === 'suspended' ? result.runId : result.terminal.runId;
 }
 
@@ -2042,3 +2076,5 @@ function isDirectRun(): boolean {
     return path.resolve(entrypoint) === modulePath;
   }
 }
+
+export { settleCodingWork } from './verification/settlement.js';

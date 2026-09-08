@@ -1,20 +1,17 @@
-import type {
-  AgentCheckResult,
-  AgentEndedRunResult,
-  AgentProgressEvent,
-  AgentRunPhase,
-  AgentSessionState
-} from '@agent-core/runtime';
+import type { AgentProgressEvent, AgentRunPhase, AgentSessionState } from '@agent-core/runtime';
+import { type CheckResult } from '@agents/verification';
 import type { CodingHandoff } from '../changes/coding-handoff.js';
-import type { CodingAgentTuiState } from './state.js';
+import type { CodingEndedRunResult } from '../outcome.js';
 import type { CodingAgentTuiActivityEntry } from './conversation-model.js';
 import {
   appendNotice,
   upsertActivity,
   upsertAssistant,
-  upsertReasoning,
-  upsertConversationEntry
+  upsertConversationEntry,
+  upsertReasoning
 } from './conversation.js';
+import { terminalPresentation } from './run-presentation.js';
+import type { CodingAgentTuiState } from './state.js';
 import {
   completedToolActivity,
   pendingToolActivity,
@@ -22,7 +19,6 @@ import {
   toolActivityId,
   updatedToolActivity
 } from './tool-presentation.js';
-import { terminalPresentation } from './run-presentation.js';
 
 type ProgressEventType = AgentProgressEvent['type'];
 type ProgressEvent<K extends ProgressEventType> = Extract<AgentProgressEvent, { readonly type: K }>;
@@ -49,7 +45,12 @@ export function applyProgress(state: CodingAgentTuiState, event: AgentProgressEv
     case 'assistant.started':
       return upsertAssistant(withWorking(state, 'Thinking'), event.turnId, '', 'streaming');
     case 'assistant.delta':
-      return upsertAssistant(withWorking(state, 'Responding'), event.turnId, event.accumulated, 'streaming');
+      return upsertAssistant(
+        withWorking(state, 'Responding'),
+        event.turnId,
+        event.accumulated,
+        'streaming'
+      );
     case 'assistant.reasoning':
       return reduceReasoning(state, event);
     case 'assistant.status':
@@ -68,8 +69,6 @@ export function applyProgress(state: CodingAgentTuiState, event: AgentProgressEv
       return reduceToolUpdated(state, event);
     case 'tool.ended':
       return reduceToolEnded(state, event);
-    case 'check.ended':
-      return reduceCheckEnded(state, event);
     case 'run.ended':
       return applyTerminal(state, event.terminal, event.deliveryDiagnostics);
   }
@@ -189,7 +188,11 @@ function reduceToolStarted(
 ): CodingAgentTuiState {
   return upsertActivity(
     withWorking(state, 'Running tool'),
-    runningToolActivity(toolActivityId({ ...event, runId: currentRunId(state) }), event.input, event.effects)
+    runningToolActivity(
+      toolActivityId({ ...event, runId: currentRunId(state) }),
+      event.input,
+      event.effects
+    )
   );
 }
 
@@ -227,16 +230,9 @@ function reduceToolEnded(
   );
 }
 
-function reduceCheckEnded(
-  state: CodingAgentTuiState,
-  event: ProgressEvent<'check.ended'>
-): CodingAgentTuiState {
-  return applyCheckResult(state, event.result, currentRunId(state));
-}
-
 export function applyCheckResult(
   state: CodingAgentTuiState,
-  result: AgentCheckResult,
+  result: CheckResult,
   runId: string
 ): CodingAgentTuiState {
   const status =
@@ -287,10 +283,19 @@ export function applySessionState(
   };
 }
 
-export function applyCodingHandoff(state: CodingAgentTuiState, handoff: CodingHandoff): CodingAgentTuiState {
+export function applyCodingHandoff(
+  state: CodingAgentTuiState,
+  handoff: CodingHandoff
+): CodingAgentTuiState {
+  state = handoff.outcome.verification.checks.reduce(
+    (current, check) => applyCheckResult(current, check, handoff.runId),
+    state
+  );
   const report = handoff.changeReport;
   const structured = report.changes.filter((change) => change.attribution === 'structured_mutation').length;
-  const external = report.changes.filter((change) => change.attribution === 'external_or_concurrent').length;
+  const external = report.changes.filter(
+    (change) => change.attribution === 'external_or_concurrent'
+  ).length;
   const changeSummary =
     report.totalChanges === 0
       ? 'No workspace changes'
@@ -329,8 +334,20 @@ export function applyCodingHandoff(state: CodingAgentTuiState, handoff: CodingHa
   );
 }
 
-export function applyResult(state: CodingAgentTuiState, result: AgentEndedRunResult): CodingAgentTuiState {
-  return applyTerminal(state, result.terminal, result.deliveryDiagnostics);
+export function applyResult(state: CodingAgentTuiState, result: CodingEndedRunResult): CodingAgentTuiState {
+  const checked = result.outcome.verification.checks.reduce(
+    (current, check) => applyCheckResult(current, check, result.terminal.runId),
+    state
+  );
+  const ended = applyTerminal(checked, result.terminal, result.deliveryDiagnostics);
+  if (result.outcome.acceptance === 'rejected') return appendNotice(ended, 'Verification failed', 'error');
+  if (result.outcome.acceptance === 'inconclusive')
+    return appendNotice(
+      ended,
+      result.outcome.reason ?? 'Acceptance requires reconciliation or further work.',
+      'warning'
+    );
+  return ended;
 }
 
 export function applyFailure(state: CodingAgentTuiState, message: string): CodingAgentTuiState {
@@ -339,14 +356,11 @@ export function applyFailure(state: CodingAgentTuiState, message: string): Codin
 
 function applyTerminal(
   state: CodingAgentTuiState,
-  terminal: AgentEndedRunResult['terminal'],
-  deliveryDiagnostics: AgentEndedRunResult['deliveryDiagnostics']
+  terminal: CodingEndedRunResult['terminal'],
+  deliveryDiagnostics: CodingEndedRunResult['deliveryDiagnostics']
 ): CodingAgentTuiState {
   const presentation = terminalPresentation(terminal);
-  let next: CodingAgentTuiState = terminal.checkResults.reduce(
-    (current, check) => applyCheckResult(current, check, terminal.runId),
-    state
-  );
+  let next = state;
   next = {
     ...next,
     run: { kind: 'ended', terminal },
@@ -366,7 +380,11 @@ function applyTerminal(
   }
   if (presentation.status === 'warning' || presentation.status === 'error') {
     if (!hasVisibleMessage(next, presentation.headline)) {
-      next = appendNotice(next, presentation.headline, presentation.status === 'error' ? 'error' : 'warning');
+      next = appendNotice(
+        next,
+        presentation.headline,
+        presentation.status === 'error' ? 'error' : 'warning'
+      );
     }
   }
   return next;
@@ -374,7 +392,7 @@ function applyTerminal(
 
 export function applyHydratedTerminal(
   state: CodingAgentTuiState,
-  terminal: AgentEndedRunResult['terminal']
+  terminal: CodingEndedRunResult['terminal']
 ): CodingAgentTuiState {
   return applyTerminal(state, terminal, []);
 }
@@ -413,10 +431,6 @@ function phaseLabel(phase: AgentRunPhase): string {
       return 'Using tools';
     case 'waiting_for_approval':
       return 'Approval required';
-    case 'verifying':
-      return 'Verifying';
-    case 'deciding':
-      return 'Evaluating result';
     case 'finalizing':
       return 'Finishing';
     case 'ended':
@@ -430,6 +444,7 @@ function compact(value: string): string {
 }
 
 function diagnosticText(diagnostic: ProgressEvent<'model.failed'>['diagnostic']): string {
-  const cause = diagnostic.causeSummary === undefined ? '' : ` · ${JSON.stringify(diagnostic.causeSummary)}`;
+  const cause =
+    diagnostic.causeSummary === undefined ? '' : ` · ${JSON.stringify(diagnostic.causeSummary)}`;
   return `${diagnostic.provider} ${diagnostic.code}${cause}`;
 }

@@ -1,8 +1,8 @@
-import { hashJson } from '@agent-core/persistence';
-import { createHash } from 'node:crypto';
 import { parseJsonObject, type JsonObject } from '@agent-core/json';
 import type { ModelReasoningRequest, ModelRequest } from '@agent-core/model';
+import { hashJson } from '@agent-core/persistence';
 import { type InferenceService } from '@agent-core/runtime';
+import { createHash } from 'node:crypto';
 import * as z from 'zod';
 import { contentId, textSha256 } from './canonical.js';
 import {
@@ -11,8 +11,8 @@ import {
   type EditorialFinding,
   type SemanticPreservationFinding
 } from './domain.js';
-import type { WritingEditorialChecker } from './verification.js';
 import { offsetRange } from './text-ranges.js';
+import type { WritingEditorialChecker } from './verification.js';
 
 const semanticVerificationSchema = z.strictObject({
   scope: z.string().trim().min(1).max(10_000),
@@ -127,9 +127,7 @@ export function createDefaultWritingEditorialChecker(input: {
     implementationId,
     verificationPolicyId,
     async verify(verification: Parameters<WritingEditorialChecker['verify']>[0]) {
-      const semanticScopes = Object.freeze(
-        verification.operationContract.intents.map((intent) => intent.intentId)
-      );
+      const semanticScopes = Object.freeze(verification.operationContract.verification.semanticIntentIds);
       const editorialCriteria = verification.operationContract.applicableCriteria.filter(
         (criterion) => criterion.verificationKind === 'editorial'
       );
@@ -166,7 +164,7 @@ export function createDefaultWritingEditorialChecker(input: {
       const invocationId = `writing-verifier-${createHash('sha256').update(implementationId).update('\0').update(verification.verificationInputSha256).digest('hex')}`;
       const { response } = await input.inference.invoke({
         invocationId,
-        ownerId: verification.operation.runId,
+        ownerId: `writing-operation:${verification.operation.operationId}`,
         purpose: 'writing-semantic-editorial-verification',
         profile,
         request,
@@ -215,7 +213,7 @@ export function createDefaultWritingEditorialChecker(input: {
           observedChanges: item.observedChanges,
           unexplainedChanges: item.unexplainedChanges,
           lostPriorEditIds: item.lostPriorEditIds,
-          evaluatorId: implementationId,
+          checkerId: implementationId,
           verificationPolicyId,
           verificationInputSha256: verification.verificationInputSha256,
           baseRevisionId: verification.base.revision.revisionId,
@@ -240,7 +238,7 @@ export function createDefaultWritingEditorialChecker(input: {
           verdict: item.verdict,
           supportingCitations: resolveCitations(item.citationIds, verification.citationCatalog),
           explanation: item.explanation,
-          evaluatorId: implementationId,
+          checkerId: implementationId,
           verificationPolicyId,
           verificationInputSha256: verification.verificationInputSha256,
           baseRevisionId: verification.base.revision.revisionId,
@@ -270,7 +268,9 @@ function verificationPayload(
       resources: Object.freeze(
         [...baseline.text]
           .filter(([resourceId]) => targetIds.has(resourceId))
-          .map(([resourceId, content]) => Object.freeze({ resourceId, sha256: textSha256(content), content }))
+          .map(([resourceId, content]) =>
+            Object.freeze({ resourceId, sha256: textSha256(content), content })
+          )
       )
     })
   );
@@ -338,7 +338,9 @@ function evidenceExcerpts(
             ? undefined
             : verification.comparisonBaselines
                 .map((baseline) => baseline.text.get(resourceId))
-                .find((candidate) => candidate !== undefined && textSha256(candidate) === source.exactSha256);
+                .find(
+                  (candidate) => candidate !== undefined && textSha256(candidate) === source.exactSha256
+                );
         if (resourceId === undefined || content === undefined)
           return Object.freeze({
             sourceId: source.sourceId,

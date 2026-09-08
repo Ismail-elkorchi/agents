@@ -1,17 +1,20 @@
-import { createHash } from 'node:crypto';
+import type { CodingOutcomeRepository } from './outcome.js';
+
 import type { EventRepository } from '@agent-core/persistence';
 import type {
-  AgentCheckResult,
   AgentEvent,
   PromptContextItemInput,
   SessionDescriptor,
   SessionRepository
 } from '@agent-core/runtime';
 import { captureWorkspaceSnapshot, type RootedFileAuthority } from '@agent-core/tools-local';
-import type { AdmittedCodingCheckPlan } from './verification/candidate-acceptance-checks.js';
-import type { PrivateStateDirectory } from './state/private-state.js';
-import { createRunChangeReport } from './changes/run-change-report.js';
+import { type CheckResult } from '@agents/verification';
+import { createHash } from 'node:crypto';
 import type { CodingHandoffService } from './changes/coding-handoff-service.js';
+import { createRunChangeReport } from './changes/run-change-report.js';
+import type { PrivateStateDirectory } from './state/private-state.js';
+import type { AdmittedCodingCheckPlan } from './verification/revision-acceptance-checks.js';
+import type { CodingWork } from './work.js';
 
 /** A fresh application contribution; check outputs always retain their original revision binding. */
 export async function codingSessionBoundaryContext(input: {
@@ -19,49 +22,65 @@ export async function codingSessionBoundaryContext(input: {
   readonly sourceRoot: RootedFileAuthority;
   readonly state: PrivateStateDirectory;
   readonly runId: string;
+  readonly work: CodingWork;
   readonly events: EventRepository<AgentEvent>;
   readonly sessions: SessionRepository;
   readonly session: SessionDescriptor;
   readonly handoffs: CodingHandoffService;
   readonly checkPlan: AdmittedCodingCheckPlan;
+  readonly outcomes: CodingOutcomeRepository;
 }): Promise<PromptContextItemInput> {
-  const [changes, source, replay, lastCheck, disposition, state] = await Promise.all([
-    createRunChangeReport(input),
+  const [changes, source, replay, outcomes, state] = await Promise.all([
+    input.work.mode === 'revision'
+      ? createRunChangeReport({ ...input, workId: input.work.workId })
+      : undefined,
     captureWorkspaceSnapshot(input.sourceRoot),
     input.sessions.loadReplayState(input.session),
-    input.events.latestOfType(input.runId, 'check.ended'),
-    input.events.latestOfType(input.runId, 'run.disposition.decided'),
+    Promise.all(input.work.runIds.map((runId) => input.outcomes.read(runId))),
     input.events.latestOfType(input.runId, 'run.state.changed')
   ]);
   const latest = replay.runFinalizations.at(-1);
   const handoff = latest === undefined ? undefined : await input.handoffs.read(latest.runId);
-  const checks =
-    lastCheck === undefined ? [] : await currentChecks(input.events, input.runId, lastCheck.eventId);
-  const latestCheck = checks.find((check) => check.eventId === lastCheck?.eventId);
+  const outcome = outcomes.filter((item) => item !== undefined).at(-1);
+  const checks = outcome?.verification.checks.map((result) => ({ runId: outcome.runId, result })) ?? [];
+  const latestCheck = checks.at(-1);
   const phase = state?.event.type === 'run.state.changed' ? state.event.state.phase : undefined;
   const material = {
     version: 1,
     runId: input.runId,
     sourceWorkspace: { revision: source.digest, coverage: source.coverage, causes: source.causes },
-    workingCopy: {
-      revision: changes.finalDigest,
-      preChangeRevision: changes.preChangeDigest,
-      coverage: changes.coverage,
-      changedResources: changes.changes,
-      omittedChanges: changes.omittedChanges,
-      causes: changes.causes
+    work: {
+      workId: input.work.workId,
+      ownerId: input.work.ownerId,
+      requirementSources: {
+        count: input.work.requirementSources.length,
+        authority:
+          'Original user contributions in session history; context selection and notes do not supersede them.',
+        selection:
+          'Retain the current work objective and its corrections; select other relevant constraints and history explicitly. Retrieve original sources to resolve uncertainty.'
+      }
     },
+    workingCopy:
+      changes === undefined
+        ? null
+        : {
+            revision: changes.finalDigest,
+            preChangeRevision: changes.preChangeDigest,
+            coverage: changes.coverage,
+            changedResources: changes.changes,
+            omittedChanges: changes.omittedChanges,
+            causes: changes.causes
+          },
     checkPlan: input.checkPlan,
-    checks: checks.map((record) => bindCheckRevision(record, changes.finalDigest)),
-    latestCheck: latestCheck === undefined ? null : bindCheckRevision(latestCheck, changes.finalDigest),
+    checks: checks.map((record) => bindCheckRevision(record, changes?.finalDigest ?? source.digest)),
+    latestCheck:
+      latestCheck === undefined
+        ? null
+        : bindCheckRevision(latestCheck, changes?.finalDigest ?? source.digest),
     publication:
-      disposition?.event.type === 'run.disposition.decided'
-        ? {
-            eventId: disposition.eventId,
-            decision: disposition.event.decision,
-            implementationId: disposition.event.implementationId
-          }
-        : { status: 'not_decided' },
+      outcome === undefined
+        ? { status: 'not_decided' }
+        : { status: outcome.publication, revision: outcome.revision, reason: outcome.reason },
     unresolved: phase?.kind === 'suspended' ? phase : null,
     latestHandoff:
       handoff === undefined
@@ -71,11 +90,11 @@ export async function codingSessionBoundaryContext(input: {
             reviewedRevision: handoff.reviewedRevision,
             publication: handoff.publication,
             changedFiles: handoff.changedFiles,
-            checks: handoff.checks,
+            checks: handoff.outcome.verification.checks,
             effectsWithUnknownOutcome: handoff.effectsWithUnknownOutcome,
             unresolved: handoff.unresolved,
             changeArtifact: handoff.changeArtifact,
-            appliesToCurrentRevision: handoff.reviewedRevision === changes.finalDigest
+            appliesToCurrentRevision: handoff.reviewedRevision === changes?.finalDigest
           }
   };
   const content = JSON.stringify(material);
@@ -95,13 +114,8 @@ export async function codingSessionBoundaryContext(input: {
 }
 
 interface CheckObservation {
-  readonly eventId: string;
-  readonly result: AgentCheckResult;
-}
-
-interface CachedChecks {
-  readonly lastEventId: string;
-  readonly checks: readonly CheckObservation[];
+  readonly runId: string;
+  readonly result: CheckResult;
 }
 
 function bindCheckRevision(record: CheckObservation, currentRevision: string) {
@@ -119,34 +133,4 @@ function bindCheckRevision(record: CheckObservation, currentRevision: string) {
     checkedRevision: revision,
     appliesToCurrentRevision: revision !== null && revision === currentRevision
   };
-}
-
-const checkCache = new WeakMap<EventRepository<AgentEvent>, Map<string, CachedChecks>>();
-
-async function currentChecks(
-  events: EventRepository<AgentEvent>,
-  runId: string,
-  lastEventId: string
-): Promise<readonly CheckObservation[]> {
-  const runs = checkCache.get(events) ?? new Map<string, CachedChecks>();
-  checkCache.set(events, runs);
-  const cached = runs.get(runId);
-  if (cached?.lastEventId === lastEventId) return cached.checks;
-  const results = new Map<string, CheckObservation>();
-  for await (const record of events.read(runId)) {
-    if (record.event.type === 'check.ended')
-      results.set(
-        record.event.result.id,
-        Object.freeze({ eventId: record.eventId, result: record.event.result })
-      );
-    if (record.eventId === lastEventId) break;
-  }
-  const checks = Object.freeze([...results.values()]);
-  // Current/finalized facts also live durably in their run or handoff; keep this cache bounded.
-  if (runs.size >= 16 && !runs.has(runId)) {
-    const oldest = runs.keys().next().value;
-    if (oldest !== undefined) runs.delete(oldest);
-  }
-  runs.set(runId, { lastEventId, checks });
-  return checks;
 }

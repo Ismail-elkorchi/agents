@@ -1,8 +1,8 @@
 import type {
   AgentApprovalSuspension,
   AgentRunInspection,
-  AgentRunSuspension,
   AgentRunState,
+  AgentRunSuspension,
   AgentSessionState,
   AgentTerminalSnapshot,
   SessionBranchEntry,
@@ -12,14 +12,9 @@ import type {
 } from '@agent-core/runtime';
 import { decodeToolCall } from '@agent-core/tools';
 import type { CodingHandoff } from '../changes/coding-handoff.js';
-import { upsertActivity, upsertAssistant, upsertConversationEntry } from './conversation.js';
 import type { CodingAgentTuiActivityEntry } from './conversation-model.js';
-import {
-  applyCodingHandoff,
-  applyCheckResult,
-  applyHydratedTerminal,
-  applySessionState
-} from './event-reducer.js';
+import { upsertActivity, upsertAssistant, upsertConversationEntry } from './conversation.js';
+import { applyCodingHandoff, applyHydratedTerminal, applySessionState } from './event-reducer.js';
 import type { CodingAgentTuiState } from './state.js';
 import {
   completedSessionToolActivity,
@@ -65,11 +60,6 @@ export function hydrateCodingAgentTuiState(
   };
   for (const entry of hydration.replay.branch) next = applyBranchEntry(next, entry);
   next = applySessionState(next, hydration.session);
-  for (const finalization of hydration.replay.runFinalizations) {
-    for (const check of finalization.terminal.checkResults) {
-      next = applyCheckResult(next, check, finalization.runId);
-    }
-  }
   const latestTerminal = hydration.replay.runFinalizations.at(-1)?.terminal;
   if (latestTerminal !== undefined) next = applyHydratedTerminal(next, latestTerminal);
   for (const handoff of hydration.handoffs) next = applyCodingHandoff(next, handoff);
@@ -93,7 +83,7 @@ function restoreSessionHistory(
     const identity = `final ${point.entryId}${point.runId === undefined ? '' : ` · run ${point.runId}`}`;
     return terminal === undefined
       ? `${identity} · terminal outside active replay · ${point.timestamp}`
-      : `${identity} · ${terminal.executionStatus} · verification ${terminal.verificationStatus} · model output ${terminal.modelOutput.status}`;
+      : `${identity} · ${terminal.executionStatus} · model output ${terminal.modelOutput.status}`;
   });
   if (branchPoints.length > retained.length)
     lines.unshift(`${String(branchPoints.length - retained.length)} earlier branch points omitted`);
@@ -261,7 +251,6 @@ function runSuspensionReason(run: AgentRunState): AgentRunSuspension['reason'] |
     return 'provider_outcome_unknown';
   if (run.toolBatches.some((batch) => batch.callStates.some((call) => call.stage === 'outcome_unknown')))
     return 'tool_outcome_unknown';
-  if (phase.kind === 'disposition' && phase.stage === 'outcome_unknown') return 'disposition_outcome_unknown';
   return undefined;
 }
 
@@ -278,7 +267,6 @@ function runEffectId(run: AgentRunState, reason: AgentRunSuspension['reason']): 
       .flatMap((batch) => batch.callStates)
       .find((call) => call.stage === 'outcome_unknown')?.effect.intent.effectId;
   }
-  if (phase.kind === 'disposition' && phase.stage === 'outcome_unknown') return phase.effect.intent.effectId;
   return undefined;
 }
 
@@ -289,12 +277,7 @@ function runLabel(run: AgentRunState): string {
       : run.control.status === 'abort_requested'
         ? 'abort requested'
         : `driver generation ${String(run.driverGeneration)}`;
-  const phase =
-    run.phase.kind === 'initializing'
-      ? run.phase.step.replaceAll('_', ' ')
-      : run.phase.kind === 'verification' || run.phase.kind === 'disposition'
-        ? `${run.phase.kind} ${run.phase.stage.replaceAll('_', ' ')}`
-        : run.phase.kind;
+  const phase = run.phase.kind === 'initializing' ? run.phase.step.replaceAll('_', ' ') : run.phase.kind;
   const providers = run.providerRequests.filter((request) => request.stage !== 'consumed').length;
   const calls = run.toolBatches
     .flatMap((batch) => batch.callStates)

@@ -1,3 +1,4 @@
+import { testOutcome } from './helpers/results.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
@@ -14,25 +15,45 @@ test('durable restore precedes live append and stable identities prevent duplica
   const host = createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 20 } });
   const events = new CodingAgentTuiEventSource();
   const hydration = runningHydration();
-  const running = runTui(createCodingAgentTuiApp('', {
-    eventSource: events,
-    initialHydration: hydration,
-    commandHandler: { execute: () => ({ message: 'Exiting.', exit: true }) }
-  }), { host });
+  const running = runTui(
+    createCodingAgentTuiApp('', {
+      eventSource: events,
+      initialHydration: hydration,
+      commandHandler: { execute: () => ({ message: 'Exiting.', exit: true }) }
+    }),
+    { host }
+  );
   await waitFor(() => host.frames().length > 0);
 
   await events.enqueue({
     type: 'progress',
-    event: { type: 'turn.started', runId: 'run-1', sessionId: 'session-1', turnIndex: 1, turnId: 'turn-1', requestAttempt: 1 }
-  });
-  await events.enqueue({
-    type: 'progress',
-    event: { type: 'assistant.delta', turnIndex: 1, turnId: 'turn-1', requestAttempt: 1, delta: ' restored', accumulated: 'Partial restored' }
+    event: {
+      type: 'turn.started',
+      runId: 'run-1',
+      sessionId: 'session-1',
+      turnIndex: 1,
+      turnId: 'turn-1',
+      requestAttempt: 1
+    }
   });
   await events.enqueue({
     type: 'progress',
     event: {
-      type: 'assistant.ended', turnIndex: 1, turnId: 'turn-1', requestAttempt: 1,
+      type: 'assistant.delta',
+      turnIndex: 1,
+      turnId: 'turn-1',
+      requestAttempt: 1,
+      delta: ' restored',
+      accumulated: 'Partial restored'
+    }
+  });
+  await events.enqueue({
+    type: 'progress',
+    event: {
+      type: 'assistant.ended',
+      turnIndex: 1,
+      turnId: 'turn-1',
+      requestAttempt: 1,
       content: 'Partial restored',
       modelOutput: { status: 'complete', message: 'Partial restored', source: 'content', turnIndex: 1 }
     }
@@ -41,9 +62,20 @@ test('durable restore precedes live append and stable identities prevent duplica
   const exit = await running;
   await events.close();
 
-  assert.equal(exit.state.conversation.items.filter((entry) => entry.kind === 'user' && entry.text === 'Existing task').length, 1);
-  assert.equal(exit.state.conversation.items.filter((entry) => entry.kind === 'assistant' && entry.turnId === 'turn-1').length, 1);
-  assert.equal(exit.state.conversation.items.find((entry) => entry.id === 'assistant:turn-1').text, 'Partial restored');
+  assert.equal(
+    exit.state.conversation.items.filter((entry) => entry.kind === 'user' && entry.text === 'Existing task')
+      .length,
+    1
+  );
+  assert.equal(
+    exit.state.conversation.items.filter((entry) => entry.kind === 'assistant' && entry.turnId === 'turn-1')
+      .length,
+    1
+  );
+  assert.equal(
+    exit.state.conversation.items.find((entry) => entry.id === 'assistant:turn-1').text,
+    'Partial restored'
+  );
   assert.equal(exit.state.debug.session.sessionId, 'session-1');
   assert.equal(exit.state.debug.runs[0].state.control.status, 'owned');
 });
@@ -66,16 +98,23 @@ test('hydration restores exact approval and unknown-effect recovery boundaries',
   await recoveryRuntime.start();
   assert.equal(recoveryRuntime.state().run.kind, 'waiting_for_recovery');
   assert.equal(recoveryRuntime.state().run.suspension.effectId, 'effect-unknown');
-  assert.ok(recoveryRuntime.state().conversation.items.some((entry) => entry.kind === 'notice' && entry.text.includes('effect-unknown')));
+  assert.ok(
+    recoveryRuntime
+      .state()
+      .conversation.items.some((entry) => entry.kind === 'notice' && entry.text.includes('effect-unknown'))
+  );
   await recoveryRuntime.dispose();
 });
 
 test('recovered queued runs surface queue and driver control', async () => {
-  const hydration = baseHydration({ phase: 'idle', queuedInputs: 1 }, {
-    pendingState: 'claimed',
-    control: { status: 'detached' },
-    phase: { kind: 'initializing', step: 'assemble_turn', turnIndex: 2 }
-  });
+  const hydration = baseHydration(
+    { phase: 'idle', queuedInputs: 1 },
+    {
+      pendingState: 'claimed',
+      control: { status: 'detached' },
+      phase: { kind: 'initializing', step: 'assemble_turn', turnIndex: 2 }
+    }
+  );
   const host = createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 16 } });
   const runtime = createTuiRuntime({
     app: createCodingAgentTuiApp('', { initialHydration: hydration }),
@@ -90,35 +129,70 @@ test('recovered queued runs surface queue and driver control', async () => {
 
 test('hydration retains concurrent work and selects the exact per-call approval or recovery effect', async () => {
   const source = { responseId: 'original-response', catalog: { revision: 'original-catalog' } };
-  const running = baseHydration({ phase: 'running', activeRunId: 'run-1', queuedInputs: 0 }, {
-    pendingState: 'claimed', control: { status: 'owned', driverId: 'driver-1' }, phase: { kind: 'active' },
-    providerRequests: [{ stage: 'consumed' }, { stage: 'effect_pending' }],
-    toolBatches: [{ source, callStates: [{ stage: 'ready' }, { stage: 'recorded' }, { stage: 'cancelled' }] }]
+  const running = baseHydration(
+    { phase: 'running', activeRunId: 'run-1', queuedInputs: 0 },
+    {
+      pendingState: 'claimed',
+      control: { status: 'owned', driverId: 'driver-1' },
+      phase: { kind: 'active' },
+      providerRequests: [{ stage: 'consumed' }, { stage: 'effect_pending' }],
+      toolBatches: [
+        { source, callStates: [{ stage: 'ready' }, { stage: 'recorded' }, { stage: 'cancelled' }] }
+      ]
+    }
+  );
+  const runtime = createTuiRuntime({
+    app: createCodingAgentTuiApp('', { initialHydration: running }),
+    host: createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 18 } })
   });
-  const runtime = createTuiRuntime({ app: createCodingAgentTuiApp('', { initialHydration: running }), host: createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 18 } }) });
   await runtime.start();
   assert.match(runtime.state().run.label, /1 provider request · 1 pending tool/u);
   assert.equal(runtime.state().debug.runs[0].state.toolBatches[0].source, source);
   await runtime.dispose();
 
   const approval = approvalHydration();
-  approval.runs[0].state.toolBatches[0].callStates.unshift({ stage: 'approval', approval: { ...approvalRequest(), approvalId: 'other-approval', callIndex: 1, callId: 'other-call' } });
-  const approvals = createTuiRuntime({ app: createCodingAgentTuiApp('', { initialHydration: approval }), host: createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 18 } }) });
+  approval.runs[0].state.toolBatches[0].callStates.unshift({
+    stage: 'approval',
+    approval: { ...approvalRequest(), approvalId: 'other-approval', callIndex: 1, callId: 'other-call' }
+  });
+  const approvals = createTuiRuntime({
+    app: createCodingAgentTuiApp('', { initialHydration: approval }),
+    host: createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 18 } })
+  });
   await approvals.start();
-  assert.deepEqual(approvals.state().run.suspension.pendingApprovals.map((item) => item.approvalId), ['approval-1', 'other-approval']);
+  assert.deepEqual(
+    approvals.state().run.suspension.pendingApprovals.map((item) => item.approvalId),
+    ['approval-1', 'other-approval']
+  );
   await approvals.dispose();
   approval.runs[0].state.phase = { kind: 'active' };
-  const independentApproval = createTuiRuntime({ app: createCodingAgentTuiApp('', { initialHydration: approval }), host: createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 18 } }) });
+  const independentApproval = createTuiRuntime({
+    app: createCodingAgentTuiApp('', { initialHydration: approval }),
+    host: createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 18 } })
+  });
   await independentApproval.start();
   assert.equal(independentApproval.state().run.kind, 'waiting_for_approval');
-  assert.deepEqual(independentApproval.state().run.suspension.pendingApprovals.map((item) => item.approvalId), ['other-approval', 'approval-1']);
+  assert.deepEqual(
+    independentApproval.state().run.suspension.pendingApprovals.map((item) => item.approvalId),
+    ['other-approval', 'approval-1']
+  );
   await independentApproval.dispose();
 
   const recovery = recoveryHydration();
   recovery.runs[0].state.phase = { kind: 'suspended', reason: 'tool_outcome_unknown' };
-  recovery.runs[0].state.providerRequests = [{ stage: 'outcome_unknown', effect: { intent: { effectId: 'different-provider-effect' } } }];
-  recovery.runs[0].state.toolBatches = [{ source, callStates: [{ stage: 'outcome_unknown', effect: { intent: { effectId: 'effect-unknown' } } }] }];
-  const recovering = createTuiRuntime({ app: createCodingAgentTuiApp('', { initialHydration: recovery }), host: createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 18 } }) });
+  recovery.runs[0].state.providerRequests = [
+    { stage: 'outcome_unknown', effect: { intent: { effectId: 'different-provider-effect' } } }
+  ];
+  recovery.runs[0].state.toolBatches = [
+    {
+      source,
+      callStates: [{ stage: 'outcome_unknown', effect: { intent: { effectId: 'effect-unknown' } } }]
+    }
+  ];
+  const recovering = createTuiRuntime({
+    app: createCodingAgentTuiApp('', { initialHydration: recovery }),
+    host: createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 18 } })
+  });
   await recovering.start();
   assert.equal(recovering.state().run.suspension.reason, 'tool_outcome_unknown');
   assert.equal(recovering.state().run.suspension.effectId, 'effect-unknown');
@@ -133,7 +207,10 @@ test('completed hydration surfaces terminal checks and persisted workspace chang
   await runtime.start();
   assert.equal(runtime.state().run.kind, 'ended');
   assert.equal(runtime.state().run.terminal.runId, 'run-1');
-  assert.equal(runtime.state().conversation.items.find((entry) => entry.id === 'check:run-1:tests').status, 'success');
+  assert.equal(
+    runtime.state().conversation.items.find((entry) => entry.id === 'check:run-1:tests').status,
+    'success'
+  );
   const changes = runtime.state().conversation.items.find((entry) => entry.id === 'handoff:run-1');
   assert.equal(changes.status, 'success');
   assert.match(changes.summary, /1 changed path.*no remaining uncertainty/u);
@@ -141,37 +218,55 @@ test('completed hydration surfaces terminal checks and persisted workspace chang
   const history = runtime.state().conversation.items.find((entry) => entry.id === 'session:history');
   assert.equal(history.activity, 'history');
   assert.match(history.summary, /1 branch point · 1 terminal run/u);
-  assert.match(history.details, /final assistant-1 · run run-1 · completed · verification passed · model output complete/u);
+  assert.match(history.details, /final assistant-1 · run run-1 · completed · model output complete/u);
   await runtime.dispose();
 });
 
 test('long stream pressure retains every reliable boundary and the latest stream value', async () => {
   const host = createMemoryTerminalHost({ terminalSize: { columns: 80, rows: 12 } });
   const events = new CodingAgentTuiEventSource();
-  const running = runTui(createCodingAgentTuiApp('', {
-    eventSource: events,
-    commandHandler: { execute: () => ({ message: 'Exiting.', exit: true }) }
-  }), { host });
+  const running = runTui(
+    createCodingAgentTuiApp('', {
+      eventSource: events,
+      commandHandler: { execute: () => ({ message: 'Exiting.', exit: true }) }
+    }),
+    { host }
+  );
   await waitFor(() => host.frames().length > 0);
   await events.enqueue({
     type: 'progress',
-    event: { type: 'turn.started', runId: 'pressure-run', turnIndex: 1, turnId: 'pressure-turn', requestAttempt: 1 }
+    event: {
+      type: 'turn.started',
+      runId: 'pressure-run',
+      turnIndex: 1,
+      turnId: 'pressure-turn',
+      requestAttempt: 1
+    }
   });
   const admissions = [];
   for (let index = 0; index < 1_100; index += 1) {
-    admissions.push(events.enqueue({
-      type: 'progress',
-      event: {
-        type: 'assistant.delta', turnIndex: 1, turnId: 'pressure-turn', requestAttempt: 1,
-        delta: 'x', accumulated: `value-${String(index)}`
-      }
-    }));
+    admissions.push(
+      events.enqueue({
+        type: 'progress',
+        event: {
+          type: 'assistant.delta',
+          turnIndex: 1,
+          turnId: 'pressure-turn',
+          requestAttempt: 1,
+          delta: 'x',
+          accumulated: `value-${String(index)}`
+        }
+      })
+    );
   }
   await Promise.all(admissions);
   await events.enqueue({
     type: 'progress',
     event: {
-      type: 'assistant.ended', turnIndex: 1, turnId: 'pressure-turn', requestAttempt: 1,
+      type: 'assistant.ended',
+      turnIndex: 1,
+      turnId: 'pressure-turn',
+      requestAttempt: 1,
       content: 'final-value',
       modelOutput: { status: 'complete', message: 'final-value', source: 'content', turnIndex: 1 }
     }
@@ -189,7 +284,12 @@ test('composer history restores the draft and tiny resizes preserve focus', asyn
   const host = createMemoryTerminalHost({ terminalSize: { columns: 80, rows: 16 } });
   const runtime = createTuiRuntime({
     app: createCodingAgentTuiApp('', {
-      commandHandler: { execute(line) { submitted.push(line); return { message: 'done' }; } }
+      commandHandler: {
+        execute(line) {
+          submitted.push(line);
+          return { message: 'done' };
+        }
+      }
     }),
     host,
     initialFocus: { kind: 'element', elementId: 'composer' }
@@ -229,12 +329,16 @@ test('event source cancellation and dispatch failure terminate explicitly', asyn
 
   const failed = new CodingAgentTuiEventSource();
   const sourceRun = failed.run(sourceContext(new AbortController().signal), {
-    emit: async () => { throw new Error('dispatch exploded'); }
+    emit: async () => {
+      throw new Error('dispatch exploded');
+    }
   });
   await assert.rejects(failed.enqueue({ type: 'app.exit' }), /dispatch exploded/u);
   await assert.rejects(sourceRun, /dispatch exploded/u);
   const lifecycle = failed.onLifecycle({
-    kind: 'failed', id: failed.id, generation: failed.generation,
+    kind: 'failed',
+    id: failed.id,
+    generation: failed.generation,
     diagnostic: { code: 'TUI_SOURCE_FAILED', message: 'delivery failed', severity: 'error' }
   });
   assert.equal(lifecycle.type, 'delivery.failed');
@@ -244,16 +348,23 @@ test('event source cancellation and dispatch failure terminate explicitly', asyn
 test('normal shutdown drains admitted messages without source diagnostics', async () => {
   const host = createMemoryTerminalHost({ terminalSize: { columns: 60, rows: 10 } });
   const events = new CodingAgentTuiEventSource();
-  const running = runTui(createCodingAgentTuiApp('', {
-    eventSource: events,
-    commandHandler: { execute: () => ({ message: 'Exiting.', exit: true }) }
-  }), { host });
+  const running = runTui(
+    createCodingAgentTuiApp('', {
+      eventSource: events,
+      commandHandler: { execute: () => ({ message: 'Exiting.', exit: true }) }
+    }),
+    { host }
+  );
   await waitFor(() => host.frames().length > 0);
   await events.enqueue({ type: 'failure', message: 'visible before shutdown' });
   host.input('/exit\r');
   const exit = await running;
   await events.close();
-  assert.ok(exit.state.conversation.items.some((entry) => entry.kind === 'notice' && entry.text === 'visible before shutdown'));
+  assert.ok(
+    exit.state.conversation.items.some(
+      (entry) => entry.kind === 'notice' && entry.text === 'visible before shutdown'
+    )
+  );
   assert.equal(exit.diagnostics.filter((item) => item.diagnostic.code === 'TUI_SOURCE_FAILED').length, 0);
 });
 
@@ -262,23 +373,35 @@ test('application exit unsubscribes delivery before cancelling an active session
   let subscribed = false;
   let aborted;
   const sessionState = {
-    sessionId: 'session-1', phase: 'running', activeRunId: 'run-1', queuedInputs: 0,
+    sessionId: 'session-1',
+    phase: 'running',
+    activeRunId: 'run-1',
+    queuedInputs: 0,
     configuration: { provider: 'test-provider', model: 'test-model' }
   };
   const controller = {
     state: () => ({
-      status: 'ready', requirements: [],
+      status: 'ready',
+      requirements: [],
       runtimeDetails: { providerId: 'test-provider', modelId: 'test-model' },
       session: sessionState
     }),
     subscribe() {
       subscribed = true;
-      return () => { subscribed = false; };
+      return () => {
+        subscribed = false;
+      };
     },
     async start() {},
-    async submit() { throw new Error('unexpected submission'); },
-    async execute() { throw new Error('unexpected command'); },
-    async resolveApproval() { throw new Error('unexpected approval'); },
+    async submit() {
+      throw new Error('unexpected submission');
+    },
+    async execute() {
+      throw new Error('unexpected command');
+    },
+    async resolveApproval() {
+      throw new Error('unexpected approval');
+    },
     async close() {
       assert.equal(subscribed, false);
       aborted = { reason: 'Coding Agent TUI closed.', runId: sessionState.activeRunId };
@@ -294,18 +417,29 @@ test('application exit unsubscribes delivery before cancelling an active session
 });
 
 function runningHydration() {
-  const hydration = baseHydration({ phase: 'running', activeRunId: 'run-1', queuedInputs: 0 }, {
-    pendingState: 'claimed',
-    control: { status: 'owned', driverId: 'driver-1' },
-    phase: { kind: 'initializing', step: 'assemble_turn', turnIndex: 1 }
-  });
+  const hydration = baseHydration(
+    { phase: 'running', activeRunId: 'run-1', queuedInputs: 0 },
+    {
+      pendingState: 'claimed',
+      control: { status: 'owned', driverId: 'driver-1' },
+      phase: { kind: 'initializing', step: 'assemble_turn', turnIndex: 1 }
+    }
+  );
   return {
     ...hydration,
     replay: {
       ...hydration.replay,
       branch: [
         entry({ id: 'input-1', type: 'input', runId: 'run-1', task: 'Existing task', instructions: [] }),
-        entry({ id: 'assistant-1', type: 'assistant', runId: 'run-1', turnIndex: 1, turnId: 'turn-1', requestAttempt: 1, content: 'Partial' })
+        entry({
+          id: 'assistant-1',
+          type: 'assistant',
+          runId: 'run-1',
+          turnIndex: 1,
+          turnId: 'turn-1',
+          requestAttempt: 1,
+          content: 'Partial'
+        })
       ],
       ledgerRunIds: ['run-1']
     }
@@ -313,91 +447,181 @@ function runningHydration() {
 }
 
 function approvalHydration() {
-  return baseHydration({
-    phase: 'suspended', activeRunId: 'run-1', queuedInputs: 0,
-    suspension: { runId: 'run-1', submissionId: 'submission-1', category: 'approval', reason: 'approval_required', actions: ['approval', 'abort'] }
-  }, {
-    pendingState: 'suspended',
-    control: { status: 'detached' },
-    phase: { kind: 'suspended', reason: 'approval', approvalId: 'approval-1' },
-    toolBatches: [{ callStates: [{ stage: 'approval', approval: approvalRequest() }] }],
-    budget: budget()
-  });
+  return baseHydration(
+    {
+      phase: 'suspended',
+      activeRunId: 'run-1',
+      queuedInputs: 0,
+      suspension: {
+        runId: 'run-1',
+        submissionId: 'submission-1',
+        category: 'approval',
+        reason: 'approval_required',
+        actions: ['approval', 'abort']
+      }
+    },
+    {
+      pendingState: 'suspended',
+      control: { status: 'detached' },
+      phase: { kind: 'suspended', reason: 'approval', approvalId: 'approval-1' },
+      toolBatches: [{ callStates: [{ stage: 'approval', approval: approvalRequest() }] }],
+      budget: budget()
+    }
+  );
 }
 
 function recoveryHydration() {
-  return baseHydration({
-    phase: 'suspended', activeRunId: 'run-1', queuedInputs: 0,
-    suspension: { runId: 'run-1', submissionId: 'submission-1', category: 'external_recovery', reason: 'tool_outcome_unknown', effectId: 'effect-unknown', actions: ['reconcile', 'abort'] }
-  }, {
-    pendingState: 'suspended',
-    control: { status: 'detached' },
-    phase: { kind: 'suspended', reason: 'tool_outcome_unknown', effectId: 'effect-unknown' },
-    budget: budget()
-  });
+  return baseHydration(
+    {
+      phase: 'suspended',
+      activeRunId: 'run-1',
+      queuedInputs: 0,
+      suspension: {
+        runId: 'run-1',
+        submissionId: 'submission-1',
+        category: 'external_recovery',
+        reason: 'tool_outcome_unknown',
+        effectId: 'effect-unknown',
+        actions: ['reconcile', 'abort']
+      }
+    },
+    {
+      pendingState: 'suspended',
+      control: { status: 'detached' },
+      phase: { kind: 'suspended', reason: 'tool_outcome_unknown', effectId: 'effect-unknown' },
+      budget: budget()
+    }
+  );
 }
 
 async function completedHydration() {
   const { decodeAgentTerminalSnapshot } = await import('@agent-core/runtime');
   const terminal = decodeAgentTerminalSnapshot({
-    runId: 'run-1', finalizationId: 'final-1', phase: 'ended', executionStatus: 'completed',
-    verificationStatus: 'passed', terminationReason: 'model_completed', modelTerminationReason: 'stop',
+    runId: 'run-1',
+    finalizationId: 'final-1',
+    phase: 'ended',
+    executionStatus: 'completed',
+    terminationReason: 'model_completed',
+    modelTerminationReason: 'stop',
     modelOutput: { status: 'complete', message: 'Completed answer.', source: 'content', turnIndex: 1 },
     turnCount: 1,
-    checkResults: [{
-      id: 'tests', implementationId: 'tests@1', requirement: 'required', verdict: 'passed',
-      summary: 'Tests passed', durationMs: 10
-    }],
     budget: budget()
   });
   const changeReport = {
-    schemaVersion: 1, runId: 'run-1', preChangeDigest: '1'.repeat(64), finalDigest: '2'.repeat(64),
-    coverage: 'complete', causes: [],
-    changes: [{
-      path: 'src/app.ts', kind: 'modified', attribution: 'structured_mutation', initial: 'existing',
-      preChangeVersionControl: 'not_reported', content: 'text', receiptSequences: [4], conflicts: []
-    }],
-    totalChanges: 1, omittedChanges: 0, mutationReceipts: [], totalMutationReceipts: 0,
+    schemaVersion: 1,
+    runId: 'run-1',
+    preChangeDigest: '1'.repeat(64),
+    finalDigest: '2'.repeat(64),
+    coverage: 'complete',
+    causes: [],
+    changes: [
+      {
+        path: 'src/app.ts',
+        kind: 'modified',
+        attribution: 'structured_mutation',
+        initial: 'existing',
+        preChangeVersionControl: 'not_reported',
+        content: 'text',
+        receiptSequences: [4],
+        conflicts: []
+      }
+    ],
+    totalChanges: 1,
+    omittedChanges: 0,
+    mutationReceipts: [],
+    totalMutationReceipts: 0,
     omittedMutationReceipts: 0,
     facts: {
-      changedPaths: ['src/app.ts'], structuredMutationPaths: ['src/app.ts'],
-      externalOrConcurrentPaths: [], verificationStatus: 'passed'
+      changedPaths: ['src/app.ts'],
+      structuredMutationPaths: ['src/app.ts'],
+      externalOrConcurrentPaths: []
     }
   };
   return {
     session: {
-      sessionId: 'session-1', phase: 'idle', queuedInputs: 0,
+      sessionId: 'session-1',
+      phase: 'idle',
+      queuedInputs: 0,
       configuration: { provider: 'test-provider', model: 'test-model' }
     },
     replay: {
       session: descriptor(),
-      branch: [entry({
-        id: 'assistant-1', type: 'assistant', runId: 'run-1', turnIndex: 1,
-        turnId: 'turn-1', requestAttempt: 1, content: 'Completed answer.'
-      })],
-      runFinalizations: [{
-        type: 'run_finalization', id: 'finalization-record-1', timestamp: '2026-08-28T00:00:01.000Z',
-        throughEntryId: 'assistant-1', runId: 'run-1', finalizationId: 'final-1', terminal
-      }],
+      branch: [
+        entry({
+          id: 'assistant-1',
+          type: 'assistant',
+          runId: 'run-1',
+          turnIndex: 1,
+          turnId: 'turn-1',
+          requestAttempt: 1,
+          content: 'Completed answer.'
+        })
+      ],
+      runFinalizations: [
+        {
+          type: 'run_finalization',
+          id: 'finalization-record-1',
+          timestamp: '2026-08-28T00:00:01.000Z',
+          throughEntryId: 'assistant-1',
+          runId: 'run-1',
+          finalizationId: 'final-1',
+          terminal
+        }
+      ],
       ledgerRunIds: ['run-1']
     },
-    branchPoints: [{
-      entryId: 'assistant-1', timestamp: '2026-08-28T00:00:01.000Z', kind: 'run_finalization',
-      runId: 'run-1', finalizationId: 'final-1'
-    }],
+    branchPoints: [
+      {
+        entryId: 'assistant-1',
+        timestamp: '2026-08-28T00:00:01.000Z',
+        kind: 'run_finalization',
+        runId: 'run-1',
+        finalizationId: 'final-1'
+      }
+    ],
     pendingSubmissions: [],
     runs: [],
-    handoffs: [{
-      schemaVersion: 1, runId: 'run-1', taskSummary: 'Existing task', modelSummary: 'Completed answer.',
-      reviewedRevision: '2'.repeat(64), changedFiles: ['src/app.ts'], changeReport,
-      changeArtifact: {
-        artifactId: `${'3'.repeat(64)}.json`, sha256: '3'.repeat(64), size: 100,
-        mediaType: 'application/json; charset=utf-8', visibility: 'public'
-      },
-      checks: terminal.checkResults, usage: terminal.budget,
-      terminal, publication: { status: 'applied', revision: '2'.repeat(64) },
-      unresolved: [], effectsWithUnknownOutcome: []
-    }]
+    handoffs: [
+      {
+        schemaVersion: 1,
+        runId: 'run-1',
+        taskSummary: 'Existing task',
+        modelSummary: 'Completed answer.',
+        reviewedRevision: '2'.repeat(64),
+        changedFiles: ['src/app.ts'],
+        changeReport,
+        changeArtifact: {
+          artifactId: `${'3'.repeat(64)}.json`,
+          sha256: '3'.repeat(64),
+          size: 100,
+          mediaType: 'application/json; charset=utf-8',
+          visibility: 'public'
+        },
+        outcome: testOutcome(terminal, {
+          acceptance: 'accepted',
+          publication: 'applied',
+          revision: changeReport.finalDigest,
+          verification: {
+            status: 'passed',
+            checks: [
+              {
+                id: 'tests',
+                implementationId: 'tests@1',
+                requirement: 'required',
+                verdict: 'passed',
+                summary: 'Tests passed',
+                durationMs: 10
+              }
+            ]
+          }
+        }),
+        usage: terminal.budget,
+        terminal,
+        publication: { status: 'applied', revision: '2'.repeat(64) },
+        unresolved: [],
+        effectsWithUnknownOutcome: []
+      }
+    ]
   };
 }
 
@@ -414,13 +638,21 @@ function baseHydration(sessionOverrides, runOverrides) {
       ...sessionOverrides
     },
     replay: {
-      session: descriptor(), branch: [], runFinalizations: [], ledgerRunIds: ['run-1']
+      session: descriptor(),
+      branch: [],
+      runFinalizations: [],
+      ledgerRunIds: ['run-1']
     },
     branchPoints: [],
-    pendingSubmissions: [{
-      submissionId: 'submission-1', runId: 'run-1', state: pendingState,
-      input: { task: 'Existing task' }, configuration: { provider: 'test-provider', model: 'test-model' }
-    }],
+    pendingSubmissions: [
+      {
+        submissionId: 'submission-1',
+        runId: 'run-1',
+        state: pendingState,
+        input: { task: 'Existing task' },
+        configuration: { provider: 'test-provider', model: 'test-model' }
+      }
+    ],
     runs: [run],
     handoffs: []
   };
@@ -429,11 +661,18 @@ function baseHydration(sessionOverrides, runOverrides) {
 function runInspection(overrides) {
   return {
     state: {
-      runId: 'run-1', finalizationId: 'final-1', revision: 1, driverGeneration: 3,
+      runId: 'run-1',
+      finalizationId: 'final-1',
+      revision: 1,
+      driverGeneration: 3,
       input: { task: 'Existing task', instructions: [], contextItems: [] },
       configuration: {
-        providerId: 'test-provider', providerImplementationId: 'provider@1', model: 'test-model',
-        runtimeImplementationId: 'runtime@1', toolImplementationIds: [], checks: [],
+        providerId: 'test-provider',
+        providerImplementationId: 'provider@1',
+        model: 'test-model',
+        runtimeImplementationId: 'runtime@1',
+        toolImplementationIds: [],
+        checks: [],
         disposition: { implementationId: 'disposition@1', policyIdentity: {}, policyHash: '0'.repeat(64) },
         policyHash: 'policy'
       },
@@ -441,7 +680,8 @@ function runInspection(overrides) {
       phase: overrides.phase,
       providerRequests: overrides.providerRequests ?? [],
       toolBatches: overrides.toolBatches ?? [],
-      toolCalls: [], revisionInstructions: [],
+      toolCalls: [],
+      revisionInstructions: [],
       ...(overrides.budget === undefined ? {} : { budget: overrides.budget })
     },
     transition: { eventId: 'event-1', sequence: 1, hash: '1'.repeat(64) },
@@ -452,7 +692,8 @@ function runInspection(overrides) {
 
 function descriptor() {
   return {
-    id: 'session-1', leafId: null,
+    id: 'session-1',
+    leafId: null,
     header: { type: 'session', version: 1, id: 'session-1', timestamp: '2026-08-28T00:00:00.000Z' }
   };
 }
@@ -463,21 +704,49 @@ function entry(value) {
 
 function approvalRequest() {
   return {
-    runId: 'run-1', approvalId: 'approval-1', status: 'pending', toolName: 'exec_command',
-    fingerprint: 'fingerprint', input: { command: 'echo ok' },
-    effects: { accesses: [{ mode: 'execute', scope: 'workspace/command' }], lockScopes: ['workspace/command'], recovery: { kind: 'unknown' } },
-    binding: { toolImplementationId: 'shell@1', authorizationPolicyId: 'policy@1', executionTargetId: 'workspace@1' },
-    policyHash: 'policy-hash', reason: 'Command approval required.', turnIndex: 1, turnId: 'turn-1',
-    requestAttempt: 1, toolBatchId: 'batch-1', callIndex: 0, callId: 'call-1'
+    runId: 'run-1',
+    approvalId: 'approval-1',
+    status: 'pending',
+    toolName: 'exec_command',
+    fingerprint: 'fingerprint',
+    input: { command: 'echo ok' },
+    effects: {
+      accesses: [{ mode: 'execute', scope: 'workspace/command' }],
+      lockScopes: ['workspace/command'],
+      recovery: { kind: 'unknown' }
+    },
+    binding: {
+      toolImplementationId: 'shell@1',
+      authorizationPolicyId: 'policy@1',
+      executionTargetId: 'workspace@1'
+    },
+    policyHash: 'policy-hash',
+    reason: 'Command approval required.',
+    turnIndex: 1,
+    turnId: 'turn-1',
+    requestAttempt: 1,
+    toolBatchId: 'batch-1',
+    callIndex: 0,
+    callId: 'call-1'
   };
 }
 
 function budget() {
   return {
-    modelTurns: 1, totalToolCalls: 1, repeatedIdenticalToolCalls: 1, revisionAttempts: 0,
-    elapsedMs: 1, promptTokens: 0, completionTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
-    reasoningTokens: 0, knownCosts: {}, pricingStatus: 'unknown', unknownPricedTokens: 0,
-    consecutiveProviderFailures: 0, consecutiveToolFailures: 0
+    modelTurns: 1,
+    totalToolCalls: 1,
+    repeatedIdenticalToolCalls: 1,
+    elapsedMs: 1,
+    promptTokens: 0,
+    completionTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    reasoningTokens: 0,
+    knownCosts: {},
+    pricingStatus: 'unknown',
+    unknownPricedTokens: 0,
+    consecutiveProviderFailures: 0,
+    consecutiveToolFailures: 0
   };
 }
 
@@ -503,29 +772,60 @@ function composerText(runtime) {
 
 function key(name, modifiers = {}) {
   return {
-    kind: 'key', key: name, eventType: 'press', location: 'standard',
+    kind: 'key',
+    key: name,
+    eventType: 'press',
+    location: 'standard',
     modifiers: { ctrl: false, alt: false, shift: false, meta: false, ...modifiers }
   };
 }
 
-
 test('restored and live context transitions share the exact window identity', async () => {
   const hydration = await completedHydration();
   const window = {
-    windowId: 'window-1', parentWindowId: null,
-    historyPosition: { format: 'agent-core.history/1', sessionId: 'session-1', branchId: 'session-1', throughEntryId: 'assistant-1', sourceRevision: 1 },
+    windowId: 'window-1',
+    parentWindowId: null,
+    historyPosition: {
+      format: 'agent-core.history/1',
+      sessionId: 'session-1',
+      branchId: 'session-1',
+      throughEntryId: 'assistant-1',
+      sourceRevision: 1
+    },
     selection: { strategy: 'retain', retained: [], omitted: [], notes: [] },
-    reason: 'Retain the original conversation.', createdAt: '2026-09-07T00:00:00.000Z'
+    reason: 'Retain the original conversation.',
+    createdAt: '2026-09-07T00:00:00.000Z'
   };
   hydration.replay.branch.push(entry({ id: 'transition-entry-1', type: 'context_transition', window }));
-  const runtime = createTuiRuntime({ app: createCodingAgentTuiApp('', { initialHydration: hydration }), host: createMemoryTerminalHost() });
+  const runtime = createTuiRuntime({
+    app: createCodingAgentTuiApp('', { initialHydration: hydration }),
+    host: createMemoryTerminalHost()
+  });
   await runtime.start();
   try {
     await runtime.dispatch({ type: 'context.transitioned', window });
-    await runtime.dispatch({ type: 'progress', event: { type: 'context.transitioned', window, transition: { transitionId: 'transition-1', windowId: window.windowId, previousWindowId: null, idempotencyKey: 'context-1', requestFingerprint: 'f'.repeat(64), committedAt: window.createdAt } } });
-    const transitions = runtime.state().conversation.items.filter((item) => item.kind === 'notice' && item.text.includes('Context changed'));
+    await runtime.dispatch({
+      type: 'progress',
+      event: {
+        type: 'context.transitioned',
+        window,
+        transition: {
+          transitionId: 'transition-1',
+          windowId: window.windowId,
+          previousWindowId: null,
+          idempotencyKey: 'context-1',
+          requestFingerprint: 'f'.repeat(64),
+          committedAt: window.createdAt
+        }
+      }
+    });
+    const transitions = runtime
+      .state()
+      .conversation.items.filter((item) => item.kind === 'notice' && item.text.includes('Context changed'));
     assert.equal(transitions.length, 1);
     assert.equal(transitions[0].id, 'session:window-1');
     assert.match(transitions[0].text, /Retain the original conversation/u);
-  } finally { await runtime.dispose(); }
+  } finally {
+    await runtime.dispose();
+  }
 });

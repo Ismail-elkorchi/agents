@@ -7,18 +7,14 @@ const tsconfigRootDir = path.dirname(fileURLToPath(import.meta.url));
 
 export default [
   {
-    ignores: [
-      'coding-agent/dist/**',
-      'writing-agent/dist/**',
-      'node_modules/**'
-    ]
+    ignores: ['verification/dist/**', 'coding-agent/dist/**', 'writing-agent/dist/**', 'node_modules/**']
   },
   js.configs.recommended,
   ...tseslint.configs.strict,
   ...tseslint.configs.strictTypeChecked,
   ...tseslint.configs.stylisticTypeChecked,
   {
-    files: ['coding-agent/src/**/*.ts', 'writing-agent/src/**/*.ts'],
+    files: ['verification/src/**/*.ts', 'coding-agent/src/**/*.ts', 'writing-agent/src/**/*.ts'],
     languageOptions: {
       parserOptions: {
         projectService: true,

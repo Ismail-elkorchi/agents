@@ -1,15 +1,12 @@
-import {
-  reliableSourceMessage,
-  replaceableSourceMessage
-} from '@ismail-elkorchi/terminal-ui/tui';
-import { ignoreMessage } from '@ismail-elkorchi/terminal-ui/interaction';
 import type { MessageResolution } from '@ismail-elkorchi/terminal-ui/interaction';
+import { ignoreMessage } from '@ismail-elkorchi/terminal-ui/interaction';
 import type {
   TuiEventSource,
-  TuiSourceSink,
   TuiSourceEmission,
+  TuiSourceSink,
   TuiSubscriptionContext
 } from '@ismail-elkorchi/terminal-ui/tui';
+import { reliableSourceMessage, replaceableSourceMessage } from '@ismail-elkorchi/terminal-ui/tui';
 import type { CodingAgentTuiMessage } from './messages.js';
 
 export class CodingAgentTuiEventSource implements TuiEventSource<CodingAgentTuiMessage> {
@@ -40,10 +37,7 @@ export class CodingAgentTuiEventSource implements TuiEventSource<CodingAgentTuiM
     return admission;
   }
 
-  async run(
-    context: TuiSubscriptionContext,
-    sink: TuiSourceSink<CodingAgentTuiMessage>
-  ): Promise<void> {
+  async run(context: TuiSubscriptionContext, sink: TuiSourceSink<CodingAgentTuiMessage>): Promise<void> {
     if (this.running) throw new Error('Coding Agent TUI event source is already running.');
     this.running = true;
     this.attached.resolve(sink);
@@ -78,7 +72,8 @@ export class CodingAgentTuiEventSource implements TuiEventSource<CodingAgentTuiM
     }
     if (!this.accepting) return this.admission;
     this.accepting = false;
-    if (!this.running) this.attached.reject(new Error('Coding Agent TUI event source closed before attachment.'));
+    if (!this.running)
+      this.attached.reject(new Error('Coding Agent TUI event source closed before attachment.'));
     try {
       await this.admission;
       this.completion.resolve(undefined);
@@ -132,6 +127,12 @@ function deferred<T>(): Deferred<T> {
 function aborted(signal: AbortSignal): Promise<void> {
   if (signal.aborted) return Promise.resolve();
   return new Promise((resolve) => {
-    signal.addEventListener('abort', () => { resolve(); }, { once: true });
+    signal.addEventListener(
+      'abort',
+      () => {
+        resolve();
+      },
+      { once: true }
+    );
   });
 }

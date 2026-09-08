@@ -1,11 +1,11 @@
 import { hashJson } from '@agent-core/persistence';
 import { contentId, nowTimestamp } from './canonical.js';
 import {
+  effectiveConstraintSetSchema,
   writingIntentSchema,
   writingOperationKindSchema,
   writingOperationModeSchema,
   writingOperationSchema,
-  effectiveConstraintSetSchema,
   type EffectiveConstraintSet,
   type ExactConstraint,
   type ProjectSnapshot,
@@ -17,8 +17,8 @@ import {
 import { createWritingOperationContract } from './operation-contract.js';
 
 export const WRITING_INTENT_SCHEMA_ID = 'writing-agent/intents';
-export const WRITING_INTENT_SCHEMA_VERSION = 2;
-export const WRITING_INTENT_REGISTRY_IMPLEMENTATION_ID = 'writing-agent.intent-registry@2';
+export const WRITING_INTENT_SCHEMA_VERSION = 3;
+export const WRITING_INTENT_REGISTRY_IMPLEMENTATION_ID = 'writing-agent.intent-registry@3';
 
 const intentKinds = Object.freeze({
   'structure.create': ['plan', 'revise'],
@@ -48,8 +48,7 @@ export interface WritingOperationAdmissionInput {
   readonly mode: WritingOperationMode;
   readonly delegatedApplyPolicy?: WritingOperation['delegatedApplyPolicy'];
   readonly sessionId: string;
-  readonly runId: string;
-  readonly executionBinding: WritingOperation['executionBinding'];
+  readonly readableResourceIds?: readonly string[];
 }
 
 export function admitWritingOperation(
@@ -74,6 +73,9 @@ export function admitWritingOperation(
   validateIntentGraph(intents, kind, control.project);
   const targetNodeIds = uniqueSorted(intents.flatMap((intent) => intent.targetNodeIds));
   const targetResourceIds = uniqueSorted(intents.flatMap((intent) => intent.targetResourceIds));
+  for (const resourceId of input.readableResourceIds ?? [])
+    if (!control.project.resources.some((resource) => resource.resourceId === resourceId))
+      throw new Error(`Reading grant references an unavailable project resource: ${resourceId}`);
   const effectiveConstraints = compileEffectiveConstraints(control.project, intents);
   const instruction = input.instruction.trim();
   if (instruction.length === 0) throw new Error('Writing operation instruction must not be empty.');
@@ -86,14 +88,15 @@ export function admitWritingOperation(
     intents,
     targetNodeIds,
     targetResourceIds,
+    readableResourceIds: uniqueSorted([...targetResourceIds, ...(input.readableResourceIds ?? [])]),
     effectiveConstraints,
     baseProjectRevisionId: input.baseProjectRevisionId,
     mode,
-    ...(input.delegatedApplyPolicy === undefined ? {} : { delegatedApplyPolicy: input.delegatedApplyPolicy }),
+    ...(input.delegatedApplyPolicy === undefined
+      ? {}
+      : { delegatedApplyPolicy: input.delegatedApplyPolicy }),
     sessionId: input.sessionId,
-    runId: input.runId,
     lifecycleState: 'admitted' as const,
-    executionBinding: input.executionBinding,
     admittedAt
   };
   const operation = writingOperationSchema.parse({
@@ -226,6 +229,7 @@ export function validateIntentGraph(
 export function createSingleIntent(input: {
   readonly intentId: string;
   readonly kind: WritingIntentKind;
+  readonly verification?: WritingIntent['verification'];
   readonly instruction: string;
   readonly targetNodeIds?: readonly string[];
   readonly targetResourceIds?: readonly string[];
@@ -239,6 +243,7 @@ export function createSingleIntent(input: {
     schemaId: WRITING_INTENT_SCHEMA_ID,
     schemaVersion: WRITING_INTENT_SCHEMA_VERSION,
     kind: input.kind,
+    verification: input.verification ?? 'semantic',
     instruction: input.instruction,
     targetNodeIds: input.targetNodeIds ?? [],
     targetResourceIds: input.targetResourceIds ?? [],

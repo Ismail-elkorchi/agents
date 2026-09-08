@@ -1,5 +1,5 @@
-import { createHash } from 'node:crypto';
 import type { RootIdentity } from '@agent-core/tools-local';
+import { createHash } from 'node:crypto';
 
 export interface CodingWorkspaceIdentity {
   readonly id: string;
@@ -10,7 +10,10 @@ export interface CodingWorkspaceIdentity {
   readonly mountId: string;
 }
 
-export function identifyCodingWorkspace(root: RootIdentity, platform: NodeJS.Platform = process.platform): CodingWorkspaceIdentity {
+export function identifyCodingWorkspace(
+  root: RootIdentity,
+  platform: NodeJS.Platform = process.platform
+): CodingWorkspaceIdentity {
   const material = JSON.stringify([platform, root.canonicalPath, root.device, root.inode, root.mountId]);
   return Object.freeze({
     id: `workspace-${createHash('sha256').update(material).digest('hex')}`,
@@ -22,11 +25,16 @@ export function identifyCodingWorkspace(root: RootIdentity, platform: NodeJS.Pla
   });
 }
 
-export function sameCodingWorkspace(left: CodingWorkspaceIdentity, right: CodingWorkspaceIdentity): boolean {
-  return left.id === right.id
-    && left.platform === right.platform
-    && left.canonicalPath === right.canonicalPath
-    && left.device === right.device
-    && left.inode === right.inode
-    && left.mountId === right.mountId;
+export function sameCodingWorkspace(
+  left: CodingWorkspaceIdentity,
+  right: CodingWorkspaceIdentity
+): boolean {
+  return (
+    left.id === right.id &&
+    left.platform === right.platform &&
+    left.canonicalPath === right.canonicalPath &&
+    left.device === right.device &&
+    left.inode === right.inode &&
+    left.mountId === right.mountId
+  );
 }

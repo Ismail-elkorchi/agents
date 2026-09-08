@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import {
   modelInputIdentity,
   type CompiledModelRequest,
@@ -10,6 +9,7 @@ import {
   type ModelSteeringSubmission,
   type ModelTransportOptions
 } from '@agent-core/model';
+import { createHash } from 'node:crypto';
 import type { CodingWorkspaceIdentity } from './workspace-identity.js';
 import { decideWorkspaceAction, type WorkspaceTrustLevel } from './workspace-trust.js';
 

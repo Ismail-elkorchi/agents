@@ -97,7 +97,10 @@ export const assumptionSchema = z
   })
   .superRefine((value, context) => {
     if ((value.status === 'superseded') !== (value.supersedingAssumptionId !== undefined)) {
-      context.addIssue({ code: 'custom', message: 'Only a superseded assumption identifies its successor.' });
+      context.addIssue({
+        code: 'custom',
+        message: 'Only a superseded assumption identifies its successor.'
+      });
     }
   })
   .readonly();
@@ -200,6 +203,7 @@ export const writingIntentSchema = z
     schemaId: identifierSchema,
     schemaVersion: z.int().min(1),
     kind: identifierSchema,
+    verification: z.enum(['deterministic', 'semantic']),
     instruction: z.string().trim().min(1).max(100_000),
     targetNodeIds: z.array(identifierSchema).readonly(),
     targetResourceIds: z.array(identifierSchema).readonly(),
@@ -267,9 +271,19 @@ export const executionBindingSchema = z
     contextPolicyVersion: z.int().min(1),
     toolImplementationIds: z.array(identifierSchema).readonly(),
     checkImplementationIds: z.array(identifierSchema).readonly(),
-    dispositionImplementationId: identifierSchema,
+    acceptanceImplementationId: identifierSchema,
     authorizationPolicyId: identifierSchema,
     configurationSha256: sha256Schema
+  })
+  .readonly();
+
+export const writingExecutionAttemptSchema = z
+  .strictObject({
+    operationId: identifierSchema,
+    runId: identifierSchema,
+    sessionId: identifierSchema,
+    executionBinding: executionBindingSchema,
+    admittedAt: timestampSchema
   })
   .readonly();
 
@@ -283,14 +297,13 @@ export const writingOperationSchema = z
     intents: z.array(writingIntentSchema).min(1).readonly(),
     targetNodeIds: z.array(identifierSchema).readonly(),
     targetResourceIds: z.array(identifierSchema).readonly(),
+    readableResourceIds: z.array(identifierSchema).readonly(),
     effectiveConstraints: effectiveConstraintSetSchema,
     baseProjectRevisionId: identifierSchema,
     mode: writingOperationModeSchema,
     delegatedApplyPolicy: writingDelegatedApplyPolicySchema.optional(),
     sessionId: identifierSchema,
-    runId: identifierSchema,
     lifecycleState: z.literal('admitted'),
-    executionBinding: executionBindingSchema,
     admittedAt: timestampSchema
   })
   .superRefine((operation, context) => {
@@ -554,7 +567,10 @@ export const semanticChangeItemSchema = z
 export const semanticChangeDeclarationSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('none') }).readonly(),
   z
-    .strictObject({ kind: z.literal('changes'), items: z.array(semanticChangeItemSchema).min(1).readonly() })
+    .strictObject({
+      kind: z.literal('changes'),
+      items: z.array(semanticChangeItemSchema).min(1).readonly()
+    })
     .readonly()
 ]);
 
@@ -578,7 +594,7 @@ export const criterionCoverageSchema = z
     verificationKind: z.enum(['deterministic', 'editorial', 'human']),
     verdict: z.enum(['passed', 'failed', 'unknown']),
     coverage: z.enum(['complete', 'partial', 'none']),
-    evaluatorIds: z.array(identifierSchema).readonly(),
+    checkerIds: z.array(identifierSchema).readonly(),
     verificationIds: z.array(identifierSchema).readonly(),
     explanation: z.string().trim().min(1).max(100_000)
   })
@@ -628,7 +644,7 @@ export const editorialFindingSchema = z
     verdict: z.enum(['passed', 'failed', 'unknown']),
     supportingCitations: z.array(writingFindingCitationSchema).readonly(),
     explanation: z.string().trim().min(1).max(100_000),
-    evaluatorId: identifierSchema,
+    checkerId: identifierSchema,
     calibrationId: identifierSchema.optional(),
     verificationPolicyId: identifierSchema,
     verificationInputSha256: sha256Schema,
@@ -650,7 +666,7 @@ export const semanticPreservationFindingSchema = z
     observedChanges: z.array(z.string().max(100_000)).readonly(),
     unexplainedChanges: z.array(z.string().max(100_000)).readonly(),
     lostPriorEditIds: z.array(identifierSchema).readonly(),
-    evaluatorId: identifierSchema,
+    checkerId: identifierSchema,
     verificationPolicyId: identifierSchema,
     calibrationId: identifierSchema.optional(),
     verificationInputSha256: sha256Schema,
@@ -848,9 +864,11 @@ export const proposalProductionVerificationSchema = z
     baseProjectRevisionId: identifierSchema,
     proposedRevisionId: identifierSchema,
     verificationInputSha256: sha256Schema,
-    evaluatorImplementationId: identifierSchema,
+    deterministicImplementationId: identifierSchema,
+    checkerImplementationId: identifierSchema,
     verificationPolicyId: identifierSchema,
     calibrationId: identifierSchema.optional(),
+    semanticExecution: z.enum(['completed', 'blocked', 'not_required']),
     deterministicChecks: z.array(deterministicCheckSchema).readonly(),
     semanticPreservationFindings: z.array(semanticPreservationFindingSchema).readonly(),
     editorialFindings: z.array(editorialFindingSchema).readonly(),
@@ -981,3 +999,5 @@ export type RevisionProposal = z.infer<typeof revisionProposalSchema>;
 export type ProposalProductionVerification = z.infer<typeof proposalProductionVerificationSchema>;
 export type ProjectRevision = z.infer<typeof projectRevisionSchema>;
 export type ProjectSnapshot = z.infer<typeof projectSnapshotSchema>;
+
+export type WritingExecutionAttempt = z.infer<typeof writingExecutionAttemptSchema>;

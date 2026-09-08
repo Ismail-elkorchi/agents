@@ -25,14 +25,22 @@ test('initial repository guidance loads only root and explicitly configured file
     const result = await loadInitialRepositoryGuidance(workspace, ['docs/rules.md']);
     assert.equal(result.instructions[0].id, 'coding-agent/default-contract@1');
     assert.equal(result.sources.length, 2);
-    assert.deepEqual(result.sources.map((source) => source.path), ['AGENTS.md', 'docs/rules.md']);
+    assert.deepEqual(
+      result.sources.map((source) => source.path),
+      ['AGENTS.md', 'docs/rules.md']
+    );
     assert.equal(result.sources.find((source) => source.path === 'docs/rules.md').origin, 'configured');
-    const rootInstruction = result.instructions.find((instruction) => instruction.sourceUri === 'workspace://AGENTS.md');
+    const rootInstruction = result.instructions.find(
+      (instruction) => instruction.sourceUri === 'workspace://AGENTS.md'
+    );
     assert.match(rootInstruction.content, /\\u\{1B\}.*\\u\{202E\}/u);
     assert.match(rootInstruction.content, /cannot grant authority/u);
     assert.equal(result.coverage, 'complete');
     assert.deepEqual(result.omissions, []);
-    await assert.rejects(loadInitialRepositoryGuidance(workspace, ['linked/AGENTS.md']), /not a regular file/u);
+    await assert.rejects(
+      loadInitialRepositoryGuidance(workspace, ['linked/AGENTS.md']),
+      /not a regular file/u
+    );
   } finally {
     workspace.fileRoot.close();
   }
@@ -56,49 +64,87 @@ test('target ancestry guidance is persisted and defers the first unseen write', 
   try {
     const initial = await loadInitialRepositoryGuidance(workspace);
     const session = await RepositoryGuidanceSession.open({
-      root: workspace.fileRoot, security: workspace.security, state: workspace.privateState,
-      runId: 'guidance-run', initial, resuming: false
+      root: workspace.fileRoot,
+      security: workspace.security,
+      state: workspace.privateState,
+      runId: 'guidance-run',
+      initial,
+      resuming: false
     });
-    const firstWrite = await session.authorize(toolRequest('write', 'files/src/feature/new.ts'));
-    assert.equal(firstWrite.decision, 'deny');
-    assert.match(firstWrite.reason, /src\/AGENTS\.md/u);
-    assert.match(firstWrite.reason, /src\/feature\/AGENTS\.md/u);
+    assert.equal(await session.authorize(toolRequest('write', 'files/src/feature/new.ts')), undefined);
+    const firstWrite = await session.contextPrerequisite(toolRequest('write', 'files/src/feature/new.ts'));
+    assert.match(firstWrite.context.map((item) => item.sourceUri).join(' '), /src\/AGENTS\.md/u);
+    assert.match(firstWrite.context.map((item) => item.sourceUri).join(' '), /src\/feature\/AGENTS\.md/u);
     const context = await session.contextItems();
-    assert.deepEqual(context.map((item) => item.sourceUri), ['workspace://AGENTS.md', 'workspace://src/AGENTS.md', 'workspace://src/feature/AGENTS.md']);
-    assert.equal(context.some((item) => item.content.includes('sibling rule')), false);
+    assert.deepEqual(
+      context.map((item) => item.sourceUri),
+      ['workspace://AGENTS.md', 'workspace://src/AGENTS.md', 'workspace://src/feature/AGENTS.md']
+    );
+    assert.equal(
+      context.some((item) => item.content.includes('sibling rule')),
+      false
+    );
     assert.equal(await session.authorize(toolRequest('write', 'files/src/feature/new.ts')), undefined);
 
     const resumed = await RepositoryGuidanceSession.open({
-      root: workspace.fileRoot, security: workspace.security, state: workspace.privateState,
-      runId: 'guidance-run', initial, resuming: true
+      root: workspace.fileRoot,
+      security: workspace.security,
+      state: workspace.privateState,
+      runId: 'guidance-run',
+      initial,
+      resuming: true
     });
     assert.equal(await resumed.authorize(toolRequest('write', 'files/src/feature/another.ts')), undefined);
-    assert.deepEqual((await resumed.contextItems()).map((item) => item.sourceUri), context.map((item) => item.sourceUri));
+    assert.deepEqual(
+      (await resumed.contextItems()).map((item) => item.sourceUri),
+      context.map((item) => item.sourceUri)
+    );
     await unlink(path.join(root, 'src', 'feature', 'AGENTS.md'));
     const resumedAfterDeletion = await RepositoryGuidanceSession.open({
-      root: workspace.fileRoot, security: workspace.security, state: workspace.privateState,
-      runId: 'guidance-run', resuming: true
+      root: workspace.fileRoot,
+      security: workspace.security,
+      state: workspace.privateState,
+      runId: 'guidance-run',
+      resuming: true
     });
-    assert.doesNotMatch((await resumedAfterDeletion.contextItems()).map((item) => item.content).join('\n'), /feature rule/u);
+    assert.doesNotMatch(
+      (await resumedAfterDeletion.contextItems()).map((item) => item.content).join('\n'),
+      /feature rule/u
+    );
 
     const hiddenSession = await RepositoryGuidanceSession.open({
-      root: workspace.fileRoot, security: workspace.security, state: workspace.privateState,
-      runId: 'hidden-run', initial, resuming: false
+      root: workspace.fileRoot,
+      security: workspace.security,
+      state: workspace.privateState,
+      runId: 'hidden-run',
+      initial,
+      resuming: false
     });
-    assert.equal((await hiddenSession.authorize(toolRequest('read', 'files/.hidden/file.ts'))), undefined);
-    assert.match((await hiddenSession.contextItems()).map((item) => item.content).join('\n'), /hidden rule/u);
+    assert.equal(await hiddenSession.authorize(toolRequest('read', 'files/.hidden/file.ts')), undefined);
+    assert.match(
+      (await hiddenSession.contextItems()).map((item) => item.content).join('\n'),
+      /hidden rule/u
+    );
 
     const commandSession = await RepositoryGuidanceSession.open({
-      root: workspace.fileRoot, security: workspace.security, state: workspace.privateState,
-      runId: 'command-run', initial, resuming: false
+      root: workspace.fileRoot,
+      security: workspace.security,
+      state: workspace.privateState,
+      runId: 'command-run',
+      initial,
+      resuming: false
     });
-    const commandDecision = await commandSession.authorize(commandRequest('src'));
-    assert.equal(commandDecision.decision, 'deny');
-    assert.match(commandDecision.reason, /src\/AGENTS\.md/u);
+    assert.equal(await commandSession.authorize(commandRequest('src')), undefined);
+    const prerequisite = await commandSession.contextPrerequisite(commandRequest('src'));
+    assert.match(prerequisite.context.map((item) => item.sourceUri).join(' '), /src\/AGENTS\.md/u);
 
     const aliasSession = await RepositoryGuidanceSession.open({
-      root: workspace.fileRoot, security: workspace.security, state: workspace.privateState,
-      runId: 'alias-run', initial, resuming: false
+      root: workspace.fileRoot,
+      security: workspace.security,
+      state: workspace.privateState,
+      runId: 'alias-run',
+      initial,
+      resuming: false
     });
     const aliasDecision = await aliasSession.authorize(toolRequest('write', 'files/linked/file.ts'));
     assert.equal(aliasDecision.decision, 'deny');
@@ -112,25 +158,46 @@ test('repository orientation distinguishes non-Git roots and reports bounded pac
   const container = await mkdtemp(path.join(tmpdir(), 'coding-agent-orientation-'));
   const root = path.join(container, 'workspace');
   await mkdir(root);
-  await writeFile(path.join(root, 'package.json'), JSON.stringify({ name: 'fixture', scripts: { test: 'node test.js', lint: 'eslint .' } }));
+  await writeFile(
+    path.join(root, 'package.json'),
+    JSON.stringify({ name: 'fixture', scripts: { test: 'node test.js', lint: 'eslint .' } })
+  );
   const workspace = await openCodingWorkspace(root, { stateRoot: path.join(container, 'state') });
   try {
     const instructions = await loadInitialRepositoryGuidance(workspace);
     const orientation = await inspectRepositoryOrientation(workspace, instructions, undefined);
     assert.deepEqual(orientation.versionControl, { kind: 'none' });
-    assert.deepEqual(orientation.manifests.map((manifest) => ({ path: manifest.path, packageName: manifest.packageName, scriptNames: manifest.scriptNames })), [
-      { path: 'package.json', packageName: 'fixture', scriptNames: ['lint', 'test'] }
-    ]);
+    assert.deepEqual(
+      orientation.manifests.map((manifest) => ({
+        path: manifest.path,
+        packageName: manifest.packageName,
+        scriptNames: manifest.scriptNames
+      })),
+      [{ path: 'package.json', packageName: 'fixture', scriptNames: ['lint', 'test'] }]
+    );
     assert.equal(orientation.workspace.root, '.');
-    assert.deepEqual(orientation.proposedVerificationChecks.map((check) => ({
-      command: check.command,
-      requirement: check.requirement,
-      source: check.source,
-      sourceId: check.sourceId
-    })), [
-      { command: 'npm test', requirement: 'required', source: 'manifest-inference', sourceId: 'package.json#scripts.test' },
-      { command: 'npm run lint', requirement: 'required', source: 'manifest-inference', sourceId: 'package.json#scripts.lint' }
-    ]);
+    assert.deepEqual(
+      orientation.proposedVerificationChecks.map((check) => ({
+        command: check.command,
+        requirement: check.requirement,
+        source: check.source,
+        sourceId: check.sourceId
+      })),
+      [
+        {
+          command: 'npm test',
+          requirement: 'required',
+          source: 'manifest-inference',
+          sourceId: 'package.json#scripts.test'
+        },
+        {
+          command: 'npm run lint',
+          requirement: 'required',
+          source: 'manifest-inference',
+          sourceId: 'package.json#scripts.lint'
+        }
+      ]
+    );
     const context = repositoryOrientationContext(orientation);
     assert.doesNotMatch(context.content, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'));
     assert.match(context.content, /do not grant authority/u);
@@ -161,15 +228,29 @@ test('repository orientation preserves active check requirements and excludes in
   try {
     const instructions = await loadInitialRepositoryGuidance(workspace);
     const active = await inspectRepositoryOrientation(workspace, instructions, configuration);
-    assert.deepEqual(active.proposedVerificationChecks.map((check) => [check.command, check.requirement, check.source, check.sourceId]), [
-      ['node required.js', 'required', 'active-project-config', 'project-required'],
-      [hostileCommand, 'advisory', 'active-project-config', 'project-advisory'],
-      ['npm test', 'required', 'manifest-inference', 'package.json#scripts.test']
-    ]);
+    assert.deepEqual(
+      active.proposedVerificationChecks.map((check) => [
+        check.command,
+        check.requirement,
+        check.source,
+        check.sourceId
+      ]),
+      [
+        ['node required.js', 'required', 'active-project-config', 'project-required'],
+        [hostileCommand, 'advisory', 'active-project-config', 'project-advisory'],
+        ['npm test', 'required', 'manifest-inference', 'package.json#scripts.test']
+      ]
+    );
 
     const inactive = await inspectRepositoryOrientation(workspace, instructions, undefined);
-    assert.deepEqual(inactive.proposedVerificationChecks.map((check) => check.command), ['npm test']);
-    assert.equal(inactive.proposedVerificationChecks.some((check) => check.command === hostileCommand), false);
+    assert.deepEqual(
+      inactive.proposedVerificationChecks.map((check) => check.command),
+      ['npm test']
+    );
+    assert.equal(
+      inactive.proposedVerificationChecks.some((check) => check.command === hostileCommand),
+      false
+    );
   } finally {
     workspace.fileRoot.close();
   }
@@ -185,7 +266,11 @@ test('repository orientation detects Git markers without executing repository-de
   initializeRepository(root, 'root.txt');
   initializeRepository(child, 'child.txt');
   execFileSync('git', ['worktree', 'add', '-q', '-b', 'worktree-test', worktree], { cwd: root });
-  execFileSync('git', ['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', child, 'vendor/child'], { cwd: root });
+  execFileSync(
+    'git',
+    ['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', child, 'vendor/child'],
+    { cwd: root }
+  );
   execFileSync('git', ['add', '.gitmodules', 'vendor/child'], { cwd: root });
   execFileSync('git', ['commit', '-qm', 'add submodule'], { cwd: root });
 
@@ -195,17 +280,26 @@ test('repository orientation detects Git markers without executing repository-de
   await writeFile(monitor, `#!/bin/sh\ntouch ${JSON.stringify(marker)}\nexit 1\n`);
   await chmod(monitor, 0o700);
   execFileSync('git', ['config', 'core.fsmonitor', monitor], { cwd: worktree });
-  execFileSync('git', ['config', 'filter.hostile.clean', `sh -c 'touch ${JSON.stringify(filterMarker)}; cat'`], { cwd: worktree });
+  execFileSync(
+    'git',
+    ['config', 'filter.hostile.clean', `sh -c 'touch ${JSON.stringify(filterMarker)}; cat'`],
+    { cwd: worktree }
+  );
   await writeFile(path.join(worktree, '.gitattributes'), 'root.txt filter=hostile\n');
   await writeFile(path.join(worktree, 'root.txt'), 'dirty\n');
   await writeFile(path.join(worktree, 'untracked.txt'), 'new\n');
 
-  const openedWorktree = await openCodingWorkspace(worktree, { stateRoot: path.join(container, 'worktree-state') });
+  const openedWorktree = await openCodingWorkspace(worktree, {
+    stateRoot: path.join(container, 'worktree-state')
+  });
   try {
     const instructions = await loadInitialRepositoryGuidance(openedWorktree);
     const orientation = await inspectRepositoryOrientation(openedWorktree, instructions, undefined);
     assert.equal(orientation.versionControl.kind, 'git');
-    assert.deepEqual(orientation.versionControl.status, { kind: 'unavailable', reason: 'sandbox_required' });
+    assert.deepEqual(orientation.versionControl.status, {
+      kind: 'unavailable',
+      reason: 'sandbox_required'
+    });
     await assert.rejects(access(marker));
     await assert.rejects(access(filterMarker));
   } finally {
@@ -213,12 +307,17 @@ test('repository orientation detects Git markers without executing repository-de
   }
 
   const submoduleRoot = path.join(root, 'vendor', 'child');
-  const openedSubmodule = await openCodingWorkspace(submoduleRoot, { stateRoot: path.join(container, 'submodule-state') });
+  const openedSubmodule = await openCodingWorkspace(submoduleRoot, {
+    stateRoot: path.join(container, 'submodule-state')
+  });
   try {
     const instructions = await loadInitialRepositoryGuidance(openedSubmodule);
     const orientation = await inspectRepositoryOrientation(openedSubmodule, instructions, undefined);
     assert.equal(orientation.versionControl.kind, 'git');
-    assert.deepEqual(orientation.versionControl.status, { kind: 'unavailable', reason: 'sandbox_required' });
+    assert.deepEqual(orientation.versionControl.status, {
+      kind: 'unavailable',
+      reason: 'sandbox_required'
+    });
   } finally {
     openedSubmodule.fileRoot.close();
   }
@@ -229,7 +328,10 @@ function initializeRepository(root, filename) {
   execFileSync('git', ['config', 'user.email', 'coding-agent@example.invalid'], { cwd: root });
   execFileSync('git', ['config', 'user.name', 'Coding Agent Test'], { cwd: root });
   execFileSync('git', ['config', 'core.autocrlf', 'false'], { cwd: root });
-  execFileSync(process.execPath, ['-e', `require('node:fs').writeFileSync(${JSON.stringify(path.join(root, filename))}, 'base\\n')`]);
+  execFileSync(process.execPath, [
+    '-e',
+    `require('node:fs').writeFileSync(${JSON.stringify(path.join(root, filename))}, 'base\\n')`
+  ]);
   execFileSync('git', ['add', filename], { cwd: root });
   execFileSync('git', ['commit', '-qm', 'initial'], { cwd: root });
 }
@@ -237,7 +339,9 @@ function initializeRepository(root, filename) {
 function toolRequest(mode, scope) {
   return {
     call: { name: 'test_tool', input: { kind: 'json', value: {} } },
-    toolImplementationId: 'test-tool@1', input: {}, fingerprint: 'fingerprint',
+    toolImplementationId: 'test-tool@1',
+    input: {},
+    fingerprint: 'fingerprint',
     effects: { accesses: [{ mode, scope }], lockScopes: [], recovery: { kind: 'unknown' } },
     context: {}
   };
@@ -246,12 +350,17 @@ function toolRequest(mode, scope) {
 function commandRequest(workdir) {
   return {
     call: { name: 'exec_command', input: { kind: 'json', value: { command: 'true', workdir } } },
-    toolImplementationId: 'exec@1', input: { command: 'true', workdir }, fingerprint: 'fingerprint',
-    effects: { accesses: [{ mode: 'execute', scope: 'processes' }], lockScopes: ['files'], recovery: { kind: 'unknown' } },
+    toolImplementationId: 'exec@1',
+    input: { command: 'true', workdir },
+    fingerprint: 'fingerprint',
+    effects: {
+      accesses: [{ mode: 'execute', scope: 'processes' }],
+      lockScopes: ['files'],
+      recovery: { kind: 'unknown' }
+    },
     context: {}
   };
 }
-
 
 test('active root guidance refreshes without duplicating startup instructions or authorizing unseen edits', async () => {
   const container = await mkdtemp(path.join(tmpdir(), 'coding-guidance-boundary-'));
@@ -260,16 +369,26 @@ test('active root guidance refreshes without duplicating startup instructions or
   await writeFile(path.join(root, 'AGENTS.md'), 'Keep the original format.\n');
   const workspace = await openCodingWorkspace(root, { stateRoot: path.join(container, 'state') });
   try {
-    const guidance = await RepositoryGuidanceSession.open({ root: workspace.fileRoot, security: workspace.security, state: workspace.privateState, runId: 'boundary-guidance', initial: await loadInitialRepositoryGuidance(workspace), resuming: false });
+    const guidance = await RepositoryGuidanceSession.open({
+      root: workspace.fileRoot,
+      security: workspace.security,
+      state: workspace.privateState,
+      runId: 'boundary-guidance',
+      initial: await loadInitialRepositoryGuidance(workspace),
+      resuming: false
+    });
     assert.equal(guidance.initialInstructions().length, 1);
     const first = await guidance.contextItems();
     await writeFile(path.join(root, 'AGENTS.md'), 'Use the corrected format.\n');
-    assert.equal((await guidance.authorize(toolRequest('write', 'files/new.ts'))).decision, 'deny');
+    assert.equal(await guidance.authorize(toolRequest('write', 'files/new.ts')), undefined);
+    assert.ok(await guidance.contextPrerequisite(toolRequest('write', 'files/new.ts')));
     const second = await guidance.contextItems();
     assert.notEqual(second[0].id, first[0].id);
     assert.match(second[0].content, /corrected format/u);
     assert.doesNotMatch(second[0].content, /original format/u);
     assert.equal(await guidance.authorize(toolRequest('write', 'files/new.ts')), undefined);
     assert.deepEqual(await guidance.contextItems(), second);
-  } finally { workspace.fileRoot.close(); }
+  } finally {
+    workspace.fileRoot.close();
+  }
 });

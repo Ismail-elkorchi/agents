@@ -1,3 +1,6 @@
+export const WRITING_DETERMINISTIC_VERIFICATION_IMPLEMENTATION_ID =
+  'writing-agent.deterministic-verification@1';
+
 import { hashJson } from '@agent-core/persistence';
 import * as z from 'zod';
 import { contentId, nowTimestamp, textSha256 } from './canonical.js';
@@ -7,31 +10,31 @@ import {
   deterministicCheckSchema,
   documentNodeSchema,
   editorialFindingSchema,
-  proposalProductionVerificationSchema,
   preservationContractSchema,
+  proposalProductionVerificationSchema,
   relationEdgeSchema,
   semanticPreservationFindingSchema,
   type AuthorshipProvenance,
-  type WritingContextSelection,
   type CriterionCoverage,
   type DeterministicCheck,
   type EditorialFinding,
   type HumanCriterionDecision,
   type LocalizedTextEdit,
   type PreservationContract,
-  type ProposalProductionVerification,
   type ProjectSnapshot,
+  type ProposalProductionVerification,
   type RevisionProposal,
   type SemanticChangeDeclaration,
   type SemanticPreservationFinding,
   type StructuralChange,
+  type WritingContextSelection,
   type WritingFindingCitation,
   type WritingOperation
 } from './domain.js';
+import { createWritingOperationContract, type WritingOperationContract } from './operation-contract.js';
+import type { ProjectLogRecord } from './project-store.js';
 import type { WritingProject } from './project.js';
 import { readRootedText } from './project.js';
-import type { ProjectLogRecord } from './project-store.js';
-import { createWritingOperationContract, type WritingOperationContract } from './operation-contract.js';
 import {
   applyLocalizedTextEdits,
   offsetRange,
@@ -283,7 +286,7 @@ export async function runDeterministicProposalVerification(
   return Object.freeze({ ...verificationMaterial, deterministicChecks });
 }
 
-export async function verifyProposalProduction(input: {
+export interface ProposalProductionVerificationInput {
   readonly project: WritingProject;
   readonly operation: WritingOperation;
   readonly proposal: RevisionProposal;
@@ -291,7 +294,11 @@ export async function verifyProposalProduction(input: {
   readonly checker: WritingEditorialChecker;
   readonly clock?: () => Date;
   readonly signal?: AbortSignal;
-}): Promise<ProposalProductionVerification> {
+}
+
+export async function verifyProposalProduction(
+  input: ProposalProductionVerificationInput
+): Promise<ProposalProductionVerification> {
   if (input.proposal.contextSelectionId !== input.contextSelection.contextSelectionId)
     throw new Error('Production verification must use the proposal’s exact delivered context selection.');
   const verificationMaterial = await runDeterministicProposalVerification({
@@ -304,29 +311,44 @@ export async function verifyProposalProduction(input: {
     contextSelection: input.contextSelection,
     ...(input.clock === undefined ? {} : { clock: input.clock })
   });
+  return verifyProposalMaterial(input, verificationMaterial);
+}
+
+/** Verifies the exact material already captured for effect admission, without rebuilding it. */
+export async function verifyProposalMaterial(
+  input: ProposalProductionVerificationInput,
+  verificationMaterial: ProposalDeterministicVerification
+): Promise<ProposalProductionVerification> {
   if (
-    hashJson(verificationMaterial.preservationContract) !==
-    hashJson(input.proposal.preservationContract)
+    hashJson(verificationMaterial.preservationContract) !== hashJson(input.proposal.preservationContract)
   ) {
     throw new Error(
       `Proposal inputs no longer reproduce their durable deterministic verification material: ${input.proposal.proposalId}`
     );
   }
-  const editorial = await input.checker.verify({
-    operation: input.operation,
-    operationContract: verificationMaterial.operationContract,
-    base: verificationMaterial.base,
-    comparisonBaselines: verificationMaterial.comparisonBaselines,
-    proposedRevisionId: verificationMaterial.proposedRevisionId,
-    proposedText: verificationMaterial.proposedText,
-    declaration: input.proposal.semanticChangeDeclaration,
-    preservationContract: verificationMaterial.preservationContract,
-    citationCatalog: verificationMaterial.citationCatalog,
-    verificationInputSha256: verificationMaterial.verificationInputSha256,
-    contextSelection: input.contextSelection,
-    ...(input.signal === undefined ? {} : { signal: input.signal })
-  });
-  assertExactVerificationCoverage(editorial, input.operation, verificationMaterial.base);
+  const blocked = verificationMaterial.deterministicChecks.some(
+    (check) => check.requirement === 'required' && check.verdict !== 'passed'
+  );
+  const plan = verificationMaterial.operationContract.verification;
+  const needsInference = plan.semanticIntentIds.length > 0 || plan.editorialCriterionIds.length > 0;
+  const editorial =
+    blocked || !needsInference
+      ? { semanticPreservationFindings: [], editorialFindings: [] }
+      : await input.checker.verify({
+          operation: input.operation,
+          operationContract: verificationMaterial.operationContract,
+          base: verificationMaterial.base,
+          comparisonBaselines: verificationMaterial.comparisonBaselines,
+          proposedRevisionId: verificationMaterial.proposedRevisionId,
+          proposedText: verificationMaterial.proposedText,
+          declaration: input.proposal.semanticChangeDeclaration,
+          preservationContract: verificationMaterial.preservationContract,
+          citationCatalog: verificationMaterial.citationCatalog,
+          verificationInputSha256: verificationMaterial.verificationInputSha256,
+          contextSelection: input.contextSelection,
+          ...(input.signal === undefined ? {} : { signal: input.signal })
+        });
+  if (!blocked) assertExactVerificationCoverage(editorial, verificationMaterial.operationContract);
   assertEditorialBindings({
     semanticFindings: editorial.semanticPreservationFindings,
     editorialFindings: editorial.editorialFindings,
@@ -343,9 +365,11 @@ export async function verifyProposalProduction(input: {
     editorial.editorialFindings
   );
   return proposalProductionVerificationSchema.parse({
+    deterministicImplementationId: WRITING_DETERMINISTIC_VERIFICATION_IMPLEMENTATION_ID,
     verificationId: contentId('proposal-production-verification', {
+      deterministicImplementationId: WRITING_DETERMINISTIC_VERIFICATION_IMPLEMENTATION_ID,
       proposalId: input.proposal.proposalId,
-      evaluatorImplementationId: input.checker.implementationId,
+      checkerImplementationId: input.checker.implementationId,
       verificationPolicyId: input.checker.verificationPolicyId,
       ...(input.checker.calibrationId === undefined ? {} : { calibrationId: input.checker.calibrationId }),
       verificationInputSha256: verificationMaterial.verificationInputSha256,
@@ -356,9 +380,10 @@ export async function verifyProposalProduction(input: {
     baseProjectRevisionId: verificationMaterial.base.revision.revisionId,
     proposedRevisionId: verificationMaterial.proposedRevisionId,
     verificationInputSha256: verificationMaterial.verificationInputSha256,
-    evaluatorImplementationId: input.checker.implementationId,
+    checkerImplementationId: input.checker.implementationId,
     verificationPolicyId: input.checker.verificationPolicyId,
     ...(input.checker.calibrationId === undefined ? {} : { calibrationId: input.checker.calibrationId }),
+    semanticExecution: blocked ? 'blocked' : needsInference ? 'completed' : 'not_required',
     deterministicChecks: [...verificationMaterial.deterministicChecks],
     semanticPreservationFindings: [...editorial.semanticPreservationFindings],
     editorialFindings: [...editorial.editorialFindings],
@@ -392,7 +417,10 @@ export function proposalSatisfiesRequiredVerification(
       reasons.push(`semantic:${finding.findingId}:${finding.verdict}/${finding.coverage}`);
   }
   for (const finding of verification.editorialFindings) {
-    if (finding.severity === 'required' && (finding.verdict !== 'passed' || finding.coverage !== 'complete'))
+    if (
+      finding.severity === 'required' &&
+      (finding.verdict !== 'passed' || finding.coverage !== 'complete')
+    )
       reasons.push(`editorial:${finding.findingId}:${finding.verdict}/${finding.coverage}`);
   }
   for (const coverage of verification.criterionCoverage) {
@@ -544,7 +572,8 @@ function deterministicProposalChecks(input: {
     input.textEdits.every((request) => input.operation.targetResourceIds.includes(request.resourceId)) &&
     input.structuralChanges.every(
       (change) =>
-        change.kind === 'create' || change.targetIds.every((id) => input.operation.targetNodeIds.includes(id))
+        change.kind === 'create' ||
+        change.targetIds.every((id) => input.operation.targetNodeIds.includes(id))
     );
   add(
     'mutation-confinement',
@@ -701,7 +730,7 @@ export function acceptanceCriterionCoverage(
           verificationKind: criterion.verificationKind,
           verdict: 'unknown',
           coverage: 'none',
-          evaluatorIds: [],
+          checkerIds: [],
           verificationIds: [],
           explanation: 'This criterion requires an explicit direct-human decision at proposal acceptance.'
         });
@@ -714,7 +743,7 @@ export function acceptanceCriterionCoverage(
           verificationKind: criterion.verificationKind,
           verdict: aggregateVerdict(selected.map((check) => check.verdict)),
           coverage: selected.length === 0 ? 'none' : 'complete',
-          evaluatorIds: [...new Set(selected.map((check) => check.implementationId))].sort(),
+          checkerIds: [...new Set(selected.map((check) => check.implementationId))].sort(),
           verificationIds: selected.map((check) => check.checkId).sort(),
           explanation:
             selected.length === 0
@@ -735,7 +764,7 @@ export function acceptanceCriterionCoverage(
         verificationKind: criterion.verificationKind,
         verdict: aggregateVerdict(selected.map((finding) => finding.verdict)),
         coverage,
-        evaluatorIds: [...new Set(selected.map((finding) => finding.evaluatorId))].sort(),
+        checkerIds: [...new Set(selected.map((finding) => finding.checkerId))].sort(),
         verificationIds: selected.map((finding) => finding.findingId).sort(),
         explanation:
           selected.length === 0
@@ -931,7 +960,10 @@ function survivingProvenanceSegments(
   );
   const priorDelta = edits
     .filter((edit) => edit.end <= original.start)
-    .reduce((total, edit) => total + (edit.replacementEnd - edit.adjustedStart) - (edit.end - edit.start), 0);
+    .reduce(
+      (total, edit) => total + (edit.replacementEnd - edit.adjustedStart) - (edit.end - edit.start),
+      0
+    );
   let oldCursor = original.start;
   let newCursor = original.start + priorDelta;
   const segments: { start: number; end: number }[] = [];
@@ -999,7 +1031,8 @@ function validateStructuralChange(
     }
   } else {
     for (const id of change.targetIds) {
-      if (!targetNodes.has(id)) throw new Error(`Proposal expands beyond admitted structural targets: ${id}`);
+      if (!targetNodes.has(id))
+        throw new Error(`Proposal expands beyond admitted structural targets: ${id}`);
       if (!base.nodes.some((node) => node.nodeId === id))
         throw new Error(`Structural change targets an unknown node: ${id}`);
     }
@@ -1097,7 +1130,10 @@ function sourceRecordIntegrity(
   });
 }
 
-function provenanceIntegrity(base: ProjectSnapshot, contentByResource: ReadonlyMap<string, string>): boolean {
+function provenanceIntegrity(
+  base: ProjectSnapshot,
+  contentByResource: ReadonlyMap<string, string>
+): boolean {
   const resources = new Set(base.resources.map((resource) => resource.resourceId));
   const nodes = new Set(base.nodes.map((node) => node.nodeId));
   const known = new Set<string>();
@@ -1222,7 +1258,9 @@ function terminologyVerdict(content: string, base: ProjectSnapshot): 'passed' | 
 
 function headingVerdict(base: ProjectSnapshot, text: ReadonlyMap<string, string>): 'passed' | 'failed' {
   for (const [resourceId, content] of text) {
-    if (base.resources.find((resource) => resource.resourceId === resourceId)?.mediaType !== 'text/markdown')
+    if (
+      base.resources.find((resource) => resource.resourceId === resourceId)?.mediaType !== 'text/markdown'
+    )
       continue;
     let previous = 0;
     for (const line of content.split(/\r\n|\r|\n/u)) {
@@ -1254,7 +1292,9 @@ function duplicatePassageVerdict(content: string): 'passed' | 'failed' {
 
 function syntaxVerdict(base: ProjectSnapshot, text: ReadonlyMap<string, string>): 'passed' | 'failed' {
   for (const [resourceId, content] of text) {
-    if (base.resources.find((resource) => resource.resourceId === resourceId)?.mediaType !== 'text/markdown')
+    if (
+      base.resources.find((resource) => resource.resourceId === resourceId)?.mediaType !== 'text/markdown'
+    )
       continue;
     if ((content.match(/^```/gmu) ?? []).length % 2 !== 0) return 'failed';
   }
@@ -1299,19 +1339,16 @@ function editorialVerificationInputSha256(input: {
 
 function assertExactVerificationCoverage(
   verification: Awaited<ReturnType<WritingEditorialChecker['verify']>>,
-  operation: WritingOperation,
-  base: ProjectSnapshot
+  contract: WritingOperationContract
 ): void {
   assertExactSet(
     verification.semanticPreservationFindings.map((finding) => finding.scope),
-    operation.intents.map((intent) => intent.intentId),
+    contract.verification.semanticIntentIds,
     'semantic intent scopes'
   );
   assertExactSet(
     verification.editorialFindings.map((finding) => finding.criterionId),
-    base.brief.acceptanceCriteria
-      .filter((criterion) => criterion.verificationKind === 'editorial')
-      .map((criterion) => criterion.criterionId),
+    contract.verification.editorialCriterionIds,
     'editorial criterion bindings'
   );
 }
@@ -1410,13 +1447,13 @@ function assertFindingComparison(
 function assertFindingEvaluator(
   finding: Pick<
     SemanticPreservationFinding,
-    'findingId' | 'evaluatorId' | 'verificationPolicyId' | 'calibrationId'
+    'findingId' | 'checkerId' | 'verificationPolicyId' | 'calibrationId'
   >,
   checker?: WritingEditorialChecker
 ): void {
   if (
     checker !== undefined &&
-    (finding.evaluatorId !== checker.implementationId ||
+    (finding.checkerId !== checker.implementationId ||
       finding.verificationPolicyId !== checker.verificationPolicyId ||
       finding.calibrationId !== checker.calibrationId)
   ) {

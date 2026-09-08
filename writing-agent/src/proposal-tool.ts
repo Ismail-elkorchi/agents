@@ -1,6 +1,5 @@
 import { parseJsonValue } from '@agent-core/json';
 import { hashJson } from '@agent-core/persistence';
-import * as z from 'zod';
 import {
   defineTool,
   isRiskAllowed,
@@ -10,19 +9,20 @@ import {
   type ToolExecutionContext,
   type ToolInvocationContext
 } from '@agent-core/tools';
+import * as z from 'zod';
+import { contentId, nowTimestamp } from './canonical.js';
 import {
   documentNodeSchema,
   relationEdgeSchema,
   revisionProposalSchema,
   semanticChangeDeclarationSchema,
-  type WritingContextSelection,
   type LocalizedTextEdit,
   type RevisionProposal,
   type StructuralChange,
+  type WritingContextSelection,
   type WritingIntent,
   type WritingOperation
 } from './domain.js';
-import { contentId, nowTimestamp } from './canonical.js';
 import type { WritingProject } from './project.js';
 import { assembleProposalVerificationMaterial } from './verification.js';
 
@@ -96,7 +96,10 @@ export class WritingOperationService {
     input: ProposeRevisionInput,
     invocation: ToolInvocationContext
   ): Promise<CanonicalProposalInput> {
-    if (invocation.runId !== this.operation.runId)
+    if (
+      (await this.project.store.getOperationByRunId(invocation.runId))?.operationId !==
+      this.operation.operationId
+    )
       throw new Error('Proposal invocation belongs to another operation run.');
     const delivered = await this.project.store.getContextSelectionForInvocation(invocation);
     if (delivered === undefined)
@@ -124,7 +127,9 @@ export class WritingOperationService {
         const descriptor = requireDescriptor(this.contextSelection, textChange.resourceId);
         const edits = textByResource.get(textChange.resourceId) ?? [];
         for (const replacement of textChange.replacements) {
-          const anchor = descriptor.anchors.find((candidate) => candidate.anchorId === replacement.anchorId);
+          const anchor = descriptor.anchors.find(
+            (candidate) => candidate.anchorId === replacement.anchorId
+          );
           if (anchor === undefined)
             throw new Error(
               `Proposal references an unknown application-owned edit anchor: ${replacement.anchorId}`
@@ -163,7 +168,9 @@ export class WritingOperationService {
             hashJson({ kind: existing.kind, targetIds: existing.targetIds, value: existing.value }) !==
             hashJson(change)
           ) {
-            throw new Error(`Proposal has conflicting structural changes with identity: ${change.changeId}`);
+            throw new Error(
+              `Proposal has conflicting structural changes with identity: ${change.changeId}`
+            );
           }
           existing.intentIds.push(intent.intentId);
           continue;
@@ -182,7 +189,9 @@ export class WritingOperationService {
         };
       });
     if (textEdits.length === 0 && structuralChanges.length === 0)
-      throw new Error('A proposal requires at least one intent-bound text replacement or structural change.');
+      throw new Error(
+        'A proposal requires at least one intent-bound text replacement or structural change.'
+      );
     if (
       deliveredSelection.operationId !== this.operation.operationId ||
       deliveredSelection.baseProjectRevisionId !== this.operation.baseProjectRevisionId
@@ -209,7 +218,9 @@ export class WritingOperationService {
     const existing = await this.project.store.getProposal(input.proposalId);
     if (existing !== undefined) {
       if (!sameProposalIntent(existing, input))
-        throw new Error(`Proposal identity conflicts with a different canonical intent: ${input.proposalId}`);
+        throw new Error(
+          `Proposal identity conflicts with a different canonical intent: ${input.proposalId}`
+        );
       return existing;
     }
     const contextSelection = (await this.project.store.view()).contextSelections.get(
@@ -531,7 +542,9 @@ function proposalObservation(proposal: RevisionProposal) {
     ok: true,
     summary: `Created writing revision proposal ${proposal.proposalId}.`,
     scope: Object.freeze({
-      resources: Object.freeze([`${PROJECT_SCOPE}/${proposal.operationId}/proposals/${proposal.proposalId}`]),
+      resources: Object.freeze([
+        `${PROJECT_SCOPE}/${proposal.operationId}/proposals/${proposal.proposalId}`
+      ]),
       coverage: 'complete' as const
     }),
     output

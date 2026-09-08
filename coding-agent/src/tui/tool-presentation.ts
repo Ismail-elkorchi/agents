@@ -1,5 +1,5 @@
-import type { ToolCall, ToolEffects, ToolObservation } from '@agent-core/tools';
 import type { JsonObject } from '@agent-core/json';
+import type { ToolCall, ToolEffects, ToolObservation } from '@agent-core/tools';
 import type { CodingAgentTuiActivityEntry } from './conversation-model.js';
 
 type ToolDisplayValue = ToolCall['input']['value'] | ToolObservation['output'];
@@ -25,7 +25,9 @@ export function completedSessionToolActivity(
       ? undefined
       : `Artifacts\n${entry.artifacts.map((artifact) => artifact.artifactId).join('\n')}`,
     entry.metadata === undefined ? undefined : `Metadata\n${formatValue(entry.metadata)}`
-  ].filter((part): part is string => part !== undefined && part.length > 0).join('\n\n');
+  ]
+    .filter((part): part is string => part !== undefined && part.length > 0)
+    .join('\n\n');
   return {
     id: sessionObservationActivityId(entry),
     kind: 'activity',
@@ -104,11 +106,9 @@ export function completedToolActivity(
   observation: ToolObservation
 ): CodingAgentTuiActivityEntry {
   const summary = compact(observation.summary);
-  const details = [
-    current?.details,
-    formatOutput(observation.output),
-    formatObservedFacts(observation)
-  ].filter((part): part is string => part !== undefined && part.length > 0).join('\n\n');
+  const details = [current?.details, formatOutput(observation.output), formatObservedFacts(observation)]
+    .filter((part): part is string => part !== undefined && part.length > 0)
+    .join('\n\n');
   return {
     id,
     kind: 'activity',
@@ -127,17 +127,28 @@ export function formatApprovalInput(call: ToolCall): string {
 function toolLabel(call: ToolCall): string {
   const value = call.input.kind === 'json' ? call.input.value : undefined;
   switch (call.name) {
-    case 'exec_command': return `Run ${quoted(firstString(value, ['command']) ?? 'command')}`;
-    case 'write_stdin': return `Continue ${compactTarget(value, ['processId'])}`;
-    case 'stop_process': return `Stop ${compactTarget(value, ['processId'])}`;
-    case 'apply_patch': return 'Apply workspace patch';
-    case 'read_files': return `Read ${compactTarget(value, ['files', 'path'])}`;
-    case 'search_text': return `Search for ${quoted(firstString(value, ['query']) ?? 'text')}`;
-    case 'list_directory': return `List ${compactTarget(value, ['path'])}`;
-    case 'find_files': return `Find ${compactTarget(value, ['patterns'])}`;
-    case 'view_image': return `View ${compactTarget(value, ['path'])}`;
-    case 'read_artifact': return `Read ${compactTarget(value, ['artifactId'])}`;
-    default: return humanize(call.name);
+    case 'exec_command':
+      return `Run ${quoted(firstString(value, ['command']) ?? 'command')}`;
+    case 'write_stdin':
+      return `Continue ${compactTarget(value, ['processId'])}`;
+    case 'stop_process':
+      return `Stop ${compactTarget(value, ['processId'])}`;
+    case 'apply_patch':
+      return 'Apply workspace patch';
+    case 'read_files':
+      return `Read ${compactTarget(value, ['files', 'path'])}`;
+    case 'search_text':
+      return `Search for ${quoted(firstString(value, ['query']) ?? 'text')}`;
+    case 'list_directory':
+      return `List ${compactTarget(value, ['path'])}`;
+    case 'find_files':
+      return `Find ${compactTarget(value, ['patterns'])}`;
+    case 'view_image':
+      return `View ${compactTarget(value, ['path'])}`;
+    case 'read_artifact':
+      return `Read ${compactTarget(value, ['artifactId'])}`;
+    default:
+      return humanize(call.name);
   }
 }
 
@@ -147,7 +158,8 @@ function compactTarget(value: JsonObject | undefined, keys: readonly string[]): 
     if (typeof candidate === 'string' && candidate.trim().length > 0) return candidate;
     if (Array.isArray(candidate)) {
       const paths = candidate.filter((item): item is string => typeof item === 'string');
-      if (paths.length > 0) return paths.length === 1 ? paths[0] ?? 'workspace' : `${String(paths.length)} paths`;
+      if (paths.length > 0)
+        return paths.length === 1 ? (paths[0] ?? 'workspace') : `${String(paths.length)} paths`;
     }
   }
   return 'workspace';
@@ -174,8 +186,10 @@ function formatEffects(effects: ToolEffects): string {
 
 function formatRecovery(recovery: ToolEffects['recovery']): string {
   if (recovery.kind === 'unknown') return 'recovery unknown';
-  if (recovery.kind === 'preconditioned_reexecution') return `re-executable with ${String(recovery.preconditions.length)} precondition${recovery.preconditions.length === 1 ? '' : 's'}`;
-  if (recovery.kind === 'queryable') return `queryable until ${recovery.expiresAt}`;
+  if (recovery.kind === 'preconditioned_reexecution')
+    return `re-executable with ${String(recovery.preconditions.length)} precondition${recovery.preconditions.length === 1 ? '' : 's'}`;
+  if (recovery.kind === 'queryable')
+    return recovery.expiresAt === null ? 'durable reconciliation' : `queryable until ${recovery.expiresAt}`;
   if (recovery.kind === 'idempotency_key') return `parameter-bound idempotency until ${recovery.expiresAt}`;
   return `journal-reconcilable ${recovery.transactionId}`;
 }

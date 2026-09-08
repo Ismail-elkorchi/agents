@@ -1,5 +1,3 @@
-import { randomUUID } from 'node:crypto';
-import path from 'node:path';
 import type {
   EnforcementRequirements,
   FilesystemGrant,
@@ -8,6 +6,8 @@ import type {
   SandboxExecutionObservation,
   SandboxExecutionRepository
 } from '@ismail-elkorchi/sandbox';
+import { randomUUID } from 'node:crypto';
+import path from 'node:path';
 import type {
   GitObservationReceipt,
   GitRepositoryLocation,
@@ -58,7 +58,8 @@ export class SandboxGitRepositoryObserver implements GitRepositoryObserver {
   #closed = false;
 
   constructor(options: SandboxGitRepositoryObserverOptions) {
-    if (!path.isAbsolute(options.gitExecutable)) throw new TypeError('Sandboxed Git observation requires an absolute executable path.');
+    if (!path.isAbsolute(options.gitExecutable))
+      throw new TypeError('Sandboxed Git observation requires an absolute executable path.');
     this.#repository = options.repository;
     this.#gitExecutable = path.normalize(options.gitExecutable);
   }
@@ -71,14 +72,21 @@ export class SandboxGitRepositoryObserver implements GitRepositoryObserver {
     let authorizationObservation: SandboxExecutionObservation;
     try {
       // `prepare` and the matching state tags are names fixed by the upstream sandbox protocol.
-      authorizationObservation = await this.#repository.prepare({ executionId, run }, { maxBytes: MAX_OUTPUT_BYTES, waitMs: STATUS_TIMEOUT_MS });
+      authorizationObservation = await this.#repository.prepare(
+        { executionId, run },
+        { maxBytes: MAX_OUTPUT_BYTES, waitMs: STATUS_TIMEOUT_MS }
+      );
     } catch {
       return Object.freeze({ kind: 'unavailable', reason: 'sandbox_unavailable', executionId });
     }
-    if (authorizationObservation.kind === 'rejected') return Object.freeze({ kind: 'unavailable', reason: 'execution_rejected', executionId });
-    if (authorizationObservation.kind === 'unknown' || authorizationObservation.kind === 'preparing') return Object.freeze({ kind: 'unavailable', reason: 'execution_unknown', executionId });
-    if (authorizationObservation.kind === 'expired') return Object.freeze({ kind: 'unavailable', reason: 'execution_expired', executionId });
-    if (authorizationObservation.kind !== 'prepared') return Object.freeze({ kind: 'unavailable', reason: 'status_failed', executionId });
+    if (authorizationObservation.kind === 'rejected')
+      return Object.freeze({ kind: 'unavailable', reason: 'execution_rejected', executionId });
+    if (authorizationObservation.kind === 'unknown' || authorizationObservation.kind === 'preparing')
+      return Object.freeze({ kind: 'unavailable', reason: 'execution_unknown', executionId });
+    if (authorizationObservation.kind === 'expired')
+      return Object.freeze({ kind: 'unavailable', reason: 'execution_expired', executionId });
+    if (authorizationObservation.kind !== 'prepared')
+      return Object.freeze({ kind: 'unavailable', reason: 'status_failed', executionId });
     const receipt: GitObservationReceipt = Object.freeze({
       executionId,
       requestDigest: authorizationObservation.requestDigest,
@@ -86,21 +94,36 @@ export class SandboxGitRepositoryObserver implements GitRepositoryObserver {
       executionDigest: authorizationObservation.executionDigest,
       backend: authorizationObservation.summary.backend.id,
       backendVersion: authorizationObservation.summary.backend.version,
-      ...(authorizationObservation.summary.execution.executableIdentityDigest ? { executableIdentityDigest: authorizationObservation.summary.execution.executableIdentityDigest } : {}),
-      ...(authorizationObservation.summary.execution.executableContentSha256 ? { executableContentSha256: authorizationObservation.summary.execution.executableContentSha256 } : {})
+      ...(authorizationObservation.summary.execution.executableIdentityDigest
+        ? { executableIdentityDigest: authorizationObservation.summary.execution.executableIdentityDigest }
+        : {}),
+      ...(authorizationObservation.summary.execution.executableContentSha256
+        ? { executableContentSha256: authorizationObservation.summary.execution.executableContentSha256 }
+        : {})
     });
-    const terminateOnAbort = () => { void this.#repository.terminate(executionId).catch(() => undefined); };
+    const terminateOnAbort = () => {
+      void this.#repository.terminate(executionId).catch(() => undefined);
+    };
     signal?.addEventListener('abort', terminateOnAbort, { once: true });
     try {
       await this.#repository.activate(executionId, authorizationObservation);
       const observation = await waitForTerminal(this.#repository, executionId);
-      if (observation.kind === 'unknown') return Object.freeze({ kind: 'unavailable', reason: 'execution_unknown', executionId });
-      if (observation.kind === 'expired') return Object.freeze({ kind: 'unavailable', reason: 'execution_expired', executionId });
-      if (observation.kind !== 'settled' || observation.result.termination.reason !== 'exit' || observation.result.termination.code !== 0) {
+      if (observation.kind === 'unknown')
+        return Object.freeze({ kind: 'unavailable', reason: 'execution_unknown', executionId });
+      if (observation.kind === 'expired')
+        return Object.freeze({ kind: 'unavailable', reason: 'execution_expired', executionId });
+      if (
+        observation.kind !== 'settled' ||
+        observation.result.termination.reason !== 'exit' ||
+        observation.result.termination.code !== 0
+      ) {
         return Object.freeze({ kind: 'unavailable', reason: 'status_failed', executionId });
       }
-      try { return parseGitStatus(observation, receipt); }
-      catch { return Object.freeze({ kind: 'unavailable', reason: 'output_invalid', executionId }); }
+      try {
+        return parseGitStatus(observation, receipt);
+      } catch {
+        return Object.freeze({ kind: 'unavailable', reason: 'output_invalid', executionId });
+      }
     } finally {
       signal?.removeEventListener('abort', terminateOnAbort);
     }
@@ -117,22 +140,36 @@ function gitStatusRun(gitExecutable: string, location: GitRepositoryLocation): S
   const workspace = path.resolve(location.workspaceRoot);
   const gitDirectory = path.resolve(location.gitDirectory);
   const commonDirectory = path.resolve(location.commonDirectory ?? gitDirectory);
-  const grants: FilesystemGrant[] = [{
-    hostPath: workspace,
-    targetPath: '/workspace',
-    access: 'read',
-    execution: 'deny',
-    rootResolution: 'reject-if-link'
-  }];
+  const grants: FilesystemGrant[] = [
+    {
+      hostPath: workspace,
+      targetPath: '/workspace',
+      access: 'read',
+      execution: 'deny',
+      rootResolution: 'reject-if-link'
+    }
+  ];
   let sandboxGitDirectory = mappedChild(workspace, gitDirectory, '/workspace');
   let sandboxCommonDirectory = mappedChild(workspace, commonDirectory, '/workspace');
   if (!sandboxCommonDirectory) {
-    grants.push({ hostPath: commonDirectory, targetPath: '/git-common', access: 'read', execution: 'deny', rootResolution: 'reject-if-link' });
+    grants.push({
+      hostPath: commonDirectory,
+      targetPath: '/git-common',
+      access: 'read',
+      execution: 'deny',
+      rootResolution: 'reject-if-link'
+    });
     sandboxCommonDirectory = '/git-common';
     sandboxGitDirectory = mappedChild(commonDirectory, gitDirectory, '/git-common');
   }
   if (!sandboxGitDirectory) {
-    grants.push({ hostPath: gitDirectory, targetPath: '/git-directory', access: 'read', execution: 'deny', rootResolution: 'reject-if-link' });
+    grants.push({
+      hostPath: gitDirectory,
+      targetPath: '/git-directory',
+      access: 'read',
+      execution: 'deny',
+      rootResolution: 'reject-if-link'
+    });
     sandboxGitDirectory = '/git-directory';
   }
   const environment: Record<string, string> = {
@@ -154,7 +191,12 @@ function gitStatusRun(gitExecutable: string, location: GitRepositoryLocation): S
   return {
     isolation: { kind: 'process' },
     policy: {
-      filesystem: { runtime: { kind: 'system' }, grants, privateHome: { enabled: true }, temporary: { executable: false } },
+      filesystem: {
+        runtime: { kind: 'system' },
+        grants,
+        privateHome: { enabled: true },
+        temporary: { executable: false }
+      },
       network: { mode: 'none' },
       process: { hostProcesses: 'deny', hostIpc: 'deny' }
     },
@@ -169,14 +211,26 @@ function gitStatusRun(gitExecutable: string, location: GitRepositoryLocation): S
     process: {
       executable: gitExecutable,
       args: [
-        '--no-pager', '--no-optional-locks',
-        '-c', 'core.hooksPath=/dev/null',
-        '-c', 'core.fsmonitor=false',
-        '-c', 'core.untrackedCache=false',
-        '-c', 'core.attributesFile=/dev/null',
-        '-c', 'gc.auto=0',
-        '-c', 'maintenance.auto=false',
-        'status', '--porcelain=v2', '--branch', '-z', '--untracked-files=all', '--ignore-submodules=none'
+        '--no-pager',
+        '--no-optional-locks',
+        '-c',
+        'core.hooksPath=/dev/null',
+        '-c',
+        'core.fsmonitor=false',
+        '-c',
+        'core.untrackedCache=false',
+        '-c',
+        'core.attributesFile=/dev/null',
+        '-c',
+        'gc.auto=0',
+        '-c',
+        'maintenance.auto=false',
+        'status',
+        '--porcelain=v2',
+        '--branch',
+        '-z',
+        '--untracked-files=all',
+        '--ignore-submodules=none'
       ],
       cwd: '/workspace',
       environment: { base: 'empty', set: environment },
@@ -190,31 +244,59 @@ function gitStatusRun(gitExecutable: string, location: GitRepositoryLocation): S
 function mappedChild(parent: string, child: string, target: string): string | undefined {
   const relative = path.relative(parent, child);
   if (relative === '') return target;
-  if (relative.startsWith(`..${path.sep}`) || relative === '..' || path.isAbsolute(relative)) return undefined;
+  if (relative.startsWith(`..${path.sep}`) || relative === '..' || path.isAbsolute(relative))
+    return undefined;
   return path.posix.join(target, ...relative.split(path.sep));
 }
 
-async function waitForTerminal(repository: SandboxExecutionRepository, executionId: string): Promise<SandboxExecutionObservation> {
+async function waitForTerminal(
+  repository: SandboxExecutionRepository,
+  executionId: string
+): Promise<SandboxExecutionObservation> {
   const deadline = Date.now() + STATUS_TIMEOUT_MS + 2_000;
   let observation = await repository.inspect(executionId, { maxBytes: MAX_OUTPUT_BYTES, waitMs: 100 });
-  while (observation.kind !== 'settled' && observation.kind !== 'rejected'
-    && observation.kind !== 'unknown' && observation.kind !== 'expired' && Date.now() < deadline) {
-    observation = await repository.inspect(executionId, { maxBytes: MAX_OUTPUT_BYTES, waitMs: Math.min(100, deadline - Date.now()) });
+  while (
+    observation.kind !== 'settled' &&
+    observation.kind !== 'rejected' &&
+    observation.kind !== 'unknown' &&
+    observation.kind !== 'expired' &&
+    Date.now() < deadline
+  ) {
+    observation = await repository.inspect(executionId, {
+      maxBytes: MAX_OUTPUT_BYTES,
+      waitMs: Math.min(100, deadline - Date.now())
+    });
   }
-  if (observation.kind === 'preparing' || observation.kind === 'prepared' || observation.kind === 'running') {
+  if (
+    observation.kind === 'preparing' ||
+    observation.kind === 'prepared' ||
+    observation.kind === 'running'
+  ) {
     await repository.terminate(executionId).catch(() => undefined);
     return Object.freeze({
-      kind: 'unknown', executionId, reason: 'execution-host-unreachable',
-      diagnostic: 'Sandboxed Git observation did not settle before its deadline.', output: observation.output
+      kind: 'unknown',
+      executionId,
+      reason: 'execution-host-unreachable',
+      diagnostic: 'Sandboxed Git observation did not settle before its deadline.',
+      output: observation.output
     });
   }
   return observation;
 }
 
-function parseGitStatus(observation: Extract<SandboxExecutionObservation, { kind: 'settled' }>, receipt: GitObservationReceipt): GitRepositoryObservation {
-  if (observation.output.cursorExpired || observation.output.cursorStart !== 0
-    || observation.output.availableCursorEnd !== observation.output.cursorEnd) throw new Error('Git status output is incomplete.');
-  const bytes = Buffer.concat(observation.output.chunks.filter((chunk) => chunk.stream === 'stdout').map((chunk) => chunk.data));
+function parseGitStatus(
+  observation: Extract<SandboxExecutionObservation, { kind: 'settled' }>,
+  receipt: GitObservationReceipt
+): GitRepositoryObservation {
+  if (
+    observation.output.cursorExpired ||
+    observation.output.cursorStart !== 0 ||
+    observation.output.availableCursorEnd !== observation.output.cursorEnd
+  )
+    throw new Error('Git status output is incomplete.');
+  const bytes = Buffer.concat(
+    observation.output.chunks.filter((chunk) => chunk.stream === 'stdout').map((chunk) => chunk.data)
+  );
   const records = new TextDecoder('utf-8', { fatal: true }).decode(bytes).split('\0');
   if (records.at(-1) === '') records.pop();
   let branch: string | undefined;
@@ -223,8 +305,16 @@ function parseGitStatus(observation: Extract<SandboxExecutionObservation, { kind
   let totalEntries = 0;
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index] ?? '';
-    if (record.startsWith('# branch.oid ')) { const value = record.slice(13); if (value !== '(initial)') head = value; continue; }
-    if (record.startsWith('# branch.head ')) { const value = record.slice(14); if (value !== '(detached)') branch = value; continue; }
+    if (record.startsWith('# branch.oid ')) {
+      const value = record.slice(13);
+      if (value !== '(initial)') head = value;
+      continue;
+    }
+    if (record.startsWith('# branch.head ')) {
+      const value = record.slice(14);
+      if (value !== '(detached)') branch = value;
+      continue;
+    }
     if (record.startsWith('# ')) continue;
     const parsed = parseEntry(record);
     if (!parsed) throw new Error('Unknown Git porcelain record.');
@@ -262,5 +352,7 @@ function parseEntry(record: string): GitStatusEntry | undefined {
 }
 
 function abortError(signal: AbortSignal): Error {
-  return signal.reason instanceof Error ? signal.reason : new Error(typeof signal.reason === 'string' ? signal.reason : 'Git observation was aborted.');
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new Error(typeof signal.reason === 'string' ? signal.reason : 'Git observation was aborted.');
 }

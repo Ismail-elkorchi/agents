@@ -1,15 +1,14 @@
 import { hashJson } from '@agent-core/persistence';
+import type { RootIdentity } from '@agent-core/tools-local';
 import { lstat } from 'node:fs/promises';
 import path from 'node:path';
 import * as z from 'zod';
-import type { RootIdentity } from '@agent-core/tools-local';
-import { contentId, nowTimestamp, randomId, textSha256 } from './canonical.js';
 import { assertBriefIntegrity } from './brief.js';
+import { contentId, nowTimestamp, randomId, textSha256 } from './canonical.js';
 import {
   authorshipProvenanceSchema,
   claimEvidenceRelationSchema,
   claimSchema,
-  writingContextSelectionSchema,
   deterministicCheckSchema,
   editorialDecisionSchema,
   editorialFindingSchema,
@@ -20,14 +19,15 @@ import {
   sha256Schema,
   sourceRecordSchema,
   timestampSchema,
-  writingBriefRevisionSchema,
-  writingApplyAuthorizationSchema,
   WRITING_APPLY_AUTHORIZATION_POLICY_ID,
+  writingApplyAuthorizationSchema,
+  writingBriefRevisionSchema,
+  writingContextSelectionSchema,
+  writingExecutionAttemptSchema,
   writingOperationSchema,
   type AuthorshipProvenance,
   type Claim,
   type ClaimEvidenceRelation,
-  type WritingContextSelection,
   type DeterministicCheck,
   type EditorialDecision,
   type EditorialFinding,
@@ -35,8 +35,10 @@ import {
   type ProposalProductionVerification,
   type RevisionProposal,
   type SourceRecord,
-  type WritingBriefRevision,
   type WritingApplyAuthorization,
+  type WritingBriefRevision,
+  type WritingContextSelection,
+  type WritingExecutionAttempt,
   type WritingOperation
 } from './domain.js';
 import {
@@ -87,8 +89,16 @@ const operationLifecycleSchema = z
   .strictObject({
     operationId: identifierSchema,
     runId: identifierSchema,
-    status: z.enum(['suspended', 'completed', 'failed', 'aborted', 'inconclusive']),
+    status: z.enum([
+      'suspended',
+      'awaiting_verification',
+      'completed',
+      'failed',
+      'aborted',
+      'inconclusive'
+    ]),
     executionSha256: sha256Schema,
+    verificationId: identifierSchema.optional(),
     proposalId: identifierSchema.optional(),
     committedRevisionId: identifierSchema.optional(),
     reason: z.string().trim().min(1).max(100_000).optional()
@@ -106,7 +116,7 @@ const assumptionStatusChangeSchema = z
   })
   .readonly();
 
-const mutationSettlementSchema = z
+export const mutationSettlementSchema = z
   .strictObject({
     mutationId: identifierSchema,
     operationId: identifierSchema,
@@ -189,7 +199,12 @@ const eventPayloadSchema = z.discriminatedUnion('kind', [
     .strictObject({ kind: z.literal('assumption.status-changed'), change: assumptionStatusChangeSchema })
     .readonly(),
   z.strictObject({ kind: z.literal('operation.admitted'), operation: writingOperationSchema }).readonly(),
-  z.strictObject({ kind: z.literal('operation.lifecycle'), lifecycle: operationLifecycleSchema }).readonly(),
+  z
+    .strictObject({ kind: z.literal('execution.admitted'), attempt: writingExecutionAttemptSchema })
+    .readonly(),
+  z
+    .strictObject({ kind: z.literal('operation.lifecycle'), lifecycle: operationLifecycleSchema })
+    .readonly(),
   z
     .strictObject({ kind: z.literal('context.selected'), selection: writingContextSelectionSchema })
     .readonly(),
@@ -229,7 +244,9 @@ const eventPayloadSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('project.changed'), change: projectChangeSchema }).readonly(),
   z.strictObject({ kind: z.literal('source.added'), source: sourceRecordSchema }).readonly(),
   z.strictObject({ kind: z.literal('claim.adopted'), claim: claimSchema }).readonly(),
-  z.strictObject({ kind: z.literal('evidence.verified'), relation: claimEvidenceRelationSchema }).readonly(),
+  z
+    .strictObject({ kind: z.literal('evidence.verified'), relation: claimEvidenceRelationSchema })
+    .readonly(),
   z
     .strictObject({
       kind: z.literal('authorship.recorded'),
@@ -284,8 +301,10 @@ export interface ProjectView {
     { readonly proposal: RevisionProposal; readonly status: ProposalStatus }
   >;
   readonly productionVerifications: ReadonlyMap<string, ProposalProductionVerification>;
+  readonly verificationHistory: ReadonlyMap<string, ProposalProductionVerification>;
   readonly applyAuthorizations: ReadonlyMap<string, WritingApplyAuthorization>;
   readonly operations: ReadonlyMap<string, WritingOperation>;
+  readonly executionAttempts: ReadonlyMap<string, WritingExecutionAttempt>;
   readonly operationLifecycles: ReadonlyMap<string, WritingOperationLifecycle>;
   readonly contextSelections: ReadonlyMap<string, WritingContextSelection>;
   readonly settlements: ReadonlyMap<string, ProjectMutationSettlement>;
@@ -461,13 +480,27 @@ export class WritingProjectStore {
     );
   }
 
+  async appendExecutionAttempt(
+    attempt: WritingExecutionAttempt,
+    expectedRevisionId: string
+  ): Promise<void> {
+    await this.appendMany(
+      [{ payload: { kind: 'execution.admitted', attempt }, projectRevisionId: expectedRevisionId }],
+      { expectedRevisionId }
+    );
+  }
+
   async appendOperationLifecycle(
     input: z.input<typeof operationLifecycleSchema>,
     expectedRevisionId: string
   ): Promise<void> {
     const lifecycle = operationLifecycleSchema.parse(input);
-    const existing = await this.getOperationLifecycle(lifecycle.operationId);
-    if (existing !== undefined && existing.status !== 'suspended') {
+    const existing = (await this.view()).operationLifecycles.get(lifecycle.runId);
+    if (
+      existing !== undefined &&
+      existing.status !== 'suspended' &&
+      existing.status !== 'awaiting_verification'
+    ) {
       if (sameOperationSettlement(existing, lifecycle)) return;
       throw new Error(
         `Writing operation already has a conflicting terminal settlement: ${lifecycle.operationId}`
@@ -524,7 +557,7 @@ export class WritingProjectStore {
 
   async appendProposalProductionVerification(verification: ProposalProductionVerification): Promise<void> {
     const parsed = proposalProductionVerificationSchema.parse(verification);
-    const existing = await this.getProposalProductionVerification(parsed.proposalId);
+    const existing = (await this.view()).verificationHistory.get(parsed.verificationId);
     if (existing !== undefined) {
       if (hashJson(existing) !== hashJson(parsed))
         throw new Error(
@@ -787,7 +820,8 @@ export class WritingProjectStore {
     const target = path.join(this.#directory, 'objects', sha256);
     const existing = await readSecureFileIfPresent(target, 64 * 1024 * 1024);
     if (existing !== undefined) {
-      if (textSha256(existing) !== sha256) throw new Error(`Content-addressed object is corrupt: ${sha256}`);
+      if (textSha256(existing) !== sha256)
+        throw new Error(`Content-addressed object is corrupt: ${sha256}`);
       return sha256;
     }
     await writePrivateAtomic(target, content);
@@ -815,7 +849,9 @@ export class WritingProjectStore {
   }
 
   async getOperationByRunId(runId: string): Promise<WritingOperation | undefined> {
-    return [...(await this.view()).operations.values()].find((operation) => operation.runId === runId);
+    const view = await this.view();
+    const attempt = view.executionAttempts.get(runId);
+    return attempt === undefined ? undefined : view.operations.get(attempt.operationId);
   }
 
   async getContextSelectionForOperation(operationId: string): Promise<WritingContextSelection | undefined> {
@@ -861,7 +897,9 @@ export class WritingProjectStore {
   }
 
   async getOperationLifecycle(operationId: string): Promise<WritingOperationLifecycle | undefined> {
-    return (await this.view()).operationLifecycles.get(operationId);
+    return [...(await this.view()).operationLifecycles.values()]
+      .filter((lifecycle) => lifecycle.operationId === operationId)
+      .at(-1);
   }
 
   private async appendMany(
@@ -884,7 +922,9 @@ export class WritingProjectStore {
           input.recordId ??
           contentId('record', {
             projectId: this.identity.projectId,
-            ...(input.projectRevisionId === undefined ? {} : { projectRevisionId: input.projectRevisionId }),
+            ...(input.projectRevisionId === undefined
+              ? {}
+              : { projectRevisionId: input.projectRevisionId }),
             payload: input.payload
           });
         const duplicate = existingRecords.find((record) => record.recordId === recordId);
@@ -915,7 +955,12 @@ export class WritingProjectStore {
       }
       const current = latestSnapshot(existingRecords);
       if (current !== undefined)
-        await writeHead(this.#directory, this.identity.projectId, current.revision.revisionId, previousHash);
+        await writeHead(
+          this.#directory,
+          this.identity.projectId,
+          current.revision.revisionId,
+          previousHash
+        );
     });
   }
 
@@ -947,7 +992,9 @@ function sameContextInvocation(
   right: Pick<WritingContextDelivery, 'runId' | 'turnId' | 'requestAttempt'>
 ): boolean {
   return (
-    left.runId === right.runId && left.turnId === right.turnId && left.requestAttempt === right.requestAttempt
+    left.runId === right.runId &&
+    left.turnId === right.turnId &&
+    left.requestAttempt === right.requestAttempt
   );
 }
 
@@ -967,7 +1014,12 @@ function validateContextDelivery(
   );
   if (
     admission?.kind !== 'operation.admitted' ||
-    admission.operation.runId !== delivery.runId ||
+    !payloads.some(
+      (payload) =>
+        payload.kind === 'execution.admitted' &&
+        payload.attempt.runId === delivery.runId &&
+        payload.attempt.operationId === delivery.operationId
+    ) ||
     admission.operation.baseProjectRevisionId !== delivery.baseProjectRevisionId ||
     selected?.kind !== 'context.selected' ||
     selected.selection.operationId !== delivery.operationId ||
@@ -1054,6 +1106,10 @@ function validateConcurrentTransition(
   identity: WritingProjectIdentity
 ): void {
   const payload = candidate.payload;
+  if (payload.kind === 'execution.admitted') {
+    validateExecutionAttempt(records, payload.attempt);
+    return;
+  }
   if (payload.kind === 'context.delivered') {
     validateContextDelivery(records, payload.delivery);
     return;
@@ -1072,13 +1128,30 @@ function validateConcurrentTransition(
   const view = projectView(records, identity);
   if (payload.kind === 'operation.lifecycle') {
     const operation = view.operations.get(payload.lifecycle.operationId);
-    if (operation?.runId !== payload.lifecycle.runId)
+    if (
+      !operation ||
+      view.executionAttempts.get(payload.lifecycle.runId)?.operationId !== operation.operationId
+    )
       throw new Error(
         `Operation lifecycle precedes or contradicts admission: ${payload.lifecycle.operationId}`
       );
-    const previous = view.operationLifecycles.get(payload.lifecycle.operationId);
-    if (previous !== undefined && previous.status !== 'suspended')
-      throw new Error(`Operation lifecycle changes a terminal settlement: ${payload.lifecycle.operationId}`);
+    if (payload.lifecycle.verificationId !== undefined) {
+      const verification = view.verificationHistory.get(payload.lifecycle.verificationId);
+      if (
+        verification?.operationId !== payload.lifecycle.operationId ||
+        verification.proposalId !== payload.lifecycle.proposalId
+      )
+        throw new Error('Operation settlement requires its exact production verification.');
+    }
+    const previous = view.operationLifecycles.get(payload.lifecycle.runId);
+    if (
+      previous !== undefined &&
+      previous.status !== 'suspended' &&
+      previous.status !== 'awaiting_verification'
+    )
+      throw new Error(
+        `Operation lifecycle changes a terminal settlement: ${payload.lifecycle.operationId}`
+      );
     return;
   }
   if (payload.kind === 'proposal.production-verified') {
@@ -1087,8 +1160,10 @@ function validateConcurrentTransition(
       throw new Error(
         `Proposal production verification precedes or contradicts its proposal: ${payload.verification.proposalId}`
       );
-    if (view.productionVerifications.has(payload.verification.proposalId))
-      throw new Error(`Proposal production verification already exists: ${payload.verification.proposalId}`);
+    if (view.verificationHistory.has(payload.verification.verificationId) || proposal.status !== 'proposed')
+      throw new Error(
+        `Proposal production verification already exists: ${payload.verification.proposalId}`
+      );
     return;
   }
   if (payload.kind === 'proposal.apply-authorized') {
@@ -1176,8 +1251,10 @@ async function readLogEnvelopesIfPresent(
 function projectView(records: readonly ProjectLogRecord[], identity: WritingProjectIdentity): ProjectView {
   const proposals = new Map<string, { proposal: RevisionProposal; status: ProposalStatus }>();
   const productionVerifications = new Map<string, ProposalProductionVerification>();
+  const verificationHistory = new Map<string, ProposalProductionVerification>();
   const applyAuthorizations = new Map<string, WritingApplyAuthorization>();
   const operations = new Map<string, WritingOperation>();
+  const executionAttempts = new Map<string, WritingExecutionAttempt>();
   const operationLifecycles = new Map<string, WritingOperationLifecycle>();
   const contextSelections = new Map<string, WritingContextSelection>();
   const settlements = new Map<string, ProjectMutationSettlement>();
@@ -1187,18 +1264,28 @@ function projectView(records: readonly ProjectLogRecord[], identity: WritingProj
     const payload = record.payload;
     if (payload.kind === 'operation.admitted')
       uniqueSet(operations, payload.operation.operationId, payload.operation, 'operation');
-    else if (payload.kind === 'operation.lifecycle') {
+    else if (payload.kind === 'execution.admitted') {
+      validateExecutionAttempt(records.slice(0, recordIndex), payload.attempt);
+      uniqueSet(executionAttempts, payload.attempt.runId, payload.attempt, 'execution attempt');
+    } else if (payload.kind === 'operation.lifecycle') {
       const operation = operations.get(payload.lifecycle.operationId);
-      if (operation?.runId !== payload.lifecycle.runId)
+      if (
+        !operation ||
+        executionAttempts.get(payload.lifecycle.runId)?.operationId !== operation.operationId
+      )
         throw new Error(
           `Operation lifecycle precedes or contradicts admission: ${payload.lifecycle.operationId}`
         );
-      const previous = operationLifecycles.get(payload.lifecycle.operationId);
-      if (previous !== undefined && previous.status !== 'suspended')
+      const previous = operationLifecycles.get(payload.lifecycle.runId);
+      if (
+        previous !== undefined &&
+        previous.status !== 'suspended' &&
+        previous.status !== 'awaiting_verification'
+      )
         throw new Error(
           `Operation lifecycle changes a terminal settlement: ${payload.lifecycle.operationId}`
         );
-      operationLifecycles.set(payload.lifecycle.operationId, payload.lifecycle);
+      operationLifecycles.set(payload.lifecycle.runId, payload.lifecycle);
     } else if (payload.kind === 'context.delivered')
       validateContextDelivery(records.slice(0, recordIndex), payload.delivery);
     else if (payload.kind === 'context.selected') {
@@ -1223,11 +1310,12 @@ function projectView(records: readonly ProjectLogRecord[], identity: WritingProj
           `Proposal production verification precedes or contradicts its proposal: ${payload.verification.proposalId}`
         );
       uniqueSet(
-        productionVerifications,
-        payload.verification.proposalId,
+        verificationHistory,
+        payload.verification.verificationId,
         payload.verification,
         'proposal production verification'
       );
+      productionVerifications.set(payload.verification.proposalId, payload.verification);
     } else if (payload.kind === 'proposal.apply-authorized') {
       const proposal = proposals.get(payload.authorization.proposalId);
       const verification = productionVerifications.get(payload.authorization.proposalId);
@@ -1298,8 +1386,10 @@ function projectView(records: readonly ProjectLogRecord[], identity: WritingProj
     current,
     proposals,
     productionVerifications,
+    verificationHistory,
     applyAuthorizations,
     operations,
+    executionAttempts,
     operationLifecycles,
     contextSelections,
     settlements
@@ -1370,7 +1460,10 @@ function assertExactApplyAuthorization(
   }
 }
 
-function sameOperationSettlement(left: WritingOperationLifecycle, right: WritingOperationLifecycle): boolean {
+function sameOperationSettlement(
+  left: WritingOperationLifecycle,
+  right: WritingOperationLifecycle
+): boolean {
   return (
     hashJson({
       operationId: left.operationId,
@@ -1493,7 +1586,9 @@ function assertManagedResourceStructure(
     relativePaths.add(resource.relativePath);
     for (const protectedRange of resource.protectedRanges) {
       if (protectedRangeIds.has(protectedRange.rangeId))
-        throw new Error(`Managed resources contain duplicate protected range ID: ${protectedRange.rangeId}`);
+        throw new Error(
+          `Managed resources contain duplicate protected range ID: ${protectedRange.rangeId}`
+        );
       protectedRangeIds.add(protectedRange.rangeId);
     }
   }
@@ -1531,7 +1626,9 @@ function assertDocumentStructure(
       if (!knownResources.has(node.resourceId))
         throw new Error(`Document node references an unknown managed resource: ${node.nodeId}`);
       if (attachedResources.has(node.resourceId))
-        throw new Error(`Managed resource is attached to several active document nodes: ${node.resourceId}`);
+        throw new Error(
+          `Managed resource is attached to several active document nodes: ${node.resourceId}`
+        );
       attachedResources.add(node.resourceId);
     }
     const ancestors = new Set<string>([node.nodeId]);
@@ -1598,13 +1695,15 @@ function assertRevisionIdentity(snapshot: ProjectSnapshot): void {
   if (hashJson(resourceHashes) !== hashJson(revision.resourceHashes))
     throw new Error(`Project revision resource hashes are invalid: ${revision.revisionId}`);
   if (
-    hashJson(sourceClaimEvidenceGraphInput(snapshot.sources, snapshot.claims, snapshot.evidenceRelations)) !==
-    revision.sourceClaimEvidenceGraphSha256
+    hashJson(
+      sourceClaimEvidenceGraphInput(snapshot.sources, snapshot.claims, snapshot.evidenceRelations)
+    ) !== revision.sourceClaimEvidenceGraphSha256
   ) {
     throw new Error(`Project revision evidence graph hash is invalid: ${revision.revisionId}`);
   }
   if (
-    hashJson(provenanceGraphInput(snapshot.authorshipProvenance)) !== revision.authorshipProvenanceGraphSha256
+    hashJson(provenanceGraphInput(snapshot.authorshipProvenance)) !==
+    revision.authorshipProvenanceGraphSha256
   )
     throw new Error(`Project revision provenance graph hash is invalid: ${revision.revisionId}`);
 }
@@ -1667,4 +1766,24 @@ async function exists(target: string): Promise<boolean> {
       return false;
     throw error;
   }
+}
+
+function validateExecutionAttempt(
+  records: readonly ProjectLogRecord[],
+  attempt: WritingExecutionAttempt
+): void {
+  const admission = records.find(
+    (record) =>
+      record.payload.kind === 'operation.admitted' &&
+      record.payload.operation.operationId === attempt.operationId
+  )?.payload;
+  if (admission?.kind !== 'operation.admitted' || admission.operation.sessionId !== attempt.sessionId)
+    throw new Error('Writing execution must bind the admitted operation and session.');
+  if (
+    records.some(
+      (record) =>
+        record.payload.kind === 'execution.admitted' && record.payload.attempt.runId === attempt.runId
+    )
+  )
+    throw new Error('A writing run already has an immutable execution binding.');
 }

@@ -1,8 +1,8 @@
-import { createHash } from 'node:crypto';
-import path from 'node:path';
 import type { AgentInstruction, PromptContextItemInput } from '@agent-core/runtime';
 import type { ToolAuthorizationDecision, ToolAuthorizationRequest } from '@agent-core/tools';
 import { rootedFileIdentitiesEqual, type RootedFileAuthority } from '@agent-core/tools-local';
+import { createHash } from 'node:crypto';
+import path from 'node:path';
 import type { WorkspaceSecurityBoundary } from '../security/workspace-security-boundary.js';
 import { PrivateStateDirectory } from '../state/private-state.js';
 import type { OpenCodingWorkspace } from '../workspace.js';
@@ -238,13 +238,30 @@ export class RepositoryGuidanceSession {
         reason: `Repository guidance could not be safely loaded for this target: ${unavailable.map((item) => `${item.path} (${item.reason})`).join(', ')}.`
       });
     }
+    return undefined;
+  }
+
+  async contextPrerequisite(request: ToolAuthorizationRequest): Promise<
+    | {
+        readonly summary: string;
+        readonly context: readonly PromptContextItemInput[];
+      }
+    | undefined
+  > {
+    if (!mutatesOrExecutes(request)) return undefined;
+    const targets = repositoryTargets(this.#root, request);
+    await this.#exclusive(async () => {
+      await this.#refreshDocuments();
+      for (const target of targets) await this.#activateTarget(target);
+    });
     const pending = this.#applicableDocuments(targets).filter(
       (document) => !this.#deliveredPaths.has(document.source.path)
     );
     if (pending.length === 0) return undefined;
     return Object.freeze({
-      decision: 'deny' as const,
-      reason: `New repository guidance became active for this target: ${pending.map((item) => item.source.path).join(', ')}. Review the guidance now present in context, then retry the operation.`
+      summary:
+        'Applicable repository guidance requires consideration before this action. The proposed effect has not started. Choose the next action using this guidance.',
+      context: Object.freeze(pending.map(guidanceContext))
     });
   }
 
@@ -345,7 +362,10 @@ export async function deleteRepositoryGuidanceState(
   await state.delete(guidanceStatePath(runId));
 }
 
-function repositoryTargets(root: RootedFileAuthority, request: ToolAuthorizationRequest): readonly string[] {
+function repositoryTargets(
+  root: RootedFileAuthority,
+  request: ToolAuthorizationRequest
+): readonly string[] {
   const targets = new Set<string>();
   for (const access of request.effects.accesses) {
     if (access.scope === 'files') targets.add('.');
@@ -514,7 +534,9 @@ function decodePersistedGuidance(value: unknown, expectedRunId: string): Persist
   const omissions = value.omissions.map(decodeOmission);
   const paths = new Set(documents.map((document) => document.source.path));
   if (value.deliveredPaths.some((item) => !paths.has(item))) {
-    throw new Error(`Persisted repository guidance references an unknown document for run ${expectedRunId}.`);
+    throw new Error(
+      `Persisted repository guidance references an unknown document for run ${expectedRunId}.`
+    );
   }
   return Object.freeze({
     version: 1,

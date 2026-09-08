@@ -33,7 +33,13 @@ export type GitRepositoryObservation =
     }
   | {
       readonly kind: 'unavailable';
-      readonly reason: 'sandbox_unavailable' | 'execution_rejected' | 'execution_unknown' | 'execution_expired' | 'status_failed' | 'output_invalid';
+      readonly reason:
+        | 'sandbox_unavailable'
+        | 'execution_rejected'
+        | 'execution_unknown'
+        | 'execution_expired'
+        | 'status_failed'
+        | 'output_invalid';
       readonly executionId?: string;
     };
 

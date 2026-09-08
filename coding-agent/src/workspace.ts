@@ -1,7 +1,7 @@
-import path from 'node:path';
-import { realpath } from 'node:fs/promises';
 import type { SessionBindingInput } from '@agent-core/runtime';
 import { RootedFileAuthority } from '@agent-core/tools-local';
+import { realpath } from 'node:fs/promises';
+import path from 'node:path';
 import { identifyCodingWorkspace, type CodingWorkspaceIdentity } from './security/workspace-identity.js';
 import { WorkspaceSecurityBoundary } from './security/workspace-security-boundary.js';
 import type { WorkspaceTrustDecision, WorkspaceTrustLevel } from './security/workspace-trust.js';
@@ -28,10 +28,17 @@ export interface OpenCodingWorkspace {
   readonly security: WorkspaceSecurityBoundary;
 }
 
-export interface OpenWorkspaceOptions { readonly stateRoot?: string }
+export interface OpenWorkspaceOptions {
+  readonly stateRoot?: string;
+}
 
-export async function openCodingWorkspace(rootPath: string, options: OpenWorkspaceOptions = {}): Promise<OpenCodingWorkspace> {
-  const fileRoot = RootedFileAuthority.adopt(rootPath, { additionalDeniedEntries: ['.git', '.coding-agent'] });
+export async function openCodingWorkspace(
+  rootPath: string,
+  options: OpenWorkspaceOptions = {}
+): Promise<OpenCodingWorkspace> {
+  const fileRoot = RootedFileAuthority.adopt(rootPath, {
+    additionalDeniedEntries: ['.git', '.coding-agent']
+  });
   try {
     const identity = identifyCodingWorkspace(fileRoot.identity);
     const requestedStatePath = path.resolve(options.stateRoot ?? defaultCodingAgentStateRoot());
@@ -55,7 +62,10 @@ export async function openCodingWorkspace(rootPath: string, options: OpenWorkspa
       ...(trustDecision ? { trustDecision } : {}),
       security: new WorkspaceSecurityBoundary(identity, trustLevel)
     });
-  } catch (error) { fileRoot.close(); throw error; }
+  } catch (error) {
+    fileRoot.close();
+    throw error;
+  }
 }
 
 export function codingWorkspaceSessionBinding(identity: CodingWorkspaceIdentity): SessionBindingInput {
@@ -64,18 +74,31 @@ export function codingWorkspaceSessionBinding(identity: CodingWorkspaceIdentity)
     schemaVersion: 1,
     subject: Object.freeze({
       workspaceId: identity.id,
-      rootIdentity: Object.freeze({ device: identity.device, inode: identity.inode, mountId: identity.mountId })
+      rootIdentity: Object.freeze({
+        device: identity.device,
+        inode: identity.inode,
+        mountId: identity.mountId
+      })
     })
   });
 }
 
-export async function loadWorkspace(rootPath: string, options: OpenWorkspaceOptions = {}): Promise<WorkspaceLayout> {
+export async function loadWorkspace(
+  rootPath: string,
+  options: OpenWorkspaceOptions = {}
+): Promise<WorkspaceLayout> {
   const opened = await openCodingWorkspace(rootPath, options);
-  try { return opened.layout; }
-  finally { opened.fileRoot.close(); }
+  try {
+    return opened.layout;
+  } finally {
+    opened.fileRoot.close();
+  }
 }
 
-export function describeWorkspace(identity: CodingWorkspaceIdentity, stateRoot = defaultCodingAgentStateRoot()): WorkspaceLayout {
+export function describeWorkspace(
+  identity: CodingWorkspaceIdentity,
+  stateRoot = defaultCodingAgentStateRoot()
+): WorkspaceLayout {
   const runtimeDir = path.join(path.resolve(stateRoot), 'workspaces', identity.id);
   return Object.freeze({
     workspaceRoot: identity.canonicalPath,
@@ -93,8 +116,9 @@ async function resolvePotentialPhysicalPath(requestedPath: string): Promise<stri
   let existing = path.resolve(requestedPath);
   const absentSegments: string[] = [];
   for (;;) {
-    try { return path.join(await realpath(existing), ...absentSegments.reverse()); }
-    catch (error) {
+    try {
+      return path.join(await realpath(existing), ...absentSegments.reverse());
+    } catch (error) {
       if (nodeCode(error) !== 'ENOENT') throw error;
       const parent = path.dirname(existing);
       if (parent === existing) throw error;
@@ -106,9 +130,14 @@ async function resolvePotentialPhysicalPath(requestedPath: string): Promise<stri
 
 function containsPath(root: string, requestedPath: string): boolean {
   const relative = path.relative(root, requestedPath);
-  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+  return (
+    relative === '' ||
+    (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
+  );
 }
 
 function nodeCode(error: unknown): string | undefined {
-  return typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string' ? error.code : undefined;
+  return typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+    ? error.code
+    : undefined;
 }

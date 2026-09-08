@@ -1,3 +1,4 @@
+import { testOutcome, testResult } from './helpers/results.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { decodeRunChangeReport, deriveRunChangeReport } from '../dist/changes/run-change-report.js';
@@ -38,14 +39,26 @@ test('change reports preserve pre-change state and distinguish exact mutations f
     receipt(10, [mutation('source.txt', 'update', hash('a'), hash('1'), 10, 11)]),
     receipt(20, [mutation('user.txt', 'update', hash('b'), hash('2'), 20, 21)]),
     receipt(30, [mutation('removed.txt', 'delete', hash('c'), undefined, 30, 0)]),
-    receipt(40, [{ ...mutation('moved.txt', 'move', hash('d'), hash('3'), 40, 41), destinationPath: 'renamed.txt' }]),
+    receipt(40, [
+      { ...mutation('moved.txt', 'move', hash('d'), hash('3'), 40, 41), destinationPath: 'renamed.txt' }
+    ]),
     receipt(50, [mutation('added.txt', 'add', undefined, hash('5'), 0, 1)])
   ]);
 
   assert.equal(report.coverage, 'complete');
-  assert.deepEqual(report.facts.structuredMutationPaths, ['added.txt', 'moved.txt', 'removed.txt', 'renamed.txt', 'source.txt', 'user.txt']);
+  assert.deepEqual(report.facts.structuredMutationPaths, [
+    'added.txt',
+    'moved.txt',
+    'removed.txt',
+    'renamed.txt',
+    'source.txt',
+    'user.txt'
+  ]);
   assert.deepEqual(report.facts.externalOrConcurrentPaths, ['external.bin']);
-  assert.equal(report.changes.find((change) => change.path === 'user.txt').preChangeVersionControl, 'changed');
+  assert.equal(
+    report.changes.find((change) => change.path === 'user.txt').preChangeVersionControl,
+    'changed'
+  );
   assert.equal(report.changes.find((change) => change.path === 'user.txt').initial, 'existing');
   assert.equal(report.changes.find((change) => change.path === 'external.bin').content, 'binary');
   assert.equal(report.mutationReceipts[0].patchSha256, hash('9'));
@@ -54,9 +67,15 @@ test('change reports preserve pre-change state and distinguish exact mutations f
 });
 
 test('change reports expose receipt conflicts and partial large-file observations', () => {
-  const preChange = { workspace: snapshot('a', [file('source.txt', hash('a'), 10)]), versionControl: { kind: 'none' } };
+  const preChange = {
+    workspace: snapshot('a', [file('source.txt', hash('a'), 10)]),
+    versionControl: { kind: 'none' }
+  };
   const final = {
-    ...snapshot('b', [file('source.txt', hash('3'), 12), { path: 'large.dat', kind: 'file', bytes: 70_000_000 }]),
+    ...snapshot('b', [
+      file('source.txt', hash('3'), 12),
+      { path: 'large.dat', kind: 'file', bytes: 70_000_000 }
+    ]),
     coverage: 'partial',
     causes: ['file_size_limit']
   };
@@ -73,42 +92,92 @@ test('change reports expose receipt conflicts and partial large-file observation
 });
 
 test('coding handoff binds checks, usage, publication, and review artifact to one revision', () => {
-  const report = deriveRunChangeReport('run-handoff', {
-    workspace: snapshot('a', [file('source.txt', hash('a'), 10)]), versionControl: { kind: 'none' }
-  }, snapshot('b', [file('source.txt', hash('b'), 11)]), [
-    receipt(10, [mutation('source.txt', 'update', hash('a'), hash('b'), 10, 11)])
-  ]);
+  const report = deriveRunChangeReport(
+    'run-handoff',
+    {
+      workspace: snapshot('a', [file('source.txt', hash('a'), 10)]),
+      versionControl: { kind: 'none' }
+    },
+    snapshot('b', [file('source.txt', hash('b'), 11)]),
+    [receipt(10, [mutation('source.txt', 'update', hash('a'), hash('b'), 10, 11)])]
+  );
   const terminal = decodeAgentTerminalSnapshot({
-    runId: 'run-handoff', finalizationId: 'final-handoff', phase: 'ended', executionStatus: 'completed',
-    verificationStatus: 'passed', terminationReason: 'model_completed', modelTerminationReason: 'stop',
-    modelOutput: { status: 'complete', message: 'Updated source.', source: 'content', turnIndex: 1 }, turnCount: 1,
-    checkResults: [{ id: 'tests', implementationId: 'tests@1', requirement: 'required', verdict: 'passed', summary: 'passed', durationMs: 1 }],
+    runId: 'run-handoff',
+    finalizationId: 'final-handoff',
+    phase: 'ended',
+    executionStatus: 'completed',
+    terminationReason: 'model_completed',
+    modelTerminationReason: 'stop',
+    modelOutput: { status: 'complete', message: 'Updated source.', source: 'content', turnIndex: 1 },
+    turnCount: 1,
     budget: budget()
   });
+  const outcome = testOutcome(terminal, {
+    acceptance: 'accepted',
+    publication: 'applied',
+    revision: report.finalDigest,
+    verification: {
+      status: 'passed',
+      checks: [
+        {
+          id: 'tests',
+          implementationId: 'tests@1',
+          requirement: 'required',
+          verdict: 'passed',
+          summary: 'passed',
+          durationMs: 1
+        }
+      ]
+    }
+  });
   const artifact = {
-    artifactId: `${hash('c')}.json`, sha256: hash('c'), size: 100,
-    mediaType: 'application/json; charset=utf-8', visibility: 'public'
+    artifactId: `${hash('c')}.json`,
+    sha256: hash('c'),
+    size: 100,
+    mediaType: 'application/json; charset=utf-8',
+    visibility: 'public'
   };
   const handoff = createCodingHandoff({
-    task: 'Update source.', result: { state: 'ended', terminal, deliveryDiagnostics: [] },
-    changeReport: report, changeArtifact: artifact,
+    task: 'Update source.',
+    result: testResult(terminal, outcome),
+    changeReport: report,
+    changeArtifact: artifact,
     publication: { status: 'applied', revision: report.finalDigest }
   });
   assert.equal(handoff.reviewedRevision, report.finalDigest);
   assert.deepEqual(handoff.changedFiles, ['source.txt']);
-  assert.equal(handoff.checks[0].id, 'tests');
+  assert.equal(handoff.outcome.verification.checks[0].id, 'tests');
   assert.equal(handoff.usage.modelTurns, 1);
   assert.deepEqual(decodeCodingHandoff(JSON.parse(JSON.stringify(handoff)), 'run-handoff'), handoff);
-  assert.throws(() => decodeCodingHandoff({ ...JSON.parse(JSON.stringify(handoff)), unexpected: true }, 'run-handoff'), /invalid/u);
-  assert.throws(() => decodeCodingHandoff({
-    ...JSON.parse(JSON.stringify(handoff)),
-    publication: { ...handoff.publication, reason: 'An applied revision cannot carry a rejection reason.' }
-  }, 'run-handoff'), /publication status is invalid/u);
-  assert.throws(() => createCodingHandoff({
-    task: 'Update source.', result: { state: 'ended', terminal, deliveryDiagnostics: [] },
-    changeReport: report, changeArtifact: artifact,
-    publication: { status: 'applied', revision: hash('d') }
-  }), /does not match the reviewed/u);
+  assert.throws(
+    () => decodeCodingHandoff({ ...JSON.parse(JSON.stringify(handoff)), unexpected: true }, 'run-handoff'),
+    /invalid/u
+  );
+  assert.throws(
+    () =>
+      decodeCodingHandoff(
+        {
+          ...JSON.parse(JSON.stringify(handoff)),
+          publication: {
+            ...handoff.publication,
+            reason: 'An applied revision cannot carry a rejection reason.'
+          }
+        },
+        'run-handoff'
+      ),
+    /publication status is invalid/u
+  );
+  assert.throws(
+    () =>
+      createCodingHandoff({
+        task: 'Update source.',
+        result: testResult(terminal, outcome),
+        changeReport: report,
+        changeArtifact: artifact,
+        publication: { status: 'applied', revision: hash('d') }
+      }),
+    /does not match the reviewed/u
+  );
 });
 
 function snapshot(digestCharacter, entries) {
@@ -173,9 +242,19 @@ function gitReceipt() {
 
 function budget() {
   return {
-    modelTurns: 1, totalToolCalls: 1, repeatedIdenticalToolCalls: 0, revisionAttempts: 0,
-    elapsedMs: 1, promptTokens: 2, completionTokens: 3, cacheReadTokens: 0, cacheWriteTokens: 0,
-    reasoningTokens: 0, knownCosts: {}, pricingStatus: 'unknown', unknownPricedTokens: 5,
-    consecutiveProviderFailures: 0, consecutiveToolFailures: 0
+    modelTurns: 1,
+    totalToolCalls: 1,
+    repeatedIdenticalToolCalls: 0,
+    elapsedMs: 1,
+    promptTokens: 2,
+    completionTokens: 3,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    reasoningTokens: 0,
+    knownCosts: {},
+    pricingStatus: 'unknown',
+    unknownPricedTokens: 5,
+    consecutiveProviderFailures: 0,
+    consecutiveToolFailures: 0
   };
 }

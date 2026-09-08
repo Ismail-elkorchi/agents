@@ -1,9 +1,6 @@
-import type {
-  AgentApprovalSuspension,
-  AgentSessionEvent,
-  AgentSessionState
-} from '@agent-core/runtime';
+import type { AgentApprovalSuspension, AgentSessionState } from '@agent-core/runtime';
 import type { CodingHandoff } from '../changes/coding-handoff.js';
+import type { CodingSessionEvent } from '../coding-session.js';
 import type { CodingAgentTuiHydration } from './hydration.js';
 import type { InteractiveCommandResult } from './interactive-commands.js';
 import type { CodingAgentTuiRuntimeDetails } from './state.js';
@@ -18,9 +15,13 @@ export interface CodingAgentInteractiveState {
 }
 
 export type CodingAgentInteractiveEvent =
-  | AgentSessionEvent
+  | CodingSessionEvent
   | { readonly type: 'interactive.state.changed'; readonly state: CodingAgentInteractiveState }
-  | { readonly type: 'interactive.notice'; readonly message: string; readonly tone?: 'info' | 'warning' | 'error' }
+  | {
+      readonly type: 'interactive.notice';
+      readonly message: string;
+      readonly tone?: 'info' | 'warning' | 'error';
+    }
   | { readonly type: 'session.hydrated'; readonly hydration: CodingAgentTuiHydration }
   | { readonly type: 'handoff.ready'; readonly handoff: CodingHandoff };
 

@@ -1,10 +1,10 @@
-import type { CodingAgentTuiState } from './state.js';
 import type {
   CodingAgentTuiActivityEntry,
   CodingAgentTuiAssistantEntry,
   CodingAgentTuiConversationEntry,
   CodingAgentTuiNoticeEntry
 } from './conversation-model.js';
+import type { CodingAgentTuiState } from './state.js';
 
 export const MAX_CONVERSATION_ENTRIES = 512;
 export const MAX_CONVERSATION_BYTES = 2 * 1024 * 1024;
@@ -29,20 +29,29 @@ export function upsertAssistant(
   status: CodingAgentTuiAssistantEntry['status']
 ): CodingAgentTuiState {
   const id = `assistant:${turnId}`;
-  const current = state.conversation.items.find((item): item is CodingAgentTuiAssistantEntry => item.id === id && item.kind === 'assistant');
+  const current = state.conversation.items.find(
+    (item): item is CodingAgentTuiAssistantEntry => item.id === id && item.kind === 'assistant'
+  );
   const entry: CodingAgentTuiAssistantEntry = { id, kind: 'assistant', turnId, text, status };
   if (current === undefined) return appendEntry(state, entry);
   return replaceEntry(state, entry);
 }
 
-export function upsertReasoning(state: CodingAgentTuiState, turnId: string, text: string): CodingAgentTuiState {
+export function upsertReasoning(
+  state: CodingAgentTuiState,
+  turnId: string,
+  text: string
+): CodingAgentTuiState {
   const entry = { id: `reasoning:${turnId}`, kind: 'reasoning' as const, turnId, text };
   return state.conversation.items.some((item) => item.id === entry.id)
     ? replaceEntry(state, entry)
     : appendEntry(state, entry);
 }
 
-export function upsertActivity(state: CodingAgentTuiState, entry: CodingAgentTuiActivityEntry): CodingAgentTuiState {
+export function upsertActivity(
+  state: CodingAgentTuiState,
+  entry: CodingAgentTuiActivityEntry
+): CodingAgentTuiState {
   const exists = state.conversation.items.some((item) => item.id === entry.id);
   const next = exists ? replaceEntry(state, entry) : appendEntry(state, entry);
   if (entry.status !== 'failed' || next.conversation.expandedIds.includes(entry.id)) return next;
@@ -79,15 +88,25 @@ export function toggleActivity(state: CodingAgentTuiState, id: string): CodingAg
 
 export function conversationText(entry: CodingAgentTuiConversationEntry): string {
   switch (entry.kind) {
-    case 'user': return entry.text;
-    case 'assistant': return entry.text;
-    case 'reasoning': return entry.text;
-    case 'notice': return entry.text;
-    case 'activity': return [entry.label, entry.summary, entry.details].filter((part): part is string => part !== undefined).join('\n');
+    case 'user':
+      return entry.text;
+    case 'assistant':
+      return entry.text;
+    case 'reasoning':
+      return entry.text;
+    case 'notice':
+      return entry.text;
+    case 'activity':
+      return [entry.label, entry.summary, entry.details]
+        .filter((part): part is string => part !== undefined)
+        .join('\n');
   }
 }
 
-function appendEntry(state: CodingAgentTuiState, entry: CodingAgentTuiConversationEntry): CodingAgentTuiState {
+function appendEntry(
+  state: CodingAgentTuiState,
+  entry: CodingAgentTuiConversationEntry
+): CodingAgentTuiState {
   const retained = retainConversation([...state.conversation.items, limitEntry(entry)]);
   return {
     ...state,
@@ -96,14 +115,21 @@ function appendEntry(state: CodingAgentTuiState, entry: CodingAgentTuiConversati
       items: retained.items,
       omittedEntries: state.conversation.omittedEntries + retained.omittedEntries,
       omittedBytes: state.conversation.omittedBytes + retained.omittedBytes,
-      expandedIds: state.conversation.expandedIds.filter((id) => retained.items.some((item) => item.id === id))
+      expandedIds: state.conversation.expandedIds.filter((id) =>
+        retained.items.some((item) => item.id === id)
+      )
     },
     nextLocalId: state.nextLocalId + 1
   };
 }
 
-function replaceEntry(state: CodingAgentTuiState, entry: CodingAgentTuiConversationEntry): CodingAgentTuiState {
-  const retained = retainConversation(state.conversation.items.map((item) => item.id === entry.id ? limitEntry(entry) : item));
+function replaceEntry(
+  state: CodingAgentTuiState,
+  entry: CodingAgentTuiConversationEntry
+): CodingAgentTuiState {
+  const retained = retainConversation(
+    state.conversation.items.map((item) => (item.id === entry.id ? limitEntry(entry) : item))
+  );
   return {
     ...state,
     conversation: {
@@ -111,12 +137,18 @@ function replaceEntry(state: CodingAgentTuiState, entry: CodingAgentTuiConversat
       items: retained.items,
       omittedEntries: state.conversation.omittedEntries + retained.omittedEntries,
       omittedBytes: state.conversation.omittedBytes + retained.omittedBytes,
-      expandedIds: state.conversation.expandedIds.filter((id) => retained.items.some((item) => item.id === id))
+      expandedIds: state.conversation.expandedIds.filter((id) =>
+        retained.items.some((item) => item.id === id)
+      )
     }
   };
 }
 
-function retainConversation(items: readonly CodingAgentTuiConversationEntry[]): { items: readonly CodingAgentTuiConversationEntry[]; omittedEntries: number; omittedBytes: number } {
+function retainConversation(items: readonly CodingAgentTuiConversationEntry[]): {
+  items: readonly CodingAgentTuiConversationEntry[];
+  omittedEntries: number;
+  omittedBytes: number;
+} {
   const retained = [...items];
   let bytes = retained.reduce((total, item) => total + entryBytes(item), 0);
   let omittedEntries = 0;
@@ -136,21 +168,38 @@ function limitEntry(entry: CodingAgentTuiConversationEntry): CodingAgentTuiConve
   const bytes = entryBytes(entry);
   if (bytes <= MAX_CONVERSATION_ENTRY_BYTES) return entry;
   switch (entry.kind) {
-    case 'activity': return {
-      ...entry,
-      id: limitUtf8Text(entry.id, 2_000),
-      label: limitUtf8Text(entry.label, 16_000),
-      ...(entry.summary ? { summary: limitUtf8Text(entry.summary, 48_000) } : {}),
-      ...(entry.details ? { details: limitUtf8Text(entry.details, 180_000) } : {})
-    };
-    case 'user': return { ...entry, id: limitUtf8Text(entry.id, 2_000), text: limitUtf8Text(entry.text, 250_000) };
-    case 'assistant': return { ...entry, id: limitUtf8Text(entry.id, 2_000), turnId: limitUtf8Text(entry.turnId, 2_000), text: limitUtf8Text(entry.text, 246_000) };
-    case 'reasoning': return { ...entry, id: limitUtf8Text(entry.id, 2_000), turnId: limitUtf8Text(entry.turnId, 2_000), text: limitUtf8Text(entry.text, 246_000) };
-    case 'notice': return { ...entry, id: limitUtf8Text(entry.id, 2_000), text: limitUtf8Text(entry.text, 250_000) };
+    case 'activity':
+      return {
+        ...entry,
+        id: limitUtf8Text(entry.id, 2_000),
+        label: limitUtf8Text(entry.label, 16_000),
+        ...(entry.summary ? { summary: limitUtf8Text(entry.summary, 48_000) } : {}),
+        ...(entry.details ? { details: limitUtf8Text(entry.details, 180_000) } : {})
+      };
+    case 'user':
+      return { ...entry, id: limitUtf8Text(entry.id, 2_000), text: limitUtf8Text(entry.text, 250_000) };
+    case 'assistant':
+      return {
+        ...entry,
+        id: limitUtf8Text(entry.id, 2_000),
+        turnId: limitUtf8Text(entry.turnId, 2_000),
+        text: limitUtf8Text(entry.text, 246_000)
+      };
+    case 'reasoning':
+      return {
+        ...entry,
+        id: limitUtf8Text(entry.id, 2_000),
+        turnId: limitUtf8Text(entry.turnId, 2_000),
+        text: limitUtf8Text(entry.text, 246_000)
+      };
+    case 'notice':
+      return { ...entry, id: limitUtf8Text(entry.id, 2_000), text: limitUtf8Text(entry.text, 250_000) };
   }
 }
 
-function entryBytes(entry: CodingAgentTuiConversationEntry): number { return Buffer.byteLength(JSON.stringify(entry), 'utf8'); }
+function entryBytes(entry: CodingAgentTuiConversationEntry): number {
+  return Buffer.byteLength(JSON.stringify(entry), 'utf8');
+}
 function limitUtf8Text(value: string, maxBytes: number): string {
   if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value;
   const marker = '\n[display truncated]';

@@ -2,7 +2,14 @@ import { createHash } from 'node:crypto';
 import type { CodingWorkspaceIdentity } from './workspace-identity.js';
 import type { WorkspaceTrustLevel } from './workspace-trust.js';
 
-export type WorkspaceContentKind = 'instruction' | 'source' | 'tool_output' | 'checkpoint' | 'receipt' | 'diagnostic' | 'summary';
+export type WorkspaceContentKind =
+  | 'instruction'
+  | 'source'
+  | 'tool_output'
+  | 'checkpoint'
+  | 'receipt'
+  | 'diagnostic'
+  | 'summary';
 
 export interface WorkspaceContentProvenance {
   readonly kind: WorkspaceContentKind;
@@ -17,14 +24,20 @@ export interface WorkspaceContentProvenance {
   readonly hazards: readonly ContentHazard[];
 }
 
-export type ContentHazard = 'terminal_control' | 'bidirectional_control' | 'invisible_unicode' | 'invalid_unicode';
+export type ContentHazard =
+  | 'terminal_control'
+  | 'bidirectional_control'
+  | 'invisible_unicode'
+  | 'invalid_unicode';
 
 export interface ProvenancedWorkspaceContent {
   readonly content: string;
   readonly provenance: WorkspaceContentProvenance;
 }
 
-const bidi = new Set([0x061c, 0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069]);
+const bidi = new Set([
+  0x061c, 0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069
+]);
 const invisible = new Set([0x200b, 0x200c, 0x200d, 0x2060, 0xfeff]);
 
 export function adoptWorkspaceContent(input: {
@@ -38,7 +51,8 @@ export function adoptWorkspaceContent(input: {
 }): ProvenancedWorkspaceContent {
   const sourceBytes = Buffer.byteLength(input.content);
   const maxBytes = input.maxBytes ?? 256 * 1024;
-  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new TypeError('Workspace content byte limit must be a positive safe integer.');
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1)
+    throw new TypeError('Workspace content byte limit must be a positive safe integer.');
   const hazards = new Set<ContentHazard>();
   const visible = makeControlsVisible(input.content, hazards);
   const bounded = truncateUtf8(visible, maxBytes);
@@ -61,7 +75,7 @@ export function adoptWorkspaceContent(input: {
 
 function makeControlsVisible(value: string, hazards: Set<ContentHazard>): string {
   let result = '';
-  for (let index = 0; index < value.length;) {
+  for (let index = 0; index < value.length; ) {
     const code = value.codePointAt(index);
     if (code === undefined) break;
     const width = code > 0xffff ? 2 : 1;
@@ -85,7 +99,10 @@ function makeControlsVisible(value: string, hazards: Set<ContentHazard>): string
   return result;
 }
 
-function truncateUtf8(value: string, maxBytes: number): { readonly value: string; readonly truncated: boolean } {
+function truncateUtf8(
+  value: string,
+  maxBytes: number
+): { readonly value: string; readonly truncated: boolean } {
   if (Buffer.byteLength(value) <= maxBytes) return { value, truncated: false };
   let end = Math.min(value.length, maxBytes);
   while (end > 0 && Buffer.byteLength(value.slice(0, end)) > maxBytes) end -= 1;
