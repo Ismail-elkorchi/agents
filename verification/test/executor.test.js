@@ -4,24 +4,12 @@ import { createCheckEffectPlan, deriveVerificationStatus, executeVerification } 
 import { EffectExecutor, effectExecutionEventCodec } from '@agent-core/runtime';
 import { InMemoryEventRepository } from '@agent-core/persistence';
 
-const context = {
-  runId: 'run',
-  turnId: 'turn',
-  turnIndex: 1,
-  requestAttempt: 1,
-  task: 'Verify the admitted material.',
-  instructions: [],
-  modelOutput: { status: 'complete', message: 'Done.', source: 'content', turnIndex: 1 },
-  metadata: {},
-  signal: new AbortController().signal,
-  execution: { observedFactsReader: { read: async () => ({ records: [], coverage: 'complete' }) } }
-};
+const context = { executionId: 'verification', signal: new AbortController().signal };
 const required = {
   kind: 'deterministic',
   id: 'required',
   implementationId: 'check@1',
   requirement: 'required',
-  description: 'Checks the application contract.',
   run: async () => ({ verdict: 'passed', summary: 'Passed.' })
 };
 
@@ -115,4 +103,35 @@ test('cancelled verification dispatches nothing and malformed plugin observation
   await assert.rejects(
     executeVerification({ ownerId: 'work', checks: [check], context, effects: executor() })
   );
+});
+
+test('verification identity separates executions and owners while settled effects replay unchanged', async () => {
+  let starts = 0;
+  const effects = executor();
+  const check = {
+    ...required,
+    kind: 'effect',
+    planEffect: async () =>
+      createCheckEffectPlan({
+        authorization: { revision: 'same-material' },
+        recovery: { kind: 'unknown' },
+        start: async () => {
+          starts++;
+          return { verdict: 'passed', summary: `Observation ${starts}.` };
+        },
+        reconcile: async () => ({ status: 'unknown' }),
+        release: async () => {}
+      })
+  };
+  const request = { ownerId: 'work', checks: [check], context, effects };
+  const first = await executeVerification(request);
+  assert.equal(first.status, 'completed');
+  assert.deepEqual(await executeVerification(request), first);
+  assert.equal(starts, 1);
+  const next = await executeVerification({ ...request, context: { ...context, executionId: 'next' } });
+  assert.equal(next.results[0].summary, 'Observation 2.');
+  const otherOwner = await executeVerification({ ...request, ownerId: 'other-work' });
+  assert.equal(otherOwner.results[0].summary, 'Observation 3.');
+  assert.deepEqual(await executeVerification(request), first);
+  assert.equal(starts, 3);
 });

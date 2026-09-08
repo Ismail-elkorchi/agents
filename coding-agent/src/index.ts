@@ -30,6 +30,7 @@ import path from 'node:path';
 import type { Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import type { CodingHandoff } from './changes/coding-handoff.js';
+import { codingHandoffUncertainties } from './presentation/run-summary.js';
 import type { CodingSession, CodingSessionSubmissionResult } from './coding-session.js';
 import {
   isCodingAgentProviderId,
@@ -84,11 +85,8 @@ export {
   repositoryOrientationContext
 } from './workspace/repository-orientation.js';
 
-export {
-  decodeCodingHandoff,
-  type CodingHandoff,
-  type CodingPublicationStatus
-} from './changes/coding-handoff.js';
+export { decodeCodingHandoff, type CodingHandoff } from './changes/coding-handoff.js';
+export { codingHandoffUncertainties } from './presentation/run-summary.js';
 export type {
   RunChangeReport,
   StructuredMutationReceipt,
@@ -1609,8 +1607,9 @@ function printResult(
     writeLine(output, `Advisory checks: ${String(advisoryFailures)} failed or unknown`);
   if (handoff) {
     const changeReport = handoff.changeReport;
-    writeLine(output, `Reviewed revision: ${handoff.reviewedRevision}`);
-    writeLine(output, `Publication: ${title(handoff.publication.status.replaceAll('_', ' '))}`);
+    const uncertainties = codingHandoffUncertainties(handoff);
+    writeLine(output, `Reviewed revision: ${changeReport.finalDigest}`);
+    writeLine(output, `Publication: ${title(handoff.outcome.publication.replaceAll('_', ' '))}`);
     writeLine(output, `Change artifact: ${handoff.changeArtifact.artifactId}`);
     writeLine(output, `Workspace changes: ${String(changeReport.totalChanges)} (${changeReport.coverage})`);
     for (const change of changeReport.changes) {
@@ -1622,9 +1621,9 @@ function printResult(
       writeLine(output, `- ${String(changeReport.omittedChanges)} additional changes omitted`);
     writeLine(
       output,
-      handoff.unresolved.length === 0
+      uncertainties.length === 0
         ? 'Remaining uncertainty: none'
-        : `Remaining uncertainty:\n${handoff.unresolved.map((uncertainty) => `- ${uncertainty}`).join('\n')}`
+        : `Remaining uncertainty:\n${uncertainties.map((uncertainty) => `- ${uncertainty}`).join('\n')}`
     );
   }
   for (const diagnostic of result.deliveryDiagnostics)

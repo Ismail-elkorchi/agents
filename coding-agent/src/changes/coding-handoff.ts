@@ -1,198 +1,97 @@
 import { parseJsonObject } from '@agent-core/json';
-import type { ArtifactRef } from '@agent-core/persistence';
-import { decodeOwnedArtifactRef, hashJson } from '@agent-core/persistence';
+import { decodeOwnedArtifactRef, hashJson, type ArtifactRef } from '@agent-core/persistence';
 import {
-  decodeAgentRunBudgetState,
   decodeAgentTerminalSnapshot,
-  type AgentRunBudgetState,
+  type AgentDeliveryDiagnostic,
   type AgentTerminalSnapshot
 } from '@agent-core/runtime';
 import type { CodingEndedRunResult } from '../outcome.js';
 import { decodeCodingWorkOutcome, type CodingWorkOutcome } from '../outcome.js';
-import { codingRunUncertainties } from '../presentation/run-summary.js';
 import { decodeRunChangeReport, type RunChangeReport } from './run-change-report.js';
 
-export type CodingPublicationStatus = 'applied' | 'not_applied' | 'not_applicable';
-
-/** One revision-bound application view for review, recovery hydration, and CLI/TUI handoff. */
+/** Revision-bound source records for review, recovery hydration, and CLI/TUI presentation. */
 export interface CodingHandoff {
   readonly schemaVersion: 1;
-  readonly runId: string;
-  readonly taskSummary: string;
-  readonly modelSummary: string;
-  readonly reviewedRevision: string;
-  readonly changedFiles: readonly string[];
   readonly changeReport: RunChangeReport;
   readonly changeArtifact: ArtifactRef;
   readonly outcome: CodingWorkOutcome;
-  readonly usage: AgentRunBudgetState;
   readonly terminal: AgentTerminalSnapshot;
-  readonly publication: {
-    readonly status: CodingPublicationStatus;
-    readonly revision: string;
-    readonly reason?: string;
-  };
-  readonly unresolved: readonly string[];
-  readonly effectsWithUnknownOutcome: readonly string[];
+  readonly deliveryDiagnostics: readonly AgentDeliveryDiagnostic[];
 }
 
 export function createCodingHandoff(input: {
-  readonly task: string;
   readonly result: CodingEndedRunResult;
   readonly changeReport: RunChangeReport;
   readonly changeArtifact: ArtifactRef;
-  readonly publication: CodingHandoff['publication'];
 }): CodingHandoff {
-  const terminal = input.result.terminal;
-  if (terminal.runId !== input.changeReport.runId) {
-    throw new Error('Coding handoff inputs do not identify one run.');
-  }
-  if (input.publication.revision !== input.changeReport.finalDigest) {
-    throw new Error(
-      `Publication revision does not match the reviewed working-copy revision for run ${terminal.runId}.`
-    );
-  }
-  const effectsWithUnknownOutcome = unknownEffects(input.changeReport);
-  const unresolved = new Set([
-    ...codingRunUncertainties(terminal, input.changeReport, input.result.outcome),
-    ...effectsWithUnknownOutcome.map((effect) => `Effect outcome is unknown: ${effect}.`),
-    ...input.result.deliveryDiagnostics.map(
-      (diagnostic) => `Delivery diagnostic for ${diagnostic.eventType}: ${diagnostic.message}`
-    ),
-    ...(input.publication.reason ? [input.publication.reason] : [])
-  ]);
-  return Object.freeze({
+  const handoff: CodingHandoff = Object.freeze({
     schemaVersion: 1,
-    runId: terminal.runId,
-    taskSummary: bounded(input.task, 16_000),
-    modelSummary:
-      terminal.modelOutput.status === 'absent'
-        ? 'errorMessage' in terminal
-          ? terminal.errorMessage
-          : 'Run ended without model output.'
-        : terminal.modelOutput.message,
-    reviewedRevision: input.changeReport.finalDigest,
-    changedFiles: input.changeReport.facts.changedPaths,
     changeReport: input.changeReport,
     changeArtifact: input.changeArtifact,
     outcome: input.result.outcome,
-    usage: terminal.budget,
-    terminal,
-    publication: Object.freeze({ ...input.publication }),
-    unresolved: Object.freeze([...unresolved]),
-    effectsWithUnknownOutcome
+    terminal: input.result.terminal,
+    deliveryDiagnostics: input.result.deliveryDiagnostics
   });
+  assertHandoffBinding(handoff);
+  return handoff;
 }
 
 export function decodeCodingHandoff(value: unknown, expectedRunId?: string): CodingHandoff {
+  const object = parseJsonObject(value);
   if (
-    !record(value) ||
-    value.schemaVersion !== 1 ||
-    typeof value.runId !== 'string' ||
-    Object.keys(value).some(
+    object.schemaVersion !== 1 ||
+    !Array.isArray(object.deliveryDiagnostics) ||
+    Object.keys(object).some(
       (key) =>
         ![
           'schemaVersion',
-          'runId',
-          'taskSummary',
-          'modelSummary',
-          'reviewedRevision',
-          'changedFiles',
           'changeReport',
           'changeArtifact',
           'outcome',
-          'usage',
           'terminal',
-          'publication',
-          'unresolved',
-          'effectsWithUnknownOutcome'
+          'deliveryDiagnostics'
         ].includes(key)
-    ) ||
-    (expectedRunId !== undefined && value.runId !== expectedRunId) ||
-    typeof value.taskSummary !== 'string' ||
-    typeof value.modelSummary !== 'string' ||
-    typeof value.reviewedRevision !== 'string' ||
-    !digest(value.reviewedRevision) ||
-    !stringList(value.changedFiles) ||
-    !stringList(value.unresolved) ||
-    !stringList(value.effectsWithUnknownOutcome) ||
-    !record(value.publication)
+    )
   )
     throw new Error('Persisted coding handoff is invalid.');
-  const terminal = decodeAgentTerminalSnapshot(value.terminal);
-  const outcome = decodeCodingWorkOutcome(value.outcome);
-  const usage = decodeAgentRunBudgetState(value.usage);
-  const changeReport = decodeRunChangeReport(value.changeReport, value.runId);
-  const changeArtifact = decodeOwnedArtifactRef(parseJsonObject(value.changeArtifact));
-  const publication = decodePublication(value.publication);
+  const terminal = decodeAgentTerminalSnapshot(object.terminal);
+  if (expectedRunId !== undefined && terminal.runId !== expectedRunId)
+    throw new Error('Persisted coding handoff identifies a different run.');
+  const handoff: CodingHandoff = Object.freeze({
+    schemaVersion: 1,
+    changeReport: decodeRunChangeReport(object.changeReport, terminal.runId),
+    changeArtifact: decodeOwnedArtifactRef(parseJsonObject(object.changeArtifact)),
+    outcome: decodeCodingWorkOutcome(object.outcome),
+    terminal,
+    deliveryDiagnostics: Object.freeze(object.deliveryDiagnostics.map(decodeDeliveryDiagnostic))
+  });
+  assertHandoffBinding(handoff);
+  return handoff;
+}
+
+function assertHandoffBinding({ terminal, changeReport, outcome }: CodingHandoff): void {
   if (
-    terminal.runId !== value.runId ||
-    changeReport.finalDigest !== value.reviewedRevision ||
-    publication.revision !== value.reviewedRevision ||
-    !sameStrings(value.changedFiles, changeReport.facts.changedPaths) ||
+    changeReport.runId !== terminal.runId ||
     outcome.runId !== terminal.runId ||
     outcome.terminalSha256 !== hashJson(terminal) ||
-    JSON.stringify(usage) !== JSON.stringify(terminal.budget)
-  ) {
-    throw new Error('Persisted coding handoff does not bind one exact reviewed revision.');
-  }
-  return Object.freeze({
-    schemaVersion: 1,
-    runId: value.runId,
-    taskSummary: value.taskSummary,
-    modelSummary: value.modelSummary,
-    reviewedRevision: value.reviewedRevision,
-    changedFiles: Object.freeze([...value.changedFiles]),
-    changeReport,
-    changeArtifact,
-    outcome,
-    usage,
-    terminal,
-    publication,
-    unresolved: Object.freeze([...value.unresolved]),
-    effectsWithUnknownOutcome: Object.freeze([...value.effectsWithUnknownOutcome])
-  });
-}
-
-function decodePublication(value: Record<string, unknown>): CodingHandoff['publication'] {
-  if (
-    Object.keys(value).some((key) => !['status', 'revision', 'reason'].includes(key)) ||
-    (value.status !== 'applied' && value.status !== 'not_applied' && value.status !== 'not_applicable') ||
-    typeof value.revision !== 'string' ||
-    !digest(value.revision) ||
-    (value.status === 'not_applied'
-      ? typeof value.reason !== 'string' || value.reason.length === 0
-      : value.reason !== undefined)
+    (outcome.revision !== undefined && outcome.revision !== changeReport.finalDigest)
   )
-    throw new Error('Persisted coding publication status is invalid.');
+    throw new Error('Coding handoff does not bind one exact reviewed revision and execution result.');
+}
+
+function decodeDeliveryDiagnostic(value: unknown): AgentDeliveryDiagnostic {
+  const object = parseJsonObject(value);
+  if (
+    Object.keys(object).some((key) => !['eventType', 'message', 'persisted'].includes(key)) ||
+    typeof object.eventType !== 'string' ||
+    object.eventType.length === 0 ||
+    typeof object.message !== 'string' ||
+    typeof object.persisted !== 'boolean'
+  )
+    throw new Error('Persisted coding delivery diagnostic is invalid.');
   return Object.freeze({
-    status: value.status,
-    revision: value.revision,
-    ...(typeof value.reason === 'string' ? { reason: value.reason } : {})
+    eventType: object.eventType,
+    message: object.message,
+    persisted: object.persisted
   });
-}
-
-function unknownEffects(report: RunChangeReport): readonly string[] {
-  const effects: string[] = [];
-  if (report.causes.some((cause) => cause === 'mutation_receipts:unsettled_structured_mutation'))
-    effects.push('structured repository mutation');
-  if (report.causes.some((cause) => cause === 'mutation_receipts:uncertain_workspace_state'))
-    effects.push('repository mutation with uncertain workspace state');
-  return Object.freeze(effects);
-}
-
-function bounded(value: string, limit: number): string {
-  return value.length <= limit ? value : `${value.slice(0, limit - 1)}…`;
-}
-function digest(value: string): boolean {
-  return /^[a-f0-9]{64}$/u.test(value);
-}
-function stringList(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string');
-}
-function sameStrings(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((item, index) => item === right[index]);
-}
-function record(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

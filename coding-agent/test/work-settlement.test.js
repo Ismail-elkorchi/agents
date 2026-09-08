@@ -65,7 +65,6 @@ function fixture({
             id: 'tests',
             implementationId: 'tests@1',
             requirement: 'required',
-            description: 'Verify exact revision.',
             run: async () => ({
               verdict,
               summary: `Tests ${verdict}.`,
@@ -86,17 +85,7 @@ function fixture({
       runIds: [terminal.runId]
     },
     checks,
-    context: {
-      runId: terminal.runId,
-      turnId: 'turn',
-      turnIndex: 1,
-      requestAttempt: 1,
-      task: 'Change code.',
-      instructions: [],
-      metadata: {},
-      signal: new AbortController().signal,
-      execution: {}
-    },
+    signal: new AbortController().signal,
     requiredCoverage: coverage,
     workingCopy,
     effects: new EffectExecutor(new InMemoryEventRepository(effectExecutionEventCodec)),

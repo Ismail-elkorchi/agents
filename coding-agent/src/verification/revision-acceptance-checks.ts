@@ -273,7 +273,6 @@ function revisionAcceptanceCheck(
     implementationId: checkImplementationId(check),
     kind: 'effect' as const,
     requirement: check.requirement,
-    description: `Verify the changed working copy with: ${check.command}`,
     timeoutMs: check.timeoutMs,
     async planEffect(context: CheckContext) {
       if (
@@ -309,8 +308,8 @@ function revisionAcceptanceCheck(
       }
       const execution = await planExecution(
         check,
-        context.runId,
-        context.turnId,
+        input.runId,
+        context.executionId,
         id,
         input.root,
         snapshot,
@@ -382,7 +381,7 @@ function revisionAcceptanceCheck(
 async function planExecution(
   check: AdmittedCodingCheck,
   runId: string,
-  turnId: string,
+  executionId: string,
   executionKey: string,
   source: RootedFileAuthority,
   snapshot: WorkspaceSnapshot,
@@ -394,6 +393,7 @@ async function planExecution(
     runtimeDirectory,
     'verification',
     sha256(runId),
+    sha256(executionId),
     sha256(executionKey),
     snapshot.digest
   );
@@ -411,7 +411,7 @@ async function planExecution(
     workspaceRoot.close();
     throw error;
   }
-  const owner = verificationOwner(runId, turnId, executionKey);
+  const owner = verificationOwner(runId, executionId, executionKey);
   const outputTokenBudget = Math.max(64, Math.ceil(check.maxOutputBytes / 4));
   let commandPlan: CommandExecutionPlan;
   try {
@@ -591,11 +591,12 @@ function checkImplementationId(check: AdmittedCodingCheck): string {
 function revisionAcceptanceCheckId(id: string): string {
   return `${id}:working-copy`;
 }
-function verificationOwner(runId: string, turnId: string, checkId: string): CommandExecutionOwner {
+function verificationOwner(runId: string, executionId: string, checkId: string): CommandExecutionOwner {
   return Object.freeze({
     ownerId: runId,
     runId,
-    turnId,
+    // The command adapter uses turnId to scope executions; no inference invocation is required.
+    turnId: executionId,
     toolBatchId: `verification:${checkId}`,
     callIndex: 0
   });

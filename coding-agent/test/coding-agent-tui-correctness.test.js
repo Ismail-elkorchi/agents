@@ -584,11 +584,6 @@ async function completedHydration() {
     handoffs: [
       {
         schemaVersion: 1,
-        runId: 'run-1',
-        taskSummary: 'Existing task',
-        modelSummary: 'Completed answer.',
-        reviewedRevision: '2'.repeat(64),
-        changedFiles: ['src/app.ts'],
         changeReport,
         changeArtifact: {
           artifactId: `${'3'.repeat(64)}.json`,
@@ -615,11 +610,8 @@ async function completedHydration() {
             ]
           }
         }),
-        usage: terminal.budget,
         terminal,
-        publication: { status: 'applied', revision: '2'.repeat(64) },
-        unresolved: [],
-        effectsWithUnknownOutcome: []
+        deliveryDiagnostics: []
       }
     ]
   };

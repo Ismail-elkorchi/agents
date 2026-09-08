@@ -11,7 +11,6 @@ import {
   AgentRunCoordinator,
   AgentRuntime,
   AgentSession,
-  createObservationAccess,
   createSessionBinding,
   effectExecutionEventCodec,
   EffectExecutor,
@@ -714,8 +713,6 @@ function writingOperationChecks(
     id: 'writing-operation-verification',
     implementationId: operationCheckImplementationId(checker),
     requirement: 'required' as const,
-    description:
-      'Verify semantic preservation, evidence use, prior accepted edits, and editorial criteria against the exact proposed revision.',
     timeoutMs: 10 * 60_000,
     async planEffect() {
       const proposal = await activeOperationProposal(project, operation);
@@ -1061,13 +1058,6 @@ async function finishWritingOperation(
     verified === undefined
   ) {
     const directory = project.state.projectDirectory(project.store.identity.projectId);
-    const events = new JsonlEventRepository({
-      rootDir: path.join(directory, 'runs'),
-      codec: agentEventCodec
-    });
-    const turn = await events.latestOfType(runId, 'assistant.ended');
-    if (turn?.event.type !== 'assistant.ended')
-      throw new Error('Writing verification requires its committed model response.');
     const verificationExecution = await executeVerification({
       ownerId: `writing-operation:${operation.operationId}`,
       checks: writingOperationChecks(project, operation, checker),
@@ -1078,20 +1068,8 @@ async function finishWritingOperation(
         })
       ),
       context: {
-        runId,
-        task: operation.instruction,
-        instructions: [],
-        modelOutput: execution.terminal.modelOutput,
-        turnId: turn.event.turnId,
-        turnIndex: turn.event.turnIndex,
-        requestAttempt: turn.event.requestAttempt,
-        metadata: { operationId: operation.operationId },
-        signal: signal ?? new AbortController().signal,
-        execution: createObservationAccess({
-          events,
-          runId,
-          artifacts: new LocalArtifactRepository({ rootDir: path.join(directory, 'artifacts') })
-        })
+        executionId: hashJson(execution.terminal),
+        signal: signal ?? new AbortController().signal
       }
     });
     verificationPending = verificationExecution.status !== 'completed';

@@ -20,10 +20,21 @@ test('conformance output grades only the required working-copy phase of an admit
 
 test('summary conformance compares application outcomes and uncertainty with the committed handoff', () => {
   const handoff = {
-    changeReport: { totalChanges: 0, coverage: 'complete', changes: [] },
-    outcome: { verification: { status: 'passed' }, acceptance: 'accepted' },
-    publication: { status: 'applied' },
-    unresolved: []
+    changeReport: {
+      runId: 'run',
+      totalChanges: 0,
+      coverage: 'complete',
+      changes: [],
+      causes: [],
+      facts: { externalOrConcurrentPaths: [] }
+    },
+    terminal: { runId: 'run', modelOutput: { status: 'complete' } },
+    outcome: {
+      verification: { status: 'passed', checks: [] },
+      acceptance: 'accepted',
+      publication: 'applied'
+    },
+    deliveryDiagnostics: []
   };
   const output = [
     'Verification: Passed',
@@ -47,9 +58,12 @@ test('summary conformance compares application outcomes and uncertainty with the
 
   const pending = {
     ...handoff,
-    outcome: { verification: { status: 'inconclusive' }, acceptance: 'inconclusive' },
-    publication: { status: 'not_applied' },
-    unresolved: ['The verification command has an unknown outcome.']
+    outcome: {
+      verification: { status: 'inconclusive', checks: [] },
+      acceptance: 'inconclusive',
+      publication: 'not_applied',
+      reason: 'The verification command has an unknown outcome.'
+    }
   };
   const pendingOutput = output
     .replace('Verification: Passed', 'Verification: Inconclusive')
@@ -60,7 +74,7 @@ test('summary conformance compares application outcomes and uncertainty with the
     codingSummaryContradictions(
       pendingOutput.replace(
         'Remaining uncertainty: none',
-        'Remaining uncertainty:\n- The verification command has an unknown outcome.'
+        'Remaining uncertainty:\n- Verification is inconclusive.\n- The verification command has an unknown outcome.'
       ),
       pending
     ),

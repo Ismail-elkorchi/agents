@@ -1,5 +1,6 @@
 import type { AgentProgressEvent, AgentRunPhase, AgentSessionState } from '@agent-core/runtime';
 import { type CheckResult } from '@agents/verification';
+import { codingHandoffUncertainties } from '../presentation/run-summary.js';
 import type { CodingHandoff } from '../changes/coding-handoff.js';
 import type { CodingEndedRunResult } from '../outcome.js';
 import type { CodingAgentTuiActivityEntry } from './conversation-model.js';
@@ -288,10 +289,11 @@ export function applyCodingHandoff(
   handoff: CodingHandoff
 ): CodingAgentTuiState {
   state = handoff.outcome.verification.checks.reduce(
-    (current, check) => applyCheckResult(current, check, handoff.runId),
+    (current, check) => applyCheckResult(current, check, handoff.terminal.runId),
     state
   );
   const report = handoff.changeReport;
+  const uncertainties = codingHandoffUncertainties(handoff);
   const structured = report.changes.filter((change) => change.attribution === 'structured_mutation').length;
   const external = report.changes.filter(
     (change) => change.attribution === 'external_or_concurrent'
@@ -300,10 +302,10 @@ export function applyCodingHandoff(
     report.totalChanges === 0
       ? 'No workspace changes'
       : `${String(report.totalChanges)} changed path${report.totalChanges === 1 ? '' : 's'} · ${String(structured)} structured · ${String(external)} external/concurrent`;
-  const summary = `${changeSummary} · ${handoff.publication.status.replaceAll('_', ' ')} · ${handoff.unresolved.length === 0 ? 'no remaining uncertainty' : `${String(handoff.unresolved.length)} remaining uncertaint${handoff.unresolved.length === 1 ? 'y' : 'ies'}`}`;
+  const summary = `${changeSummary} · ${handoff.outcome.publication.replaceAll('_', ' ')} · ${uncertainties.length === 0 ? 'no remaining uncertainty' : `${String(uncertainties.length)} remaining uncertaint${uncertainties.length === 1 ? 'y' : 'ies'}`}`;
   const details = [
-    `Reviewed revision ${handoff.reviewedRevision}`,
-    `Publication ${handoff.publication.status}`,
+    `Reviewed revision ${report.finalDigest}`,
+    `Publication ${handoff.outcome.publication}`,
     `Change artifact ${handoff.changeArtifact.artifactId}`,
     '',
     ...report.changes.map(
@@ -312,10 +314,14 @@ export function applyCodingHandoff(
     ),
     ...(report.omittedChanges === 0 ? [] : [`${String(report.omittedChanges)} additional changes omitted`]),
     '',
-    `Remaining uncertainty\n${handoff.unresolved.length === 0 ? 'none' : handoff.unresolved.join('\n')}`
+    `Remaining uncertainty\n${uncertainties.length === 0 ? 'none' : uncertainties.join('\n')}`
   ].join('\n');
-  const handoffs = state.debug.handoffs.some((candidate) => candidate.runId === handoff.runId)
-    ? state.debug.handoffs.map((candidate) => (candidate.runId === handoff.runId ? handoff : candidate))
+  const handoffs = state.debug.handoffs.some(
+    (candidate) => candidate.terminal.runId === handoff.terminal.runId
+  )
+    ? state.debug.handoffs.map((candidate) =>
+        candidate.terminal.runId === handoff.terminal.runId ? handoff : candidate
+      )
     : [...state.debug.handoffs, handoff];
   return upsertActivity(
     {
@@ -323,11 +329,11 @@ export function applyCodingHandoff(
       debug: { ...state.debug, handoffs }
     },
     {
-      id: `handoff:${handoff.runId}`,
+      id: `handoff:${handoff.terminal.runId}`,
       kind: 'activity',
       activity: 'change',
       label: 'Coding handoff',
-      status: report.coverage === 'partial' || handoff.unresolved.length > 0 ? 'warning' : 'success',
+      status: report.coverage === 'partial' || uncertainties.length > 0 ? 'warning' : 'success',
       summary,
       ...(details.length === 0 ? {} : { details })
     }

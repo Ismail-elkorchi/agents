@@ -2,7 +2,8 @@ import { testOutcome, testResult } from './helpers/results.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { decodeRunChangeReport, deriveRunChangeReport } from '../dist/changes/run-change-report.js';
-import { createCodingHandoff, decodeCodingHandoff } from '../dist/changes/coding-handoff.js';
+import { createCodingHandoff } from '../dist/changes/coding-handoff.js';
+import { decodeCodingHandoff, codingHandoffUncertainties } from '@ismail-elkorchi/coding-agent';
 import { decodeAgentTerminalSnapshot } from '@agent-core/runtime';
 
 const hash = (character) => character.repeat(64);
@@ -137,46 +138,61 @@ test('coding handoff binds checks, usage, publication, and review artifact to on
     mediaType: 'application/json; charset=utf-8',
     visibility: 'public'
   };
-  const handoff = createCodingHandoff({
-    task: 'Update source.',
+  const input = {
     result: testResult(terminal, outcome),
     changeReport: report,
-    changeArtifact: artifact,
-    publication: { status: 'applied', revision: report.finalDigest }
-  });
-  assert.equal(handoff.reviewedRevision, report.finalDigest);
-  assert.deepEqual(handoff.changedFiles, ['source.txt']);
+    changeArtifact: artifact
+  };
+  const handoff = createCodingHandoff(input);
+  assert.equal(handoff.changeReport.finalDigest, report.finalDigest);
+  assert.deepEqual(handoff.changeReport.facts.changedPaths, ['source.txt']);
   assert.equal(handoff.outcome.verification.checks[0].id, 'tests');
-  assert.equal(handoff.usage.modelTurns, 1);
+  assert.equal(handoff.terminal.budget.modelTurns, 1);
   assert.deepEqual(decodeCodingHandoff(JSON.parse(JSON.stringify(handoff)), 'run-handoff'), handoff);
-  assert.throws(
-    () => decodeCodingHandoff({ ...JSON.parse(JSON.stringify(handoff)), unexpected: true }, 'run-handoff'),
-    /invalid/u
-  );
+  assert.deepEqual(codingHandoffUncertainties(handoff), []);
+  for (const field of [
+    'runId',
+    'reviewedRevision',
+    'changedFiles',
+    'modelSummary',
+    'taskSummary',
+    'usage',
+    'publication',
+    'unresolved',
+    'effectsWithUnknownOutcome'
+  ]) {
+    assert.equal(Object.hasOwn(handoff, field), false);
+    assert.throws(() => decodeCodingHandoff({ ...handoff, [field]: null }), /invalid/u);
+  }
+  assert.throws(() => decodeCodingHandoff(handoff, 'other-run'), /different run/u);
+  for (const mismatch of [{ revision: hash('d') }, { terminalSha256: hash('d') }, { runId: 'other-run' }]) {
+    const mismatchedOutcome = { ...outcome, ...mismatch };
+    assert.throws(() => decodeCodingHandoff({ ...handoff, outcome: mismatchedOutcome }), /does not bind/u);
+    assert.throws(
+      () => createCodingHandoff({ ...input, result: testResult(terminal, mismatchedOutcome) }),
+      /does not bind/u
+    );
+  }
+  const diagnostics = [{ eventType: 'run.ended', message: 'Subscriber disconnected.', persisted: false }];
+  const pending = decodeCodingHandoff({
+    ...handoff,
+    outcome: {
+      ...outcome,
+      acceptance: 'inconclusive',
+      publication: 'not_applied',
+      reason: 'Publication response was lost.'
+    },
+    deliveryDiagnostics: diagnostics
+  });
+  diagnostics[0].message = 'changed after decoding';
+  assert.deepEqual(codingHandoffUncertainties(pending), [
+    'Delivery diagnostic for run.ended: Subscriber disconnected.',
+    'Publication response was lost.'
+  ]);
   assert.throws(
     () =>
-      decodeCodingHandoff(
-        {
-          ...JSON.parse(JSON.stringify(handoff)),
-          publication: {
-            ...handoff.publication,
-            reason: 'An applied revision cannot carry a rejection reason.'
-          }
-        },
-        'run-handoff'
-      ),
-    /publication status is invalid/u
-  );
-  assert.throws(
-    () =>
-      createCodingHandoff({
-        task: 'Update source.',
-        result: testResult(terminal, outcome),
-        changeReport: report,
-        changeArtifact: artifact,
-        publication: { status: 'applied', revision: hash('d') }
-      }),
-    /does not match the reviewed/u
+      decodeCodingHandoff({ ...handoff, deliveryDiagnostics: [{ ...diagnostics[0], persisted: 'yes' }] }),
+    /delivery diagnostic is invalid/u
   );
 });
 

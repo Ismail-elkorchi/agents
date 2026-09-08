@@ -13,7 +13,6 @@ import {
   createContextTools,
   createHistoryTools,
   createNotesTools,
-  createObservationAccess,
   createRuntimeContextBootstrapValidator,
   effectExecutionEventCodec,
   sourceRef,
@@ -693,7 +692,6 @@ export async function createCodingSession(
             ]);
           };
           settleRuns.set(runtimeContext.runId, async (execution, signal) => {
-            const response = await events.latestOfType(runtimeContext.runId, 'assistant.ended');
             return settleCodingWork({
               execution,
               work: await work.read(currentWork.workId),
@@ -702,25 +700,7 @@ export async function createCodingSession(
               ...(workingCopy ? { workingCopy } : {}),
               effects,
               outcomes,
-              ...(response?.event.type === 'assistant.ended'
-                ? {
-                    context: {
-                      runId: runtimeContext.runId,
-                      task: runtimeContext.input.task,
-                      instructions: [],
-                      turnId: response.event.turnId,
-                      turnIndex: response.event.turnIndex,
-                      requestAttempt: response.event.requestAttempt,
-                      metadata: { workId: currentWork.workId },
-                      signal,
-                      execution: createObservationAccess({
-                        events,
-                        runId: runtimeContext.runId,
-                        artifacts: artifactStore
-                      })
-                    }
-                  }
-                : {})
+              signal
             });
           });
           activeRuntime = new AgentRuntime({

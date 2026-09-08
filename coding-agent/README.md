@@ -196,7 +196,7 @@ try {
 }
 ```
 
-The package exports `decodeCodingHandoff` for integrations reading persisted handoffs. Its `outcome` records application verification and acceptance; `changeReport` records workspace changes and coverage.
+The package exports `decodeCodingHandoff` for integrations reading persisted handoffs. Its `outcome` records application verification, acceptance, and publication; `changeReport` records the reviewed revision, workspace changes, and coverage; `terminal` records execution and usage. `deliveryDiagnostics` preserves delivery failures separately. `codingHandoffUncertainties` derives presentation from these records. The current handoff shape is required; incompatible records are rejected without rewriting them.
 
 Original user contributions remain available across completed runs. The optional
 attention tools are composed for every Coding session: `history_read`,

@@ -47,7 +47,7 @@ export async function executeVerification(input: {
       continue;
     }
     try {
-      const identity = { runId: context.runId, turnId: context.turnId, checkId: check.id };
+      const identity = { ownerId: input.ownerId, executionId: context.executionId, checkId: check.id };
       const result = await input.effects.execute<CheckResult>(
         {
           intent: {

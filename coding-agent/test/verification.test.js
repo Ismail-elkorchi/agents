@@ -363,23 +363,7 @@ function checkCandidate(command, requirement, source, sourceId) {
 }
 
 function context() {
-  return {
-    runId: 'run-verification',
-    task: 'verify',
-    instructions: [],
-    modelOutput: { status: 'complete', message: 'done', source: 'content', turnIndex: 1 },
-    turnIndex: 1,
-    turnId: 'turn-1',
-    requestAttempt: 1,
-    metadata: {},
-    signal: new AbortController().signal,
-    execution: {
-      observedFacts: {
-        read: async () => ({ items: [], bytes: 0, truncated: false }),
-        readArtifact: async () => new Uint8Array()
-      }
-    }
-  };
+  return { executionId: 'verification-1', signal: new AbortController().signal };
 }
 
 function commandResult(options = {}) {

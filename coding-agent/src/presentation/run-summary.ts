@@ -1,7 +1,23 @@
 import type { CodingWorkOutcome } from '../outcome.js';
 
 import type { AgentTerminalSnapshot } from '@agent-core/runtime';
+import type { CodingHandoff } from '../changes/coding-handoff.js';
 import type { RunChangeReport } from '../changes/run-change-report.js';
+
+/** Presentation derived from committed records, including delivery failures outside terminal truth. */
+export function codingHandoffUncertainties(handoff: CodingHandoff): readonly string[] {
+  return Object.freeze([
+    ...new Set([
+      ...codingRunUncertainties(handoff.terminal, handoff.changeReport, handoff.outcome),
+      ...handoff.deliveryDiagnostics.map(
+        (diagnostic) => `Delivery diagnostic for ${diagnostic.eventType}: ${diagnostic.message}`
+      ),
+      ...(handoff.outcome.publication === 'not_applied'
+        ? [handoff.outcome.reason ?? 'The proposed revision was not published.']
+        : [])
+    ])
+  ]);
+}
 
 /** Derives remaining coding-run uncertainty exclusively from terminal state and observed changes. */
 export function codingRunUncertainties(

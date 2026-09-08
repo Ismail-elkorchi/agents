@@ -5,7 +5,6 @@ import { EffectExecutor, type AgentEndedRunResult } from '@agent-core/runtime';
 import {
   deriveVerificationStatus,
   executeVerification,
-  type CheckContext,
   type CheckDefinition,
   type CheckResult
 } from '@agents/verification';
@@ -19,7 +18,7 @@ export async function settleCodingWork(input: {
   readonly execution: AgentEndedRunResult;
   readonly work: CodingWork;
   readonly checks: readonly CheckDefinition[];
-  readonly context?: Omit<CheckContext, 'modelOutput'>;
+  readonly signal: AbortSignal;
   readonly requiredCoverage: AdmittedCodingCheckPlan['requiredCoverage'];
   readonly workingCopy?: CodingWorkingCopy;
   readonly effects: EffectExecutor;
@@ -42,13 +41,11 @@ export async function settleCodingWork(input: {
     reason: 'Execution did not complete.'
   };
   if (terminal.executionStatus === 'completed') {
-    if (input.context === undefined)
-      throw new Error('Completed coding work requires its exact model response identity.');
     const verification = await executeVerification({
       ownerId: input.work.ownerId,
       checks: input.checks,
       effects: input.effects,
-      context: { ...input.context, modelOutput: terminal.modelOutput }
+      context: { executionId: terminalSha256, signal: input.signal }
     });
     const status =
       verification.status === 'completed'
@@ -85,7 +82,7 @@ export async function settleCodingWork(input: {
         input.requiredCoverage,
         input.effects,
         input.work.ownerId,
-        input.context.signal
+        input.signal
       );
     }
   }

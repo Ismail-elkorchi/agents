@@ -1,12 +1,7 @@
 import { decodeEffectRecoveryCapability, type EffectRecoveryCapability } from '@agent-core/effects';
-import { parseJsonObject, parseJsonValue, type JsonObject, type JsonValue } from '@agent-core/json';
+import { parseJsonObject, parseJsonValue, type JsonValue } from '@agent-core/json';
 import type { ArtifactRef } from '@agent-core/persistence';
-import {
-  AgentContractError,
-  type AgentEffectiveInstruction,
-  type AgentPresentModelOutput,
-  type ObservationAccess
-} from '@agent-core/runtime';
+import { AgentContractError } from '@agent-core/runtime';
 
 export type VerificationStatus = 'not_required' | 'not_run' | 'passed' | 'failed' | 'inconclusive';
 
@@ -51,16 +46,9 @@ export type CheckResult = Readonly<{
 }>;
 
 export interface CheckContext {
-  readonly runId: string;
-  readonly task: string;
-  readonly instructions: readonly AgentEffectiveInstruction[];
-  readonly modelOutput: AgentPresentModelOutput;
-  readonly turnIndex: number;
-  readonly turnId: string;
-  readonly requestAttempt: number;
-  readonly metadata: Readonly<JsonObject>;
+  /** Application-selected verification identity, stable across recovery within its owner. */
+  readonly executionId: string;
   readonly signal: AbortSignal;
-  readonly execution: ObservationAccess;
 }
 
 interface CheckDefinitionBase {
@@ -68,7 +56,6 @@ interface CheckDefinitionBase {
   /** Stable identity for the admitted verifier implementation and semantics. */
   readonly implementationId: string;
   readonly requirement: CheckRequirement;
-  readonly description?: string;
   readonly timeoutMs?: number;
 }
 
@@ -94,14 +81,6 @@ export type CheckEffectReconciliation =
 export interface CheckEffectPlan {
   readonly authorization: JsonValue;
   readonly recovery: EffectRecoveryCapability;
-  start(signal: AbortSignal): Promise<CheckObservation>;
-  reconcile(signal: AbortSignal): Promise<CheckEffectReconciliation>;
-  release(): Promise<void>;
-}
-
-export interface CheckEffectPlanInput {
-  readonly authorization: JsonValue;
-  readonly recovery: EffectRecoveryCapability;
   readonly start: (signal: AbortSignal) => Promise<CheckObservation>;
   readonly reconcile: (signal: AbortSignal) => Promise<CheckEffectReconciliation>;
   readonly release: () => Promise<void>;
@@ -109,7 +88,7 @@ export interface CheckEffectPlanInput {
 
 const CHECK_EFFECT_PLANS = new WeakSet();
 
-export function createCheckEffectPlan(input: CheckEffectPlanInput): CheckEffectPlan {
+export function createCheckEffectPlan(input: CheckEffectPlan): CheckEffectPlan {
   if (
     typeof input.start !== 'function' ||
     typeof input.reconcile !== 'function' ||
@@ -132,32 +111,6 @@ export function isCheckEffectPlan(value: unknown): value is CheckEffectPlan {
   return typeof value === 'object' && value !== null && CHECK_EFFECT_PLANS.has(value);
 }
 
-export function validateCheckDefinitions(
-  definitions: readonly CheckDefinition[] | undefined
-): readonly CheckDefinition[] {
-  const output = definitions ?? [];
-  const issues: string[] = [];
-  const ids = new Set<string>();
-  for (const [index, definition] of output.entries()) {
-    const id = definition.id;
-    const label = id.length > 0 ? id : String(index);
-    if (id.trim().length === 0) issues.push(`Check at index ${String(index)} has an empty id.`);
-    else if (ids.has(id)) issues.push(`Duplicate check id: ${id}.`);
-    else ids.add(id);
-    if (!validIdentity(definition.implementationId))
-      issues.push(`Check ${label} implementationId must be a non-empty bounded identity.`);
-    if (!isCheckKind(definition.kind)) issues.push(`Check ${label} kind must be deterministic or effect.`);
-    if (definition.timeoutMs !== undefined && !positiveInteger(definition.timeoutMs))
-      issues.push(`Check ${label} timeoutMs must be a positive finite integer.`);
-  }
-  if (issues.length > 0) throw new AgentContractError('Invalid check definitions.', issues);
-  return Object.freeze([...output]);
-}
-
-function isCheckKind(value: unknown): value is CheckDefinition['kind'] {
-  return value === 'deterministic' || value === 'effect';
-}
-
 export function deriveVerificationStatus(
   definitions: readonly Pick<CheckDefinition, 'id' | 'requirement'>[],
   results: readonly CheckResult[]
@@ -171,11 +124,8 @@ export function deriveVerificationStatus(
   return 'passed';
 }
 
-export function parseCheckResult(value: unknown, measuredDurationMs?: number): CheckResult {
-  return decodeOwnedCheckResult(parseJsonObject(value), measuredDurationMs);
-}
-
-export function decodeOwnedCheckResult(object: JsonObject, measuredDurationMs?: number): CheckResult {
+export function parseCheckResult(value: unknown): CheckResult {
+  const object = parseJsonObject(value);
   const issues: string[] = [];
   const fields = [
     'id',
@@ -200,7 +150,7 @@ export function decodeOwnedCheckResult(object: JsonObject, measuredDurationMs?: 
   const verdict = oneOf(object.verdict, ['passed', 'failed', 'unknown']) ? object.verdict : undefined;
   const summary =
     typeof object.summary === 'string' && object.summary.trim().length > 0 ? object.summary : undefined;
-  const rawDurationMs = measuredDurationMs ?? object.durationMs;
+  const rawDurationMs = object.durationMs;
   const durationMs =
     typeof rawDurationMs === 'number' && Number.isFinite(rawDurationMs) && rawDurationMs >= 0
       ? rawDurationMs
@@ -225,9 +175,16 @@ export function decodeOwnedCheckResult(object: JsonObject, measuredDurationMs?: 
         ? object.diagnostic
         : undefined;
   if (object.diagnostic !== undefined && !diagnostic) issues.push('diagnostic is invalid.');
-  if (issues.length > 0) throw contract('Invalid check result.', issues);
-  if (!id || !implementationId || !requirement || !verdict || !summary || durationMs === undefined)
-    throw contract('Invalid check result.', issues);
+  if (
+    issues.length > 0 ||
+    !id ||
+    !implementationId ||
+    !requirement ||
+    !verdict ||
+    !summary ||
+    durationMs === undefined
+  )
+    throw new AgentContractError('Invalid check result.', issues);
   return Object.freeze({
     id,
     implementationId,
@@ -268,22 +225,14 @@ function isArtifactRef(value: unknown): value is ArtifactRef {
   );
 }
 
-function positiveInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value) && Number.isInteger(value) && value > 0;
-}
-
 function validIdentity(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0 && Buffer.byteLength(value, 'utf8') <= 256;
 }
 
 function oneOf<T extends string>(value: unknown, values: readonly T[]): value is T {
-  return typeof value === 'string' && values.some((modelOutput) => modelOutput === value);
+  return typeof value === 'string' && values.some((candidate) => candidate === value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function contract(message: string, issues: string[]): AgentContractError {
-  return new AgentContractError(message, issues);
 }

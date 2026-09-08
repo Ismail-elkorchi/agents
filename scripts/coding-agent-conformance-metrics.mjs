@@ -1,3 +1,5 @@
+import { codingHandoffUncertainties } from '@ismail-elkorchi/coding-agent';
+
 function ratio(numerator, denominator) {
   return Object.freeze({
     numerator,
@@ -14,13 +16,14 @@ export function hasPassedRequiredWorkingCopyCheck(output, checkId) {
 
 export function codingSummaryContradictions(output, handoff) {
   const report = handoff.changeReport;
+  const uncertainties = codingHandoffUncertainties(handoff);
   const contradictions = [];
   if (!output.includes(`Workspace changes: ${String(report.totalChanges)} (${report.coverage})`))
     contradictions.push('change count or coverage');
   for (const [label, expected] of [
     ['Verification', handoff.outcome.verification.status],
     ['Acceptance', handoff.outcome.acceptance],
-    ['Publication', handoff.publication.status]
+    ['Publication', handoff.outcome.publication]
   ]) {
     const value = output
       .split(/\r?\n/u)
@@ -37,11 +40,11 @@ export function codingSummaryContradictions(output, handoff) {
       contradictions.push(`change ${change.path}`);
   }
   if (
-    handoff.unresolved.length === 0
+    uncertainties.length === 0
       ? !output.includes('Remaining uncertainty: none')
       : output.includes('Remaining uncertainty: none') ||
         !output.includes('Remaining uncertainty:\n') ||
-        handoff.unresolved.some((uncertainty) => !output.includes(`- ${uncertainty}`))
+        uncertainties.some((uncertainty) => !output.includes(`- ${uncertainty}`))
   )
     contradictions.push('remaining uncertainty');
   return contradictions;

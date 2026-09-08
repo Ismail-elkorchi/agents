@@ -83,16 +83,13 @@ export class CodingHandoffService {
   async #finalize(runId: string, result: CodingEndedRunResult): Promise<CodingHandoff> {
     const stored = await this.read(runId);
     if (stored) {
-      if (stored.publication.status === 'applied')
-        await this.#work.publish(stored.outcome.workId, stored.reviewedRevision);
+      if (stored.outcome.publication === 'applied')
+        await this.#work.publish(stored.outcome.workId, stored.changeReport.finalDigest);
       return stored;
     }
     const work = await this.#work.forRun(runId);
     if (work?.mode !== 'revision')
       throw new Error('A coding change handoff requires admitted revision work.');
-    const started = await this.#events.latestOfType(runId, 'run.started');
-    if (started?.event.type !== 'run.started')
-      throw new Error('Coding handoff requires its committed task.');
     const workingCopyPath = isolatedWorkingCopyWorkspacePath(this.#runtimeDirectory, work.workId);
     const hasWorkingCopy =
       result.outcome.publication !== 'applied' && (await realDirectoryExists(workingCopyPath));
@@ -109,16 +106,9 @@ export class CodingHandoffService {
     } finally {
       if (hasWorkingCopy) reviewRoot.close();
     }
-    const publication: CodingHandoff['publication'] = {
-      status: result.outcome.publication,
-      revision: report.finalDigest,
-      ...(result.outcome.publication === 'not_applied'
-        ? { reason: result.outcome.reason ?? 'The proposed revision was not published.' }
-        : {})
-    };
     if (result.outcome.revision !== undefined && result.outcome.revision !== report.finalDigest)
       throw new Error('Coding handoff revision differs from the application outcome.');
-    if (publication.status === 'applied') {
+    if (result.outcome.publication === 'applied') {
       const source = await captureWorkspaceSnapshot(this.#sourceRoot);
       if (source.coverage !== 'complete' || source.digest !== report.finalDigest) {
         throw new Error(`Applied run ${runId} does not match its reviewed working-copy revision.`);
@@ -131,17 +121,15 @@ export class CodingHandoffService {
       description: `Exact bounded change report for Coding Agent run ${runId}.`
     });
     const handoff = createCodingHandoff({
-      task: started.event.task,
       result,
       changeReport: report,
-      changeArtifact,
-      publication
+      changeArtifact
     });
     const encoded = JSON.stringify(handoff);
     if (Buffer.byteLength(encoded) > MAX_PERSISTED_HANDOFF_BYTES)
       throw new Error(`Coding handoff ${runId} exceeds its persistence budget.`);
     await this.#state.write(handoffPath(runId), encoded);
-    if (publication.status === 'applied') await this.#work.publish(work.workId, report.finalDigest);
+    if (result.outcome.publication === 'applied') await this.#work.publish(work.workId, report.finalDigest);
     return handoff;
   }
 }

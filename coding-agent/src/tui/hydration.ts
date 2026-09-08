@@ -306,9 +306,13 @@ function assertHydration(hydration: CodingAgentTuiHydration): void {
     }
   }
   for (const handoff of hydration.handoffs) {
-    if (!hydration.replay.runFinalizations.some((finalization) => finalization.runId === handoff.runId)) {
+    if (
+      !hydration.replay.runFinalizations.some(
+        (finalization) => finalization.runId === handoff.terminal.runId
+      )
+    ) {
       throw new Error(
-        `TUI hydration contains a coding handoff outside the session replay: ${handoff.runId}.`
+        `TUI hydration contains a coding handoff outside the session replay: ${handoff.terminal.runId}.`
       );
     }
   }

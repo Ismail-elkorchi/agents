@@ -12,6 +12,7 @@ import { type CheckResult } from '@agents/verification';
 import { createHash } from 'node:crypto';
 import type { CodingHandoffService } from './changes/coding-handoff-service.js';
 import { createRunChangeReport } from './changes/run-change-report.js';
+import { codingHandoffUncertainties } from './presentation/run-summary.js';
 import type { PrivateStateDirectory } from './state/private-state.js';
 import type { AdmittedCodingCheckPlan } from './verification/revision-acceptance-checks.js';
 import type { CodingWork } from './work.js';
@@ -86,15 +87,14 @@ export async function codingSessionBoundaryContext(input: {
       handoff === undefined
         ? null
         : {
-            runId: handoff.runId,
-            reviewedRevision: handoff.reviewedRevision,
-            publication: handoff.publication,
-            changedFiles: handoff.changedFiles,
+            runId: handoff.terminal.runId,
+            reviewedRevision: handoff.changeReport.finalDigest,
+            publication: handoff.outcome.publication,
+            changedFiles: handoff.changeReport.facts.changedPaths,
             checks: handoff.outcome.verification.checks,
-            effectsWithUnknownOutcome: handoff.effectsWithUnknownOutcome,
-            unresolved: handoff.unresolved,
+            unresolved: codingHandoffUncertainties(handoff),
             changeArtifact: handoff.changeArtifact,
-            appliesToCurrentRevision: handoff.reviewedRevision === changes?.finalDigest
+            appliesToCurrentRevision: handoff.changeReport.finalDigest === changes?.finalDigest
           }
   };
   const content = JSON.stringify(material);
