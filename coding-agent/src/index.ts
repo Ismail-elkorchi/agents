@@ -84,7 +84,11 @@ export {
   repositoryOrientationContext
 } from './workspace/repository-orientation.js';
 
-export type { CodingHandoff, CodingPublicationStatus } from './changes/coding-handoff.js';
+export {
+  decodeCodingHandoff,
+  type CodingHandoff,
+  type CodingPublicationStatus
+} from './changes/coding-handoff.js';
 export type {
   RunChangeReport,
   StructuredMutationReceipt,

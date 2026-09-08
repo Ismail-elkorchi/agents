@@ -12,6 +12,41 @@ export function hasPassedRequiredWorkingCopyCheck(output, checkId) {
   return output.split(/\r?\n/u).some((line) => line === prefix || line.startsWith(`${prefix} - `));
 }
 
+export function codingSummaryContradictions(output, handoff) {
+  const report = handoff.changeReport;
+  const contradictions = [];
+  if (!output.includes(`Workspace changes: ${String(report.totalChanges)} (${report.coverage})`))
+    contradictions.push('change count or coverage');
+  for (const [label, expected] of [
+    ['Verification', handoff.outcome.verification.status],
+    ['Acceptance', handoff.outcome.acceptance],
+    ['Publication', handoff.publication.status]
+  ]) {
+    const value = output
+      .split(/\r?\n/u)
+      .find((line) => line.startsWith(`${label}: `))
+      ?.slice(label.length + 2)
+      .trim()
+      .toLowerCase()
+      .replaceAll(' ', '_');
+    if (value !== expected) contradictions.push(`${label.toLowerCase()} status`);
+  }
+  for (const change of report.changes) {
+    const origin = change.attribution === 'structured_mutation' ? 'agent' : 'external/concurrent';
+    if (!output.includes(`- ${change.kind} ${change.path} [${origin}`))
+      contradictions.push(`change ${change.path}`);
+  }
+  if (
+    handoff.unresolved.length === 0
+      ? !output.includes('Remaining uncertainty: none')
+      : output.includes('Remaining uncertainty: none') ||
+        !output.includes('Remaining uncertainty:\n') ||
+        handoff.unresolved.some((uncertainty) => !output.includes(`- ${uncertainty}`))
+  )
+    contradictions.push('remaining uncertainty');
+  return contradictions;
+}
+
 export function evaluateCodingAgentConformance(cases) {
   if (!Array.isArray(cases) || cases.length === 0)
     throw new Error('Coding Agent conformance requires at least one case.');
@@ -50,7 +85,7 @@ export function evaluateCodingAgentConformance(cases) {
       throw new Error(`${specification.id} did not request every expected approval.`);
     }
 
-    requireTerminal(specification.id, specification.outcome, observation.outcome);
+    requireOutcome(specification.id, specification.outcome, observation.outcome);
     for (const checkId of specification.requiredChecks) {
       if (!observation.passedChecks.includes(checkId))
         throw new Error(`${specification.id} did not pass required check ${checkId}.`);
@@ -110,7 +145,7 @@ export function assertCodingAgentConformanceThresholds(metrics) {
   requireRate(metrics.targetScopeViolationRate, 0, 'target/scope violation rate');
 }
 
-function requireTerminal(id, expected, actual) {
+function requireOutcome(id, expected, actual) {
   for (const field of ['executionStatus', 'modelOutputStatus', 'verificationStatus', 'terminationReason']) {
     if (actual[field] !== expected[field]) {
       throw new Error(

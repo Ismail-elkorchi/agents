@@ -109,7 +109,7 @@ try {
       "import * as coding from '@ismail-elkorchi/coding-agent';",
       "import * as tui from '@ismail-elkorchi/coding-agent/tui';",
       "import * as writing from '@ismail-elkorchi/writing-agent';",
-      "if (!coding.resolveCodingAuthority || !coding.loadCodingAgentConfiguration || !coding.createCodingSession || !tui.createCodingAgentTuiApp) throw new Error('Coding-agent public exports are incomplete');",
+      "if (!coding.resolveCodingAuthority || !coding.loadCodingAgentConfiguration || !coding.createCodingSession || !coding.decodeCodingHandoff || !tui.createCodingAgentTuiApp) throw new Error('Coding-agent public exports are incomplete');",
       "if (!writing.createWritingProject || !writing.admitWritingOperation || !writing.runTransientWriting) throw new Error('Writing-agent public exports are incomplete');"
     ].join('\n')
   );

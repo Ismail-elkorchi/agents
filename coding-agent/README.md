@@ -196,6 +196,8 @@ try {
 }
 ```
 
+The package exports `decodeCodingHandoff` for integrations reading persisted handoffs. Its `outcome` records application verification and acceptance; `changeReport` records workspace changes and coverage.
+
 Original user contributions remain available across completed runs. The optional
 attention tools are composed for every Coding session: `history_read`,
 `history_search`, `notes_list`, `notes_search`, `notes_read`, `notes_write`,

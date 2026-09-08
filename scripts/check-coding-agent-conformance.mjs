@@ -15,9 +15,10 @@ import {
 import {
   assertCodingAgentConformanceThresholds,
   evaluateCodingAgentConformance,
+  codingSummaryContradictions,
   hasPassedRequiredWorkingCopyCheck
 } from './coding-agent-conformance-metrics.mjs';
-import { decodeCodingHandoff } from '../coding-agent/dist/changes/coding-handoff.js';
+import { decodeCodingHandoff } from '@ismail-elkorchi/coding-agent';
 
 if (!sandboxAvailable) {
   process.stdout.write(
@@ -127,7 +128,8 @@ async function runResilientMutationCase() {
     ]);
     if (ended.code !== 0)
       throw new Error(`Conformance task did not complete.\n${ended.stdout}\n${ended.stderr}`);
-    const report = await readChangeReport(fixture, runId);
+    const handoff = await readHandoff(fixture, runId);
+    const report = handoff.changeReport;
     const prompt = provider.chatRequests
       .flatMap((request) => request.messages)
       .map((message) => message.content)
@@ -161,9 +163,9 @@ async function runResilientMutationCase() {
           bytes: change.afterBytes ?? change.beforeBytes ?? 0
         })),
         clarificationRequested: false,
-        summaryContradictions: summaryContradictions(ended.stdout, report),
+        summaryContradictions: codingSummaryContradictions(ended.stdout, handoff),
         scopeViolations: scopeViolations(report, ['src/note.txt'], ['untouched.txt']),
-        outcome: parseTerminal(ended.stdout)
+        outcome: parseOutcome(ended.stdout)
       }
     };
   } finally {
@@ -187,7 +189,8 @@ async function runClarificationCase() {
     const ended = await runCli(fixture, ['exec', 'Fix the issue.', '--permissions', 'edit']);
     if (ended.code !== 0)
       throw new Error(`Clarification task did not complete.\n${ended.stdout}\n${ended.stderr}`);
-    const report = await readChangeReport(fixture);
+    const handoff = await readHandoff(fixture);
+    const report = handoff.changeReport;
     const clarificationRequested = /identify the exact target and acceptable blast radius/u.test(
       ended.stdout
     );
@@ -213,9 +216,9 @@ async function runClarificationCase() {
           bytes: change.afterBytes ?? change.beforeBytes ?? 0
         })),
         clarificationRequested,
-        summaryContradictions: summaryContradictions(ended.stdout, report),
+        summaryContradictions: codingSummaryContradictions(ended.stdout, handoff),
         scopeViolations: scopeViolations(report, [], ['src/a.js', 'src/b.js']),
-        outcome: parseTerminal(ended.stdout)
+        outcome: parseOutcome(ended.stdout)
       }
     };
   } finally {
@@ -224,38 +227,12 @@ async function runClarificationCase() {
   }
 }
 
-async function readChangeReport(fixture, runId) {
+async function readHandoff(fixture, runId) {
   const directory = path.join(fixture.stateRoot, 'coding-handoffs');
   const entries = (await readdir(directory)).filter((entry) => entry.endsWith('.json'));
   if (entries.length !== 1)
     throw new Error(`Expected one conformance coding handoff, found ${String(entries.length)}.`);
-  return decodeCodingHandoff(JSON.parse(await readFile(path.join(directory, entries[0]), 'utf8')), runId)
-    .changeReport;
-}
-
-function summaryContradictions(output, report) {
-  const contradictions = [];
-  if (!output.includes(`Workspace changes: ${String(report.totalChanges)} (${report.coverage})`))
-    contradictions.push('change count or coverage');
-  const verification = /Verification: ([^\n]+)/u
-    .exec(output)?.[1]
-    ?.trim()
-    .toLowerCase()
-    .replaceAll(' ', '_');
-  if (verification !== report.facts.verificationStatus) contradictions.push('verification status');
-  for (const change of report.changes) {
-    const origin = change.attribution === 'structured_mutation' ? 'agent' : 'external/concurrent';
-    if (!output.includes(`- ${change.kind} ${change.path} [${origin}`))
-      contradictions.push(`change ${change.path}`);
-  }
-  if (
-    report.coverage === 'complete' &&
-    report.facts.externalOrConcurrentPaths.length === 0 &&
-    !output.includes('Remaining uncertainty: none')
-  ) {
-    contradictions.push('remaining uncertainty');
-  }
-  return contradictions;
+  return decodeCodingHandoff(JSON.parse(await readFile(path.join(directory, entries[0]), 'utf8')), runId);
 }
 
 function scopeViolations(report, allowedPaths, forbiddenPaths) {
@@ -271,7 +248,7 @@ function scopeViolations(report, allowedPaths, forbiddenPaths) {
     .map((change) => change.path);
 }
 
-function parseTerminal(output) {
+function parseOutcome(output) {
   return {
     executionStatus: match(output, /Execution: (\S+)/u, 'execution status').toLowerCase(),
     modelOutputStatus: match(output, /Model output: (\S+)/u, 'model output status').toLowerCase(),
