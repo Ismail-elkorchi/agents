@@ -88,14 +88,15 @@ function restoreSessionHistory(
   );
   const retained = branchPoints.slice(-100);
   const lines = retained.map((point) => {
-    if (point.kind === 'compaction') return `compaction ${point.entryId} · ${point.timestamp}`;
+    if (point.kind === 'context_transition') return `context ${point.entryId} · ${point.timestamp}`;
     const terminal = terminals.get(point.entryId);
     const identity = `final ${point.entryId}${point.runId === undefined ? '' : ` · run ${point.runId}`}`;
     return terminal === undefined
       ? `${identity} · terminal outside active replay · ${point.timestamp}`
       : `${identity} · ${terminal.executionStatus} · verification ${terminal.verificationStatus} · model output ${terminal.modelOutput.status}`;
   });
-  if (branchPoints.length > retained.length) lines.unshift(`${String(branchPoints.length - retained.length)} earlier branch points omitted`);
+  if (branchPoints.length > retained.length)
+    lines.unshift(`${String(branchPoints.length - retained.length)} earlier branch points omitted`);
   const details = lines.join('\n');
   const priorRuns = branchPoints.filter((point) => point.kind === 'run_finalization').length;
   return upsertActivity(state, {
@@ -109,10 +110,7 @@ function restoreSessionHistory(
   });
 }
 
-function applyBranchEntry(
-  state: CodingAgentTuiState,
-  entry: SessionBranchEntry
-): CodingAgentTuiState {
+function applyBranchEntry(state: CodingAgentTuiState, entry: SessionBranchEntry): CodingAgentTuiState {
   switch (entry.type) {
     case 'input':
       return upsertConversationEntry(state, {
@@ -136,13 +134,14 @@ function applyBranchEntry(
       const id = sessionObservationActivityId(entry);
       return upsertActivity(state, completedSessionToolActivity(activity(state, id), entry));
     }
-    case 'model_settings': return state;
-    case 'compaction':
+    case 'model_settings':
+      return state;
+    case 'context_transition':
       return upsertConversationEntry(state, {
-        id: `session:${entry.id}`,
+        id: `session:${entry.window.windowId}`,
         kind: 'notice',
         tone: 'info',
-        text: `Session compacted · ${entry.provider}/${entry.model}\n${entry.summary}`
+        text: `Context changed · ${entry.window.selection.strategy} · ${entry.window.windowId}\n${entry.window.reason}`
       });
     case 'branch':
       return upsertConversationEntry(state, {
@@ -172,22 +171,22 @@ function restoreSessionRunState(
     if (suspension.reason === 'approval_required') {
       return { ...state, run: { kind: 'waiting_for_approval', suspension } };
     }
-    return upsertConversationEntry({
-      ...state,
-      run: { kind: 'waiting_for_recovery', suspension }
-    }, {
-      id: `recovery:${suspension.runId}`,
-      kind: 'notice',
-      tone: 'warning',
-      text: `Recovery required · ${suspension.reason.replaceAll('_', ' ')}${suspension.effectId === undefined ? '' : ` · effect ${suspension.effectId}`}`
-    });
+    return upsertConversationEntry(
+      {
+        ...state,
+        run: { kind: 'waiting_for_recovery', suspension }
+      },
+      {
+        id: `recovery:${suspension.runId}`,
+        kind: 'notice',
+        tone: 'warning',
+        text: `Recovery required · ${suspension.reason.replaceAll('_', ' ')}${suspension.effectId === undefined ? '' : ` · effect ${suspension.effectId}`}`
+      }
+    );
   }
   if (session.phase === 'running') {
     if (run === undefined) throw new Error('Restored running session has no durable run.');
     return { ...state, run: { kind: 'working', label: runLabel(run.state) } };
-  }
-  if (session.phase === 'compacting') {
-    return { ...state, run: { kind: 'working', label: 'Compacting session' } };
   }
   if (session.queuedInputs > 0) {
     const recovering = hydration.pendingSubmissions.some((submission) => submission.state === 'claimed');
@@ -211,25 +210,40 @@ function selectedRun(hydration: CodingAgentTuiHydration): AgentRunInspection | u
   return hydration.runs.find((run) => pendingRunIds.has(run.state.runId));
 }
 
-function runSuspension(
-  run: AgentRunState
-): AgentApprovalSuspension | AgentRunSuspension {
+function runSuspension(run: AgentRunState): AgentApprovalSuspension | AgentRunSuspension {
   if (run.budget === undefined) {
     throw new Error(`Suspended run ${run.runId} has no durable budget.`);
   }
-  if (run.phase.kind === 'approval') {
+  const approvals = run.toolBatches.flatMap((batch) =>
+    batch.callStates.flatMap((call) => (call.stage === 'approval' ? [call.approval] : []))
+  );
+  const approvalId =
+    run.phase.kind === 'suspended' && run.phase.reason === 'approval'
+      ? run.phase.approvalId
+      : run.phase.kind === 'active'
+        ? approvals[0]?.approvalId
+        : undefined;
+  if (approvalId !== undefined) {
+    const selected = approvals.find((approval) => approval.approvalId === approvalId);
+    if (selected === undefined) {
+      throw new Error(`Suspended run ${run.runId} has no matching pending tool approval.`);
+    }
+    const pendingApprovals = [
+      selected,
+      ...approvals.filter((approval) => approval.approvalId !== approvalId)
+    ];
     return {
       state: 'suspended',
       reason: 'approval_required',
       runId: run.runId,
       finalizationId: run.finalizationId,
-      pendingApprovals: [run.phase.approval],
+      pendingApprovals,
       budget: run.budget
     };
   }
   const reason = runSuspensionReason(run);
   if (reason === undefined) throw new Error(`Run ${run.runId} is not suspended.`);
-  const effectId = runEffectId(run);
+  const effectId = runEffectId(run, reason);
   return {
     state: 'suspended',
     reason,
@@ -240,38 +254,56 @@ function runSuspension(
   };
 }
 
-function runSuspensionReason(
-  run: AgentRunState
-): AgentRunSuspension['reason'] | undefined {
+function runSuspensionReason(run: AgentRunState): AgentRunSuspension['reason'] | undefined {
   const phase = run.phase;
-  if (phase.kind === 'provider' && phase.stage === 'outcome_unknown') return 'provider_outcome_unknown';
-  if (phase.kind === 'tools' && phase.callStates.some((call) => call.stage === 'outcome_unknown')) return 'tool_outcome_unknown';
+  if (phase.kind === 'suspended') return phase.reason === 'approval' ? undefined : phase.reason;
+  if (run.providerRequests.some((request) => request.stage === 'outcome_unknown'))
+    return 'provider_outcome_unknown';
+  if (run.toolBatches.some((batch) => batch.callStates.some((call) => call.stage === 'outcome_unknown')))
+    return 'tool_outcome_unknown';
   if (phase.kind === 'disposition' && phase.stage === 'outcome_unknown') return 'disposition_outcome_unknown';
-  if (phase.kind === 'suspended') return phase.reason;
   return undefined;
 }
 
-function runEffectId(run: AgentRunState): string | undefined {
+function runEffectId(run: AgentRunState, reason: AgentRunSuspension['reason']): string | undefined {
   const phase = run.phase;
-  if (phase.kind === 'provider' && phase.stage === 'outcome_unknown') return phase.effect.intent.effectId;
-  if (phase.kind === 'tools') {
-    return phase.callStates.find((call) => call.stage === 'outcome_unknown')?.effect.intent.effectId;
+  if (phase.kind === 'suspended' && phase.reason !== 'approval' && phase.effectId !== undefined)
+    return phase.effectId;
+  if (reason === 'provider_outcome_unknown') {
+    return run.providerRequests.find((request) => request.stage === 'outcome_unknown')?.effect.intent
+      .effectId;
+  }
+  if (reason === 'tool_outcome_unknown') {
+    return run.toolBatches
+      .flatMap((batch) => batch.callStates)
+      .find((call) => call.stage === 'outcome_unknown')?.effect.intent.effectId;
   }
   if (phase.kind === 'disposition' && phase.stage === 'outcome_unknown') return phase.effect.intent.effectId;
-  if (phase.kind === 'suspended') return phase.effectId;
   return undefined;
 }
 
 function runLabel(run: AgentRunState): string {
-  const control = run.control.status === 'detached'
-    ? 'detached'
-    : run.control.status === 'abort_requested' ? 'abort requested' : `driver generation ${String(run.driverGeneration)}`;
-  const phase = run.phase.kind === 'initializing'
-    ? run.phase.step.replaceAll('_', ' ')
-    : run.phase.kind === 'provider' || run.phase.kind === 'verification' || run.phase.kind === 'disposition'
-      ? `${run.phase.kind} ${run.phase.stage.replaceAll('_', ' ')}`
-      : run.phase.kind;
-  return `Recovered ${phase} · ${control}`;
+  const control =
+    run.control.status === 'detached'
+      ? 'detached'
+      : run.control.status === 'abort_requested'
+        ? 'abort requested'
+        : `driver generation ${String(run.driverGeneration)}`;
+  const phase =
+    run.phase.kind === 'initializing'
+      ? run.phase.step.replaceAll('_', ' ')
+      : run.phase.kind === 'verification' || run.phase.kind === 'disposition'
+        ? `${run.phase.kind} ${run.phase.stage.replaceAll('_', ' ')}`
+        : run.phase.kind;
+  const providers = run.providerRequests.filter((request) => request.stage !== 'consumed').length;
+  const calls = run.toolBatches
+    .flatMap((batch) => batch.callStates)
+    .filter((call) => call.stage !== 'recorded' && call.stage !== 'cancelled').length;
+  const work =
+    run.phase.kind === 'active'
+      ? ` · ${String(providers)} provider request${providers === 1 ? '' : 's'} · ${String(calls)} pending tool${calls === 1 ? '' : 's'}`
+      : '';
+  return `Recovered ${phase}${work} · ${control}`;
 }
 
 function activity(state: CodingAgentTuiState, id: string): CodingAgentTuiActivityEntry | undefined {
@@ -292,7 +324,9 @@ function assertHydration(hydration: CodingAgentTuiHydration): void {
   }
   for (const handoff of hydration.handoffs) {
     if (!hydration.replay.runFinalizations.some((finalization) => finalization.runId === handoff.runId)) {
-      throw new Error(`TUI hydration contains a coding handoff outside the session replay: ${handoff.runId}.`);
+      throw new Error(
+        `TUI hydration contains a coding handoff outside the session replay: ${handoff.runId}.`
+      );
     }
   }
 }

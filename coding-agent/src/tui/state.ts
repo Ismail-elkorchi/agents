@@ -1,11 +1,14 @@
 import { createScrollState, createTextAreaState } from '@ismail-elkorchi/terminal-ui/behavior';
-import type { ScrollState, TextAreaState, UnscrolledSearchPickerState } from '@ismail-elkorchi/terminal-ui/behavior';
+import type {
+  ScrollState,
+  TextAreaState,
+  UnscrolledSearchPickerState
+} from '@ismail-elkorchi/terminal-ui/behavior';
 import type {
   AgentApprovalSuspension,
   AgentRunInspection,
   AgentRunSuspension,
   AgentDeliveryDiagnostic,
-  AgentProgressEvent,
   AgentProviderStateSummary,
   AgentReplayPayload,
   AgentRunBudgetState,
@@ -56,8 +59,6 @@ export interface CodingAgentTuiDebugState {
   readonly budget?: AgentRunBudgetState;
   readonly replay?: AgentReplayPayload;
   readonly providerState?: AgentProviderStateSummary;
-  readonly latestHistoryReduction?: Extract<AgentProgressEvent, { readonly type: 'context.history.reduced' }>;
-  readonly latestCheckpoint?: Extract<AgentProgressEvent, { readonly type: 'context.checkpoint.created' }>;
   readonly terminal?: AgentTerminalSnapshot;
   readonly deliveryDiagnostics: readonly AgentDeliveryDiagnostic[];
   readonly session?: AgentSessionState;
@@ -79,7 +80,11 @@ export type CodingAgentTuiRunState =
 export type CodingAgentTuiOverlay =
   | { readonly kind: 'none' }
   | { readonly kind: 'commands'; readonly picker: CodingAgentTuiPickerState }
-  | { readonly kind: 'command_values'; readonly command: InteractiveCommandName; readonly picker: CodingAgentTuiPickerState }
+  | {
+      readonly kind: 'command_values';
+      readonly command: InteractiveCommandName;
+      readonly picker: CodingAgentTuiPickerState;
+    }
   | { readonly kind: 'search'; readonly picker: CodingAgentTuiPickerState }
   | { readonly kind: 'help' }
   | { readonly kind: 'debug'; readonly text: string };
@@ -139,7 +144,9 @@ export function createInitialCodingAgentTuiState(
     modalOffsetRow: 0,
     runtimeDetails,
     debug: {
-      ...(runtimeDetails.sessionLocation === undefined ? {} : { sessionLocation: runtimeDetails.sessionLocation }),
+      ...(runtimeDetails.sessionLocation === undefined
+        ? {}
+        : { sessionLocation: runtimeDetails.sessionLocation }),
       deliveryDiagnostics: [],
       branchPoints: [],
       pendingSubmissions: [],

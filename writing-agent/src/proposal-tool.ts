@@ -5,7 +5,8 @@ import {
   requireToolService,
   ToolInputError,
   type CompiledToolDefinition,
-  type ToolExecutionContext
+  type ToolExecutionContext,
+  type ToolInvocationContext
 } from '@agent-core/tools';
 import {
   documentNodeSchema,
@@ -23,7 +24,7 @@ import { canonicalJson, canonicalSha256, contentId, nowTimestamp } from './canon
 import type { WritingProject } from './project.js';
 import { assembleProposalVerificationMaterial } from './verification.js';
 
-export const PROPOSE_REVISION_IMPLEMENTATION_ID = 'writing-agent.propose-revision@2';
+export const PROPOSE_REVISION_IMPLEMENTATION_ID = 'writing-agent.propose-revision@3';
 export const WRITING_OPERATION_SERVICE = 'writingOperation';
 const PROJECT_SCOPE = 'writing-projects';
 
@@ -56,6 +57,7 @@ const proposeRevisionOutputSchema = z.strictObject({
 type ProposeRevisionOutput = z.output<typeof proposeRevisionOutputSchema>;
 
 interface CanonicalProposalInput {
+  readonly contextSelectionId: string;
   readonly proposalId: string;
   readonly operationId: string;
   readonly baseProjectRevisionId: string;
@@ -71,51 +73,91 @@ export class WritingOperationService {
   readonly project: WritingProject;
   readonly operation: WritingOperation;
   readonly contextSelection: WritingContextSelection;
+  readonly #deliveredSelection: () => WritingContextSelection;
 
   constructor(input: {
     readonly project: WritingProject;
     readonly operation: WritingOperation;
     readonly contextSelection: WritingContextSelection;
+    readonly deliveredSelection?: () => WritingContextSelection;
   }) {
     this.project = input.project;
     this.operation = input.operation;
     this.contextSelection = input.contextSelection;
+    this.#deliveredSelection = input.deliveredSelection ?? (() => input.contextSelection);
     assertTargetDescriptors(input.operation, input.contextSelection);
     operationServices.add(this);
     Object.freeze(this);
   }
 
-  canonicalize(input: ProposeRevisionInput): CanonicalProposalInput {
+  async canonicalizeForInvocation(
+    input: ProposeRevisionInput,
+    invocation: ToolInvocationContext
+  ): Promise<CanonicalProposalInput> {
+    if (invocation.runId !== this.operation.runId)
+      throw new Error('Proposal invocation belongs to another operation run.');
+    const delivered = await this.project.store.getContextSelectionForInvocation(invocation);
+    if (delivered === undefined)
+      throw new Error('Proposal invocation has no durable delivered context binding.');
+    return this.canonicalize(input, delivered);
+  }
+
+  canonicalize(
+    input: ProposeRevisionInput,
+    deliveredSelection = this.#deliveredSelection()
+  ): CanonicalProposalInput {
     const parsed = proposalInputSchema(this.operation, this.contextSelection).parse(input);
     const textByResource = new Map<string, LocalizedTextEdit['edits'][number][]>();
     const structuralChanges: StructuralChange[] = [];
     for (const intentOperation of parsed.operations) {
       const intent = requireIntent(this.operation, intentOperation.intentId);
       for (const textChange of intentOperation.textChanges ?? []) {
-        if (!intent.targetResourceIds.includes(textChange.resourceId)) throw new Error(`Proposal intent expands beyond its resource targets: ${intent.intentId}/${textChange.resourceId}`);
+        if (!intent.targetResourceIds.includes(textChange.resourceId))
+          throw new Error(
+            `Proposal intent expands beyond its resource targets: ${intent.intentId}/${textChange.resourceId}`
+          );
         const descriptor = requireDescriptor(this.contextSelection, textChange.resourceId);
         const edits = textByResource.get(textChange.resourceId) ?? [];
         for (const replacement of textChange.replacements) {
           const anchor = descriptor.anchors.find((candidate) => candidate.anchorId === replacement.anchorId);
-          if (anchor === undefined) throw new Error(`Proposal references an unknown application-owned edit anchor: ${replacement.anchorId}`);
+          if (anchor === undefined)
+            throw new Error(
+              `Proposal references an unknown application-owned edit anchor: ${replacement.anchorId}`
+            );
           const existing = edits.find((edit) => edit.anchorId === anchor.anchorId);
           if (existing !== undefined) {
-            if (existing.replacementText !== replacement.replacementText || existing.expectedTextSha256 !== anchor.textSha256) {
+            if (
+              existing.replacementText !== replacement.replacementText ||
+              existing.expectedTextSha256 !== anchor.textSha256
+            ) {
               throw new Error(`Proposal has conflicting replacements for edit anchor: ${anchor.anchorId}`);
             }
             existing.intentIds.push(intent.intentId);
             continue;
           }
-          if (edits.some((edit) => rangesOverlap(edit.range, anchor.range))) throw new Error(`Proposal has overlapping text replacements: ${anchor.anchorId}`);
-          edits.push({ anchorId: anchor.anchorId, intentIds: [intent.intentId], range: anchor.range, expectedTextSha256: anchor.textSha256, replacementText: replacement.replacementText });
+          if (edits.some((edit) => rangesOverlap(edit.range, anchor.range)))
+            throw new Error(`Proposal has overlapping text replacements: ${anchor.anchorId}`);
+          edits.push({
+            anchorId: anchor.anchorId,
+            intentIds: [intent.intentId],
+            range: anchor.range,
+            expectedTextSha256: anchor.textSha256,
+            replacementText: replacement.replacementText
+          });
         }
         textByResource.set(textChange.resourceId, edits);
       }
       for (const change of intentOperation.structuralChanges ?? []) {
-        if (change.kind !== structuralKind(intent)) throw new Error(`Proposal structural change does not match intent ${intent.intentId}: ${change.kind}`);
+        if (change.kind !== structuralKind(intent))
+          throw new Error(
+            `Proposal structural change does not match intent ${intent.intentId}: ${change.kind}`
+          );
         const existing = structuralChanges.find((candidate) => candidate.changeId === change.changeId);
         if (existing !== undefined) {
-          if (canonicalSha256({ kind: existing.kind, targetIds: existing.targetIds, value: existing.value }) !== canonicalSha256(change)) {
+          if (
+            canonicalSha256({ kind: existing.kind, targetIds: existing.targetIds, value: existing.value }) !==
+            canonicalSha256(change)
+          ) {
             throw new Error(`Proposal has conflicting structural changes with identity: ${change.changeId}`);
           }
           existing.intentIds.push(intent.intentId);
@@ -134,8 +176,15 @@ export class WritingOperationService {
           edits: edits.sort((left, right) => comparePositions(left.range.start, right.range.start))
         };
       });
-    if (textEdits.length === 0 && structuralChanges.length === 0) throw new Error('A proposal requires at least one intent-bound text replacement or structural change.');
+    if (textEdits.length === 0 && structuralChanges.length === 0)
+      throw new Error('A proposal requires at least one intent-bound text replacement or structural change.');
+    if (
+      deliveredSelection.operationId !== this.operation.operationId ||
+      deliveredSelection.baseProjectRevisionId !== this.operation.baseProjectRevisionId
+    )
+      throw new Error('Delivered writing context identifies a different operation.');
     const canonicalIntent = {
+      contextSelectionId: deliveredSelection.contextSelectionId,
       operationId: this.operation.operationId,
       baseProjectRevisionId: this.operation.baseProjectRevisionId,
       textEdits,
@@ -147,12 +196,22 @@ export class WritingOperationService {
   }
 
   async createProposal(input: CanonicalProposalInput): Promise<RevisionProposal> {
-    if (input.operationId !== this.operation.operationId || input.baseProjectRevisionId !== this.operation.baseProjectRevisionId) throw new Error('Proposal input does not match its operation-scoped service.');
+    if (
+      input.operationId !== this.operation.operationId ||
+      input.baseProjectRevisionId !== this.operation.baseProjectRevisionId
+    )
+      throw new Error('Proposal input does not match its operation-scoped service.');
     const existing = await this.project.store.getProposal(input.proposalId);
     if (existing !== undefined) {
-      if (!sameProposalIntent(existing, input)) throw new Error(`Proposal identity conflicts with a different canonical intent: ${input.proposalId}`);
+      if (!sameProposalIntent(existing, input))
+        throw new Error(`Proposal identity conflicts with a different canonical intent: ${input.proposalId}`);
       return existing;
     }
+    const contextSelection = (await this.project.store.view()).contextSelections.get(
+      input.contextSelectionId
+    );
+    if (contextSelection?.operationId !== this.operation.operationId)
+      throw new Error('Writing proposal has no delivered context selection.');
     const materialPreparation = await assembleProposalVerificationMaterial({
       project: this.project,
       operation: this.operation,
@@ -160,7 +219,7 @@ export class WritingOperationService {
       textEdits: input.textEdits,
       structuralChanges: input.structuralChanges,
       declaration: input.semanticChangeDeclaration,
-      contextSelection: this.contextSelection
+      contextSelection
     });
     const material = {
       proposalId: input.proposalId,
@@ -170,11 +229,13 @@ export class WritingOperationService {
       affectedResourceIds: [...new Set(input.textEdits.map((edit) => edit.resourceId))].sort(),
       textEdits: input.textEdits,
       structuralChanges: input.structuralChanges,
-      expectedBaseHashes: Object.fromEntries(input.textEdits.map((edit) => [edit.resourceId, edit.baseSha256])),
+      expectedBaseHashes: Object.fromEntries(
+        input.textEdits.map((edit) => [edit.resourceId, edit.baseSha256])
+      ),
       preservationContract: materialPreparation.preservationContract,
       semanticChangeDeclaration: input.semanticChangeDeclaration,
       proposedAuthorshipProvenance: materialPreparation.proposedAuthorshipProvenance,
-      contextSelectionId: this.contextSelection.contextSelectionId,
+      contextSelectionId: contextSelection.contextSelectionId,
       status: 'proposed' as const,
       boundedRationale: input.rationale,
       createdAt: nowTimestamp()
@@ -186,22 +247,36 @@ export class WritingOperationService {
   }
 }
 
-export function createProposeRevisionTool(service: WritingOperationService): CompiledToolDefinition<ProposeRevisionInput, CanonicalProposalInput, ProposeRevisionOutput> {
+export function createProposeRevisionTool(
+  service: WritingOperationService
+): CompiledToolDefinition<ProposeRevisionInput, CanonicalProposalInput, ProposeRevisionOutput> {
   const proposeRevisionInputSchema = proposalInputSchema(service.operation, service.contextSelection);
   return defineTool({
     name: 'propose_revision',
     implementationId: PROPOSE_REVISION_IMPLEMENTATION_ID,
-    description: 'Create one validated writing proposal from ordered, intent-bound changes without supplying hashes, paths, source text, or mutation authority.',
-    promptGuide: 'Use only the listed intent IDs, resource IDs, and application-owned anchor IDs. Supply replacement prose or admitted structural content plus an explicit semantic-change declaration. The application binds hashes, ranges, paths, authority, and provenance.',
+    description:
+      'Create one validated writing proposal from ordered, intent-bound changes without supplying hashes, paths, source text, or mutation authority.',
+    promptGuide:
+      'Use only the listed intent IDs, resource IDs, and application-owned anchor IDs. Supply replacement prose or admitted structural content plus an explicit semantic-change declaration. The application binds hashes, ranges, paths, authority, and provenance.',
     schema: proposeRevisionInputSchema,
     outputSchema: proposeRevisionOutputSchema,
     requirements: { services: [WRITING_OPERATION_SERVICE] },
     effectEnvelope: {
-      accesses: [{ mode: 'read', scope: PROJECT_SCOPE }, { mode: 'write', scope: PROJECT_SCOPE }],
+      accesses: [
+        { mode: 'read', scope: PROJECT_SCOPE },
+        { mode: 'write', scope: PROJECT_SCOPE }
+      ],
       lockScopes: [PROJECT_SCOPE]
     },
-    canonicalizeInput(input, context) { return requireOperationService(context).canonicalize(input); },
-    snapshotInput(input) { return canonicalJson(input); },
+    canonicalizeInput(input, context) {
+      const bound = requireOperationService(context);
+      return context.invocation === undefined
+        ? bound.canonicalize(input)
+        : bound.canonicalizeForInvocation(input, context.invocation);
+    },
+    snapshotInput(input) {
+      return canonicalJson(input);
+    },
     deriveEffects(input, context) {
       const bound = requireOperationService(context);
       const projectId = bound.project.store.identity.projectId;
@@ -223,13 +298,28 @@ export function createProposeRevisionTool(service: WritingOperationService): Com
     async recover(input, effect, context) {
       const bound = requireOperationService(context);
       const capability = effect.intent.recovery;
-      if (capability.kind !== 'buffered_mutation' || capability.authority !== bound.project.store.recoveryIdentity
-        || capability.reconcilerId !== PROPOSE_REVISION_IMPLEMENTATION_ID || capability.transactionId !== input.proposalId) {
-        return { status: 'parameter_mismatch', reason: 'Proposal recovery identity does not match the operation-scoped project store.' };
+      if (
+        capability.kind !== 'buffered_mutation' ||
+        capability.authority !== bound.project.store.recoveryIdentity ||
+        capability.reconcilerId !== PROPOSE_REVISION_IMPLEMENTATION_ID ||
+        capability.transactionId !== input.proposalId
+      ) {
+        return {
+          status: 'parameter_mismatch',
+          reason: 'Proposal recovery identity does not match the operation-scoped project store.'
+        };
       }
       const proposal = await bound.project.store.getProposal(input.proposalId);
-      if (proposal === undefined) return { status: 'not_found', reason: 'No durable proposal-creation record exists; the started append outcome is unknown.' };
-      if (!sameProposalIntent(proposal, input)) return { status: 'parameter_mismatch', reason: 'Durable proposal content conflicts with the recovered canonical intent.' };
+      if (proposal === undefined)
+        return {
+          status: 'not_found',
+          reason: 'No durable proposal-creation record exists; the started append outcome is unknown.'
+        };
+      if (!sameProposalIntent(proposal, input))
+        return {
+          status: 'parameter_mismatch',
+          reason: 'Durable proposal content conflicts with the recovered canonical intent.'
+        };
       return { status: 'settled', observation: proposalObservation(proposal) };
     },
     isAvailable: (policy) => isRiskAllowed(policy, 'read') && isRiskAllowed(policy, 'write'),
@@ -240,39 +330,67 @@ export function createProposeRevisionTool(service: WritingOperationService): Com
   });
 }
 
-function proposalInputSchema(operation: WritingOperation, selection: WritingContextSelection): z.ZodType<ProposeRevisionInput> {
+function proposalInputSchema(
+  operation: WritingOperation,
+  selection: WritingContextSelection
+): z.ZodType<ProposeRevisionInput> {
   const intentSchemas = operation.intents.map((intent) => intentOperationSchema(intent, selection));
   const operationSchema = oneOf(intentSchemas);
-  return z.strictObject({
-    operations: z.array(operationSchema).min(1),
-    semanticChangeDeclaration: semanticChangeDeclarationSchema,
-    rationale: z.string().max(10_000).default('')
-  }).superRefine((value, context) => {
-    const ids = value.operations.map((item) => item.intentId);
-    if (new Set(ids).size !== ids.length) context.addIssue({ code: 'custom', message: 'Proposal intent operations must be unique.' });
-    const expected = operation.intents.map((intent) => intent.intentId);
-    const missing = expected.filter((intentId) => !ids.includes(intentId));
-    const unknown = ids.filter((intentId) => !expected.includes(intentId));
-    if (missing.length > 0 || unknown.length > 0) context.addIssue({ code: 'custom', message: `Proposal must cover the exact admitted intent set; missing: ${missing.join(', ') || '(none)'}; unknown: ${unknown.join(', ') || '(none)'}.` });
-    const order = ids.map((intentId) => expected.indexOf(intentId));
-    if (order.some((value, index) => index > 0 && value < (order[index - 1] ?? -1))) context.addIssue({ code: 'custom', message: 'Proposal intent operations must preserve admitted dependency order.' });
-  });
+  return z
+    .strictObject({
+      operations: z.array(operationSchema).min(1),
+      semanticChangeDeclaration: semanticChangeDeclarationSchema,
+      rationale: z.string().max(10_000).default('')
+    })
+    .superRefine((value, context) => {
+      const ids = value.operations.map((item) => item.intentId);
+      if (new Set(ids).size !== ids.length)
+        context.addIssue({ code: 'custom', message: 'Proposal intent operations must be unique.' });
+      const expected = operation.intents.map((intent) => intent.intentId);
+      const missing = expected.filter((intentId) => !ids.includes(intentId));
+      const unknown = ids.filter((intentId) => !expected.includes(intentId));
+      if (missing.length > 0 || unknown.length > 0)
+        context.addIssue({
+          code: 'custom',
+          message: `Proposal must cover the exact admitted intent set; missing: ${missing.join(', ') || '(none)'}; unknown: ${unknown.join(', ') || '(none)'}.`
+        });
+      const order = ids.map((intentId) => expected.indexOf(intentId));
+      if (order.some((value, index) => index > 0 && value < (order[index - 1] ?? -1)))
+        context.addIssue({
+          code: 'custom',
+          message: 'Proposal intent operations must preserve admitted dependency order.'
+        });
+    });
 }
 
-function intentOperationSchema(intent: WritingIntent, selection: WritingContextSelection): z.ZodType<ModelIntentOperation> {
+function intentOperationSchema(
+  intent: WritingIntent,
+  selection: WritingContextSelection
+): z.ZodType<ModelIntentOperation> {
   if (textIntent(intent)) {
     const resources = intent.targetResourceIds.map((resourceId) => {
       const descriptor = requireDescriptor(selection, resourceId);
-      const anchors = intent.targetRangeIds.length === 0
-        ? descriptor.anchors
-        : descriptor.anchors.filter((anchor) => anchor.targetRangeId !== undefined && intent.targetRangeIds.includes(anchor.targetRangeId));
-      if (anchors.length === 0) throw new Error(`Text intent has no application-owned edit anchors inside its exact admitted scope: ${intent.intentId}/${resourceId}`);
+      const anchors =
+        intent.targetRangeIds.length === 0
+          ? descriptor.anchors
+          : descriptor.anchors.filter(
+              (anchor) =>
+                anchor.targetRangeId !== undefined && intent.targetRangeIds.includes(anchor.targetRangeId)
+            );
+      if (anchors.length === 0)
+        throw new Error(
+          `Text intent has no application-owned edit anchors inside its exact admitted scope: ${intent.intentId}/${resourceId}`
+        );
       return z.strictObject({
         resourceId: z.literal(resourceId),
-        replacements: z.array(z.strictObject({
-          anchorId: literalChoice(anchors.map((anchor) => anchor.anchorId)),
-          replacementText: z.string()
-        })).min(1)
+        replacements: z
+          .array(
+            z.strictObject({
+              anchorId: literalChoice(anchors.map((anchor) => anchor.anchorId)),
+              replacementText: z.string()
+            })
+          )
+          .min(1)
       });
     });
     return z.strictObject({
@@ -281,44 +399,55 @@ function intentOperationSchema(intent: WritingIntent, selection: WritingContextS
     });
   }
   const kind = structuralKind(intent);
-  if (kind === undefined) throw new Error(`Intent cannot produce a revision proposal: ${intent.intentId}/${intent.kind}`);
+  if (kind === undefined)
+    throw new Error(`Intent cannot produce a revision proposal: ${intent.intentId}/${intent.kind}`);
   const targetIds = intent.targetNodeIds;
-  if (targetIds.length === 0) throw new Error(`Structural intent has no exact node targets: ${intent.intentId}`);
+  if (targetIds.length === 0)
+    throw new Error(`Structural intent has no exact node targets: ${intent.intentId}`);
   return z.strictObject({
     intentId: z.literal(intent.intentId),
-    structuralChanges: z.array(z.strictObject({
-      changeId: z.string().trim().min(1).max(512),
-      kind: z.literal(kind),
-      targetIds: z.array(literalChoice(targetIds)).min(1),
-      value: structuralValueSchema(kind)
-    })).min(1)
+    structuralChanges: z
+      .array(
+        z.strictObject({
+          changeId: z.string().trim().min(1).max(512),
+          kind: z.literal(kind),
+          targetIds: z.array(literalChoice(targetIds)).min(1),
+          value: structuralValueSchema(kind)
+        })
+      )
+      .min(1)
   }) as z.ZodType<ModelIntentOperation>;
 }
 
 function structuralValueSchema(kind: StructuralChange['kind']): z.ZodType {
   if (kind === 'create') return z.strictObject({ node: documentNodeSchema });
-  if (kind === 'reorder') return z.strictObject({ orders: z.array(z.strictObject({ nodeId: z.string(), siblingOrder: z.int().nonnegative() })).min(1) });
+  if (kind === 'reorder')
+    return z.strictObject({
+      orders: z.array(z.strictObject({ nodeId: z.string(), siblingOrder: z.int().nonnegative() })).min(1)
+    });
   if (kind === 'purpose') return z.strictObject({ purpose: z.string().trim().min(1).max(100_000) });
-  if (kind === 'relation') return z.discriminatedUnion('action', [
-    z.strictObject({ action: z.literal('add'), relation: relationEdgeSchema }),
-    z.strictObject({ action: z.literal('remove'), relationId: z.string() })
-  ]);
-  if (kind === 'split' || kind === 'merge') return z.strictObject({ replacementNodes: z.array(documentNodeSchema).min(1) });
+  if (kind === 'relation')
+    return z.discriminatedUnion('action', [
+      z.strictObject({ action: z.literal('add'), relation: relationEdgeSchema }),
+      z.strictObject({ action: z.literal('remove'), relationId: z.string() })
+    ]);
+  if (kind === 'split' || kind === 'merge')
+    return z.strictObject({ replacementNodes: z.array(documentNodeSchema).min(1) });
   return z.strictObject({});
 }
 
-function oneOf<T extends z.ZodType>(schemas: readonly T[]): T {
+function oneOf<T extends z.ZodType>(schemas: readonly T[]): T | z.ZodUnion<readonly T[]> {
   const first = schemas.at(0);
   if (first === undefined) throw new Error('A proposal schema requires at least one admitted choice.');
   if (schemas.length === 1) return first;
-  return z.union(schemas as [T, T, ...T[]]) as unknown as T;
+  return z.union(schemas);
 }
 
 function literalChoice(values: readonly string[]): z.ZodType<string> {
   const first = values.at(0);
   if (first === undefined) throw new Error('An operation-bound schema choice cannot be empty.');
   if (values.length === 1) return z.literal(first);
-  return z.enum(values as [string, ...string[]]);
+  return z.enum(values);
 }
 
 function textIntent(intent: WritingIntent): boolean {
@@ -326,7 +455,9 @@ function textIntent(intent: WritingIntent): boolean {
 }
 
 function structuralKind(intent: WritingIntent): StructuralChange['kind'] | undefined {
-  return intent.kind.startsWith('structure.') ? intent.kind.slice('structure.'.length) as StructuralChange['kind'] : undefined;
+  return intent.kind.startsWith('structure.')
+    ? (intent.kind.slice('structure.'.length) as StructuralChange['kind'])
+    : undefined;
 }
 
 function requireIntent(operation: WritingOperation, intentId: string): WritingIntent {
@@ -335,29 +466,46 @@ function requireIntent(operation: WritingOperation, intentId: string): WritingIn
   return intent;
 }
 
-function requireDescriptor(selection: WritingContextSelection, resourceId: string): WritingContextSelection['targetDescriptors'][number] {
+function requireDescriptor(
+  selection: WritingContextSelection,
+  resourceId: string
+): WritingContextSelection['targetDescriptors'][number] {
   const descriptor = selection.targetDescriptors.find((candidate) => candidate.resourceId === resourceId);
-  if (descriptor === undefined) throw new Error(`Context selection lacks an application-owned target descriptor: ${resourceId}`);
+  if (descriptor === undefined)
+    throw new Error(`Context selection lacks an application-owned target descriptor: ${resourceId}`);
   return descriptor;
 }
 
 function assertTargetDescriptors(operation: WritingOperation, selection: WritingContextSelection): void {
-  if (selection.operationId !== operation.operationId) throw new Error('Target descriptors do not belong to the operation-scoped context selection.');
+  if (selection.operationId !== operation.operationId)
+    throw new Error('Target descriptors do not belong to the operation-scoped context selection.');
   const descriptorIds = selection.targetDescriptors.map((descriptor) => descriptor.resourceId);
-  if (new Set(descriptorIds).size !== descriptorIds.length) throw new Error('Context selection repeats an application-owned target descriptor.');
+  if (new Set(descriptorIds).size !== descriptorIds.length)
+    throw new Error('Context selection repeats an application-owned target descriptor.');
   for (const resourceId of operation.targetResourceIds) requireDescriptor(selection, resourceId);
 }
 
-function comparePositions(left: { readonly line: number; readonly column: number }, right: { readonly line: number; readonly column: number }): number {
+function comparePositions(
+  left: { readonly line: number; readonly column: number },
+  right: { readonly line: number; readonly column: number }
+): number {
   return left.line - right.line || left.column - right.column;
 }
 
-function rangesOverlap(left: WritingContextSelection['targetDescriptors'][number]['anchors'][number]['range'], right: WritingContextSelection['targetDescriptors'][number]['anchors'][number]['range']): boolean {
+function rangesOverlap(
+  left: WritingContextSelection['targetDescriptors'][number]['anchors'][number]['range'],
+  right: WritingContextSelection['targetDescriptors'][number]['anchors'][number]['range']
+): boolean {
   return comparePositions(left.start, right.end) < 0 && comparePositions(right.start, left.end) < 0;
 }
 
 function requireOperationService(context: ToolExecutionContext): WritingOperationService {
-  return requireToolService(context, WRITING_OPERATION_SERVICE, isOperationService, 'adopted WritingOperationService');
+  return requireToolService(
+    context,
+    WRITING_OPERATION_SERVICE,
+    isOperationService,
+    'adopted WritingOperationService'
+  );
 }
 
 function isOperationService(value: unknown): value is WritingOperationService {
@@ -377,7 +525,10 @@ function proposalObservation(proposal: RevisionProposal) {
     kind: 'result' as const,
     ok: true,
     summary: `Created writing revision proposal ${proposal.proposalId}.`,
-    scope: Object.freeze({ resources: Object.freeze([`${PROJECT_SCOPE}/${proposal.operationId}/proposals/${proposal.proposalId}`]), coverage: 'complete' as const }),
+    scope: Object.freeze({
+      resources: Object.freeze([`${PROJECT_SCOPE}/${proposal.operationId}/proposals/${proposal.proposalId}`]),
+      coverage: 'complete' as const
+    }),
     output
   });
 }
@@ -388,24 +539,39 @@ function boundedSummary(proposal: RevisionProposal): string {
 }
 
 function sameProposalIntent(proposal: RevisionProposal, input: CanonicalProposalInput): boolean {
-  return proposal.operationId === input.operationId
-    && proposal.baseProjectRevisionId === input.baseProjectRevisionId
-    && canonicalSha256({
+  return (
+    proposal.contextSelectionId === input.contextSelectionId &&
+    proposal.operationId === input.operationId &&
+    proposal.baseProjectRevisionId === input.baseProjectRevisionId &&
+    canonicalSha256({
       textEdits: proposal.textEdits,
       structuralChanges: proposal.structuralChanges,
       semanticChangeDeclaration: proposal.semanticChangeDeclaration,
       rationale: proposal.boundedRationale
-    }) === canonicalSha256({
-      textEdits: input.textEdits,
-      structuralChanges: input.structuralChanges,
-      semanticChangeDeclaration: input.semanticChangeDeclaration,
-      rationale: input.rationale
-    });
+    }) ===
+      canonicalSha256({
+        textEdits: input.textEdits,
+        structuralChanges: input.structuralChanges,
+        semanticChangeDeclaration: input.semanticChangeDeclaration,
+        rationale: input.rationale
+      })
+  );
 }
 
-export function assertProposalToolOnlyPrivateMutation(request: { readonly call: { readonly name: string }; readonly effects: { readonly accesses: readonly { readonly mode: string; readonly scope: string }[] } }): void {
-  if (request.call.name !== 'propose_revision') throw new ToolInputError('Suggest mode permits only propose_revision to mutate Writing Agent private state.');
-  if (request.effects.accesses.some((access) => access.mode !== 'read' && (access.mode !== 'write' || !access.scope.startsWith(`${PROJECT_SCOPE}/`)))) {
+export function assertProposalToolOnlyPrivateMutation(request: {
+  readonly call: { readonly name: string };
+  readonly effects: { readonly accesses: readonly { readonly mode: string; readonly scope: string }[] };
+}): void {
+  if (request.call.name !== 'propose_revision')
+    throw new ToolInputError(
+      'Suggest mode permits only propose_revision to mutate Writing Agent private state.'
+    );
+  if (
+    request.effects.accesses.some(
+      (access) =>
+        access.mode !== 'read' && (access.mode !== 'write' || !access.scope.startsWith(`${PROJECT_SCOPE}/`))
+    )
+  ) {
     throw new ToolInputError('Proposal tool effects exceed the private proposal boundary.');
   }
 }

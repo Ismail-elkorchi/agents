@@ -4,9 +4,9 @@ import { execFileSync } from 'node:child_process';
 import { access, chmod, mkdir, mkdtemp, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { loadInitialRepositoryGuidance, RepositoryGuidanceSession } from '../dist/instructions/repository-guidance.js';
-import { inspectRepositoryOrientation, repositoryOrientationContext } from '../dist/workspace/repository-orientation.js';
-import { openCodingWorkspace } from '../dist/workspace.js';
+import { loadInitialRepositoryGuidance, RepositoryGuidanceSession } from '@ismail-elkorchi/coding-agent';
+import { inspectRepositoryOrientation, repositoryOrientationContext } from '@ismail-elkorchi/coding-agent';
+import { openCodingWorkspace } from '@ismail-elkorchi/coding-agent';
 
 test('initial repository guidance loads only root and explicitly configured files', async () => {
   const container = await mkdtemp(path.join(tmpdir(), 'coding-agent-instructions-'));
@@ -64,7 +64,7 @@ test('target ancestry guidance is persisted and defers the first unseen write', 
     assert.match(firstWrite.reason, /src\/AGENTS\.md/u);
     assert.match(firstWrite.reason, /src\/feature\/AGENTS\.md/u);
     const context = await session.contextItems();
-    assert.deepEqual(context.map((item) => item.sourceUri), ['workspace://src/AGENTS.md', 'workspace://src/feature/AGENTS.md']);
+    assert.deepEqual(context.map((item) => item.sourceUri), ['workspace://AGENTS.md', 'workspace://src/AGENTS.md', 'workspace://src/feature/AGENTS.md']);
     assert.equal(context.some((item) => item.content.includes('sibling rule')), false);
     assert.equal(await session.authorize(toolRequest('write', 'files/src/feature/new.ts')), undefined);
 
@@ -79,7 +79,7 @@ test('target ancestry guidance is persisted and defers the first unseen write', 
       root: workspace.fileRoot, security: workspace.security, state: workspace.privateState,
       runId: 'guidance-run', resuming: true
     });
-    assert.match((await resumedAfterDeletion.contextItems()).map((item) => item.content).join('\n'), /feature rule/u);
+    assert.doesNotMatch((await resumedAfterDeletion.contextItems()).map((item) => item.content).join('\n'), /feature rule/u);
 
     const hiddenSession = await RepositoryGuidanceSession.open({
       root: workspace.fileRoot, security: workspace.security, state: workspace.privateState,
@@ -251,3 +251,25 @@ function commandRequest(workdir) {
     context: {}
   };
 }
+
+
+test('active root guidance refreshes without duplicating startup instructions or authorizing unseen edits', async () => {
+  const container = await mkdtemp(path.join(tmpdir(), 'coding-guidance-boundary-'));
+  const root = path.join(container, 'workspace');
+  await mkdir(root);
+  await writeFile(path.join(root, 'AGENTS.md'), 'Keep the original format.\n');
+  const workspace = await openCodingWorkspace(root, { stateRoot: path.join(container, 'state') });
+  try {
+    const guidance = await RepositoryGuidanceSession.open({ root: workspace.fileRoot, security: workspace.security, state: workspace.privateState, runId: 'boundary-guidance', initial: await loadInitialRepositoryGuidance(workspace), resuming: false });
+    assert.equal(guidance.initialInstructions().length, 1);
+    const first = await guidance.contextItems();
+    await writeFile(path.join(root, 'AGENTS.md'), 'Use the corrected format.\n');
+    assert.equal((await guidance.authorize(toolRequest('write', 'files/new.ts'))).decision, 'deny');
+    const second = await guidance.contextItems();
+    assert.notEqual(second[0].id, first[0].id);
+    assert.match(second[0].content, /corrected format/u);
+    assert.doesNotMatch(second[0].content, /original format/u);
+    assert.equal(await guidance.authorize(toolRequest('write', 'files/new.ts')), undefined);
+    assert.deepEqual(await guidance.contextItems(), second);
+  } finally { workspace.fileRoot.close(); }
+});

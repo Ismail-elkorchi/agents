@@ -27,19 +27,31 @@ export class CodingAgentTuiProgressRenderer {
     this.dispatchReady.resolve(dispatch);
   }
 
-  handle(event: AgentProgressEvent): Promise<void> { return this.enqueue({ type: 'progress', event }); }
-  flush(): Promise<void> { return this.queue; }
-  showResult(result: AgentEndedRunResult): Promise<void> { return this.enqueue({ type: 'result', result }); }
+  handle(event: AgentProgressEvent): Promise<void> {
+    return this.enqueue({ type: 'progress', event });
+  }
+  flush(): Promise<void> {
+    return this.queue;
+  }
+  showResult(result: AgentEndedRunResult): Promise<void> {
+    return this.enqueue({ type: 'result', result });
+  }
   showSuspension(suspension: Extract<AgentRunResult, { state: 'suspended' }>): Promise<void> {
-    return this.enqueue(suspension.reason === 'approval_required'
-      ? { type: 'approval.required', suspension }
-      : { type: 'run.suspended', suspension });
+    return this.enqueue(
+      suspension.reason === 'approval_required'
+        ? { type: 'approval.required', suspension }
+        : { type: 'run.suspended', suspension }
+    );
   }
-  showFailure(message: string): Promise<void> { return this.enqueue({ type: 'failure', message }); }
-  showCompaction(compaction: import('@agent-core/runtime').SessionCompactionEntry): Promise<void> {
-    return this.enqueue({ type: 'session.compacted', compaction });
+  showFailure(message: string): Promise<void> {
+    return this.enqueue({ type: 'failure', message });
   }
-  showHandoff(handoff: CodingHandoff): Promise<void> { return this.enqueue({ type: 'handoff.ready', handoff }); }
+  showContextTransition(window: import('@agent-core/runtime').ContextWindowRecord): Promise<void> {
+    return this.enqueue({ type: 'context.transitioned', window });
+  }
+  showHandoff(handoff: CodingHandoff): Promise<void> {
+    return this.enqueue({ type: 'handoff.ready', handoff });
+  }
   showInteractiveState(state: CodingAgentInteractiveState): Promise<void> {
     return this.enqueue({ type: 'interactive.state.changed', state });
   }
@@ -105,8 +117,11 @@ export async function runCodingAgentTuiApp(
     unsubscribe = controller.subscribe(async (event) => {
       result = await presentControllerEvent(event, progress, result);
     });
-    try { await controller.start(); }
-    catch (error) { await progress.showFailure(errorMessage(error)); }
+    try {
+      await controller.start();
+    } catch (error) {
+      await progress.showFailure(errorMessage(error));
+    }
     if (initialTask.length > 0) await controller.submit(initialTask);
     const exitResult = await exit;
     unsubscribe();
@@ -120,17 +135,39 @@ export async function runCodingAgentTuiApp(
     outcome = { kind: 'failed', cause };
   }
   const cleanupFailures: unknown[] = [];
-  try { unsubscribe?.(); } catch (cause) { cleanupFailures.push(cause); }
-  try { await controller.close(); } catch (cause) { cleanupFailures.push(cause); }
-  try { await progress.flush(); } catch (cause) { cleanupFailures.push(cause); }
-  try { await events.close(); } catch (cause) { cleanupFailures.push(cause); }
+  try {
+    unsubscribe?.();
+  } catch (cause) {
+    cleanupFailures.push(cause);
+  }
+  try {
+    await controller.close();
+  } catch (cause) {
+    cleanupFailures.push(cause);
+  }
+  try {
+    await progress.flush();
+  } catch (cause) {
+    cleanupFailures.push(cause);
+  }
+  try {
+    await events.close();
+  } catch (cause) {
+    cleanupFailures.push(cause);
+  }
   if (ownsHost) {
-    try { await host.dispose(); } catch (cause) { cleanupFailures.push(cause); }
+    try {
+      await host.dispose();
+    } catch (cause) {
+      cleanupFailures.push(cause);
+    }
   }
   const uniqueFailures = [...new Set(cleanupFailures)];
   if (outcome.kind === 'failed') {
     if (uniqueFailures.length === 0) throw outcome.cause;
-    throw new AggregateError([outcome.cause, ...uniqueFailures], 'Coding Agent TUI run and cleanup failed.', { cause: outcome.cause });
+    throw new AggregateError([outcome.cause, ...uniqueFailures], 'Coding Agent TUI run and cleanup failed.', {
+      cause: outcome.cause
+    });
   }
   if (uniqueFailures.length > 0) throw new AggregateError(uniqueFailures, 'Coding Agent TUI cleanup failed.');
   return outcome.value;
@@ -142,15 +179,31 @@ async function presentControllerEvent(
   currentResult: AgentRunResult | undefined
 ): Promise<AgentRunResult | undefined> {
   switch (event.type) {
-    case 'interactive.state.changed': await progress.showInteractiveState(event.state); return currentResult;
-    case 'interactive.notice': await progress.showNotice(event.message, event.tone); return currentResult;
-    case 'session.hydrated': await progress.showHydration(event.hydration); return currentResult;
-    case 'handoff.ready': await progress.showHandoff(event.handoff); return currentResult;
-    case 'run.progress': await progress.handle(event.event); return currentResult;
-    case 'configuration.changed': return currentResult;
-    case 'input.queued': return currentResult;
-    case 'compaction.completed': await progress.showCompaction(event.compaction); return currentResult;
-    case 'run.failed': await progress.showFailure(event.error.message); return currentResult;
+    case 'interactive.state.changed':
+      await progress.showInteractiveState(event.state);
+      return currentResult;
+    case 'interactive.notice':
+      await progress.showNotice(event.message, event.tone);
+      return currentResult;
+    case 'session.hydrated':
+      await progress.showHydration(event.hydration);
+      return currentResult;
+    case 'handoff.ready':
+      await progress.showHandoff(event.handoff);
+      return currentResult;
+    case 'run.progress':
+      await progress.handle(event.event);
+      return currentResult;
+    case 'configuration.changed':
+      return currentResult;
+    case 'input.queued':
+      return currentResult;
+    case 'context.transitioned':
+      await progress.showContextTransition(event.window);
+      return currentResult;
+    case 'run.failed':
+      await progress.showFailure(event.error.message);
+      return currentResult;
     case 'run.completed':
       if (event.result.state === 'suspended') await progress.showSuspension(event.result);
       else await progress.showResult(event.result);
@@ -169,6 +222,8 @@ interface Deferred<T> {
 
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise; });
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
   return { promise, resolve };
 }

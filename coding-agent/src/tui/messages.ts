@@ -3,7 +3,7 @@ import type {
   AgentEndedRunResult,
   AgentRunSuspension,
   AgentProgressEvent,
-  SessionCompactionEntry
+  ContextWindowRecord
 } from '@agent-core/runtime';
 import type { CodingHandoff } from '../changes/coding-handoff.js';
 import type {
@@ -22,10 +22,14 @@ export type CodingAgentTuiMessage =
   | { readonly type: 'result'; readonly result: AgentEndedRunResult }
   | { readonly type: 'failure'; readonly message: string }
   | { readonly type: 'delivery.failed'; readonly message: string }
-  | { readonly type: 'session.compacted'; readonly compaction: SessionCompactionEntry }
+  | { readonly type: 'context.transitioned'; readonly window: ContextWindowRecord }
   | { readonly type: 'handoff.ready'; readonly handoff: CodingHandoff }
   | { readonly type: 'interactive.state.changed'; readonly state: CodingAgentInteractiveState }
-  | { readonly type: 'interactive.notice'; readonly message: string; readonly tone?: 'info' | 'warning' | 'error' }
+  | {
+      readonly type: 'interactive.notice';
+      readonly message: string;
+      readonly tone?: 'info' | 'warning' | 'error';
+    }
   | { readonly type: 'session.hydrated'; readonly hydration: CodingAgentTuiHydration }
   | { readonly type: 'approval.required'; readonly suspension: AgentApprovalSuspension }
   | { readonly type: 'run.suspended'; readonly suspension: AgentRunSuspension }
@@ -33,7 +37,11 @@ export type CodingAgentTuiMessage =
   | { readonly type: 'composer.edit'; readonly transition: TextAreaTransition }
   | { readonly type: 'composer.history'; readonly direction: 'previous' | 'next' }
   | { readonly type: 'composer.submit' }
-  | { readonly type: 'command.completed'; readonly execution: CodingAgentTuiCommandExecution; readonly recordResult: boolean }
+  | {
+      readonly type: 'command.completed';
+      readonly execution: CodingAgentTuiCommandExecution;
+      readonly recordResult: boolean;
+    }
   | { readonly type: 'command.failed'; readonly message: string }
   | { readonly type: 'conversation.scroll'; readonly transition: ScrollTransition }
   | { readonly type: 'conversation.scrolled'; readonly request: ScrollRequest }

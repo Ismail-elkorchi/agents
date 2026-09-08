@@ -12,7 +12,7 @@ The producer receives the complete applicable WritingOperationContract: every in
 
 In suggest mode, the model can read only admitted target resources and affected local source resources. propose_revision is its only write-shaped capability. The model supplies admitted IDs and replacement prose; it cannot choose paths, hashes, preimages, verification verdicts, criterion coverage, or mutation authority. The host validates and stores one private proposal without modifying managed files.
 
-All model calls, including semantic verification, pass through Agent Core's InferenceGateway. Writing performs one ordered WritingContextSelection; Core preserves that order in PromptMaterial and does not run another relevance selector.
+All model calls, including semantic verification, pass through Agent Core's governed InferenceService and share the owning run's budget. Writing performs one ordered WritingContextSelection; Core preserves that order in PromptMaterial and does not run another relevance selector.
 
 ## Verification and evidence
 
@@ -56,3 +56,35 @@ Exactly four provider compositions are supported: ollama, openrouter, openai, an
 Secure local revision currently requires Agent Core's Linux rooted-file authority, descriptor-relative checks, link checks, and recoverable patch journal. Unsupported platforms fail closed.
 
 There is no autonomous mode, multi-agent orchestration, live model mutation, model-owned publication, or offline measurement corpus/campaign subsystem. The terminal surface is intentionally non-interactive. This package is pre-alpha and intentionally does not translate retired unpublished state names.
+
+## Optional history and editorial notes
+
+Project operations can opt into Core's bounded session history and branch-scoped
+notes through `runWritingOperation({ ..., memory: { history: true, notes: true } })`.
+The default operation exposes its existing project tools. Enabled history tools
+read original sources by exact identity; note writes use compare-and-swap and
+preserve immutable revisions. Neither capability can edit a brief, expand a
+proposal target, authorize application, or make generated text a verified source.
+
+Each delivered history excerpt, note read, or note-index result appends an immutable
+`WritingContextSelection` revision. It binds the operation, base project revision,
+parent selection, exact history cut/source hash or note revision, excerpt content
+hash, and delivery bounds. Search excerpts are identified as search excerpts,
+without inventing a byte position. The store preserves the original brief,
+selected control items and protected edit-anchor descriptors unchanged.
+
+The next model invocation identifies its delivered selection revision. A canonical
+proposal captures that revision before tool execution. A durable request binding
+keeps recovery tied to the originating turn and request attempt. Production semantic
+verification hashes and receives the same selection. Later note edits cannot
+change an already admitted proposal or its verification input. Repeated delivery
+of the same exact note revision is idempotent; conflicting selection parents fail
+or are retried after reading the committed parent.
+
+Primary work and the default semantic verifier share an `InferenceService`, a
+private durable invocation repository, and the run's budget owner. Optional
+`inferenceBudget` limits apply to their combined invocation and token spend.
+The verifier uses a bounded output reservation and exact invocation identity;
+cancellation propagates without automatically repeating an uncertain invocation.
+Custom hosts constructing `createDefaultWritingEditorialChecker` supply an
+`inference` service with explicit invocation and artifact repositories.

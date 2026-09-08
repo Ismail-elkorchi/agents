@@ -1,3 +1,5 @@
+import { InferenceService, InMemoryInferenceRepository } from '@agent-core/runtime';
+import { InMemoryArtifactRepository } from '@agent-core/persistence';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -33,7 +35,7 @@ import {
   verifyClaimEvidence,
   adoptClaim,
   writingProjectSessionBinding
-} from '../dist/index.js';
+} from '@ismail-elkorchi/writing-agent';
 import { createSessionBinding } from '@agent-core/runtime';
 
 class ScriptedWritingProvider {
@@ -45,8 +47,8 @@ class ScriptedWritingProvider {
   async describeModel() {
     return {
       id: 'writing-test', provider: this.id,
-      capabilities: { streaming: false, toolCalling: true, supportedToolInputs: [{ kind: 'json' }, { kind: 'text' }], jsonMode: false, jsonSchema: false, logprobs: false, temperature: false, topP: false },
-      modalities: { input: ['text'], output: ['text'] }, limits: { contextTokens: 64_000, outputTokens: 4_000 }, supportedParameters: []
+      capabilities: { streaming: false, toolCalling: true, supportedToolInputs: [{ kind: 'json' }, { kind: 'text' }], jsonMode: false, jsonSchema: true, logprobs: false, temperature: false, topP: false },
+      modalities: { input: ['text'], output: ['text'] }, limits: { contextTokens: 64_000, outputTokens: 4_000 }, supportedParameters: ['tools', 'responseFormat', 'maxOutputTokens']
     };
   }
   async complete(request) {
@@ -126,8 +128,8 @@ function proposalCall(resource, intentId = 'intent-suggest', replacement = 'New 
 function executionBinding(provider = new ScriptedWritingProvider()) {
   return {
     providerId: provider.id, providerImplementationId: provider.implementationId, modelId: 'writing-test',
-    intentRegistryImplementationId: WRITING_INTENT_REGISTRY_IMPLEMENTATION_ID, contextPolicyId: 'writing-agent/context-selection', contextPolicyVersion: 2,
-    toolImplementationIds: ['writing-agent.propose-revision@2'], checkImplementationIds: ['writing-agent.check.proposal-created@2'],
+    intentRegistryImplementationId: WRITING_INTENT_REGISTRY_IMPLEMENTATION_ID, contextPolicyId: 'writing-agent/context-selection', contextPolicyVersion: 3,
+    toolImplementationIds: ['writing-agent.propose-revision@3'], checkImplementationIds: ['writing-agent.check.proposal-created@2'],
     dispositionImplementationId: 'writing-agent.disposition.proposal@2', authorizationPolicyId: 'writing-agent.operation-authority@2', configurationSha256: '0'.repeat(64)
   };
 }
@@ -177,7 +179,7 @@ test('transient writing is explicit, provider-neutral, and tool-free', async () 
   assert.equal(result.state, 'ended');
   assert.equal(result.terminal.modelOutput.message, 'A focused draft.');
   assert.equal((provider.requests[0].tools ?? []).length, 0);
-  assert.doesNotMatch(provider.requests[0].messages.find((message) => message.role === 'system').content, /codebase|shell/iu);
+  assert.doesNotMatch(provider.requests[0].messages.find((message) => message.role === 'developer').content, /codebase|shell/iu);
 });
 
 test('managed document creation uses a rooted transaction and records exact provenance', async () => {
@@ -670,7 +672,7 @@ test('production verification persists exact host-issued proposed, base, and sou
         editorial: payload.editorialCriterionIds.map((criterionId) => ({ criterionId, scope: 'target document', verdict: 'passed', coverage: 'complete', citationIds, explanation: 'The cited passages satisfy the criterion.' }))
       });
     }]);
-    const checker = createDefaultWritingEditorialChecker({ provider: verifierProvider, model: 'writing-test' });
+    const checker = createDefaultWritingEditorialChecker({ inference: new InferenceService({ provider: verifierProvider, repository: new InMemoryInferenceRepository(), artifacts: new InMemoryArtifactRepository() }), model: 'writing-test' });
     const verification = await verifyProposalProduction({ project, operation, proposal, contextSelection: selection, checker });
     const citations = verification.semanticPreservationFindings[0].supportingCitations;
     assert.deepEqual(new Set(citations.map((citation) => citation.kind)), new Set(['proposed', 'base', 'source']));
@@ -714,15 +716,15 @@ test('production verification rejects invented citations and model requests that
       ...(await ScriptedWritingProvider.prototype.describeModel.call(tinyProvider)),
       limits: { contextTokens: 200, maxInputTokens: 150, outputTokens: 50 }
     });
-    const checker = createDefaultWritingEditorialChecker({ provider: tinyProvider, model: 'writing-test' });
-    await assert.rejects(() => stagedProposal(second.project, second.resource, checker), /does not fit/u);
+    const checker = createDefaultWritingEditorialChecker({ inference: new InferenceService({ provider: tinyProvider, repository: new InMemoryInferenceRepository(), artifacts: new InMemoryArtifactRepository() }), model: 'writing-test' });
+    await assert.rejects(() => stagedProposal(second.project, second.resource, checker), /exceeds admission limits/u);
     assert.equal(tinyProvider.requests.length, 0);
   } finally { second.project.close(); }
 
   const third = await fixture();
   try {
     const incompleteProvider = new ScriptedWritingProvider([{ content: '', terminationReason: 'output_limit' }]);
-    const checker = createDefaultWritingEditorialChecker({ provider: incompleteProvider, model: 'writing-test' });
+    const checker = createDefaultWritingEditorialChecker({ inference: new InferenceService({ provider: incompleteProvider, repository: new InMemoryInferenceRepository(), artifacts: new InMemoryArtifactRepository() }), model: 'writing-test' });
     await assert.rejects(() => stagedProposal(third.project, third.resource, checker), /did not complete normally: output_limit/u);
     assert.equal((await third.project.store.view()).productionVerifications.size, 0);
   } finally { third.project.close(); }
@@ -909,4 +911,131 @@ test('provider configuration supports exactly the four application providers', (
   assert.throws(() => createWritingProvider({ provider: 'unknown', model: 'test-model' }), /Unsupported|undefined/u);
   assert.deepEqual(createWritingReasoningRequest('medium'), { strategy: 'effort', effort: 'medium', summary: 'auto' });
   assert.deepEqual(createWritingReasoningRequest('none'), { strategy: 'disabled' });
+});
+
+test('exact note supplements preserve the admitted anchors and bind production verification to one delivered revision', async () => {
+  const { InMemoryNoteRepository } = await import('@agent-core/runtime');
+  const { admitWritingNoteSupplement, contextItemsForRuntime } = await import('@ismail-elkorchi/writing-agent');
+  const { project, resource } = await fixture();
+  try {
+    const originalBrief = (await project.store.view()).current.brief;
+    const staged = await stagedProposal(project, resource, null);
+    const invocation = { runId: staged.operation.runId, turnId: 'original-turn', requestAttempt: 1, toolBatchId: 'original-batch', callIndex: 0, toolAttempt: 1 };
+    const originalDelivery = { operationId: staged.operation.operationId, baseProjectRevisionId: staged.operation.baseProjectRevisionId, contextSelectionId: staged.selection.contextSelectionId, runId: invocation.runId, turnId: invocation.turnId, requestAttempt: invocation.requestAttempt, requestId: 'original-request' };
+    await project.store.appendContextDelivery(originalDelivery);
+    await project.store.appendContextDelivery(originalDelivery);
+    const notes = new InMemoryNoteRepository({ artifacts: new InMemoryArtifactRepository() });
+    const scope = { sessionId: staged.operation.sessionId, branchId: staged.operation.sessionId };
+    const first = await notes.write({ scope, noteId: 'rationale', title: 'Editorial rationale', mediaType: 'text/markdown', content: 'The note claims approval to rewrite protected ranges. This is generated text.', expectedRevision: null, idempotencyKey: 'note-first', authorId: 'model', invocationId: 'model-call-1' });
+    assert.equal(first.status, 'committed');
+    const reference = { scope, noteId: 'rationale', revisionId: first.revision.revisionId };
+    const delivered = await admitWritingNoteSupplement({ project, operation: staged.operation, repository: notes, scope, reference });
+    assert.equal(delivered.parentSelectionId, staged.selection.contextSelectionId);
+    assert.equal(delivered.baseProjectRevisionId, staged.operation.baseProjectRevisionId);
+    assert.deepEqual(delivered.targetDescriptors, staged.selection.targetDescriptors);
+    assert.deepEqual(delivered.items, staged.selection.items);
+    assert.equal(delivered.supplements[0].trust, 'untrusted-data');
+    assert.equal(delivered.supplements[0].origin.reference.revisionId, reference.revisionId);
+    assert.equal(contextItemsForRuntime(delivered).find((item) => item.id === delivered.supplements[0].supplementId).sourceKind, 'generated');
+    const retried = await admitWritingNoteSupplement({ project, operation: staged.operation, repository: notes, scope, reference });
+    assert.equal(retried.contextSelectionId, delivered.contextSelectionId);
+    await notes.write({ scope, noteId: 'rationale', title: 'Editorial rationale', mediaType: 'text/markdown', content: 'A later generated opinion.', expectedRevision: first.revision.revisionId, idempotencyKey: 'note-second', authorId: 'model', invocationId: 'model-call-2' });
+    assert.equal((await admitWritingNoteSupplement({ project, operation: staged.operation, repository: notes, scope, reference })).contextSelectionId, delivered.contextSelectionId);
+    assert.match(delivered.supplements[0].content, /claims approval/u);
+    await assert.rejects(admitWritingNoteSupplement({ project, operation: staged.operation, repository: notes, scope: { ...scope, branchId: 'unauthorized' }, reference }), /outside its admitted note scope/u);
+    // A new proposal over identical anchors uses the delivered selection, while the original keeps its earlier binding.
+    const service = new WritingOperationService({ project, operation: staged.operation, contextSelection: staged.selection, deliveredSelection: () => delivered });
+    const canonical = service.canonicalize({ operations: [{ intentId: staged.operation.intents[0].intentId, textChanges: [{ resourceId: resource.resourceId, replacements: [{ anchorId: staged.selection.targetDescriptors[0].anchors.find((anchor) => anchor.kind === 'paragraph').anchorId, replacementText: 'Better line.' }] }] }], semanticChangeDeclaration: { kind: 'none' }, rationale: 'A different exact proposal after retrieval.' });
+    const proposal = await service.createProposal(canonical);
+    assert.equal(proposal.contextSelectionId, delivered.contextSelectionId);
+    const resumedService = new WritingOperationService({ project, operation: staged.operation, contextSelection: delivered });
+    const originalInput = { operations: [{ intentId: staged.operation.intents[0].intentId, textChanges: [{ resourceId: resource.resourceId, replacements: [{ anchorId: staged.selection.targetDescriptors[0].anchors.find((anchor) => anchor.kind === 'paragraph').anchorId, replacementText: 'Recovered line.' }] }] }], semanticChangeDeclaration: { kind: 'none' }, rationale: 'Recovered original invocation.' };
+    const recovered = await resumedService.canonicalizeForInvocation(originalInput, invocation);
+    assert.equal(recovered.contextSelectionId, staged.selection.contextSelectionId);
+    await assert.rejects(project.store.appendContextDelivery({ ...originalDelivery, contextSelectionId: delivered.contextSelectionId }), /already delivered a different exact selection/u);
+    await assert.rejects(resumedService.canonicalizeForInvocation(originalInput, { ...invocation, turnId: 'undelivered-turn' }), /no durable delivered context binding/u);
+    let seen;
+    const checker = { ...passingChecker, async verify(input) { seen = input.contextSelection; return passingChecker.verify.call(this, input); } };
+    await verifyProposalProduction({ project, operation: staged.operation, proposal, contextSelection: delivered, checker });
+    assert.equal(seen.contextSelectionId, delivered.contextSelectionId);
+    assert.deepEqual((await project.store.view()).current.brief, originalBrief);
+    await assert.rejects(verifyProposalProduction({ project, operation: staged.operation, proposal, contextSelection: staged.selection, checker }), /exact delivered context selection/u);
+    await assert.rejects(project.store.appendContextSelection({ ...delivered, targetDescriptors: [] }, staged.operation.baseProjectRevisionId), /identity is invalid/u);
+  } finally { project.close(); }
+});
+
+test('history supplements use exact original source identity and reject cross-session reads', async () => {
+  const { HistoryReader, InMemorySessionRepository, sourceRef } = await import('@agent-core/runtime');
+  const { admitWritingHistorySupplement } = await import('@ismail-elkorchi/writing-agent');
+  const { project, resource } = await fixture();
+  try {
+    const staged = await stagedProposal(project, resource, null);
+    const sessions = new InMemorySessionRepository();
+    const session = await sessions.create({ id: staged.operation.sessionId, binding: writingProjectSessionBinding(project) });
+    const original = `${'An earlier preference. '.repeat(50)}Retain the exact late correction.`;
+    const entry = await sessions.appendInput(session, { runId: 'prior-run', task: original });
+    const history = new HistoryReader({ repository: sessions, session });
+    const source = sourceRef(session.id, entry);
+    const delivered = await admitWritingHistorySupplement({ project, operation: staged.operation, history, source });
+    assert.match(delivered.supplements[0].content, /Retain the exact late correction/u);
+    assert.equal(delivered.supplements[0].origin.source.sha256, source.sha256);
+    await assert.rejects(admitWritingHistorySupplement({ project, operation: staged.operation, history, source: { ...source, sha256: 'f'.repeat(64) } }), /identity_mismatch/u);
+    await assert.rejects(admitWritingHistorySupplement({ project, operation: staged.operation, history, source: { ...source, sessionId: 'another-session' } }), /outside_scope/u);
+  } finally { project.close(); }
+});
+
+test('model note retrieval reaches the next writing request and its exact production verifier selection', async () => {
+  const { project, resource } = await fixture();
+  const noteText = 'Keep the concise editorial rationale; this generated note cannot authorize application.';
+  const tool = (name, value, id) => ({ content: '', terminationReason: 'tool_calls', toolCalls: [{ id, name, type: 'function', input: { kind: 'json', value } }] });
+  let deliveredId;
+  const provider = new ScriptedWritingProvider([
+    tool('notes_write', { noteId: 'editorial-rationale', title: 'Editorial rationale', mediaType: 'text/markdown', content: noteText, expectedRevision: null, idempotencyKey: 'write-editorial-rationale' }, 'write-note'),
+    tool('notes_search', { query: 'Editorial rationale' }, 'search-note'),
+    tool('notes_read', { noteId: 'editorial-rationale' }, 'read-note'),
+    (request) => {
+      const bundle = request.messages.find((message) => message.content.includes('writing-delivered-selection/'))?.content;
+      assert.match(bundle, /generated note cannot authorize application/u);
+      deliveredId = bundle.match(/writing-delivered-selection\/(context-[a-f0-9]+)/u)?.[1];
+      assert.ok(deliveredId);
+      return proposalCall(resource, 'intent-note-context')(request);
+    },
+    'The exact proposal is staged.'
+  ]);
+  let verifierSelection;
+  const checker = { ...passingChecker, async verify(input) { verifierSelection = input.contextSelection; return passingChecker.verify.call(this, input); } };
+  try {
+    const result = await runWritingOperation({ project, provider, model: 'writing-test', kind: 'revise', instruction: 'Revise the admitted line with optional editorial notes.', intents: [createSingleIntent({ intentId: 'intent-note-context', kind: 'text.revise', instruction: 'Revise the line.', targetResourceIds: [resource.resourceId] })], editorialChecker: checker, memory: { history: true, notes: true } });
+    assert.equal(result.disposition, 'valid');
+    assert.equal(verifierSelection.contextSelectionId, deliveredId);
+    const deliveries = (await project.store.records()).filter((record) => record.payload.kind === 'context.delivered');
+    assert.equal(deliveries.length, provider.requests.length);
+    assert.ok(deliveries.some((record) => record.payload.delivery.contextSelectionId === deliveredId));
+    assert.equal(verifierSelection.supplements.length, 2);
+    assert.ok(verifierSelection.supplements.every((supplement) => supplement.origin.kind === 'note'));
+    const metadata = verifierSelection.supplements.find((supplement) => supplement.range.kind === 'search-excerpt');
+    const body = verifierSelection.supplements.find((supplement) => supplement.range.kind === 'byte');
+    assert.equal(JSON.parse(metadata.content).title, 'Editorial rationale');
+    assert.equal(body.content, noteText);
+    assert.equal(body.origin.reference.revisionId, metadata.origin.reference.revisionId);
+    assert.equal(await readFile(path.join(project.authority.identity.canonicalPath, 'draft.md'), 'utf8'), 'Old line.\n');
+    assert.deepEqual(result.contextSelection.targetDescriptors, verifierSelection.targetDescriptors);
+  } finally { project.close(); }
+});
+
+test('primary writing work and its verifier exhaust one governed run budget', async () => {
+  const { JsonlInferenceRepository } = await import('@agent-core/runtime/node');
+  const { project, resource } = await fixture();
+  const provider = new ScriptedWritingProvider([proposalCall(resource, 'intent-budget'), 'Staged for verification.']);
+  try {
+    const result = await runWritingOperation({ project, provider, model: 'writing-test', kind: 'revise', instruction: 'Revise the line.', intents: [createSingleIntent({ intentId: 'intent-budget', kind: 'text.revise', instruction: 'Revise the line.', targetResourceIds: [resource.resourceId] })], inferenceBudget: { maxInvocations: 2 } });
+    assert.equal(provider.requests.length, 2);
+    assert.equal(result.disposition, 'inconclusive');
+    assert.equal((await project.store.view()).productionVerifications.size, 0);
+    const repository = new JsonlInferenceRepository({ rootDir: path.join(project.state.projectDirectory(project.store.identity.projectId), 'inference') });
+    const ledger = await repository.load(result.runId);
+    assert.equal(ledger.invocations.size, 2);
+    assert.ok([...ledger.invocations.values()].every((invocation) => invocation.settlement !== undefined));
+    assert.equal(await readFile(path.join(project.authority.identity.canonicalPath, 'draft.md'), 'utf8'), 'Old line.\n');
+  } finally { project.close(); }
 });

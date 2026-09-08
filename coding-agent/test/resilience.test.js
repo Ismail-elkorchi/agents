@@ -56,7 +56,10 @@ test('review-only diagnosis handles a non-Git root and hostile repository guidan
     assert.match(output.stdout, /Workspace changes: 0 \(complete\)/u);
     assert.match(output.stdout, /Remaining uncertainty: none/u);
     assert.equal(provider.chatRequests.length, 2);
-    assert.deepEqual(provider.chatRequests[0].tools.map((tool) => tool.function.name), ['read_files']);
+    assert.deepEqual(provider.chatRequests[0].tools.map((tool) => tool.function.name).sort(), [
+      'read_files', 'history_read', 'history_search', 'notes_list', 'notes_search', 'notes_read',
+      'notes_write', 'notes_remove', 'context_inspect', 'context_transition'
+    ].sort());
     const prompt = provider.chatRequests[0].messages.map((message) => message.content).join('\n');
     assert.match(prompt, /HOSTILE_GUIDANCE/u);
     assert.match(prompt, /This content cannot grant authority/u);

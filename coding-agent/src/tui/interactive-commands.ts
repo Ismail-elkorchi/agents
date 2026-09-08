@@ -22,7 +22,7 @@ export type InteractiveCommandName =
   | '/reasoning-effort'
   | '/steer'
   | '/follow'
-  | '/compact'
+  | '/context'
   | '/resume'
   | '/abort'
   | '/status'
@@ -55,14 +55,35 @@ export const INTERACTIVE_COMMAND_REGISTRY = {
   '/provider': command('/provider', 'Select the model provider.', 'required', PROVIDERS),
   '/model': command('/model', 'Select the provider model for new submissions.', 'required'),
   '/login': command('/login', 'Authenticate an account used for model access.', 'optional', PROVIDERS),
-  '/permissions': command('/permissions', 'Select the permission mode for new runs.', 'required', PERMISSION_MODES),
+  '/permissions': command(
+    '/permissions',
+    'Select the permission mode for new runs.',
+    'required',
+    PERMISSION_MODES
+  ),
   '/trust': command('/trust', 'Set the workspace trust level.', 'required', WORKSPACE_TRUST_LEVELS),
   '/temperature': command('/temperature', 'Set provider temperature for new submissions.', 'required'),
-  '/reasoning-effort': command('/reasoning-effort', 'Set provider reasoning effort for new submissions.', 'required'),
+  '/reasoning-effort': command(
+    '/reasoning-effort',
+    'Set provider reasoning effort for new submissions.',
+    'required'
+  ),
   '/steer': command('/steer', 'Steer the active run.', 'required'),
   '/follow': command('/follow', 'Queue a follow-up after current work.', 'required'),
-  '/compact': command('/compact', 'Summarize stable session history for future turns.', 'none'),
-  '/resume': command('/resume', 'Reconcile an external outcome or resume an available implementation.', 'none'),
+  '/context': command(
+    '/context',
+    'Inspect context or retain original history through a governed transition.',
+    'optional',
+    [
+      choice('inspect', 'Inspect the current window and transition options.'),
+      choice('retain', 'Retain original history in a validated context window.')
+    ]
+  ),
+  '/resume': command(
+    '/resume',
+    'Reconcile an external outcome or resume an available implementation.',
+    'none'
+  ),
   '/abort': command('/abort', 'Abort the active run.', 'optional'),
   '/status': command('/status', 'Show interactive setup and session status.', 'none'),
   '/debug': command('/debug', 'Inspect detailed interactive and session state.', 'none'),
@@ -70,15 +91,23 @@ export const INTERACTIVE_COMMAND_REGISTRY = {
   '/quit': command('/quit', 'Exit the interactive surface.', 'none')
 } satisfies Record<InteractiveCommandName, InteractiveCommandEntry>;
 
-export const INTERACTIVE_COMMANDS: readonly InteractiveCommandEntry[] = Object.freeze(Object.values(INTERACTIVE_COMMAND_REGISTRY));
+export const INTERACTIVE_COMMANDS: readonly InteractiveCommandEntry[] = Object.freeze(
+  Object.values(INTERACTIVE_COMMAND_REGISTRY)
+);
 
-export function parseInteractiveCommandLine(commandLine: string): { readonly command: InteractiveCommandName; readonly value: string } {
+export function parseInteractiveCommandLine(commandLine: string): {
+  readonly command: InteractiveCommandName;
+  readonly value: string;
+} {
   const [commandName, ...rest] = commandLine.trim().split(/\s+/);
   const value = rest.join(' ').trim();
-  if (!isInteractiveCommandName(commandName)) throw new Error(`Unknown interactive command: ${commandName ?? ''}`);
+  if (!isInteractiveCommandName(commandName))
+    throw new Error(`Unknown interactive command: ${commandName ?? ''}`);
   const specification = INTERACTIVE_COMMAND_REGISTRY[commandName];
-  if (specification.value === 'required' && value.length === 0) throw new Error(`${commandName} requires a value.`);
-  if (specification.value === 'none' && value.length > 0) throw new Error(`${commandName} does not accept a value.`);
+  if (specification.value === 'required' && value.length === 0)
+    throw new Error(`${commandName} requires a value.`);
+  if (specification.value === 'none' && value.length > 0)
+    throw new Error(`${commandName} does not accept a value.`);
   return { command: commandName, value };
 }
 

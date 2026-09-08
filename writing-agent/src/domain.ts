@@ -1,6 +1,11 @@
 import * as z from 'zod';
 
-export const identifierSchema = z.string().trim().min(1).max(512).regex(/^[A-Za-z0-9][A-Za-z0-9._:/@-]*$/u);
+export const identifierSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(512)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._:/@-]*$/u);
 export const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u);
 export const timestampSchema = z.iso.datetime({ offset: true });
 export const originSchema = z.enum(['user', 'source', 'inferred', 'default']);
@@ -29,19 +34,23 @@ export const constraintSchema = z.strictObject({
   sourceId: identifierSchema.optional()
 });
 
-export const lengthConstraintSchema = z.strictObject({
-  constraintId: identifierSchema,
-  unit: z.enum(['words', 'characters', 'lines']),
-  minimum: z.int().nonnegative().optional(),
-  maximum: z.int().nonnegative().optional(),
-  requirement: z.enum(['required', 'advisory']),
-  criterionIds: z.array(identifierSchema),
-  origin: originSchema,
-  sourceId: identifierSchema.optional()
-}).superRefine((value, context) => {
-  if (value.minimum === undefined && value.maximum === undefined) context.addIssue({ code: 'custom', message: 'A length constraint requires a minimum or maximum.' });
-  if (value.minimum !== undefined && value.maximum !== undefined && value.minimum > value.maximum) context.addIssue({ code: 'custom', message: 'Length minimum exceeds maximum.' });
-});
+export const lengthConstraintSchema = z
+  .strictObject({
+    constraintId: identifierSchema,
+    unit: z.enum(['words', 'characters', 'lines']),
+    minimum: z.int().nonnegative().optional(),
+    maximum: z.int().nonnegative().optional(),
+    requirement: z.enum(['required', 'advisory']),
+    criterionIds: z.array(identifierSchema),
+    origin: originSchema,
+    sourceId: identifierSchema.optional()
+  })
+  .superRefine((value, context) => {
+    if (value.minimum === undefined && value.maximum === undefined)
+      context.addIssue({ code: 'custom', message: 'A length constraint requires a minimum or maximum.' });
+    if (value.minimum !== undefined && value.maximum !== undefined && value.minimum > value.maximum)
+      context.addIssue({ code: 'custom', message: 'Length minimum exceeds maximum.' });
+  });
 
 export const exactConstraintSchema = z.strictObject({
   constraintId: identifierSchema,
@@ -54,17 +63,19 @@ export const exactConstraintSchema = z.strictObject({
   sourceId: identifierSchema.optional()
 });
 
-export const assumptionSchema = z.strictObject({
-  assumptionId: identifierSchema,
-  statement: z.string().trim().min(1).max(100_000),
-  origin: originSchema,
-  status: z.enum(['proposed', 'accepted', 'rejected', 'superseded']),
-  supersedingAssumptionId: identifierSchema.optional()
-}).superRefine((value, context) => {
-  if ((value.status === 'superseded') !== (value.supersedingAssumptionId !== undefined)) {
-    context.addIssue({ code: 'custom', message: 'Only a superseded assumption identifies its successor.' });
-  }
-});
+export const assumptionSchema = z
+  .strictObject({
+    assumptionId: identifierSchema,
+    statement: z.string().trim().min(1).max(100_000),
+    origin: originSchema,
+    status: z.enum(['proposed', 'accepted', 'rejected', 'superseded']),
+    supersedingAssumptionId: identifierSchema.optional()
+  })
+  .superRefine((value, context) => {
+    if ((value.status === 'superseded') !== (value.supersedingAssumptionId !== undefined)) {
+      context.addIssue({ code: 'custom', message: 'Only a superseded assumption identifies its successor.' });
+    }
+  });
 
 export const acceptanceCriterionSchema = z.strictObject({
   criterionId: identifierSchema,
@@ -104,7 +115,15 @@ export const writingBriefRevisionSchema = z.strictObject({
   createdAt: timestampSchema
 });
 
-export const writingOperationKindSchema = z.enum(['plan', 'draft', 'continue', 'revise', 'review', 'transform', 'translate']);
+export const writingOperationKindSchema = z.enum([
+  'plan',
+  'draft',
+  'continue',
+  'revise',
+  'review',
+  'transform',
+  'translate'
+]);
 export const writingOperationModeSchema = z.enum(['suggest', 'apply']);
 
 export const humanCriterionDecisionSchema = z.strictObject({
@@ -157,19 +176,26 @@ export const writingIntentSchema = z.strictObject({
   exactConstraints: z.array(exactConstraintSchema)
 });
 
-export const effectiveLengthConstraintSchema = z.strictObject({
-  constraintId: identifierSchema,
-  unit: z.enum(['words', 'characters', 'lines']),
-  minimum: z.int().nonnegative().optional(),
-  maximum: z.int().nonnegative().optional(),
-  requirement: z.enum(['required', 'advisory']),
-  criterionIds: z.array(identifierSchema),
-  sourceConstraintIds: z.array(identifierSchema).min(1),
-  targetResourceIds: z.array(identifierSchema).min(1)
-}).superRefine((value, context) => {
-  if (value.minimum === undefined && value.maximum === undefined) context.addIssue({ code: 'custom', message: 'An effective length constraint requires a minimum or maximum.' });
-  if (value.minimum !== undefined && value.maximum !== undefined && value.minimum > value.maximum) context.addIssue({ code: 'custom', message: 'Effective length constraints do not intersect.' });
-});
+export const effectiveLengthConstraintSchema = z
+  .strictObject({
+    constraintId: identifierSchema,
+    unit: z.enum(['words', 'characters', 'lines']),
+    minimum: z.int().nonnegative().optional(),
+    maximum: z.int().nonnegative().optional(),
+    requirement: z.enum(['required', 'advisory']),
+    criterionIds: z.array(identifierSchema),
+    sourceConstraintIds: z.array(identifierSchema).min(1),
+    targetResourceIds: z.array(identifierSchema).min(1)
+  })
+  .superRefine((value, context) => {
+    if (value.minimum === undefined && value.maximum === undefined)
+      context.addIssue({
+        code: 'custom',
+        message: 'An effective length constraint requires a minimum or maximum.'
+      });
+    if (value.minimum !== undefined && value.maximum !== undefined && value.minimum > value.maximum)
+      context.addIssue({ code: 'custom', message: 'Effective length constraints do not intersect.' });
+  });
 
 export const effectiveExactConstraintSchema = z.strictObject({
   constraintId: identifierSchema,
@@ -201,29 +227,35 @@ export const executionBindingSchema = z.strictObject({
   configurationSha256: sha256Schema
 });
 
-export const writingOperationSchema = z.strictObject({
-  projectId: identifierSchema,
-  operationId: identifierSchema,
-  briefRevisionId: identifierSchema,
-  kind: writingOperationKindSchema,
-  instruction: z.string().trim().min(1).max(100_000),
-  intents: z.array(writingIntentSchema).min(1),
-  targetNodeIds: z.array(identifierSchema),
-  targetResourceIds: z.array(identifierSchema),
-  effectiveConstraints: effectiveConstraintSetSchema,
-  baseProjectRevisionId: identifierSchema,
-  mode: writingOperationModeSchema,
-  delegatedApplyPolicy: writingDelegatedApplyPolicySchema.optional(),
-  sessionId: identifierSchema,
-  runId: identifierSchema,
-  lifecycleState: z.literal('admitted'),
-  executionBinding: executionBindingSchema,
-  admittedAt: timestampSchema
-}).superRefine((operation, context) => {
-  if ((operation.mode === 'apply') !== (operation.delegatedApplyPolicy !== undefined)) {
-    context.addIssue({ code: 'custom', message: 'Apply operations require an explicit direct-user delegated apply policy, and suggest operations must not carry it.' });
-  }
-});
+export const writingOperationSchema = z
+  .strictObject({
+    projectId: identifierSchema,
+    operationId: identifierSchema,
+    briefRevisionId: identifierSchema,
+    kind: writingOperationKindSchema,
+    instruction: z.string().trim().min(1).max(100_000),
+    intents: z.array(writingIntentSchema).min(1),
+    targetNodeIds: z.array(identifierSchema),
+    targetResourceIds: z.array(identifierSchema),
+    effectiveConstraints: effectiveConstraintSetSchema,
+    baseProjectRevisionId: identifierSchema,
+    mode: writingOperationModeSchema,
+    delegatedApplyPolicy: writingDelegatedApplyPolicySchema.optional(),
+    sessionId: identifierSchema,
+    runId: identifierSchema,
+    lifecycleState: z.literal('admitted'),
+    executionBinding: executionBindingSchema,
+    admittedAt: timestampSchema
+  })
+  .superRefine((operation, context) => {
+    if ((operation.mode === 'apply') !== (operation.delegatedApplyPolicy !== undefined)) {
+      context.addIssue({
+        code: 'custom',
+        message:
+          'Apply operations require an explicit direct-user delegated apply policy, and suggest operations must not carry it.'
+      });
+    }
+  });
 
 export const documentNodeSchema = z.strictObject({
   nodeId: identifierSchema,
@@ -286,7 +318,13 @@ export const sourceRecordSchema = z.strictObject({
   accessMetadata: z.record(z.string(), z.json()).optional(),
   rightsMetadata: z.record(z.string(), z.json()).optional(),
   identityStatus: z.enum(['unverified', 'verified', 'conflicting', 'unavailable']),
-  authoritativeIdentifiers: z.array(z.strictObject({ scheme: identifierSchema, value: z.string().trim().min(1).max(10_000), evidence: z.string().trim().min(1).max(100_000) })),
+  authoritativeIdentifiers: z.array(
+    z.strictObject({
+      scheme: identifierSchema,
+      value: z.string().trim().min(1).max(10_000),
+      evidence: z.string().trim().min(1).max(100_000)
+    })
+  ),
   identityVerifierId: identifierSchema.optional(),
   verificationPolicyId: identifierSchema.optional(),
   excerpts: z.array(sourceExcerptSchema),
@@ -319,60 +357,89 @@ export const claimEvidenceRelationSchema = z.strictObject({
   verifierId: identifierSchema,
   verificationPolicyId: identifierSchema,
   calibrationId: identifierSchema.optional(),
-  criterionEvidence: z.array(z.strictObject({ criterionId: identifierSchema, evidence: z.string().trim().min(1).max(100_000), explanation: z.string().trim().min(1).max(100_000) })),
+  criterionEvidence: z.array(
+    z.strictObject({
+      criterionId: identifierSchema,
+      evidence: z.string().trim().min(1).max(100_000),
+      explanation: z.string().trim().min(1).max(100_000)
+    })
+  ),
   humanDecisionId: identifierSchema.optional()
 });
 
-export const voiceReferenceSchema = z.strictObject({
-  voiceReferenceId: identifierSchema,
-  resourceId: identifierSchema.optional(),
-  artifactId: identifierSchema.optional(),
-  exactSha256: sha256Schema,
-  range: textRangeSchema.optional(),
-  assertedProvenance: z.string().trim().min(1).max(100_000),
-  permittedPurpose: z.string().trim().min(1).max(100_000),
-  consentOrRightsBasis: z.string().trim().min(1).max(100_000).optional(),
-  language: z.string().trim().min(1).max(256),
-  locale: z.string().trim().min(1).max(256).optional(),
-  genre: z.string().trim().min(1).max(256),
-  rhetoricalScope: z.string().trim().min(1).max(10_000),
-  preserveNotes: z.array(z.string().trim().min(1).max(10_000)),
-  doNotImitateNotes: z.array(z.string().trim().min(1).max(10_000)),
-  retentionStatus: z.enum(['retained', 'deletion-requested', 'deleted'])
-}).superRefine((value, context) => {
-  if (Number(value.resourceId !== undefined) + Number(value.artifactId !== undefined) !== 1) {
-    context.addIssue({ code: 'custom', message: 'Voice reference requires exactly one resource or artifact identity.' });
-  }
-});
+export const voiceReferenceSchema = z
+  .strictObject({
+    voiceReferenceId: identifierSchema,
+    resourceId: identifierSchema.optional(),
+    artifactId: identifierSchema.optional(),
+    exactSha256: sha256Schema,
+    range: textRangeSchema.optional(),
+    assertedProvenance: z.string().trim().min(1).max(100_000),
+    permittedPurpose: z.string().trim().min(1).max(100_000),
+    consentOrRightsBasis: z.string().trim().min(1).max(100_000).optional(),
+    language: z.string().trim().min(1).max(256),
+    locale: z.string().trim().min(1).max(256).optional(),
+    genre: z.string().trim().min(1).max(256),
+    rhetoricalScope: z.string().trim().min(1).max(10_000),
+    preserveNotes: z.array(z.string().trim().min(1).max(10_000)),
+    doNotImitateNotes: z.array(z.string().trim().min(1).max(10_000)),
+    retentionStatus: z.enum(['retained', 'deletion-requested', 'deleted'])
+  })
+  .superRefine((value, context) => {
+    if (Number(value.resourceId !== undefined) + Number(value.artifactId !== undefined) !== 1) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Voice reference requires exactly one resource or artifact identity.'
+      });
+    }
+  });
 
-export const authorshipProvenanceSchema = z.strictObject({
-  provenanceId: identifierSchema,
-  projectRevisionId: identifierSchema,
-  resourceId: identifierSchema.optional(),
-  nodeId: identifierSchema.optional(),
-  range: textRangeSchema.optional(),
-  structuralObjectId: identifierSchema.optional(),
-  operationId: identifierSchema,
-  proposalId: identifierSchema.optional(),
-  intentIds: z.array(identifierSchema),
-  classification: z.enum(['human-authored', 'imported', 'model-suggested', 'user-accepted-unchanged', 'user-modified']),
-  supersedesProvenanceIds: z.array(identifierSchema),
-  createdAt: timestampSchema
-}).superRefine((value, context) => {
-  const targetCount = Number(value.resourceId !== undefined && value.range !== undefined) + Number(value.nodeId !== undefined && value.structuralObjectId !== undefined);
-  if (targetCount !== 1) context.addIssue({ code: 'custom', message: 'Authorship provenance requires exactly one range or structural target.' });
-});
+export const authorshipProvenanceSchema = z
+  .strictObject({
+    provenanceId: identifierSchema,
+    projectRevisionId: identifierSchema,
+    resourceId: identifierSchema.optional(),
+    nodeId: identifierSchema.optional(),
+    range: textRangeSchema.optional(),
+    structuralObjectId: identifierSchema.optional(),
+    operationId: identifierSchema,
+    proposalId: identifierSchema.optional(),
+    intentIds: z.array(identifierSchema),
+    classification: z.enum([
+      'human-authored',
+      'imported',
+      'model-suggested',
+      'user-accepted-unchanged',
+      'user-modified'
+    ]),
+    supersedesProvenanceIds: z.array(identifierSchema),
+    createdAt: timestampSchema
+  })
+  .superRefine((value, context) => {
+    const targetCount =
+      Number(value.resourceId !== undefined && value.range !== undefined) +
+      Number(value.nodeId !== undefined && value.structuralObjectId !== undefined);
+    if (targetCount !== 1)
+      context.addIssue({
+        code: 'custom',
+        message: 'Authorship provenance requires exactly one range or structural target.'
+      });
+  });
 
 export const localizedTextEditSchema = z.strictObject({
   resourceId: identifierSchema,
   baseSha256: sha256Schema,
-  edits: z.array(z.strictObject({
-    anchorId: identifierSchema,
-    intentIds: z.array(identifierSchema).min(1),
-    range: textRangeSchema,
-    expectedTextSha256: sha256Schema,
-    replacementText: z.string()
-  })).min(1)
+  edits: z
+    .array(
+      z.strictObject({
+        anchorId: identifierSchema,
+        intentIds: z.array(identifierSchema).min(1),
+        range: textRangeSchema,
+        expectedTextSha256: sha256Schema,
+        replacementText: z.string()
+      })
+    )
+    .min(1)
 });
 
 export const structuralChangeSchema = z.strictObject({
@@ -385,7 +452,17 @@ export const structuralChangeSchema = z.strictObject({
 
 export const semanticChangeItemSchema = z.strictObject({
   itemId: identifierSchema,
-  kind: z.enum(['claim', 'citation', 'evidence-relation', 'referent', 'stance', 'obligation', 'chronology', 'terminology', 'structural-relation']),
+  kind: z.enum([
+    'claim',
+    'citation',
+    'evidence-relation',
+    'referent',
+    'stance',
+    'obligation',
+    'chronology',
+    'terminology',
+    'structural-relation'
+  ]),
   action: z.enum(['introduce', 'modify', 'remove']),
   scope: z.string().trim().min(1).max(10_000),
   targetId: identifierSchema.optional(),
@@ -504,38 +581,110 @@ export const preservationContractSchema = z.strictObject({
   requiredRevalidations: z.array(identifierSchema)
 });
 
+const writingHistorySourceSchema = z.strictObject({
+  sessionId: z.string().min(1),
+  entryId: z.string().min(1),
+  sha256: sha256Schema,
+  event: z
+    .strictObject({
+      runId: z.string().min(1),
+      eventId: z.string().min(1),
+      sequence: z.int().nonnegative(),
+      hash: sha256Schema
+    })
+    .optional()
+});
+const writingNoteReferenceSchema = z.strictObject({
+  scope: z.strictObject({ sessionId: z.string().min(1), branchId: z.string().min(1) }),
+  noteId: z.string().min(1),
+  revisionId: z.string().min(1)
+});
+export const writingContextSupplementSchema = z.strictObject({
+  supplementId: identifierSchema,
+  operationId: identifierSchema,
+  baseProjectRevisionId: identifierSchema,
+  origin: z.discriminatedUnion('kind', [
+    z.strictObject({
+      kind: z.literal('history'),
+      source: writingHistorySourceSchema,
+      sourceCut: z.strictObject({
+        format: z.literal('agent-core.history/1'),
+        sessionId: z.string().min(1),
+        branchId: z.string().min(1),
+        throughEntryId: z.string().nullable(),
+        sourceRevision: z.int().nonnegative(),
+        ledgerCoverage: z.enum(['authoritative', 'session']),
+        ledgerHeads: z
+          .array(
+            z.strictObject({
+              runId: z.string().min(1),
+              sequence: z.int().min(-1),
+              hash: sha256Schema.optional()
+            })
+          )
+          .readonly()
+          .optional()
+      })
+    }),
+    z.strictObject({ kind: z.literal('note'), reference: writingNoteReferenceSchema })
+  ]),
+  content: z.string().max(128_000),
+  contentSha256: sha256Schema,
+  range: z.discriminatedUnion('kind', [
+    z.strictObject({
+      kind: z.literal('byte'),
+      offset: z.int().nonnegative(),
+      nextOffset: z.int().nonnegative(),
+      totalBytes: z.int().nonnegative()
+    }),
+    z.strictObject({ kind: z.literal('search-excerpt') })
+  ]),
+  truncated: z.boolean(),
+  trust: z.literal('untrusted-data')
+});
+export type WritingContextSupplement = z.infer<typeof writingContextSupplementSchema>;
+
 export const writingContextSelectionSchema = z.strictObject({
   contextSelectionId: identifierSchema,
+  parentSelectionId: identifierSchema.nullable(),
+  baseProjectRevisionId: identifierSchema,
+  supplements: z.array(writingContextSupplementSchema).max(128),
   policyId: identifierSchema,
   policyVersion: z.int().min(1),
   operationId: identifierSchema,
   selectedIntentIds: z.array(identifierSchema),
   intentCoverage: z.record(identifierSchema, z.enum(['complete', 'partial', 'none'])),
   tokenBudget: z.int().min(1),
-  targetDescriptors: z.array(z.strictObject({
-    resourceId: identifierSchema,
-    relativePath: z.string().trim().min(1).max(4_096),
-    baseSha256: sha256Schema,
-    mediaType: z.string().trim().min(1).max(256),
-    anchors: z.array(z.strictObject({
-      anchorId: identifierSchema,
-      kind: z.enum(['document', 'paragraph', 'protected-range']),
-      targetRangeId: identifierSchema.optional(),
-      range: textRangeSchema,
-      textSha256: sha256Schema,
-      label: z.string().trim().min(1).max(1_000)
-    }))
-  })),
-  items: z.array(z.strictObject({
-    itemId: identifierSchema,
-    kind: identifierSchema,
-    versionOrSha256: z.string().trim().min(1).max(1_000),
-    range: textRangeSchema.optional(),
-    trust: trustSchema,
-    provenanceId: identifierSchema,
-    reasonCodes: z.array(identifierSchema).min(1),
-    content: z.string().max(2_000_000)
-  })),
+  targetDescriptors: z.array(
+    z.strictObject({
+      resourceId: identifierSchema,
+      relativePath: z.string().trim().min(1).max(4_096),
+      baseSha256: sha256Schema,
+      mediaType: z.string().trim().min(1).max(256),
+      anchors: z.array(
+        z.strictObject({
+          anchorId: identifierSchema,
+          kind: z.enum(['document', 'paragraph', 'protected-range']),
+          targetRangeId: identifierSchema.optional(),
+          range: textRangeSchema,
+          textSha256: sha256Schema,
+          label: z.string().trim().min(1).max(1_000)
+        })
+      )
+    })
+  ),
+  items: z.array(
+    z.strictObject({
+      itemId: identifierSchema,
+      kind: identifierSchema,
+      versionOrSha256: z.string().trim().min(1).max(1_000),
+      range: textRangeSchema.optional(),
+      trust: trustSchema,
+      provenanceId: identifierSchema,
+      reasonCodes: z.array(identifierSchema).min(1),
+      content: z.string().max(2_000_000)
+    })
+  ),
   omittedCounts: z.record(identifierSchema, z.int().nonnegative()),
   truncated: z.boolean(),
   coverage: z.enum(['complete', 'partial'])

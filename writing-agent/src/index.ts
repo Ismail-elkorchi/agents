@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 export * from './brief.js';
 export * from './context.js';
+export { admitWritingHistorySupplement, admitWritingNoteSupplement } from './context-supplements.js';
 export * from './domain.js';
 export * from './operations.js';
 export * from './operation-contract.js';
@@ -12,6 +13,7 @@ export * from './provider.js';
 export * from './verification.js';
 export * from './revisions.js';
 export * from './runtime.js';
+export { createWritingMemoryTools, type WritingMemoryOptions } from './session-memory.js';
 export * from './semantic-checker.js';
 export * from './sources.js';
 export * from './text-ranges.js';
@@ -20,7 +22,8 @@ export { main } from './cli.js';
 
 import { isDirectRun, main } from './cli.js';
 
-if (isDirectRun(import.meta.url)) main(process.argv.slice(2)).catch((error: unknown) => {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exitCode = 1;
-});
+if (isDirectRun(import.meta.url))
+  main(process.argv.slice(2)).catch((error: unknown) => {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  });

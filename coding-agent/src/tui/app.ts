@@ -10,10 +10,7 @@ import {
   scrollReducer
 } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { SearchPickerIndex } from '@ismail-elkorchi/terminal-ui/behavior';
-import {
-  createMeasuredCollection,
-  measuredWindow
-} from '@ismail-elkorchi/terminal-ui/collection';
+import { createMeasuredCollection, measuredWindow } from '@ismail-elkorchi/terminal-ui/collection';
 import type { ScrollGeometry } from '@ismail-elkorchi/terminal-ui/interaction';
 import {
   button,
@@ -62,7 +59,7 @@ import type {
   CodingAgentTuiConversationState,
   CodingAgentTuiRuntimeDetails,
   CodingAgentTuiSetupState,
-  CodingAgentTuiState,
+  CodingAgentTuiState
 } from './state.js';
 import type { CodingAgentTuiActivityEntry, CodingAgentTuiConversationEntry } from './conversation-model.js';
 import {
@@ -97,13 +94,43 @@ export function createCodingAgentTuiApp(task: string, options: CodingAgentTuiApp
     }),
     update: (state, message, context) => updateCodingAgentTui(state, message, context, options),
     inputBindings: [
-      binding('commands', 'p', { ctrl: true }, { type: 'overlay.open', overlay: 'commands' }, ({ state }) => canOpenOverlay(state)),
-      binding('search', 'f', { ctrl: true }, { type: 'overlay.open', overlay: 'search' }, ({ state }) => canOpenOverlay(state)),
-      binding('help', 'f1', {}, { type: 'overlay.open', overlay: 'help' }, ({ state }) => canOpenOverlay(state)),
-      binding('page-up', 'pageUp', {}, { type: 'conversation.scroll', transition: { kind: 'scrollPages', rows: -1 } }, ({ state }) => canScroll(state)),
-      binding('page-down', 'pageDown', {}, { type: 'conversation.scroll', transition: { kind: 'scrollPages', rows: 1 } }, ({ state }) => canScroll(state)),
-      binding('composer-history-previous', 'arrowUp', {}, { type: 'composer.history', direction: 'previous' }, composerHistoryPreviousEnabled),
-      binding('composer-history-next', 'arrowDown', {}, { type: 'composer.history', direction: 'next' }, composerHistoryNextEnabled),
+      binding('commands', 'p', { ctrl: true }, { type: 'overlay.open', overlay: 'commands' }, ({ state }) =>
+        canOpenOverlay(state)
+      ),
+      binding('search', 'f', { ctrl: true }, { type: 'overlay.open', overlay: 'search' }, ({ state }) =>
+        canOpenOverlay(state)
+      ),
+      binding('help', 'f1', {}, { type: 'overlay.open', overlay: 'help' }, ({ state }) =>
+        canOpenOverlay(state)
+      ),
+      binding(
+        'page-up',
+        'pageUp',
+        {},
+        { type: 'conversation.scroll', transition: { kind: 'scrollPages', rows: -1 } },
+        ({ state }) => canScroll(state)
+      ),
+      binding(
+        'page-down',
+        'pageDown',
+        {},
+        { type: 'conversation.scroll', transition: { kind: 'scrollPages', rows: 1 } },
+        ({ state }) => canScroll(state)
+      ),
+      binding(
+        'composer-history-previous',
+        'arrowUp',
+        {},
+        { type: 'composer.history', direction: 'previous' },
+        composerHistoryPreviousEnabled
+      ),
+      binding(
+        'composer-history-next',
+        'arrowDown',
+        {},
+        { type: 'composer.history', direction: 'next' },
+        composerHistoryNextEnabled
+      ),
       binding('composer-submit', 'enter', {}, { type: 'composer.submit' }, composerBindingEnabled),
       binding(
         'composer-newline-shift-enter',
@@ -112,7 +139,13 @@ export function createCodingAgentTuiApp(task: string, options: CodingAgentTuiApp
         composerNewlineMessage(),
         composerBindingEnabled
       ),
-      binding('composer-newline-control-o', 'o', { ctrl: true }, composerNewlineMessage(), composerBindingEnabled)
+      binding(
+        'composer-newline-control-o',
+        'o',
+        { ctrl: true },
+        composerNewlineMessage(),
+        composerBindingEnabled
+      )
     ],
     ...(eventSource === undefined
       ? {}
@@ -124,9 +157,10 @@ export function createCodingAgentTuiApp(task: string, options: CodingAgentTuiApp
 
 function initialState(task: string, options: CodingAgentTuiAppOptions): CodingAgentTuiState {
   const initial = createInitialCodingAgentTuiState(options.runtimeDetails, options.setup);
-  const hydrated = options.initialHydration === undefined
-    ? initial
-    : hydrateCodingAgentTuiState(initial, options.initialHydration);
+  const hydrated =
+    options.initialHydration === undefined
+      ? initial
+      : hydrateCodingAgentTuiState(initial, options.initialHydration);
   const normalizedTask = task.trim();
   return normalizedTask.length === 0 ? hydrated : appendUser(hydrated, normalizedTask);
 }
@@ -138,34 +172,55 @@ function updateCodingAgentTui(
   options: CodingAgentTuiAppOptions
 ): TuiUpdateResult<CodingAgentTuiState, CodingAgentTuiMessage> {
   switch (message.type) {
-    case 'progress': return updated(applyProgress(state, message.event), context);
-    case 'result': return updated(applyResult(state, message.result), context);
-    case 'failure': return updated(applyFailure(state, message.message), context);
-    case 'delivery.failed': return {
-      state: reconcileConversationLayout(applyFailure(state, message.message), context),
-      exit: { reason: 'event-delivery-failed' }
-    };
-    case 'session.compacted': return updated(upsertConversationEntry(state, {
-      id: `session:${message.compaction.id}`,
-      kind: 'notice',
-      tone: 'info',
-      text: `Session compacted · ${message.compaction.provider}/${message.compaction.model}\n${message.compaction.summary}`
-    }), context);
-    case 'handoff.ready': return updated(applyCodingHandoff(state, message.handoff), context);
-    case 'interactive.state.changed': return updated(applyInteractiveState(state, message.state), context);
-    case 'interactive.notice': return updated(appendNotice(state, message.message, message.tone ?? 'info'), context);
-    case 'session.hydrated': return updated(hydrateCodingAgentTuiState(state, message.hydration), context);
-    case 'approval.required': return updated({
-      ...state,
-      run: { kind: 'waiting_for_approval', suspension: message.suspension },
-      overlay: { kind: 'none' },
-      modalOffsetRow: 0
-    }, context, { kind: 'element', elementId: 'approval-deny' });
-    case 'run.suspended': return updated({
-      ...state,
-      run: { kind: 'waiting_for_recovery', suspension: message.suspension },
-      overlay: { kind: 'none' }
-    }, context);
+    case 'progress':
+      return updated(applyProgress(state, message.event), context);
+    case 'result':
+      return updated(applyResult(state, message.result), context);
+    case 'failure':
+      return updated(applyFailure(state, message.message), context);
+    case 'delivery.failed':
+      return {
+        state: reconcileConversationLayout(applyFailure(state, message.message), context),
+        exit: { reason: 'event-delivery-failed' }
+      };
+    case 'context.transitioned':
+      return updated(
+        upsertConversationEntry(state, {
+          id: `session:${message.window.windowId}`,
+          kind: 'notice',
+          tone: 'info',
+          text: `Context changed · ${message.window.selection.strategy} · ${message.window.windowId}\n${message.window.reason}`
+        }),
+        context
+      );
+    case 'handoff.ready':
+      return updated(applyCodingHandoff(state, message.handoff), context);
+    case 'interactive.state.changed':
+      return updated(applyInteractiveState(state, message.state), context);
+    case 'interactive.notice':
+      return updated(appendNotice(state, message.message, message.tone ?? 'info'), context);
+    case 'session.hydrated':
+      return updated(hydrateCodingAgentTuiState(state, message.hydration), context);
+    case 'approval.required':
+      return updated(
+        {
+          ...state,
+          run: { kind: 'waiting_for_approval', suspension: message.suspension },
+          overlay: { kind: 'none' },
+          modalOffsetRow: 0
+        },
+        context,
+        { kind: 'element', elementId: 'approval-deny' }
+      );
+    case 'run.suspended':
+      return updated(
+        {
+          ...state,
+          run: { kind: 'waiting_for_recovery', suspension: message.suspension },
+          overlay: { kind: 'none' }
+        },
+        context
+      );
     case 'approval.decide': {
       if (state.run.kind !== 'waiting_for_approval') return { state };
       return {
@@ -173,57 +228,80 @@ function updateCodingAgentTui(
         effects: [approvalEffect(state.run.suspension, message.decision, options.approvalHandler)]
       };
     }
-    case 'composer.edit': return updated(editComposer(state, message.transition), context);
-    case 'composer.history': return updated(navigateComposerHistory(state, message.direction), context);
-    case 'composer.submit': return submit(state, context, options.commandHandler);
+    case 'composer.edit':
+      return updated(editComposer(state, message.transition), context);
+    case 'composer.history':
+      return updated(navigateComposerHistory(state, message.direction), context);
+    case 'composer.submit':
+      return submit(state, context, options.commandHandler);
     case 'command.completed': {
       const result = applyCommandExecution(state, message.execution, message.recordResult);
-      const next = message.execution.view === 'debug'
-        ? {
-            ...result.state,
-            overlay: { kind: 'debug' as const, text: debugText(result.state, message.execution.message) },
-            modalOffsetRow: 0
-          }
-        : result.state;
-      return result.exit === true
-        ? { state: next, exit: { reason: 'command' } }
-        : updated(next, context);
+      const next =
+        message.execution.view === 'debug'
+          ? {
+              ...result.state,
+              overlay: { kind: 'debug' as const, text: debugText(result.state, message.execution.message) },
+              modalOffsetRow: 0
+            }
+          : result.state;
+      return result.exit === true ? { state: next, exit: { reason: 'command' } } : updated(next, context);
     }
-    case 'command.failed': return updated(applyCommandFailure(state, message.message), context);
+    case 'command.failed':
+      return updated(applyCommandFailure(state, message.message), context);
     case 'conversation.scroll': {
       const layout = conversationLayout(state, context);
-      return updated({
-        ...state,
-        conversation: {
-          ...state.conversation,
-          scroll: scrollReducer(layout.scroll, message.transition, layout.geometry)
-        }
-      }, context);
+      return updated(
+        {
+          ...state,
+          conversation: {
+            ...state.conversation,
+            scroll: scrollReducer(layout.scroll, message.transition, layout.geometry)
+          }
+        },
+        context
+      );
     }
-    case 'conversation.scrolled': return updated({
-      ...state,
-      conversation: {
-        ...state.conversation,
-        scroll: applyScrollRequest(state.conversation.scroll, message.request),
-      }
-    }, context);
-    case 'activity.toggle': return updated(toggleActivity(state, message.id), context);
-    case 'overlay.open': return openOverlay(state, message.overlay, context);
-    case 'overlay.close': return updated({ ...state, overlay: { kind: 'none' } }, context, {
-      kind: 'element', elementId: 'composer'
-    });
-    case 'modal.scrolled': return { state: { ...state, modalOffsetRow: message.offsetRow } };
-    case 'commands.transition': return transitionCommands(state, message.transition);
-    case 'commands.accept': return acceptCommand(state, message.event.id, context, options.commandHandler);
-    case 'command-values.transition': return transitionCommandValues(state, message.transition);
-    case 'command-values.accept': return acceptCommandValue(state, message.event.id, context, options.commandHandler);
-    case 'search.transition': return transitionSearch(state, message.transition);
-    case 'search.accept': return acceptSearchResult(state, message.event.id, context);
-    case 'terminal.resized': return updated(state, context);
-    case 'app.exit': return {
-      state,
-      exit: message.reason === undefined ? {} : { reason: message.reason }
-    };
+    case 'conversation.scrolled':
+      return updated(
+        {
+          ...state,
+          conversation: {
+            ...state.conversation,
+            scroll: applyScrollRequest(state.conversation.scroll, message.request)
+          }
+        },
+        context
+      );
+    case 'activity.toggle':
+      return updated(toggleActivity(state, message.id), context);
+    case 'overlay.open':
+      return openOverlay(state, message.overlay, context);
+    case 'overlay.close':
+      return updated({ ...state, overlay: { kind: 'none' } }, context, {
+        kind: 'element',
+        elementId: 'composer'
+      });
+    case 'modal.scrolled':
+      return { state: { ...state, modalOffsetRow: message.offsetRow } };
+    case 'commands.transition':
+      return transitionCommands(state, message.transition);
+    case 'commands.accept':
+      return acceptCommand(state, message.event.id, context, options.commandHandler);
+    case 'command-values.transition':
+      return transitionCommandValues(state, message.transition);
+    case 'command-values.accept':
+      return acceptCommandValue(state, message.event.id, context, options.commandHandler);
+    case 'search.transition':
+      return transitionSearch(state, message.transition);
+    case 'search.accept':
+      return acceptSearchResult(state, message.event.id, context);
+    case 'terminal.resized':
+      return updated(state, context);
+    case 'app.exit':
+      return {
+        state,
+        exit: message.reason === undefined ? {} : { reason: message.reason }
+      };
   }
 }
 
@@ -258,10 +336,12 @@ function applyInteractiveState(
       ...(interactive.runtimeDetails.sessionLocation === undefined
         ? {}
         : { sessionLocation: interactive.runtimeDetails.sessionLocation }),
-      ...(interactive.session === undefined ? {} : {
-        sessionId: interactive.session.sessionId,
-        session: interactive.session
-      })
+      ...(interactive.session === undefined
+        ? {}
+        : {
+            sessionId: interactive.session.sessionId,
+            session: interactive.session
+          })
     }
   };
   if (interactive.status === 'initializing') {
@@ -275,9 +355,12 @@ function applyInteractiveState(
   if (interactive.status === 'setup_required') {
     const commands = interactive.requirements.map((requirement) => {
       switch (requirement) {
-        case 'workspace_trust': return '/trust restricted or /trust trusted';
-        case 'provider': return '/provider <ollama|openrouter|openai|openai-codex>';
-        case 'model': return '/model <model-id>';
+        case 'workspace_trust':
+          return '/trust restricted or /trust trusted';
+        case 'provider':
+          return '/provider <ollama|openrouter|openai|openai-codex>';
+        case 'model':
+          return '/model <model-id>';
       }
     });
     return upsertConversationEntry(next, {
@@ -306,11 +389,7 @@ function transitionCommands(
       ...state,
       overlay: {
         kind: 'commands',
-        picker: searchPickerReducer(
-          state.overlay.picker,
-          transition,
-          { searchPickerIndex: COMMAND_INDEX }
-        )
+        picker: searchPickerReducer(state.overlay.picker, transition, { searchPickerIndex: COMMAND_INDEX })
       }
     }
   };
@@ -330,15 +409,20 @@ function acceptCommand(
       { query: { text: '', mode: 'fuzzy' } },
       commandValueIndex(command)
     );
-    return updated({
-      ...state,
-      overlay: { kind: 'command_values', command: command.name, picker },
-      modalOffsetRow: 0
-    }, context, { kind: 'element', elementId: 'command-value-picker' });
+    return updated(
+      {
+        ...state,
+        overlay: { kind: 'command_values', command: command.name, picker },
+        modalOffsetRow: 0
+      },
+      context,
+      { kind: 'element', elementId: 'command-value-picker' }
+    );
   }
   if (command.value === 'required') {
     return updated(setComposerText({ ...state, overlay: { kind: 'none' } }, `${command.name} `), context, {
-      kind: 'element', elementId: 'composer'
+      kind: 'element',
+      elementId: 'composer'
     });
   }
   return submit(setComposerText({ ...state, overlay: { kind: 'none' } }, command.name), context, handler);
@@ -375,17 +459,23 @@ function acceptCommandValue(
   const commandOverlay = state.overlay;
   const commandEntry = INTERACTIVE_COMMANDS.find((candidate) => candidate.name === commandOverlay.command);
   if (commandEntry?.choices?.some((choice) => choice.value === value) !== true) return { state };
-  return submit(setComposerText({ ...state, overlay: { kind: 'none' } }, `${commandEntry.name} ${value}`), context, handler);
+  return submit(
+    setComposerText({ ...state, overlay: { kind: 'none' } }, `${commandEntry.name} ${value}`),
+    context,
+    handler
+  );
 }
 
 function commandValueIndex(commandEntry: (typeof INTERACTIVE_COMMANDS)[number]): SearchPickerIndex {
-  return createSearchPickerIndex((commandEntry.choices ?? []).map((choice) => ({
-    id: choice.value,
-    label: choice.value,
-    value: choice.value,
-    description: choice.description,
-    keywords: [choice.value, choice.description]
-  })));
+  return createSearchPickerIndex(
+    (commandEntry.choices ?? []).map((choice) => ({
+      id: choice.value,
+      label: choice.value,
+      value: choice.value,
+      description: choice.description,
+      keywords: [choice.value, choice.description]
+    }))
+  );
 }
 
 function transitionSearch(
@@ -399,11 +489,7 @@ function transitionSearch(
       ...state,
       overlay: {
         kind: 'search',
-        picker: searchPickerReducer(
-          state.overlay.picker,
-          transition,
-          { searchPickerIndex: index }
-        )
+        picker: searchPickerReducer(state.overlay.picker, transition, { searchPickerIndex: index })
       }
     }
   };
@@ -418,11 +504,7 @@ function acceptSearchResult(
   const layout = conversationLayout(state, context);
   const selected = searchPickerEntryById(conversationSearchIndex(state), id)?.value;
   if (selected === undefined) return { state };
-  let scroll = scrollReducer(
-    layout.scroll,
-    { kind: 'setFollowTail', followTail: false },
-    layout.geometry
-  );
+  let scroll = scrollReducer(layout.scroll, { kind: 'setFollowTail', followTail: false }, layout.geometry);
   scroll = scrollReducer(
     scroll,
     { kind: 'setOffset', rows: layout.starts.get(selected.id) ?? 0 },
@@ -445,18 +527,19 @@ function openOverlay(
 ): TuiUpdateResult<CodingAgentTuiState, CodingAgentTuiMessage> {
   if (!canOpenOverlay(state)) return { state };
   if (kind === 'help') return { state: { ...state, overlay: { kind: 'help' }, modalOffsetRow: 0 } };
-  if (kind === 'debug') return { state: { ...state, overlay: { kind: 'debug', text: debugText(state) }, modalOffsetRow: 0 } };
-  const picker = kind === 'commands'
-    ? createSearchPickerState({ query: { text: '', mode: 'fuzzy' } }, COMMAND_INDEX)
-    : createSearchPickerState(
-        { query: { text: '', mode: 'fuzzy' } },
-        conversationSearchIndex(state)
-      );
-  const overlayState: CodingAgentTuiState = kind === 'commands'
-    ? { ...state, overlay: { kind: 'commands', picker }, modalOffsetRow: 0 }
-    : { ...state, overlay: { kind: 'search', picker }, modalOffsetRow: 0 };
+  if (kind === 'debug')
+    return { state: { ...state, overlay: { kind: 'debug', text: debugText(state) }, modalOffsetRow: 0 } };
+  const picker =
+    kind === 'commands'
+      ? createSearchPickerState({ query: { text: '', mode: 'fuzzy' } }, COMMAND_INDEX)
+      : createSearchPickerState({ query: { text: '', mode: 'fuzzy' } }, conversationSearchIndex(state));
+  const overlayState: CodingAgentTuiState =
+    kind === 'commands'
+      ? { ...state, overlay: { kind: 'commands', picker }, modalOffsetRow: 0 }
+      : { ...state, overlay: { kind: 'search', picker }, modalOffsetRow: 0 };
   return updated(overlayState, context, {
-    kind: 'element', elementId: kind === 'commands' ? 'command-picker' : 'conversation-search'
+    kind: 'element',
+    elementId: kind === 'commands' ? 'command-picker' : 'conversation-search'
   });
 }
 
@@ -478,23 +561,26 @@ function reconcileConversationLayout(state: CodingAgentTuiState, context: TuiCon
 }
 
 function agentTuiView(state: CodingAgentTuiState, context: TuiContext): Element<CodingAgentTuiMessage> {
-  const workspace = grid([
-    statusChrome(state),
-    conversationView(state, context),
-    divider({ id: 'composer-divider' }),
-    composerView(state),
-    hintBar(state, context.terminalSize.columns)
-  ], {
-    id: 'coding-agent-tui',
-    rows: [
-      { kind: 'fixed', cells: 1 },
-      { kind: 'fill' },
-      { kind: 'fixed', cells: 1 },
-      { kind: 'fixed', cells: 2 },
-      { kind: 'fixed', cells: 1 }
+  const workspace = grid(
+    [
+      statusChrome(state),
+      conversationView(state, context),
+      divider({ id: 'composer-divider' }),
+      composerView(state),
+      hintBar(state, context.terminalSize.columns)
     ],
-    columns: [{ kind: 'fill' }]
-  });
+    {
+      id: 'coding-agent-tui',
+      rows: [
+        { kind: 'fixed', cells: 1 },
+        { kind: 'fill' },
+        { kind: 'fixed', cells: 1 },
+        { kind: 'fixed', cells: 2 },
+        { kind: 'fixed', cells: 1 }
+      ],
+      columns: [{ kind: 'fill' }]
+    }
+  );
   if (state.run.kind === 'waiting_for_approval') {
     return overlay([workspace, approvalDialog(state, context)], { id: 'coding-agent-overlay' });
   }
@@ -505,9 +591,12 @@ function agentTuiView(state: CodingAgentTuiState, context: TuiContext): Element<
 }
 
 function composerView(state: CodingAgentTuiState): Element<CodingAgentTuiMessage> {
-  const placeholder = state.setup.status === 'setup_required'
-    ? 'Send a message or open commands to finish setup'
-    : state.run.kind === 'working' ? 'Queue a follow-up' : 'Send a message';
+  const placeholder =
+    state.setup.status === 'setup_required'
+      ? 'Send a message or open commands to finish setup'
+      : state.run.kind === 'working'
+        ? 'Queue a follow-up'
+        : 'Send a message';
   return textArea({
     id: 'composer',
     meta: { accessibleName: 'Message composer' },
@@ -524,11 +613,14 @@ function composerView(state: CodingAgentTuiState): Element<CodingAgentTuiMessage
 function conversationView(state: CodingAgentTuiState, context: TuiContext): Element<CodingAgentTuiMessage> {
   const layout = conversationLayout(state, context);
   if (layout.items.length === 0) {
-    return viewport(text({ content: 'Start with a message.', id: 'conversation-empty', textRole: 'caption' }), {
-      id: 'conversation',
-      offset: { row: 0 },
-      onScroll: (request): CodingAgentTuiMessage => ({ type: 'conversation.scrolled', request })
-    });
+    return viewport(
+      text({ content: 'Start with a message.', id: 'conversation-empty', textRole: 'caption' }),
+      {
+        id: 'conversation',
+        offset: { row: 0 },
+        onScroll: (request): CodingAgentTuiMessage => ({ type: 'conversation.scrolled', request })
+      }
+    );
   }
   const window = measuredWindow(createMeasuredCollection(layout.items), {
     viewportRows: layout.geometry.viewportRows,
@@ -558,7 +650,10 @@ function conversationView(state: CodingAgentTuiState, context: TuiContext): Elem
   });
 }
 
-function conversationEntryView(entry: CodingAgentTuiConversationEntry, state: CodingAgentTuiState): Element<CodingAgentTuiMessage> {
+function conversationEntryView(
+  entry: CodingAgentTuiConversationEntry,
+  state: CodingAgentTuiState
+): Element<CodingAgentTuiMessage> {
   if (entry.kind === 'activity' && entry.details !== undefined) {
     return disclosure({
       id: entry.id,
@@ -574,35 +669,49 @@ function conversationEntryView(entry: CodingAgentTuiConversationEntry, state: Co
   return richText({ id: entry.id, segments: conversationSegments(entry), wrap: true });
 }
 
-function overlayView(state: CodingAgentTuiState, context: TuiContext): Element<CodingAgentTuiMessage> | undefined {
+function overlayView(
+  state: CodingAgentTuiState,
+  context: TuiContext
+): Element<CodingAgentTuiMessage> | undefined {
   const width = Math.max(5, Math.min(84, context.terminalSize.columns - 4));
   const height = Math.max(4, Math.min(20, context.terminalSize.rows - 4));
   switch (state.overlay.kind) {
-    case 'none': return undefined;
-    case 'commands': return dialog({
-      ...modalOptions('commands-dialog', 'Commands', 'command-picker', width, height),
-      slots: {
-        content: searchPicker<string, CodingAgentTuiMessage, CodingAgentTuiMessage>({
-          id: 'command-picker',
-          title: 'Commands',
-          view: searchPickerView(state.overlay.picker),
-          searchPickerIndex: COMMAND_INDEX,
-          maxVisible: Math.max(3, height - 5),
-          helpText: 'Enter choose · Esc close',
-          onTransition: (transition): CodingAgentTuiMessage => ({
-            type: 'commands.transition',
-            transition
-          }),
-          onAccept: (event): CodingAgentTuiMessage => ({ type: 'commands.accept', event })
-        })
-      }
-    });
+    case 'none':
+      return undefined;
+    case 'commands':
+      return dialog({
+        ...modalOptions('commands-dialog', 'Commands', 'command-picker', width, height),
+        slots: {
+          content: searchPicker<string, CodingAgentTuiMessage, CodingAgentTuiMessage>({
+            id: 'command-picker',
+            title: 'Commands',
+            view: searchPickerView(state.overlay.picker),
+            searchPickerIndex: COMMAND_INDEX,
+            maxVisible: Math.max(3, height - 5),
+            helpText: 'Enter choose · Esc close',
+            onTransition: (transition): CodingAgentTuiMessage => ({
+              type: 'commands.transition',
+              transition
+            }),
+            onAccept: (event): CodingAgentTuiMessage => ({ type: 'commands.accept', event })
+          })
+        }
+      });
     case 'command_values': {
       const commandOverlay = state.overlay;
-      const commandEntry = INTERACTIVE_COMMANDS.find((candidate) => candidate.name === commandOverlay.command);
-      const index: SearchPickerIndex = commandEntry === undefined ? createSearchPickerIndex([]) : commandValueIndex(commandEntry);
+      const commandEntry = INTERACTIVE_COMMANDS.find(
+        (candidate) => candidate.name === commandOverlay.command
+      );
+      const index: SearchPickerIndex =
+        commandEntry === undefined ? createSearchPickerIndex([]) : commandValueIndex(commandEntry);
       return dialog({
-        ...modalOptions('command-value-dialog', commandEntry?.name ?? 'Command value', 'command-value-picker', width, height),
+        ...modalOptions(
+          'command-value-dialog',
+          commandEntry?.name ?? 'Command value',
+          'command-value-picker',
+          width,
+          height
+        ),
         slots: {
           content: searchPicker<string, CodingAgentTuiMessage, CodingAgentTuiMessage>({
             id: 'command-value-picker',
@@ -611,61 +720,73 @@ function overlayView(state: CodingAgentTuiState, context: TuiContext): Element<C
             searchPickerIndex: index,
             maxVisible: Math.max(3, height - 5),
             helpText: 'Enter choose · Esc close',
-            onTransition: (transition): CodingAgentTuiMessage => ({ type: 'command-values.transition', transition }),
+            onTransition: (transition): CodingAgentTuiMessage => ({
+              type: 'command-values.transition',
+              transition
+            }),
             onAccept: (event): CodingAgentTuiMessage => ({ type: 'command-values.accept', event })
           })
         }
       });
     }
-    case 'search': return dialog({
-      ...modalOptions('search-dialog', 'Find', 'conversation-search', width, height),
-      slots: {
-        content: searchPicker<CodingAgentTuiConversationEntry, CodingAgentTuiMessage, CodingAgentTuiMessage>({
-          id: 'conversation-search',
-          title: 'Find in conversation',
-          view: searchPickerView(state.overlay.picker),
-          searchPickerIndex: conversationSearchIndex(state),
-          maxVisible: Math.max(3, height - 5),
-          emptyText: 'No matching messages',
-          helpText: 'Enter jump · Esc close',
-          onTransition: (transition): CodingAgentTuiMessage => ({
-            type: 'search.transition',
-            transition
-          }),
-          onAccept: (event): CodingAgentTuiMessage => ({ type: 'search.accept', event })
-        })
-      }
-    });
-    case 'help': return dialog({
-      ...modalOptions('help-dialog', 'Keyboard shortcuts', 'help-content', width, Math.min(13, height)),
-      slots: {
-        content: richText({
-          id: 'help-content',
-          segments: body([
-            'Enter             Send message',
-            'Shift+Enter       Insert newline (enhanced terminals)',
-            'Ctrl+O            Insert newline',
-            'Up/Down           Browse sent messages',
-            'Ctrl+P            Commands',
-            'Ctrl+F            Find in conversation',
-            'PageUp/PageDown   Scroll conversation',
-            'F1                Help',
-            'Escape            Close'
-          ].join('\n')),
-          wrap: true
-        })
-      }
-    });
-    case 'debug': return dialog({
-      ...modalOptions('debug-dialog', 'Runtime details', 'debug-content', width, height),
-      slots: {
-        content: modalViewport(
-          richText({ id: 'debug-details', segments: body(state.overlay.text), wrap: true }),
-          state,
-          'debug-content'
-        )
-      }
-    });
+    case 'search':
+      return dialog({
+        ...modalOptions('search-dialog', 'Find', 'conversation-search', width, height),
+        slots: {
+          content: searchPicker<
+            CodingAgentTuiConversationEntry,
+            CodingAgentTuiMessage,
+            CodingAgentTuiMessage
+          >({
+            id: 'conversation-search',
+            title: 'Find in conversation',
+            view: searchPickerView(state.overlay.picker),
+            searchPickerIndex: conversationSearchIndex(state),
+            maxVisible: Math.max(3, height - 5),
+            emptyText: 'No matching messages',
+            helpText: 'Enter jump · Esc close',
+            onTransition: (transition): CodingAgentTuiMessage => ({
+              type: 'search.transition',
+              transition
+            }),
+            onAccept: (event): CodingAgentTuiMessage => ({ type: 'search.accept', event })
+          })
+        }
+      });
+    case 'help':
+      return dialog({
+        ...modalOptions('help-dialog', 'Keyboard shortcuts', 'help-content', width, Math.min(13, height)),
+        slots: {
+          content: richText({
+            id: 'help-content',
+            segments: body(
+              [
+                'Enter             Send message',
+                'Shift+Enter       Insert newline (enhanced terminals)',
+                'Ctrl+O            Insert newline',
+                'Up/Down           Browse sent messages',
+                'Ctrl+P            Commands',
+                'Ctrl+F            Find in conversation',
+                'PageUp/PageDown   Scroll conversation',
+                'F1                Help',
+                'Escape            Close'
+              ].join('\n')
+            ),
+            wrap: true
+          })
+        }
+      });
+    case 'debug':
+      return dialog({
+        ...modalOptions('debug-dialog', 'Runtime details', 'debug-content', width, height),
+        slots: {
+          content: modalViewport(
+            richText({ id: 'debug-details', segments: body(state.overlay.text), wrap: true }),
+            state,
+            'debug-content'
+          )
+        }
+      });
   }
 }
 
@@ -674,9 +795,14 @@ function approvalDialog(state: CodingAgentTuiState, context: TuiContext): Elemen
   const suspension = state.run.suspension;
   const approval = suspension.pendingApprovals[0];
   const width = Math.max(5, Math.min(88, context.terminalSize.columns - 4));
-  const bodyElement = approval === undefined
-    ? richText({ id: 'approval-missing', segments: errorText('The runtime suspended without an approval request.'), wrap: true })
-    : approvalContent(approval, suspension.pendingApprovals.length, state);
+  const bodyElement =
+    approval === undefined
+      ? richText({
+          id: 'approval-missing',
+          segments: errorText('The runtime suspended without an approval request.'),
+          wrap: true
+        })
+      : approvalContent(approval, suspension.pendingApprovals.length, state);
   return dialog({
     id: 'approval-dialog',
     title: 'Approval required',
@@ -686,10 +812,23 @@ function approvalDialog(state: CodingAgentTuiState, context: TuiContext): Elemen
     onDismiss: (): CodingAgentTuiMessage => ({ type: 'approval.decide', decision: 'deny' }),
     slots: {
       content: modalViewport(bodyElement, state, 'approval-content-scroll'),
-      actions: row([
-        button({ id: 'approval-deny', label: 'Deny', tone: 'destructive', onPress: (): CodingAgentTuiMessage => ({ type: 'approval.decide', decision: 'deny' }) }),
-        button({ id: 'approval-allow', label: 'Allow once', tone: 'primary', onPress: (): CodingAgentTuiMessage => ({ type: 'approval.decide', decision: 'allow' }) })
-      ], { id: 'approval-actions', gap: 2 })
+      actions: row(
+        [
+          button({
+            id: 'approval-deny',
+            label: 'Deny',
+            tone: 'destructive',
+            onPress: (): CodingAgentTuiMessage => ({ type: 'approval.decide', decision: 'deny' })
+          }),
+          button({
+            id: 'approval-allow',
+            label: 'Allow once',
+            tone: 'primary',
+            onPress: (): CodingAgentTuiMessage => ({ type: 'approval.decide', decision: 'allow' })
+          })
+        ],
+        { id: 'approval-actions', gap: 2 }
+      )
     },
     width,
     height: Math.max(4, Math.min(18, context.terminalSize.rows - 4)),
@@ -708,7 +847,7 @@ function modalViewport(
     scrollbar: { axis: 'vertical', visible: 'auto' },
     onScroll: (event): CodingAgentTuiMessage => ({
       type: 'modal.scrolled',
-      offsetRow: event.nextState.offsetRow,
+      offsetRow: event.nextState.offsetRow
     })
   });
 }
@@ -723,20 +862,25 @@ function approvalContent(
     approvalSubject(approval),
     approval.reason,
     effectSummary(approval)
-  ].filter((line) => line.length > 0).join('\n');
+  ]
+    .filter((line) => line.length > 0)
+    .join('\n');
   const details = JSON.stringify({ input: approval.input, effects: approval.effects }, null, 2);
-  return column([
-    richText({ id: 'approval-summary', segments: body(summary), wrap: true }),
-    disclosure({
-      id: 'approval-details',
-      label: 'Exact input and effects',
-      expanded: state.conversation.expandedIds.includes('approval-details'),
-      slots: {
-        content: richText({ id: 'approval-raw', segments: body(details), wrap: true })
-      },
-      onTransition: (): CodingAgentTuiMessage => ({ type: 'activity.toggle', id: 'approval-details' })
-    })
-  ], { id: 'approval-content', gap: 1 });
+  return column(
+    [
+      richText({ id: 'approval-summary', segments: body(summary), wrap: true }),
+      disclosure({
+        id: 'approval-details',
+        label: 'Exact input and effects',
+        expanded: state.conversation.expandedIds.includes('approval-details'),
+        slots: {
+          content: richText({ id: 'approval-raw', segments: body(details), wrap: true })
+        },
+        onTransition: (): CodingAgentTuiMessage => ({ type: 'activity.toggle', id: 'approval-details' })
+      })
+    ],
+    { id: 'approval-content', gap: 1 }
+  );
 }
 
 function approvalEffect(
@@ -760,7 +904,11 @@ function approvalEffect(
 }
 
 interface ConversationLayout {
-  readonly items: readonly { readonly id: string; readonly value: CodingAgentTuiConversationEntry; readonly rows: number }[];
+  readonly items: readonly {
+    readonly id: string;
+    readonly value: CodingAgentTuiConversationEntry;
+    readonly rows: number;
+  }[];
   readonly starts: ReadonlyMap<string, number>;
   readonly scroll: CodingAgentTuiState['conversation']['scroll'];
   readonly geometry: ScrollGeometry;
@@ -804,42 +952,61 @@ function conversationEntryRows(
 }
 
 function wrappedRows(value: string, width: number, context: TuiContext): number {
-  return Math.max(1, wrapTextCells(value, width, {
-    widthProfile: context.capabilities.unicode.widthProfile,
-    preserveWords: true
-  }).length);
+  return Math.max(
+    1,
+    wrapTextCells(value, width, {
+      widthProfile: context.capabilities.unicode.widthProfile,
+      preserveWords: true
+    }).length
+  );
 }
 
 function conversationPlainText(entry: CodingAgentTuiConversationEntry): string {
   switch (entry.kind) {
-    case 'user': return `You\n${entry.text}`;
-    case 'assistant': return `Assistant\n${entry.text.length === 0 ? '…' : entry.text}`;
-    case 'reasoning': return `Reasoning summary\n${entry.text}`;
-    case 'notice': return entry.text;
-    case 'activity': return `${activityLabel(entry)}${entry.summary === undefined ? '' : ` ${entry.summary}`}`;
+    case 'user':
+      return `You\n${entry.text}`;
+    case 'assistant':
+      return `Assistant\n${entry.text.length === 0 ? '…' : entry.text}`;
+    case 'reasoning':
+      return `Reasoning summary\n${entry.text}`;
+    case 'notice':
+      return entry.text;
+    case 'activity':
+      return `${activityLabel(entry)}${entry.summary === undefined ? '' : ` ${entry.summary}`}`;
   }
 }
 
 function conversationSegments(entry: CodingAgentTuiConversationEntry): InlineContent {
   switch (entry.kind) {
-    case 'user': return [{ kind: 'text', text: 'You\n', style: { bold: true } }, ...body(`${entry.text}\n`)];
-    case 'assistant': return [
-      { kind: 'text', text: 'Assistant\n', style: { bold: true } },
-      ...body(`${entry.text.length === 0 ? '…' : entry.text}\n`)
-    ];
-    case 'reasoning': return [
-      { kind: 'text', text: 'Reasoning summary\n', style: { bold: true, dim: true } },
-      { kind: 'text', text: `${entry.text}\n`, style: { dim: true } }
-    ];
-    case 'notice': return [{ kind: 'text', text: `${entry.text}\n`, style: entry.tone === 'error' ? { bold: true } : { dim: true } }];
-    case 'activity': return [
-      activitySymbol(entry.status),
-      {
-        kind: 'text',
-        text: ` ${entry.label}${entry.summary === undefined ? '' : ` — ${entry.summary}`}`,
-        ...(entry.status === 'running' ? { style: { dim: true } } : {})
-      }
-    ];
+    case 'user':
+      return [{ kind: 'text', text: 'You\n', style: { bold: true } }, ...body(`${entry.text}\n`)];
+    case 'assistant':
+      return [
+        { kind: 'text', text: 'Assistant\n', style: { bold: true } },
+        ...body(`${entry.text.length === 0 ? '…' : entry.text}\n`)
+      ];
+    case 'reasoning':
+      return [
+        { kind: 'text', text: 'Reasoning summary\n', style: { bold: true, dim: true } },
+        { kind: 'text', text: `${entry.text}\n`, style: { dim: true } }
+      ];
+    case 'notice':
+      return [
+        {
+          kind: 'text',
+          text: `${entry.text}\n`,
+          style: entry.tone === 'error' ? { bold: true } : { dim: true }
+        }
+      ];
+    case 'activity':
+      return [
+        activitySymbol(entry.status),
+        {
+          kind: 'text',
+          text: ` ${entry.label}${entry.summary === undefined ? '' : ` — ${entry.summary}`}`,
+          ...(entry.status === 'running' ? { style: { dim: true } } : {})
+        }
+      ];
   }
 }
 
@@ -849,10 +1016,14 @@ function activityLabel(entry: CodingAgentTuiActivityEntry): string {
 
 function activityGlyph(status: CodingAgentTuiActivityEntry['status']): string {
   switch (status) {
-    case 'running': return '•';
-    case 'success': return '✓';
-    case 'warning': return '!';
-    case 'failed': return '✗';
+    case 'running':
+      return '•';
+    case 'success':
+      return '✓';
+    case 'warning':
+      return '!';
+    case 'failed':
+      return '✗';
   }
 }
 
@@ -871,14 +1042,11 @@ const conversationSearchIndexes = new WeakMap<
 >();
 
 function conversationSearchIndex(
-  state: CodingAgentTuiState,
+  state: CodingAgentTuiState
 ): SearchPickerIndex<CodingAgentTuiConversationEntry> {
   const cached = conversationSearchIndexes.get(state.conversation);
   if (cached !== undefined) return cached;
-  const index = createSearchPickerIndex(
-    visibleConversationItems(state),
-    conversationSearchEntry,
-  );
+  const index = createSearchPickerIndex(visibleConversationItems(state), conversationSearchEntry);
   conversationSearchIndexes.set(state.conversation, index);
   return index;
 }
@@ -890,28 +1058,36 @@ function conversationSearchEntry(entry: CodingAgentTuiConversationEntry) {
     id: entry.id,
     label: label.length === 0 ? entry.kind : label,
     value: entry,
-    group: entry.kind,
+    group: entry.kind
   };
 }
 
 function visibleConversationItems(state: CodingAgentTuiState): readonly CodingAgentTuiConversationEntry[] {
   if (state.conversation.omittedEntries === 0) return state.conversation.items;
-  return [{
-    id: 'conversation:omitted',
-    kind: 'notice',
-    tone: 'info',
-    text: `${String(state.conversation.omittedEntries)} earlier conversation entries omitted from this display (${formatBytes(state.conversation.omittedBytes)}).`
-  }, ...state.conversation.items];
+  return [
+    {
+      id: 'conversation:omitted',
+      kind: 'notice',
+      tone: 'info',
+      text: `${String(state.conversation.omittedEntries)} earlier conversation entries omitted from this display (${formatBytes(state.conversation.omittedBytes)}).`
+    },
+    ...state.conversation.items
+  ];
 }
 
-function formatBytes(bytes: number): string { return bytes < 1024 ? `${String(bytes)} B` : `${(bytes / 1024).toFixed(1)} KiB`; }
+function formatBytes(bytes: number): string {
+  return bytes < 1024 ? `${String(bytes)} B` : `${(bytes / 1024).toFixed(1)} KiB`;
+}
 
 function modalOptions(id: string, title: string, focusId: string, width: number, height: number) {
   return {
     id,
     title,
     modal: true as const,
-    focusPolicy: { initialFocus: { kind: 'element' as const, elementId: focusId }, returnFocus: 'restore' as const },
+    focusPolicy: {
+      initialFocus: { kind: 'element' as const, elementId: focusId },
+      returnFocus: 'restore' as const
+    },
     dismissal: {
       dismissOnEscape: true as const,
       dismissOnOutsidePress: false as const
@@ -940,9 +1116,11 @@ function binding(
 }
 
 function composerBindingEnabled({ state, focusPath }: TuiInputBindingContext<CodingAgentTuiState>): boolean {
-  return state.overlay.kind === 'none'
-    && state.run.kind !== 'waiting_for_approval'
-    && focusPath?.includes('composer') === true;
+  return (
+    state.overlay.kind === 'none' &&
+    state.run.kind !== 'waiting_for_approval' &&
+    focusPath?.includes('composer') === true
+  );
 }
 
 function composerHistoryPreviousEnabled(context: TuiInputBindingContext<CodingAgentTuiState>): boolean {
@@ -984,7 +1162,9 @@ function errorText(value: string): InlineContent {
 function effectSummary(approval: AgentApprovalRequest): string {
   const accesses = approval.effects.accesses;
   if (accesses.length === 0) return 'tool run';
-  const summary = accesses.map((access) => `${access.mode.replaceAll('_', ' ')} · ${access.scope}`).join(', ');
+  const summary = accesses
+    .map((access) => `${access.mode.replaceAll('_', ' ')} · ${access.scope}`)
+    .join(', ');
   const execution = sandboxExecutionSummary(approval.input);
   return execution ? `${summary}. ${execution}` : summary;
 }
@@ -994,7 +1174,8 @@ function sandboxExecutionSummary(input: AgentApprovalRequest['input']): string |
   const execution = input.execution;
   if (!jsonObject(execution)) return undefined;
   const policyDigest = typeof execution.policyDigest === 'string' ? execution.policyDigest : undefined;
-  const executionDigest = typeof execution.executionDigest === 'string' ? execution.executionDigest : undefined;
+  const executionDigest =
+    typeof execution.executionDigest === 'string' ? execution.executionDigest : undefined;
   if (!policyDigest || !executionDigest) return undefined;
   return `Sandboxed command; network denied; host escape denied; policy ${policyDigest}; execution ${executionDigest}.`;
 }
@@ -1004,7 +1185,8 @@ function jsonObject(value: unknown): value is import('@agent-core/json').JsonObj
 }
 
 function approvalSubject(approval: AgentApprovalRequest): string {
-  if (typeof approval.input !== 'object' || approval.input === null || Array.isArray(approval.input)) return '';
+  if (typeof approval.input !== 'object' || approval.input === null || Array.isArray(approval.input))
+    return '';
   const input = approval.input as import('@agent-core/json').JsonObject;
   const candidates = [
     ['Command', input.command],
@@ -1022,11 +1204,15 @@ function approvalSubject(approval: AgentApprovalRequest): string {
 }
 
 function debugText(state: CodingAgentTuiState, runtimeState?: string): string {
-  return JSON.stringify({
-    runtimeDetails: state.runtimeDetails,
-    eventState: state.debug,
-    ...(runtimeState === undefined ? {} : { runtimeState: parseDebugRuntimeState(runtimeState) })
-  }, null, 2);
+  return JSON.stringify(
+    {
+      runtimeDetails: state.runtimeDetails,
+      eventState: state.debug,
+      ...(runtimeState === undefined ? {} : { runtimeState: parseDebugRuntimeState(runtimeState) })
+    },
+    null,
+    2
+  );
 }
 
 function parseDebugRuntimeState(value: string): unknown {

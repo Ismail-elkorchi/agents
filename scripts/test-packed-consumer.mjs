@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { glob, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -9,7 +9,13 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const npmCli = process.env.npm_execpath;
 if (!npmCli) throw new Error('npm_execpath is required to verify packed consumers.');
 const core = path.resolve(root, '../agent-core');
-const packageDirs = ['packages/auth', 'packages/json', 'packages/effects', 'packages/persistence', 'packages/model', 'packages/runtime', 'packages/tools', 'packages/tools-local', 'packages/providers/ollama', 'packages/providers/openai-responses', 'packages/providers/openai', 'packages/providers/openai-codex', 'packages/providers/openrouter'];
+const coreManifest = JSON.parse(await readFile(path.join(core, 'package.json'), 'utf8'));
+const packageDirs = [];
+for await (const file of glob(coreManifest.workspaces.map((workspace) => `${workspace}/package.json`), { cwd: core })) {
+  const manifest = JSON.parse(await readFile(path.join(core, file), 'utf8'));
+  if (!manifest.private) packageDirs.push(path.dirname(file));
+}
+packageDirs.sort();
 const temporary = await mkdtemp(path.join(tmpdir(), 'coding-agent-packed-consumer-'));
 try {
   const packs = path.join(temporary, 'packs');
@@ -51,7 +57,7 @@ try {
   await mkdir(consumer, { recursive: true });
   await writeFile(path.join(consumer, 'package.json'), `${JSON.stringify({ name: 'coding-agent-consumer', private: true, type: 'module', dependencies, overrides: { '@ismail-elkorchi/terminal-ui': '$@ismail-elkorchi/terminal-ui' } }, null, 2)}\n`);
   await exec(process.execPath, [npmCli, 'install', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: consumer, maxBuffer: 20 * 1024 * 1024 });
-  await writeFile(path.join(consumer, 'index.mjs'), ["import * as coding from '@ismail-elkorchi/coding-agent';", "import * as tui from '@ismail-elkorchi/coding-agent/tui';", "import * as writing from '@ismail-elkorchi/writing-agent';", "if (!coding.resolveCodingAuthority || !coding.loadCodingAgentConfiguration || !tui.createCodingAgentTuiApp) throw new Error('Coding-agent public exports are incomplete');", "if (!writing.createWritingProject || !writing.admitWritingOperation || !writing.runTransientWriting) throw new Error('Writing-agent public exports are incomplete');"].join('\n'));
+  await writeFile(path.join(consumer, 'index.mjs'), ["import * as coding from '@ismail-elkorchi/coding-agent';", "import * as tui from '@ismail-elkorchi/coding-agent/tui';", "import * as writing from '@ismail-elkorchi/writing-agent';", "if (!coding.resolveCodingAuthority || !coding.loadCodingAgentConfiguration || !coding.createCodingSession || !tui.createCodingAgentTuiApp) throw new Error('Coding-agent public exports are incomplete');", "if (!writing.createWritingProject || !writing.admitWritingOperation || !writing.runTransientWriting) throw new Error('Writing-agent public exports are incomplete');"].join('\n'));
   await exec(process.execPath, ['index.mjs'], { cwd: consumer });
   console.log('Packed agent consumers passed.');
 } finally { await rm(temporary, { recursive: true, force: true }); }

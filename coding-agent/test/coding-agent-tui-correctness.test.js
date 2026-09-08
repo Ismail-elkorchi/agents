@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { decodeAgentTerminalSnapshot } from '@agent-core/runtime';
 import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import { textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
 import { createTuiRuntime, runTui } from '@ismail-elkorchi/terminal-ui/tui';
@@ -89,9 +88,46 @@ test('recovered queued runs surface queue and driver control', async () => {
   await runtime.dispose();
 });
 
+test('hydration retains concurrent work and selects the exact per-call approval or recovery effect', async () => {
+  const source = { responseId: 'original-response', catalog: { revision: 'original-catalog' } };
+  const running = baseHydration({ phase: 'running', activeRunId: 'run-1', queuedInputs: 0 }, {
+    pendingState: 'claimed', control: { status: 'owned', driverId: 'driver-1' }, phase: { kind: 'active' },
+    providerRequests: [{ stage: 'consumed' }, { stage: 'effect_pending' }],
+    toolBatches: [{ source, callStates: [{ stage: 'ready' }, { stage: 'recorded' }, { stage: 'cancelled' }] }]
+  });
+  const runtime = createTuiRuntime({ app: createCodingAgentTuiApp('', { initialHydration: running }), host: createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 18 } }) });
+  await runtime.start();
+  assert.match(runtime.state().run.label, /1 provider request · 1 pending tool/u);
+  assert.equal(runtime.state().debug.runs[0].state.toolBatches[0].source, source);
+  await runtime.dispose();
+
+  const approval = approvalHydration();
+  approval.runs[0].state.toolBatches[0].callStates.unshift({ stage: 'approval', approval: { ...approvalRequest(), approvalId: 'other-approval', callIndex: 1, callId: 'other-call' } });
+  const approvals = createTuiRuntime({ app: createCodingAgentTuiApp('', { initialHydration: approval }), host: createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 18 } }) });
+  await approvals.start();
+  assert.deepEqual(approvals.state().run.suspension.pendingApprovals.map((item) => item.approvalId), ['approval-1', 'other-approval']);
+  await approvals.dispose();
+  approval.runs[0].state.phase = { kind: 'active' };
+  const independentApproval = createTuiRuntime({ app: createCodingAgentTuiApp('', { initialHydration: approval }), host: createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 18 } }) });
+  await independentApproval.start();
+  assert.equal(independentApproval.state().run.kind, 'waiting_for_approval');
+  assert.deepEqual(independentApproval.state().run.suspension.pendingApprovals.map((item) => item.approvalId), ['other-approval', 'approval-1']);
+  await independentApproval.dispose();
+
+  const recovery = recoveryHydration();
+  recovery.runs[0].state.phase = { kind: 'suspended', reason: 'tool_outcome_unknown' };
+  recovery.runs[0].state.providerRequests = [{ stage: 'outcome_unknown', effect: { intent: { effectId: 'different-provider-effect' } } }];
+  recovery.runs[0].state.toolBatches = [{ source, callStates: [{ stage: 'outcome_unknown', effect: { intent: { effectId: 'effect-unknown' } } }] }];
+  const recovering = createTuiRuntime({ app: createCodingAgentTuiApp('', { initialHydration: recovery }), host: createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 18 } }) });
+  await recovering.start();
+  assert.equal(recovering.state().run.suspension.reason, 'tool_outcome_unknown');
+  assert.equal(recovering.state().run.suspension.effectId, 'effect-unknown');
+  await recovering.dispose();
+});
+
 test('completed hydration surfaces terminal checks and persisted workspace changes', async () => {
   const runtime = createTuiRuntime({
-    app: createCodingAgentTuiApp('', { initialHydration: completedHydration() }),
+    app: createCodingAgentTuiApp('', { initialHydration: await completedHydration() }),
     host: createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 18 } })
   });
   await runtime.start();
@@ -283,7 +319,8 @@ function approvalHydration() {
   }, {
     pendingState: 'suspended',
     control: { status: 'detached' },
-    phase: { kind: 'approval', approval: approvalRequest() },
+    phase: { kind: 'suspended', reason: 'approval', approvalId: 'approval-1' },
+    toolBatches: [{ callStates: [{ stage: 'approval', approval: approvalRequest() }] }],
     budget: budget()
   });
 }
@@ -300,7 +337,8 @@ function recoveryHydration() {
   });
 }
 
-function completedHydration() {
+async function completedHydration() {
+  const { decodeAgentTerminalSnapshot } = await import('@agent-core/runtime');
   const terminal = decodeAgentTerminalSnapshot({
     runId: 'run-1', finalizationId: 'final-1', phase: 'ended', executionStatus: 'completed',
     verificationStatus: 'passed', terminationReason: 'model_completed', modelTerminationReason: 'stop',
@@ -401,6 +439,8 @@ function runInspection(overrides) {
       },
       control: overrides.control,
       phase: overrides.phase,
+      providerRequests: overrides.providerRequests ?? [],
+      toolBatches: overrides.toolBatches ?? [],
       toolCalls: [], revisionInstructions: [],
       ...(overrides.budget === undefined ? {} : { budget: overrides.budget })
     },
@@ -467,3 +507,25 @@ function key(name, modifiers = {}) {
     modifiers: { ctrl: false, alt: false, shift: false, meta: false, ...modifiers }
   };
 }
+
+
+test('restored and live context transitions share the exact window identity', async () => {
+  const hydration = await completedHydration();
+  const window = {
+    windowId: 'window-1', parentWindowId: null,
+    historyPosition: { format: 'agent-core.history/1', sessionId: 'session-1', branchId: 'session-1', throughEntryId: 'assistant-1', sourceRevision: 1 },
+    selection: { strategy: 'retain', retained: [], omitted: [], notes: [] },
+    reason: 'Retain the original conversation.', createdAt: '2026-09-07T00:00:00.000Z'
+  };
+  hydration.replay.branch.push(entry({ id: 'transition-entry-1', type: 'context_transition', window }));
+  const runtime = createTuiRuntime({ app: createCodingAgentTuiApp('', { initialHydration: hydration }), host: createMemoryTerminalHost() });
+  await runtime.start();
+  try {
+    await runtime.dispatch({ type: 'context.transitioned', window });
+    await runtime.dispatch({ type: 'progress', event: { type: 'context.transitioned', window, transition: { transitionId: 'transition-1', windowId: window.windowId, previousWindowId: null, idempotencyKey: 'context-1', requestFingerprint: 'f'.repeat(64), committedAt: window.createdAt } } });
+    const transitions = runtime.state().conversation.items.filter((item) => item.kind === 'notice' && item.text.includes('Context changed'));
+    assert.equal(transitions.length, 1);
+    assert.equal(transitions[0].id, 'session:window-1');
+    assert.match(transitions[0].text, /Retain the original conversation/u);
+  } finally { await runtime.dispose(); }
+});

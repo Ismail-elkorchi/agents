@@ -168,3 +168,54 @@ coding-agent auth logout openai-codex
 ```
 
 OpenAI Platform authentication comes from `OPENAI_API_KEY`; ChatGPT subscription authentication is stored by `auth login openai-codex` outside the workspace.
+
+## Reusable persistent sessions
+
+`createCodingSession` composes the same workspace authority, isolated working copy,
+Sandbox tools, check plans, disposition, and handoff service used by the CLI and TUI.
+It accepts an already opened and admitted workspace, a `ModelProvider`, exact session
+settings, and a permission mode. `closeCodingSession` settles application cleanup;
+the caller closes its opened workspace after the session finishes.
+
+```ts
+import { createCodingSession, closeCodingSession } from '@ismail-elkorchi/coding-agent';
+
+const coding = await createCodingSession({
+  workspace,
+  provider,
+  settings: { provider: provider.id, model },
+  permissionMode: 'review'
+});
+try {
+  const submission = await coding.agent.submit({ task: 'Inspect this implementation.' });
+  if (submission.kind === 'started') await submission.completion;
+} finally {
+  await closeCodingSession(coding);
+}
+```
+
+Original user contributions remain available across completed runs. The optional
+attention tools are composed for every Coding session: `history_read`,
+`history_search`, `notes_list`, `notes_search`, `notes_read`, `notes_write`,
+`notes_remove`, `context_inspect`, and `context_transition`. They are confined to
+the selected session branch. Notes are generated material and cannot authorize
+workspace effects, change a check result, or publish a working copy. Review mode
+can maintain private notes while workspace writes remain unavailable.
+
+`/context` or `/context inspect` shows the committed window and pending work.
+`/context retain` requests a validated window retaining original history after a
+run has established the complete tool catalog. Model
+context requests are scheduled for a legal runtime boundary. Both controls use
+Core's context service and compiled bootstrap validation. A failed admission keeps
+the previous committed window. A provider-native strategy requires an active run,
+an explicit provider capability and a governed transform of completed history;
+the current run's source and synchronous tool obligations remain original.
+Primary generation and native transforms share `coding.inference`, durable
+invocation records and one owning run budget. Hosts may set `inferenceBudget`.
+
+Active repository guidance is reread at request and authorization boundaries. Each
+request includes current source and working-copy revision identities, actual
+changed resources, the admitted check plan, the latest observed check, and the
+latest handoff's exact reviewed revision and publication status. A prior check is
+labelled applicable only when its checked revision equals the current working
+copy; model notes cannot change that binding.

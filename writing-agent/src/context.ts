@@ -1,13 +1,18 @@
 import { canonicalSha256, contentId, deepFreeze, textSha256 } from './canonical.js';
 import type { PromptContextItemInput } from '@agent-core/runtime';
-import { writingContextSelectionSchema, type WritingContextSelection, type ProjectSnapshot, type WritingOperation } from './domain.js';
+import {
+  writingContextSelectionSchema,
+  type WritingContextSelection,
+  type ProjectSnapshot,
+  type WritingOperation
+} from './domain.js';
 import type { WritingProject } from './project.js';
 import { completeTextRange, readRootedText } from './project.js';
 import { offsetRange, rangeFromOffsets } from './text-ranges.js';
 
 export const WRITING_CONTEXT_POLICY_ID = 'writing-agent/context-selection';
-export const WRITING_CONTEXT_POLICY_VERSION = 2;
-export const WRITING_CONTEXT_POLICY_IMPLEMENTATION_ID = 'writing-agent.context-selection@2';
+export const WRITING_CONTEXT_POLICY_VERSION = 3;
+export const WRITING_CONTEXT_POLICY_IMPLEMENTATION_ID = 'writing-agent.context-selection@3';
 
 export async function selectWritingContext(input: {
   readonly project: WritingProject;
@@ -15,11 +20,15 @@ export async function selectWritingContext(input: {
   readonly tokenBudget?: number;
 }): Promise<WritingContextSelection> {
   const snapshot = (await input.project.store.view()).current;
-  if (input.operation.baseProjectRevisionId !== snapshot.revision.revisionId) throw new Error('Cannot select context for a stale writing operation.');
+  if (input.operation.baseProjectRevisionId !== snapshot.revision.revisionId)
+    throw new Error('Cannot select context for a stale writing operation.');
   const tokenBudget = input.tokenBudget ?? 24_000;
-  if (!Number.isSafeInteger(tokenBudget) || tokenBudget < 256) throw new Error('Writing context token budget must be at least 256.');
+  if (!Number.isSafeInteger(tokenBudget) || tokenBudget < 256)
+    throw new Error('Writing context token budget must be at least 256.');
   const selection = await contextCandidates(input.project, input.operation, snapshot);
-  const candidates = [...selection.items].sort((left, right) => contextPriority(left.kind) - contextPriority(right.kind));
+  const candidates = [...selection.items].sort(
+    (left, right) => contextPriority(left.kind) - contextPriority(right.kind)
+  );
   let remaining = tokenBudget;
   let truncated = false;
   const items: WritingContextSelection['items'][number][] = [];
@@ -31,7 +40,10 @@ export async function selectWritingContext(input: {
       remaining -= cost;
       continue;
     }
-    if (candidate.kind === 'operation-target-descriptor') throw new Error(`Writing context budget cannot carry required target control descriptor: ${candidate.itemId}`);
+    if (candidate.kind === 'operation-target-descriptor')
+      throw new Error(
+        `Writing context budget cannot carry required target control descriptor: ${candidate.itemId}`
+      );
     if (candidate.kind === 'target-text' && remaining >= 128) {
       const content = truncateToTokens(candidate.content, remaining);
       items.push({ ...candidate, content, range: completeTextRange(content) });
@@ -42,13 +54,26 @@ export async function selectWritingContext(input: {
     }
   }
   const selectedIntentIds = input.operation.intents.map((intent) => intent.intentId);
-  const intentCoverage = Object.fromEntries(input.operation.intents.map((intent) => {
-    const targets = new Set([...intent.targetNodeIds, ...intent.targetResourceIds]);
-    const selected = items.filter((item) => targets.has(item.itemId)).length;
-    return [intent.intentId, targets.size === 0 || selected === targets.size ? 'complete' : selected === 0 ? 'none' : 'partial'];
-  }));
-  const coverage = truncated || Object.values(omittedCounts).some((count) => count > 0) || Object.values(intentCoverage).some((value) => value !== 'complete') ? 'partial' : 'complete';
+  const intentCoverage = Object.fromEntries(
+    input.operation.intents.map((intent) => {
+      const targets = new Set([...intent.targetNodeIds, ...intent.targetResourceIds]);
+      const selected = items.filter((item) => targets.has(item.itemId)).length;
+      return [
+        intent.intentId,
+        targets.size === 0 || selected === targets.size ? 'complete' : selected === 0 ? 'none' : 'partial'
+      ];
+    })
+  );
+  const coverage =
+    truncated ||
+    Object.values(omittedCounts).some((count) => count > 0) ||
+    Object.values(intentCoverage).some((value) => value !== 'complete')
+      ? 'partial'
+      : 'complete';
   const material = {
+    parentSelectionId: null,
+    baseProjectRevisionId: input.operation.baseProjectRevisionId,
+    supplements: [],
     policyId: WRITING_CONTEXT_POLICY_ID,
     policyVersion: WRITING_CONTEXT_POLICY_VERSION,
     operationId: input.operation.operationId,
@@ -61,135 +86,223 @@ export async function selectWritingContext(input: {
     truncated,
     coverage
   };
-  return deepFreeze(writingContextSelectionSchema.parse({ contextSelectionId: contentId('context', material), ...material }));
+  return deepFreeze(
+    writingContextSelectionSchema.parse({ contextSelectionId: contentId('context', material), ...material })
+  );
 }
 
-export function contextItemsForRuntime(selection: WritingContextSelection): readonly PromptContextItemInput[] {
-  return selection.items.map((item) => ({
-    id: item.itemId,
-    content: item.content,
-    sourceUri: `writing-context://${encodeURIComponent(item.kind)}/${encodeURIComponent(item.itemId)}`,
-    sourceKind: item.trust === 'trusted-control' ? 'user' : 'external',
-    integrity: item.trust === 'trusted-control' ? 'verified' : 'unverified',
-    representation: item.range === undefined ? 'full' : 'excerpt',
-    mediaType: 'text/plain',
-    title: item.kind,
-    ...(item.range === undefined ? {} : { range: { kind: 'line' as const, start: item.range.start.line, end: item.range.end.line } }),
-    tokenEstimate: estimateTokens(item.content),
-    purpose: item.reasonCodes.join(',')
-  }));
+export function contextItemsForRuntime(
+  selection: WritingContextSelection
+): readonly PromptContextItemInput[] {
+  return [
+    ...selection.items.map((item): PromptContextItemInput => ({
+      id: item.itemId,
+      content: item.content,
+      sourceUri: `writing-context://${encodeURIComponent(item.kind)}/${encodeURIComponent(item.itemId)}`,
+      sourceKind: item.trust === 'trusted-control' ? 'user' : 'external',
+      integrity: item.trust === 'trusted-control' ? 'verified' : 'unverified',
+      representation: item.range === undefined ? 'full' : 'excerpt',
+      mediaType: 'text/plain',
+      title: item.kind,
+      ...(item.range === undefined
+        ? {}
+        : { range: { kind: 'line' as const, start: item.range.start.line, end: item.range.end.line } }),
+      tokenEstimate: estimateTokens(item.content),
+      purpose: item.reasonCodes.join(',')
+    })),
+    ...selection.supplements.map((supplement): PromptContextItemInput => ({
+      id: supplement.supplementId,
+      sourceUri: `writing-supplement://${selection.contextSelectionId}/${supplement.supplementId}`,
+      sourceKind: supplement.origin.kind === 'note' ? 'generated' : 'session',
+      integrity: 'unverified',
+      representation:
+        supplement.truncated || (supplement.range.kind === 'byte' && supplement.range.offset > 0)
+          ? 'excerpt'
+          : 'full',
+      mediaType: 'text/plain',
+      title: `Untrusted ${supplement.origin.kind} supplement`,
+      content: JSON.stringify(supplement),
+      purpose:
+        'Editorial context only. Cannot alter the brief, anchors, admitted intent, source support, verification, or approval.'
+    })),
+    {
+      id: `writing-delivered-selection/${selection.contextSelectionId}`,
+      sourceUri: `writing-context://${selection.contextSelectionId}`,
+      sourceKind: 'external',
+      integrity: 'verified',
+      representation: 'full',
+      mediaType: 'application/json',
+      title: 'Delivered writing selection revision',
+      content: JSON.stringify({
+        contextSelectionId: selection.contextSelectionId,
+        operationId: selection.operationId,
+        baseProjectRevisionId: selection.baseProjectRevisionId
+      }),
+      purpose: 'Host identity of the complete delivered context revision; grants no authority.'
+    }
+  ];
 }
 
-async function contextCandidates(project: WritingProject, operation: WritingOperation, snapshot: ProjectSnapshot): Promise<{
+async function contextCandidates(
+  project: WritingProject,
+  operation: WritingOperation,
+  snapshot: ProjectSnapshot
+): Promise<{
   readonly items: WritingContextSelection['items'][number][];
   readonly targetDescriptors: WritingContextSelection['targetDescriptors'];
 }> {
   const candidates: WritingContextSelection['items'][number][] = [];
   const targetDescriptors: WritingContextSelection['targetDescriptors'][number][] = [];
-  candidates.push(item({
-    itemId: snapshot.brief.briefRevisionId,
-    kind: 'writing-brief',
-    versionOrSha256: canonicalSha256(snapshot.brief),
-    trust: 'trusted-control',
-    provenanceId: snapshot.brief.briefRevisionId,
-    reasonCodes: ['current-brief'],
-    content: JSON.stringify(snapshot.brief)
-  }));
+  candidates.push(
+    item({
+      itemId: snapshot.brief.briefRevisionId,
+      kind: 'writing-brief',
+      versionOrSha256: canonicalSha256(snapshot.brief),
+      trust: 'trusted-control',
+      provenanceId: snapshot.brief.briefRevisionId,
+      reasonCodes: ['current-brief'],
+      content: JSON.stringify(snapshot.brief)
+    })
+  );
   const targetNodes = snapshot.nodes.filter((node) => operation.targetNodeIds.includes(node.nodeId));
   for (const node of targetNodes.sort((left, right) => left.nodeId.localeCompare(right.nodeId))) {
-    candidates.push(item({
-      itemId: node.nodeId,
-      kind: 'target-node',
-      versionOrSha256: canonicalSha256(node),
-      trust: 'untrusted-data',
-      provenanceId: `node-${node.nodeId}`,
-      reasonCodes: ['operation-target', 'node-purpose'],
-      content: JSON.stringify(node)
-    }));
-    const relatives = snapshot.nodes.filter((candidate) => candidate.nodeId === node.parentId || (candidate.parentId === node.parentId && Math.abs(candidate.siblingOrder - node.siblingOrder) === 1));
+    candidates.push(
+      item({
+        itemId: node.nodeId,
+        kind: 'target-node',
+        versionOrSha256: canonicalSha256(node),
+        trust: 'untrusted-data',
+        provenanceId: `node-${node.nodeId}`,
+        reasonCodes: ['operation-target', 'node-purpose'],
+        content: JSON.stringify(node)
+      })
+    );
+    const relatives = snapshot.nodes.filter(
+      (candidate) =>
+        candidate.nodeId === node.parentId ||
+        (candidate.parentId === node.parentId && Math.abs(candidate.siblingOrder - node.siblingOrder) === 1)
+    );
     for (const relative of relatives.sort((left, right) => left.nodeId.localeCompare(right.nodeId))) {
       if (candidates.some((candidate) => candidate.itemId === relative.nodeId)) continue;
-      candidates.push(item({
-        itemId: relative.nodeId,
-        kind: relative.nodeId === node.parentId ? 'parent-node' : 'adjacent-node',
-        versionOrSha256: canonicalSha256(relative),
-        trust: 'untrusted-data',
-        provenanceId: `node-${relative.nodeId}`,
-        reasonCodes: [relative.nodeId === node.parentId ? 'target-parent' : 'target-adjacent'],
-        content: JSON.stringify(relative)
-      }));
+      candidates.push(
+        item({
+          itemId: relative.nodeId,
+          kind: relative.nodeId === node.parentId ? 'parent-node' : 'adjacent-node',
+          versionOrSha256: canonicalSha256(relative),
+          trust: 'untrusted-data',
+          provenanceId: `node-${relative.nodeId}`,
+          reasonCodes: [relative.nodeId === node.parentId ? 'target-parent' : 'target-adjacent'],
+          content: JSON.stringify(relative)
+        })
+      );
     }
   }
-  const targetResources = snapshot.resources.filter((resource) => operation.targetResourceIds.includes(resource.resourceId));
-  for (const resource of targetResources.sort((left, right) => left.resourceId.localeCompare(right.resourceId))) {
+  const targetResources = snapshot.resources.filter((resource) =>
+    operation.targetResourceIds.includes(resource.resourceId)
+  );
+  for (const resource of targetResources.sort((left, right) =>
+    left.resourceId.localeCompare(right.resourceId)
+  )) {
     const file = await readRootedText(project.authority, resource.relativePath, 16 * 1024 * 1024);
-    if (file.sha256 !== resource.currentSha256) throw new Error(`Managed resource changed before context selection: ${resource.resourceId}`);
+    if (file.sha256 !== resource.currentSha256)
+      throw new Error(`Managed resource changed before context selection: ${resource.resourceId}`);
     const descriptor = targetDescriptor(resource, file.content);
     targetDescriptors.push(descriptor);
-    candidates.push(item({
-      itemId: contentId('target-descriptor-item', { operationId: operation.operationId, resourceId: resource.resourceId }),
-      kind: 'operation-target-descriptor',
-      versionOrSha256: canonicalSha256(descriptor),
-      trust: 'trusted-control',
-      provenanceId: operation.operationId,
-      reasonCodes: ['application-owned-target', 'edit-anchor-authority'],
-      content: JSON.stringify(descriptor)
-    }));
-    candidates.push(item({
-      itemId: resource.resourceId,
-      kind: 'target-text',
-      versionOrSha256: file.sha256,
-      range: completeTextRange(file.content),
-      trust: 'untrusted-data',
-      provenanceId: `resource-${resource.resourceId}-${file.sha256}`,
-      reasonCodes: ['operation-target', 'exact-current-text'],
-      content: file.content
-    }));
+    candidates.push(
+      item({
+        itemId: contentId('target-descriptor-item', {
+          operationId: operation.operationId,
+          resourceId: resource.resourceId
+        }),
+        kind: 'operation-target-descriptor',
+        versionOrSha256: canonicalSha256(descriptor),
+        trust: 'trusted-control',
+        provenanceId: operation.operationId,
+        reasonCodes: ['application-owned-target', 'edit-anchor-authority'],
+        content: JSON.stringify(descriptor)
+      })
+    );
+    candidates.push(
+      item({
+        itemId: resource.resourceId,
+        kind: 'target-text',
+        versionOrSha256: file.sha256,
+        range: completeTextRange(file.content),
+        trust: 'untrusted-data',
+        provenanceId: `resource-${resource.resourceId}-${file.sha256}`,
+        reasonCodes: ['operation-target', 'exact-current-text'],
+        content: file.content
+      })
+    );
   }
-  for (const relation of snapshot.relations.filter((relation) => operation.targetNodeIds.includes(relation.sourceId) || operation.targetNodeIds.includes(relation.targetId)).sort((left, right) => left.relationId.localeCompare(right.relationId))) {
-    candidates.push(item({
-      itemId: relation.relationId,
-      kind: 'related-node-edge',
-      versionOrSha256: canonicalSha256(relation),
-      trust: 'untrusted-data',
-      provenanceId: `relation-${relation.relationId}`,
-      reasonCodes: ['explicit-relation'],
-      content: JSON.stringify(relation)
-    }));
+  for (const relation of snapshot.relations
+    .filter(
+      (relation) =>
+        operation.targetNodeIds.includes(relation.sourceId) ||
+        operation.targetNodeIds.includes(relation.targetId)
+    )
+    .sort((left, right) => left.relationId.localeCompare(right.relationId))) {
+    candidates.push(
+      item({
+        itemId: relation.relationId,
+        kind: 'related-node-edge',
+        versionOrSha256: canonicalSha256(relation),
+        trust: 'untrusted-data',
+        provenanceId: `relation-${relation.relationId}`,
+        reasonCodes: ['explicit-relation'],
+        content: JSON.stringify(relation)
+      })
+    );
   }
-  const evidenceContextRequired = operation.intents.some((intent) => intent.affectedClaimIds.length > 0 || intent.affectedRelationIds.length > 0);
-  for (const source of snapshot.sources.filter(() => evidenceContextRequired).sort((left, right) => left.sourceId.localeCompare(right.sourceId))) {
-    candidates.push(item({
-      itemId: source.sourceId,
-      kind: 'linked-source',
-      versionOrSha256: source.exactSha256,
-      trust: 'untrusted-data',
-      provenanceId: `source-${source.sourceId}`,
-      reasonCodes: ['evidence-linked'],
-      content: JSON.stringify(source)
-    }));
+  const evidenceContextRequired = operation.intents.some(
+    (intent) => intent.affectedClaimIds.length > 0 || intent.affectedRelationIds.length > 0
+  );
+  for (const source of snapshot.sources
+    .filter(() => evidenceContextRequired)
+    .sort((left, right) => left.sourceId.localeCompare(right.sourceId))) {
+    candidates.push(
+      item({
+        itemId: source.sourceId,
+        kind: 'linked-source',
+        versionOrSha256: source.exactSha256,
+        trust: 'untrusted-data',
+        provenanceId: `source-${source.sourceId}`,
+        reasonCodes: ['evidence-linked'],
+        content: JSON.stringify(source)
+      })
+    );
   }
-  for (const finding of snapshot.editorialFindings.filter((finding) => finding.verdict !== 'passed').sort((left, right) => left.findingId.localeCompare(right.findingId))) {
-    candidates.push(item({
-      itemId: finding.findingId,
-      kind: 'unresolved-finding',
-      versionOrSha256: canonicalSha256(finding),
-      trust: 'untrusted-data',
-      provenanceId: `finding-${finding.findingId}`,
-      reasonCodes: ['unresolved-review'],
-      content: JSON.stringify(finding)
-    }));
+  for (const finding of snapshot.editorialFindings
+    .filter((finding) => finding.verdict !== 'passed')
+    .sort((left, right) => left.findingId.localeCompare(right.findingId))) {
+    candidates.push(
+      item({
+        itemId: finding.findingId,
+        kind: 'unresolved-finding',
+        versionOrSha256: canonicalSha256(finding),
+        trust: 'untrusted-data',
+        provenanceId: `finding-${finding.findingId}`,
+        reasonCodes: ['unresolved-review'],
+        content: JSON.stringify(finding)
+      })
+    );
   }
-  for (const decision of snapshot.editorialDecisions.filter((decision) => operation.intents.some((intent) => intent.affectedEditorialDecisionIds.includes(decision.decisionId))).sort((left, right) => left.decisionId.localeCompare(right.decisionId))) {
-    candidates.push(item({
-      itemId: decision.decisionId,
-      kind: 'accepted-editorial-decision',
-      versionOrSha256: canonicalSha256(decision),
-      trust: 'trusted-control',
-      provenanceId: `decision-${decision.decisionId}`,
-      reasonCodes: ['intent-preservation'],
-      content: JSON.stringify(decision)
-    }));
+  for (const decision of snapshot.editorialDecisions
+    .filter((decision) =>
+      operation.intents.some((intent) => intent.affectedEditorialDecisionIds.includes(decision.decisionId))
+    )
+    .sort((left, right) => left.decisionId.localeCompare(right.decisionId))) {
+    candidates.push(
+      item({
+        itemId: decision.decisionId,
+        kind: 'accepted-editorial-decision',
+        versionOrSha256: canonicalSha256(decision),
+        trust: 'trusted-control',
+        provenanceId: `decision-${decision.decisionId}`,
+        reasonCodes: ['intent-preservation'],
+        content: JSON.stringify(decision)
+      })
+    );
   }
   return { items: candidates, targetDescriptors };
 }
@@ -199,11 +312,23 @@ function targetDescriptor(
   content: string
 ): WritingContextSelection['targetDescriptors'][number] {
   const anchors: WritingContextSelection['targetDescriptors'][number]['anchors'][number][] = [];
-  const add = (kind: 'document' | 'paragraph' | 'protected-range', range: WritingContextSelection['targetDescriptors'][number]['anchors'][number]['range'], label: string, targetRangeId?: string) => {
+  const add = (
+    kind: 'document' | 'paragraph' | 'protected-range',
+    range: WritingContextSelection['targetDescriptors'][number]['anchors'][number]['range'],
+    label: string,
+    targetRangeId?: string
+  ) => {
     const offsets = offsetRange(content, range);
     const textHash = textSha256(content.slice(offsets.start, offsets.end));
     anchors.push({
-      anchorId: contentId('edit-anchor', { resourceId: resource.resourceId, baseSha256: resource.currentSha256, kind, targetRangeId: targetRangeId ?? null, range, textHash }),
+      anchorId: contentId('edit-anchor', {
+        resourceId: resource.resourceId,
+        baseSha256: resource.currentSha256,
+        kind,
+        targetRangeId: targetRangeId ?? null,
+        range,
+        textHash
+      }),
       kind,
       ...(targetRangeId === undefined ? {} : { targetRangeId }),
       range,
@@ -212,7 +337,13 @@ function targetDescriptor(
     });
   };
   add('document', completeTextRange(content), 'Complete admitted document');
-  for (const protectedRange of resource.protectedRanges) add('protected-range', protectedRange.range, `Protected range ${protectedRange.rangeId}`, protectedRange.rangeId);
+  for (const protectedRange of resource.protectedRanges)
+    add(
+      'protected-range',
+      protectedRange.range,
+      `Protected range ${protectedRange.rangeId}`,
+      protectedRange.rangeId
+    );
   for (const [index, offsets] of paragraphOffsets(content).slice(0, 512).entries()) {
     add('paragraph', rangeFromOffsets(content, offsets.start, offsets.end), `Paragraph ${String(index + 1)}`);
   }
@@ -235,13 +366,15 @@ function paragraphOffsets(content: string): readonly { readonly start: number; r
     start = end + match[0].length;
   }
   const finalEnd = trimTrailingNewlines(content, start, content.length);
-  if (start < finalEnd && content.slice(start, finalEnd).trim().length > 0) ranges.push({ start, end: finalEnd });
+  if (start < finalEnd && content.slice(start, finalEnd).trim().length > 0)
+    ranges.push({ start, end: finalEnd });
   return Object.freeze(ranges);
 }
 
 function trimTrailingNewlines(content: string, start: number, end: number): number {
   let selected = end;
-  while (selected > start && (content[selected - 1] === '\n' || content[selected - 1] === '\r')) selected -= 1;
+  while (selected > start && (content[selected - 1] === '\n' || content[selected - 1] === '\r'))
+    selected -= 1;
   return selected;
 }
 
