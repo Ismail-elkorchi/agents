@@ -1,16 +1,9 @@
+import { hashJson } from '@agent-core/persistence';
 import { lstat } from 'node:fs/promises';
 import path from 'node:path';
 import * as z from 'zod';
 import type { RootIdentity } from '@agent-core/tools-local';
-import {
-  adoptSchema,
-  canonicalSha256,
-  contentId,
-  deepFreeze,
-  nowTimestamp,
-  randomId,
-  textSha256
-} from './canonical.js';
+import { contentId, nowTimestamp, randomId, textSha256 } from './canonical.js';
 import { assertBriefIntegrity } from './brief.js';
 import {
   authorshipProvenanceSchema,
@@ -59,183 +52,223 @@ import {
 const ZERO_HASH = '0'.repeat(64);
 const MAX_LOG_BYTES = 256 * 1024 * 1024;
 
-const rootIdentitySchema = z.strictObject({
-  canonicalPath: z.string().trim().min(1).max(16_384),
-  device: z.string().trim().min(1).max(256),
-  inode: z.string().trim().min(1).max(256),
-  mountId: z.string().trim().min(1).max(256)
-});
+const rootIdentitySchema = z
+  .strictObject({
+    canonicalPath: z.string().trim().min(1).max(16_384),
+    device: z.string().trim().min(1).max(256),
+    inode: z.string().trim().min(1).max(256),
+    mountId: z.string().trim().min(1).max(256)
+  })
+  .readonly();
 
-export const writingProjectIdentitySchema = z.strictObject({
-  projectId: identifierSchema,
-  projectStoreId: identifierSchema,
-  platform: z.string().trim().min(1).max(128),
-  rootIdentity: rootIdentitySchema,
-  createdAt: timestampSchema
-});
+export const writingProjectIdentitySchema = z
+  .strictObject({
+    projectId: identifierSchema,
+    projectStoreId: identifierSchema,
+    platform: z.string().trim().min(1).max(128),
+    rootIdentity: rootIdentitySchema,
+    createdAt: timestampSchema
+  })
+  .readonly();
 
 export type WritingProjectIdentity = z.infer<typeof writingProjectIdentitySchema>;
 
-const proposalLifecycleSchema = z.strictObject({
-  proposalId: identifierSchema,
-  expectedStatus: z.enum(['proposed', 'accepted', 'rejected', 'superseded']),
-  status: z.enum(['accepted', 'rejected', 'superseded', 'applied']),
-  decisionId: identifierSchema,
-  explanation: z.string().trim().min(1).max(100_000)
-});
+const proposalLifecycleSchema = z
+  .strictObject({
+    proposalId: identifierSchema,
+    expectedStatus: z.enum(['proposed', 'accepted', 'rejected', 'superseded']),
+    status: z.enum(['accepted', 'rejected', 'superseded', 'applied']),
+    decisionId: identifierSchema,
+    explanation: z.string().trim().min(1).max(100_000)
+  })
+  .readonly();
 
-const operationLifecycleSchema = z.strictObject({
-  operationId: identifierSchema,
-  runId: identifierSchema,
-  status: z.enum(['suspended', 'completed', 'failed', 'aborted', 'inconclusive']),
-  executionSha256: sha256Schema,
-  proposalId: identifierSchema.optional(),
-  committedRevisionId: identifierSchema.optional(),
-  reason: z.string().trim().min(1).max(100_000).optional()
-});
+const operationLifecycleSchema = z
+  .strictObject({
+    operationId: identifierSchema,
+    runId: identifierSchema,
+    status: z.enum(['suspended', 'completed', 'failed', 'aborted', 'inconclusive']),
+    executionSha256: sha256Schema,
+    proposalId: identifierSchema.optional(),
+    committedRevisionId: identifierSchema.optional(),
+    reason: z.string().trim().min(1).max(100_000).optional()
+  })
+  .readonly();
 
-const assumptionStatusChangeSchema = z.strictObject({
-  assumptionId: identifierSchema,
-  previousStatus: z.literal('proposed'),
-  status: z.enum(['accepted', 'rejected', 'superseded']),
-  supersedingAssumptionId: identifierSchema.optional(),
-  briefRevisionId: identifierSchema,
-  decisionSource: z.literal('direct-user')
-});
+const assumptionStatusChangeSchema = z
+  .strictObject({
+    assumptionId: identifierSchema,
+    previousStatus: z.literal('proposed'),
+    status: z.enum(['accepted', 'rejected', 'superseded']),
+    supersedingAssumptionId: identifierSchema.optional(),
+    briefRevisionId: identifierSchema,
+    decisionSource: z.literal('direct-user')
+  })
+  .readonly();
 
-const mutationSettlementSchema = z.strictObject({
-  mutationId: identifierSchema,
-  operationId: identifierSchema,
-  transactionId: identifierSchema,
-  applyAuthorizationId: identifierSchema.optional(),
-  outcome: z.enum(['committed', 'committed_with_residue', 'rolled_back', 'rollback_failed']),
-  oldAndNewHashes: z.array(
-    z.strictObject({
-      resourceId: identifierSchema,
-      path: z.string().trim().min(1).max(4_096),
-      oldSha256: sha256Schema.optional(),
-      newSha256: sha256Schema.optional(),
-      changedAnchorIds: z.array(identifierSchema)
-    })
-  ),
-  changedPaths: z.array(z.string().trim().min(1).max(4_096)),
-  addedPaths: z.array(z.string().trim().min(1).max(4_096)),
-  deletedPaths: z.array(z.string().trim().min(1).max(4_096)),
-  cleanup: z.enum(['succeeded', 'failed', 'uncertain']),
-  remainingUncertainty: z.array(z.string().trim().min(1).max(100_000))
-});
+const mutationSettlementSchema = z
+  .strictObject({
+    mutationId: identifierSchema,
+    operationId: identifierSchema,
+    transactionId: identifierSchema,
+    applyAuthorizationId: identifierSchema.optional(),
+    outcome: z.enum(['committed', 'committed_with_residue', 'rolled_back', 'rollback_failed']),
+    oldAndNewHashes: z
+      .array(
+        z
+          .strictObject({
+            resourceId: identifierSchema,
+            path: z.string().trim().min(1).max(4_096),
+            oldSha256: sha256Schema.optional(),
+            newSha256: sha256Schema.optional(),
+            changedAnchorIds: z.array(identifierSchema).readonly()
+          })
+          .readonly()
+      )
+      .readonly(),
+    changedPaths: z.array(z.string().trim().min(1).max(4_096)).readonly(),
+    addedPaths: z.array(z.string().trim().min(1).max(4_096)).readonly(),
+    deletedPaths: z.array(z.string().trim().min(1).max(4_096)).readonly(),
+    cleanup: z.enum(['succeeded', 'failed', 'uncertain']),
+    remainingUncertainty: z.array(z.string().trim().min(1).max(100_000)).readonly()
+  })
+  .readonly();
 
-const projectChangeSchema = z.strictObject({
-  changeKind: z.enum([
-    'resource',
-    'structure',
-    'relation',
-    'brief',
-    'source',
-    'claim',
-    'evidence',
-    'voice',
-    'provenance',
-    'undo',
-    'delivery'
-  ]),
-  operationId: identifierSchema,
-  affectedIds: z.array(identifierSchema),
-  beforeSha256: sha256Schema.optional(),
-  afterSha256: sha256Schema.optional(),
-  summary: z.string().trim().min(1).max(100_000)
-});
+const projectChangeSchema = z
+  .strictObject({
+    changeKind: z.enum([
+      'resource',
+      'structure',
+      'relation',
+      'brief',
+      'source',
+      'claim',
+      'evidence',
+      'voice',
+      'provenance',
+      'undo',
+      'delivery'
+    ]),
+    operationId: identifierSchema,
+    affectedIds: z.array(identifierSchema).readonly(),
+    beforeSha256: sha256Schema.optional(),
+    afterSha256: sha256Schema.optional(),
+    summary: z.string().trim().min(1).max(100_000)
+  })
+  .readonly();
 
-const deliveryRecordSchema = z.strictObject({
-  deliveryId: identifierSchema,
-  projectRevisionId: identifierSchema,
-  operationId: identifierSchema,
-  format: z.string().trim().min(1).max(256),
-  resourceIds: z.array(identifierSchema),
-  deliveredAt: timestampSchema
-});
+const deliveryRecordSchema = z
+  .strictObject({
+    deliveryId: identifierSchema,
+    projectRevisionId: identifierSchema,
+    operationId: identifierSchema,
+    format: z.string().trim().min(1).max(256),
+    resourceIds: z.array(identifierSchema).readonly(),
+    deliveredAt: timestampSchema
+  })
+  .readonly();
 
-const contextDeliverySchema = z.strictObject({
-  operationId: identifierSchema,
-  baseProjectRevisionId: identifierSchema,
-  contextSelectionId: identifierSchema,
-  runId: identifierSchema,
-  turnId: identifierSchema,
-  requestAttempt: z.int().positive(),
-  requestId: identifierSchema
-});
+const contextDeliverySchema = z
+  .strictObject({
+    operationId: identifierSchema,
+    baseProjectRevisionId: identifierSchema,
+    contextSelectionId: identifierSchema,
+    runId: identifierSchema,
+    turnId: identifierSchema,
+    requestAttempt: z.int().positive(),
+    requestId: identifierSchema
+  })
+  .readonly();
 
 export type WritingContextDelivery = z.infer<typeof contextDeliverySchema>;
 
 const eventPayloadSchema = z.discriminatedUnion('kind', [
-  z.strictObject({ kind: z.literal('project.created'), identity: writingProjectIdentitySchema }),
-  z.strictObject({ kind: z.literal('brief.revised'), brief: writingBriefRevisionSchema }),
-  z.strictObject({ kind: z.literal('assumption.status-changed'), change: assumptionStatusChangeSchema }),
-  z.strictObject({ kind: z.literal('operation.admitted'), operation: writingOperationSchema }),
-  z.strictObject({ kind: z.literal('operation.lifecycle'), lifecycle: operationLifecycleSchema }),
-  z.strictObject({ kind: z.literal('context.selected'), selection: writingContextSelectionSchema }),
-  z.strictObject({ kind: z.literal('context.delivered'), delivery: contextDeliverySchema }),
-  z.strictObject({ kind: z.literal('proposal.created'), proposal: revisionProposalSchema }),
-  z.strictObject({
-    kind: z.literal('proposal.production-verified'),
-    verification: proposalProductionVerificationSchema
-  }),
-  z.strictObject({
-    kind: z.literal('proposal.apply-authorized'),
-    authorization: writingApplyAuthorizationSchema
-  }),
-  z.strictObject({ kind: z.literal('proposal.lifecycle'), lifecycle: proposalLifecycleSchema }),
-  z.strictObject({ kind: z.literal('mutation.settled'), settlement: mutationSettlementSchema }),
-  z.strictObject({
-    kind: z.literal('revision.committed'),
-    snapshot: projectSnapshotSchema,
-    cause: z.enum([
-      'initial',
-      'brief',
-      'proposal',
-      'direct',
-      'structure',
-      'undo',
-      'source',
-      'evidence',
-      'provenance'
-    ])
-  }),
-  z.strictObject({ kind: z.literal('project.changed'), change: projectChangeSchema }),
-  z.strictObject({ kind: z.literal('source.added'), source: sourceRecordSchema }),
-  z.strictObject({ kind: z.literal('claim.adopted'), claim: claimSchema }),
-  z.strictObject({ kind: z.literal('evidence.verified'), relation: claimEvidenceRelationSchema }),
-  z.strictObject({
-    kind: z.literal('authorship.recorded'),
-    provenance: z.array(authorshipProvenanceSchema).min(1)
-  }),
-  z.strictObject({ kind: z.literal('check.recorded'), check: deterministicCheckSchema }),
-  z.strictObject({ kind: z.literal('editorial.finding'), finding: editorialFindingSchema }),
-  z.strictObject({ kind: z.literal('editorial.decision'), decision: editorialDecisionSchema }),
-  z.strictObject({ kind: z.literal('delivery.recorded'), delivery: deliveryRecordSchema })
+  z.strictObject({ kind: z.literal('project.created'), identity: writingProjectIdentitySchema }).readonly(),
+  z.strictObject({ kind: z.literal('brief.revised'), brief: writingBriefRevisionSchema }).readonly(),
+  z
+    .strictObject({ kind: z.literal('assumption.status-changed'), change: assumptionStatusChangeSchema })
+    .readonly(),
+  z.strictObject({ kind: z.literal('operation.admitted'), operation: writingOperationSchema }).readonly(),
+  z.strictObject({ kind: z.literal('operation.lifecycle'), lifecycle: operationLifecycleSchema }).readonly(),
+  z
+    .strictObject({ kind: z.literal('context.selected'), selection: writingContextSelectionSchema })
+    .readonly(),
+  z.strictObject({ kind: z.literal('context.delivered'), delivery: contextDeliverySchema }).readonly(),
+  z.strictObject({ kind: z.literal('proposal.created'), proposal: revisionProposalSchema }).readonly(),
+  z
+    .strictObject({
+      kind: z.literal('proposal.production-verified'),
+      verification: proposalProductionVerificationSchema
+    })
+    .readonly(),
+  z
+    .strictObject({
+      kind: z.literal('proposal.apply-authorized'),
+      authorization: writingApplyAuthorizationSchema
+    })
+    .readonly(),
+  z.strictObject({ kind: z.literal('proposal.lifecycle'), lifecycle: proposalLifecycleSchema }).readonly(),
+  z.strictObject({ kind: z.literal('mutation.settled'), settlement: mutationSettlementSchema }).readonly(),
+  z
+    .strictObject({
+      kind: z.literal('revision.committed'),
+      snapshot: projectSnapshotSchema,
+      cause: z.enum([
+        'initial',
+        'brief',
+        'proposal',
+        'direct',
+        'structure',
+        'undo',
+        'source',
+        'evidence',
+        'provenance'
+      ])
+    })
+    .readonly(),
+  z.strictObject({ kind: z.literal('project.changed'), change: projectChangeSchema }).readonly(),
+  z.strictObject({ kind: z.literal('source.added'), source: sourceRecordSchema }).readonly(),
+  z.strictObject({ kind: z.literal('claim.adopted'), claim: claimSchema }).readonly(),
+  z.strictObject({ kind: z.literal('evidence.verified'), relation: claimEvidenceRelationSchema }).readonly(),
+  z
+    .strictObject({
+      kind: z.literal('authorship.recorded'),
+      provenance: z.array(authorshipProvenanceSchema).min(1).readonly()
+    })
+    .readonly(),
+  z.strictObject({ kind: z.literal('check.recorded'), check: deterministicCheckSchema }).readonly(),
+  z.strictObject({ kind: z.literal('editorial.finding'), finding: editorialFindingSchema }).readonly(),
+  z.strictObject({ kind: z.literal('editorial.decision'), decision: editorialDecisionSchema }).readonly(),
+  z.strictObject({ kind: z.literal('delivery.recorded'), delivery: deliveryRecordSchema }).readonly()
 ]);
 
-const logRecordSchema = z.strictObject({
-  schemaVersion: z.literal(1),
-  recordId: identifierSchema,
-  timestamp: timestampSchema,
-  projectId: identifierSchema,
-  projectRevisionId: identifierSchema.optional(),
-  payload: eventPayloadSchema
-});
+const logRecordSchema = z
+  .strictObject({
+    schemaVersion: z.literal(1),
+    recordId: identifierSchema,
+    timestamp: timestampSchema,
+    projectId: identifierSchema,
+    projectRevisionId: identifierSchema.optional(),
+    payload: eventPayloadSchema
+  })
+  .readonly();
 
-const logEnvelopeSchema = z.strictObject({
-  previousHash: sha256Schema,
-  record: logRecordSchema,
-  recordHash: sha256Schema
-});
+const logEnvelopeSchema = z
+  .strictObject({
+    previousHash: sha256Schema,
+    record: logRecordSchema,
+    recordHash: sha256Schema
+  })
+  .readonly();
 
-const headPointerSchema = z.strictObject({
-  schemaVersion: z.literal(1),
-  projectId: identifierSchema,
-  revisionId: identifierSchema,
-  recordHash: sha256Schema
-});
+const headPointerSchema = z
+  .strictObject({
+    schemaVersion: z.literal(1),
+    projectId: identifierSchema,
+    revisionId: identifierSchema,
+    recordHash: sha256Schema
+  })
+  .readonly();
 
 export type ProjectLogRecord = z.infer<typeof logRecordSchema>;
 export type ProjectMutationSettlement = z.infer<typeof mutationSettlementSchema>;
@@ -284,7 +317,7 @@ export class WritingProjectStore {
     const projectId = input.projectId ?? randomId('project');
     if (input.brief.projectId !== projectId || input.initialSnapshot.brief.projectId !== projectId)
       throw new Error('Initial writing records do not match the project identity.');
-    const identity = adoptSchema(writingProjectIdentitySchema, {
+    const identity = writingProjectIdentitySchema.parse({
       projectId,
       projectStoreId: input.projectStoreId ?? randomId('project-store'),
       platform: process.platform,
@@ -432,7 +465,7 @@ export class WritingProjectStore {
     input: z.input<typeof operationLifecycleSchema>,
     expectedRevisionId: string
   ): Promise<void> {
-    const lifecycle = adoptSchema(operationLifecycleSchema, input);
+    const lifecycle = operationLifecycleSchema.parse(input);
     const existing = await this.getOperationLifecycle(lifecycle.operationId);
     if (existing !== undefined && existing.status !== 'suspended') {
       if (sameOperationSettlement(existing, lifecycle)) return;
@@ -493,7 +526,7 @@ export class WritingProjectStore {
     const parsed = proposalProductionVerificationSchema.parse(verification);
     const existing = await this.getProposalProductionVerification(parsed.proposalId);
     if (existing !== undefined) {
-      if (canonicalSha256(existing) !== canonicalSha256(parsed))
+      if (hashJson(existing) !== hashJson(parsed))
         throw new Error(
           `Proposal production verification conflicts with its durable record: ${parsed.proposalId}`
         );
@@ -514,7 +547,7 @@ export class WritingProjectStore {
     const parsed = writingApplyAuthorizationSchema.parse(authorization);
     const existing = await this.getWritingApplyAuthorization(parsed.proposalId);
     if (existing !== undefined) {
-      if (canonicalSha256(existing) !== canonicalSha256(parsed))
+      if (hashJson(existing) !== hashJson(parsed))
         throw new Error(
           `Writing apply authorization conflicts with its durable record: ${parsed.proposalId}`
         );
@@ -535,7 +568,7 @@ export class WritingProjectStore {
     input: z.input<typeof proposalLifecycleSchema>,
     expectedRevisionId: string
   ): Promise<void> {
-    const lifecycle = adoptSchema(proposalLifecycleSchema, input);
+    const lifecycle = proposalLifecycleSchema.parse(input);
     await this.appendMany(
       [{ payload: { kind: 'proposal.lifecycle', lifecycle }, projectRevisionId: expectedRevisionId }],
       { expectedRevisionId }
@@ -547,7 +580,7 @@ export class WritingProjectStore {
     readonly decision: EditorialDecision;
     readonly expectedRevisionId: string;
   }): Promise<void> {
-    const lifecycle = adoptSchema(proposalLifecycleSchema, input.lifecycle);
+    const lifecycle = proposalLifecycleSchema.parse(input.lifecycle);
     await this.appendMany(
       [
         {
@@ -851,20 +884,20 @@ export class WritingProjectStore {
           input.recordId ??
           contentId('record', {
             projectId: this.identity.projectId,
-            projectRevisionId: input.projectRevisionId,
+            ...(input.projectRevisionId === undefined ? {} : { projectRevisionId: input.projectRevisionId }),
             payload: input.payload
           });
         const duplicate = existingRecords.find((record) => record.recordId === recordId);
         if (duplicate !== undefined) {
           if (
             duplicate.projectRevisionId !== input.projectRevisionId ||
-            canonicalSha256(duplicate.payload) !== canonicalSha256(input.payload)
+            hashJson(duplicate.payload) !== hashJson(input.payload)
           ) {
             throw new Error(`Project log record ID conflicts with different content: ${recordId}`);
           }
           continue;
         }
-        const candidate = adoptSchema(logRecordSchema, {
+        const candidate = logRecordSchema.parse({
           schemaVersion: 1,
           recordId,
           timestamp: input.timestamp ?? nowTimestamp(this.#clock),
@@ -873,8 +906,8 @@ export class WritingProjectStore {
           payload: input.payload
         });
         validateConcurrentTransition(existingRecords, candidate, this.identity);
-        const recordHash = canonicalSha256({ previousHash, record: candidate });
-        const envelope = adoptSchema(logEnvelopeSchema, { previousHash, record: candidate, recordHash });
+        const recordHash = hashJson({ previousHash, record: candidate });
+        const envelope = logEnvelopeSchema.parse({ previousHash, record: candidate, recordHash });
         await appendPrivateLine(path.join(this.#directory, 'project.jsonl'), JSON.stringify(envelope));
         previousHash = recordHash;
         envelopes = [...envelopes, envelope];
@@ -945,7 +978,7 @@ function validateContextDelivery(
   const prior = payloads.find(
     (payload) => payload.kind === 'context.delivered' && sameContextInvocation(payload.delivery, delivery)
   );
-  if (prior?.kind === 'context.delivered' && canonicalSha256(prior.delivery) !== canonicalSha256(delivery))
+  if (prior?.kind === 'context.delivered' && hashJson(prior.delivery) !== hashJson(delivery))
     throw new Error('Writing invocation already delivered a different exact selection.');
 }
 
@@ -985,13 +1018,13 @@ function validateWritingSelection(
         )
       );
     };
-    if (canonicalSha256(protectedMaterial(previous)) !== canonicalSha256(protectedMaterial(selection)))
+    if (hashJson(protectedMaterial(previous)) !== hashJson(protectedMaterial(selection)))
       throw new Error(
         'Writing supplements cannot change admitted controls, anchors, or selected original material.'
       );
     if (
-      canonicalSha256(selection.supplements.slice(0, previous.supplements.length)) !==
-        canonicalSha256(previous.supplements) ||
+      hashJson(selection.supplements.slice(0, previous.supplements.length)) !==
+        hashJson(previous.supplements) ||
       selection.supplements.length <= previous.supplements.length
     )
       throw new Error('Writing supplements must append immutable deliveries.');
@@ -1116,10 +1149,10 @@ async function readLogEnvelopes(directory: string): Promise<readonly z.infer<typ
   const envelopes = lines.map((line, index) => {
     if (line.length === 0)
       throw new Error(`Writing project log contains an empty record at line ${String(index + 1)}.`);
-    const envelope = adoptSchema(logEnvelopeSchema, JSON.parse(line));
+    const envelope = logEnvelopeSchema.parse(JSON.parse(line));
     if (envelope.previousHash !== previousHash)
       throw new Error(`Writing project log chain is invalid at line ${String(index + 1)}.`);
-    const expected = canonicalSha256({ previousHash, record: envelope.record });
+    const expected = hashJson({ previousHash, record: envelope.record });
     if (envelope.recordHash !== expected)
       throw new Error(`Writing project log checksum is invalid at line ${String(index + 1)}.`);
     previousHash = envelope.recordHash;
@@ -1180,7 +1213,7 @@ function projectView(records: readonly ProjectLogRecord[], identity: WritingProj
       uniqueSet(
         proposals,
         payload.proposal.proposalId,
-        { proposal: payload.proposal, status: 'proposed' },
+        Object.freeze({ proposal: payload.proposal, status: 'proposed' }),
         'proposal'
       );
     else if (payload.kind === 'proposal.production-verified') {
@@ -1233,10 +1266,13 @@ function projectView(records: readonly ProjectLogRecord[], identity: WritingProj
         throw new Error(
           `Proposal lifecycle expected ${payload.lifecycle.expectedStatus}, found ${proposal.status}: ${payload.lifecycle.proposalId}`
         );
-      proposals.set(payload.lifecycle.proposalId, {
-        proposal: proposal.proposal,
-        status: payload.lifecycle.status
-      });
+      proposals.set(
+        payload.lifecycle.proposalId,
+        Object.freeze({
+          proposal: proposal.proposal,
+          status: payload.lifecycle.status
+        })
+      );
     } else if (payload.kind === 'mutation.settled') {
       if (payload.settlement.applyAuthorizationId !== undefined) {
         const authorization = applyAuthorizations.get(payload.settlement.mutationId);
@@ -1256,7 +1292,7 @@ function projectView(records: readonly ProjectLogRecord[], identity: WritingProj
   const current = latestSnapshot(records);
   if (current === undefined)
     throw new Error(`Writing project ${identity.projectId} has no current revision.`);
-  return deepFreeze({
+  return Object.freeze({
     identity,
     records: Object.freeze([...records]),
     current,
@@ -1308,13 +1344,13 @@ function assertExactApplyAuthorization(
     productionVerificationId: verification.verificationId,
     verificationInputSha256: verification.verificationInputSha256,
     editorialDecisionId: decision.decisionId,
-    humanCriterionDecisionsSha256: canonicalSha256(decision.criterionDecisions),
+    humanCriterionDecisionsSha256: hashJson(decision.criterionDecisions),
     transactionId
   };
   if (
     authorization.authorizationId !== contentId('writing-apply-authorization', material) ||
     authorization.authorizedAt !== decision.createdAt ||
-    canonicalSha256({
+    hashJson({
       authorizationPolicyId: authorization.authorizationPolicyId,
       projectId: authorization.projectId,
       operationId: authorization.operationId,
@@ -1326,7 +1362,7 @@ function assertExactApplyAuthorization(
       editorialDecisionId: authorization.editorialDecisionId,
       humanCriterionDecisionsSha256: authorization.humanCriterionDecisionsSha256,
       transactionId: authorization.transactionId
-    }) !== canonicalSha256(material)
+    }) !== hashJson(material)
   ) {
     throw new Error(
       `Writing apply authorization does not bind the exact verified proposal transaction: ${proposal.proposalId}`
@@ -1336,7 +1372,7 @@ function assertExactApplyAuthorization(
 
 function sameOperationSettlement(left: WritingOperationLifecycle, right: WritingOperationLifecycle): boolean {
   return (
-    canonicalSha256({
+    hashJson({
       operationId: left.operationId,
       runId: left.runId,
       status: left.status,
@@ -1345,7 +1381,7 @@ function sameOperationSettlement(left: WritingOperationLifecycle, right: Writing
       committedRevisionId: left.committedRevisionId,
       reason: left.reason
     }) ===
-    canonicalSha256({
+    hashJson({
       operationId: right.operationId,
       runId: right.runId,
       status: right.status,
@@ -1376,7 +1412,7 @@ function latestSnapshot(records: readonly ProjectLogRecord[]): ProjectSnapshot |
 }
 
 export function createProjectRevision(
-  input: Omit<z.input<typeof projectSnapshotSchema>, 'revision'> & {
+  input: Omit<ProjectSnapshot, 'revision'> & {
     readonly parentRevisionIds: readonly string[];
     readonly briefRevisionId: string;
     readonly operationId: string;
@@ -1396,17 +1432,17 @@ export function createProjectRevision(
     input.relations,
     input.resources.map((resource) => resource.resourceId)
   );
-  const documentTreeSha256 = canonicalSha256(input.nodes);
-  const relationGraphSha256 = canonicalSha256(input.relations);
+  const documentTreeSha256 = hashJson(input.nodes);
+  const relationGraphSha256 = hashJson(input.relations);
   const resourceHashes = Object.fromEntries(
     [...input.resources]
       .sort((left, right) => left.resourceId.localeCompare(right.resourceId))
       .map((resource) => [resource.resourceId, resource.currentSha256])
   );
-  const sourceClaimEvidenceGraphSha256 = canonicalSha256(
+  const sourceClaimEvidenceGraphSha256 = hashJson(
     sourceClaimEvidenceGraphInput(input.sources, input.claims, input.evidenceRelations)
   );
-  const authorshipProvenanceGraphSha256 = canonicalSha256(provenanceGraphInput(input.authorshipProvenance));
+  const authorshipProvenanceGraphSha256 = hashJson(provenanceGraphInput(input.authorshipProvenance));
   const revisionInput = {
     parentRevisionIds: [...input.parentRevisionIds],
     briefRevisionId: input.briefRevisionId,
@@ -1426,7 +1462,7 @@ export function createProjectRevision(
     ...resource,
     currentProjectRevisionId: revisionId
   }));
-  return adoptSchema(projectSnapshotSchema, {
+  return projectSnapshotSchema.parse({
     revision: { revisionId, ...revisionInput },
     brief: input.brief,
     nodes: input.nodes,
@@ -1549,8 +1585,8 @@ function assertRevisionIdentity(snapshot: ProjectSnapshot): void {
   if (revision.revisionId !== expected)
     throw new Error(`Project revision identity is invalid: ${revision.revisionId}`);
   if (
-    canonicalSha256(snapshot.nodes) !== revision.documentTreeSha256 ||
-    canonicalSha256(snapshot.relations) !== revision.relationGraphSha256
+    hashJson(snapshot.nodes) !== revision.documentTreeSha256 ||
+    hashJson(snapshot.relations) !== revision.relationGraphSha256
   ) {
     throw new Error(`Project revision graph hashes are invalid: ${revision.revisionId}`);
   }
@@ -1559,18 +1595,16 @@ function assertRevisionIdentity(snapshot: ProjectSnapshot): void {
       .sort((left, right) => left.resourceId.localeCompare(right.resourceId))
       .map((resource) => [resource.resourceId, resource.currentSha256])
   );
-  if (canonicalSha256(resourceHashes) !== canonicalSha256(revision.resourceHashes))
+  if (hashJson(resourceHashes) !== hashJson(revision.resourceHashes))
     throw new Error(`Project revision resource hashes are invalid: ${revision.revisionId}`);
   if (
-    canonicalSha256(
-      sourceClaimEvidenceGraphInput(snapshot.sources, snapshot.claims, snapshot.evidenceRelations)
-    ) !== revision.sourceClaimEvidenceGraphSha256
+    hashJson(sourceClaimEvidenceGraphInput(snapshot.sources, snapshot.claims, snapshot.evidenceRelations)) !==
+    revision.sourceClaimEvidenceGraphSha256
   ) {
     throw new Error(`Project revision evidence graph hash is invalid: ${revision.revisionId}`);
   }
   if (
-    canonicalSha256(provenanceGraphInput(snapshot.authorshipProvenance)) !==
-    revision.authorshipProvenanceGraphSha256
+    hashJson(provenanceGraphInput(snapshot.authorshipProvenance)) !== revision.authorshipProvenanceGraphSha256
   )
     throw new Error(`Project revision provenance graph hash is invalid: ${revision.revisionId}`);
 }
@@ -1604,7 +1638,7 @@ async function writeHead(
 function uniqueSet<T>(map: Map<string, T>, id: string, value: T, label: string): void {
   const existing = map.get(id);
   if (existing !== undefined) {
-    if (canonicalSha256(existing) !== canonicalSha256(value))
+    if (hashJson(existing) !== hashJson(value))
       throw new Error(`Duplicate ${label} ID has conflicting content: ${id}`);
     return;
   }

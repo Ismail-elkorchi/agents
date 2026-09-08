@@ -1,3 +1,5 @@
+import { parseJsonValue } from '@agent-core/json';
+import { hashJson } from '@agent-core/persistence';
 import * as z from 'zod';
 import {
   defineTool,
@@ -20,7 +22,7 @@ import {
   type WritingIntent,
   type WritingOperation
 } from './domain.js';
-import { canonicalJson, canonicalSha256, contentId, nowTimestamp } from './canonical.js';
+import { contentId, nowTimestamp } from './canonical.js';
 import type { WritingProject } from './project.js';
 import { assembleProposalVerificationMaterial } from './verification.js';
 
@@ -49,8 +51,8 @@ const proposeRevisionOutputSchema = z.strictObject({
   proposalId: z.string(),
   canonicalProposalSha256: z.string().regex(/^[a-f0-9]{64}$/u),
   status: z.literal('proposed'),
-  affectedNodeIds: z.array(z.string()),
-  affectedResourceIds: z.array(z.string()),
+  affectedNodeIds: z.array(z.string()).readonly(),
+  affectedResourceIds: z.array(z.string()).readonly(),
   summary: z.string().max(4_000)
 });
 
@@ -107,8 +109,11 @@ export class WritingOperationService {
     deliveredSelection = this.#deliveredSelection()
   ): CanonicalProposalInput {
     const parsed = proposalInputSchema(this.operation, this.contextSelection).parse(input);
-    const textByResource = new Map<string, LocalizedTextEdit['edits'][number][]>();
-    const structuralChanges: StructuralChange[] = [];
+    const textByResource = new Map<
+      string,
+      (Omit<LocalizedTextEdit['edits'][number], 'intentIds'> & { intentIds: string[] })[]
+    >();
+    const structuralChanges: (Omit<StructuralChange, 'intentIds'> & { intentIds: string[] })[] = [];
     for (const intentOperation of parsed.operations) {
       const intent = requireIntent(this.operation, intentOperation.intentId);
       for (const textChange of intentOperation.textChanges ?? []) {
@@ -155,8 +160,8 @@ export class WritingOperationService {
         const existing = structuralChanges.find((candidate) => candidate.changeId === change.changeId);
         if (existing !== undefined) {
           if (
-            canonicalSha256({ kind: existing.kind, targetIds: existing.targetIds, value: existing.value }) !==
-            canonicalSha256(change)
+            hashJson({ kind: existing.kind, targetIds: existing.targetIds, value: existing.value }) !==
+            hashJson(change)
           ) {
             throw new Error(`Proposal has conflicting structural changes with identity: ${change.changeId}`);
           }
@@ -240,7 +245,7 @@ export class WritingOperationService {
       boundedRationale: input.rationale,
       createdAt: nowTimestamp()
     };
-    const canonicalProposalSha256 = canonicalSha256(material);
+    const canonicalProposalSha256 = hashJson(material);
     const proposal = revisionProposalSchema.parse({ ...material, canonicalProposalSha256 });
     await this.project.store.appendProposal(proposal);
     return proposal;
@@ -275,7 +280,7 @@ export function createProposeRevisionTool(
         : bound.canonicalizeForInvocation(input, context.invocation);
     },
     snapshotInput(input) {
-      return canonicalJson(input);
+      return parseJsonValue(input);
     },
     deriveEffects(input, context) {
       const bound = requireOperationService(context);
@@ -543,13 +548,13 @@ function sameProposalIntent(proposal: RevisionProposal, input: CanonicalProposal
     proposal.contextSelectionId === input.contextSelectionId &&
     proposal.operationId === input.operationId &&
     proposal.baseProjectRevisionId === input.baseProjectRevisionId &&
-    canonicalSha256({
+    hashJson({
       textEdits: proposal.textEdits,
       structuralChanges: proposal.structuralChanges,
       semanticChangeDeclaration: proposal.semanticChangeDeclaration,
       rationale: proposal.boundedRationale
     }) ===
-      canonicalSha256({
+      hashJson({
         textEdits: input.textEdits,
         structuralChanges: input.structuralChanges,
         semanticChangeDeclaration: input.semanticChangeDeclaration,

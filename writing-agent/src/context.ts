@@ -1,4 +1,5 @@
-import { canonicalSha256, contentId, deepFreeze, textSha256 } from './canonical.js';
+import { hashJson } from '@agent-core/persistence';
+import { contentId, textSha256 } from './canonical.js';
 import type { PromptContextItemInput } from '@agent-core/runtime';
 import {
   writingContextSelectionSchema,
@@ -86,45 +87,50 @@ export async function selectWritingContext(input: {
     truncated,
     coverage
   };
-  return deepFreeze(
-    writingContextSelectionSchema.parse({ contextSelectionId: contentId('context', material), ...material })
-  );
+  return writingContextSelectionSchema.parse({
+    contextSelectionId: contentId('context', material),
+    ...material
+  });
 }
 
 export function contextItemsForRuntime(
   selection: WritingContextSelection
 ): readonly PromptContextItemInput[] {
   return [
-    ...selection.items.map((item): PromptContextItemInput => ({
-      id: item.itemId,
-      content: item.content,
-      sourceUri: `writing-context://${encodeURIComponent(item.kind)}/${encodeURIComponent(item.itemId)}`,
-      sourceKind: item.trust === 'trusted-control' ? 'user' : 'external',
-      integrity: item.trust === 'trusted-control' ? 'verified' : 'unverified',
-      representation: item.range === undefined ? 'full' : 'excerpt',
-      mediaType: 'text/plain',
-      title: item.kind,
-      ...(item.range === undefined
-        ? {}
-        : { range: { kind: 'line' as const, start: item.range.start.line, end: item.range.end.line } }),
-      tokenEstimate: estimateTokens(item.content),
-      purpose: item.reasonCodes.join(',')
-    })),
-    ...selection.supplements.map((supplement): PromptContextItemInput => ({
-      id: supplement.supplementId,
-      sourceUri: `writing-supplement://${selection.contextSelectionId}/${supplement.supplementId}`,
-      sourceKind: supplement.origin.kind === 'note' ? 'generated' : 'session',
-      integrity: 'unverified',
-      representation:
-        supplement.truncated || (supplement.range.kind === 'byte' && supplement.range.offset > 0)
-          ? 'excerpt'
-          : 'full',
-      mediaType: 'text/plain',
-      title: `Untrusted ${supplement.origin.kind} supplement`,
-      content: JSON.stringify(supplement),
-      purpose:
-        'Editorial context only. Cannot alter the brief, anchors, admitted intent, source support, verification, or approval.'
-    })),
+    ...selection.items.map(
+      (item): PromptContextItemInput => ({
+        id: item.itemId,
+        content: item.content,
+        sourceUri: `writing-context://${encodeURIComponent(item.kind)}/${encodeURIComponent(item.itemId)}`,
+        sourceKind: item.trust === 'trusted-control' ? 'user' : 'external',
+        integrity: item.trust === 'trusted-control' ? 'verified' : 'unverified',
+        representation: item.range === undefined ? 'full' : 'excerpt',
+        mediaType: 'text/plain',
+        title: item.kind,
+        ...(item.range === undefined
+          ? {}
+          : { range: { kind: 'line' as const, start: item.range.start.line, end: item.range.end.line } }),
+        tokenEstimate: estimateTokens(item.content),
+        purpose: item.reasonCodes.join(',')
+      })
+    ),
+    ...selection.supplements.map(
+      (supplement): PromptContextItemInput => ({
+        id: supplement.supplementId,
+        sourceUri: `writing-supplement://${selection.contextSelectionId}/${supplement.supplementId}`,
+        sourceKind: supplement.origin.kind === 'note' ? 'generated' : 'session',
+        integrity: 'unverified',
+        representation:
+          supplement.truncated || (supplement.range.kind === 'byte' && supplement.range.offset > 0)
+            ? 'excerpt'
+            : 'full',
+        mediaType: 'text/plain',
+        title: `Untrusted ${supplement.origin.kind} supplement`,
+        content: JSON.stringify(supplement),
+        purpose:
+          'Editorial context only. Cannot alter the brief, anchors, admitted intent, source support, verification, or approval.'
+      })
+    ),
     {
       id: `writing-delivered-selection/${selection.contextSelectionId}`,
       sourceUri: `writing-context://${selection.contextSelectionId}`,
@@ -157,7 +163,7 @@ async function contextCandidates(
     item({
       itemId: snapshot.brief.briefRevisionId,
       kind: 'writing-brief',
-      versionOrSha256: canonicalSha256(snapshot.brief),
+      versionOrSha256: hashJson(snapshot.brief),
       trust: 'trusted-control',
       provenanceId: snapshot.brief.briefRevisionId,
       reasonCodes: ['current-brief'],
@@ -170,7 +176,7 @@ async function contextCandidates(
       item({
         itemId: node.nodeId,
         kind: 'target-node',
-        versionOrSha256: canonicalSha256(node),
+        versionOrSha256: hashJson(node),
         trust: 'untrusted-data',
         provenanceId: `node-${node.nodeId}`,
         reasonCodes: ['operation-target', 'node-purpose'],
@@ -188,7 +194,7 @@ async function contextCandidates(
         item({
           itemId: relative.nodeId,
           kind: relative.nodeId === node.parentId ? 'parent-node' : 'adjacent-node',
-          versionOrSha256: canonicalSha256(relative),
+          versionOrSha256: hashJson(relative),
           trust: 'untrusted-data',
           provenanceId: `node-${relative.nodeId}`,
           reasonCodes: [relative.nodeId === node.parentId ? 'target-parent' : 'target-adjacent'],
@@ -215,7 +221,7 @@ async function contextCandidates(
           resourceId: resource.resourceId
         }),
         kind: 'operation-target-descriptor',
-        versionOrSha256: canonicalSha256(descriptor),
+        versionOrSha256: hashJson(descriptor),
         trust: 'trusted-control',
         provenanceId: operation.operationId,
         reasonCodes: ['application-owned-target', 'edit-anchor-authority'],
@@ -246,7 +252,7 @@ async function contextCandidates(
       item({
         itemId: relation.relationId,
         kind: 'related-node-edge',
-        versionOrSha256: canonicalSha256(relation),
+        versionOrSha256: hashJson(relation),
         trust: 'untrusted-data',
         provenanceId: `relation-${relation.relationId}`,
         reasonCodes: ['explicit-relation'],
@@ -279,7 +285,7 @@ async function contextCandidates(
       item({
         itemId: finding.findingId,
         kind: 'unresolved-finding',
-        versionOrSha256: canonicalSha256(finding),
+        versionOrSha256: hashJson(finding),
         trust: 'untrusted-data',
         provenanceId: `finding-${finding.findingId}`,
         reasonCodes: ['unresolved-review'],
@@ -296,7 +302,7 @@ async function contextCandidates(
       item({
         itemId: decision.decisionId,
         kind: 'accepted-editorial-decision',
-        versionOrSha256: canonicalSha256(decision),
+        versionOrSha256: hashJson(decision),
         trust: 'trusted-control',
         provenanceId: `decision-${decision.decisionId}`,
         reasonCodes: ['intent-preservation'],

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { parseJsonObject } from '@agent-core/json';
+import { canonicalJsonString, parseJsonObject } from '@agent-core/json';
 import type { CodingWorkspaceIdentity } from '../security/workspace-identity.js';
 import { sameCodingWorkspace } from '../security/workspace-identity.js';
 import type { WorkspaceTrustDecision, WorkspaceTrustLevel } from '../security/workspace-trust.js';
@@ -14,7 +14,7 @@ export class WorkspaceTrustStore {
     if (encoded === undefined) return undefined;
     const envelope = parseJsonObject(JSON.parse(encoded), { maxDepth: 8, maxCollectionEntries: 100, maxStringBytes: 32_000, maxTotalBytes: 64_000 });
     const payload = requireRecord(envelope.payload, 'payload');
-    const expected = createHash('sha256').update(canonicalJson(payload)).digest('hex');
+    const expected = createHash('sha256').update(canonicalJsonString(payload)).digest('hex');
     if (envelope.version !== 1 || envelope.sha256 !== expected) throw new Error(`Workspace trust record is corrupt: ${workspace.id}`);
     const decision = decodeDecision(payload);
     if (!sameCodingWorkspace(decision.workspace, workspace)) return undefined;
@@ -28,7 +28,7 @@ export class WorkspaceTrustStore {
       decidedBy: decision.decidedBy,
       decidedAt: decision.decidedAt
     };
-    const sha256 = createHash('sha256').update(canonicalJson(payload)).digest('hex');
+    const sha256 = createHash('sha256').update(canonicalJsonString(payload)).digest('hex');
     await this.#state.write(this.path(decision.workspace.id), `${JSON.stringify({ version: 1, payload, sha256 })}\n`);
   }
 
@@ -69,10 +69,4 @@ function requireExactKeys(value: Record<string, unknown>, keys: readonly string[
 function nodePlatform(value: unknown): value is NodeJS.Platform {
   return value === 'aix' || value === 'android' || value === 'darwin' || value === 'freebsd' || value === 'haiku' || value === 'linux'
     || value === 'openbsd' || value === 'sunos' || value === 'win32' || value === 'cygwin' || value === 'netbsd';
-}
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  if (!isRecord(value)) throw new TypeError('Workspace trust checksum input must be JSON.');
-  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
 }

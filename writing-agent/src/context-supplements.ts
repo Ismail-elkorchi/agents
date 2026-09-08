@@ -1,3 +1,4 @@
+import { hashJson } from '@agent-core/persistence';
 import type {
   HistoryReader,
   HistoryReadResult,
@@ -9,7 +10,7 @@ import type {
   NoteRepository,
   NoteScope
 } from '@agent-core/runtime';
-import { canonicalSha256, contentId, deepFreeze, textSha256 } from './canonical.js';
+import { contentId, textSha256 } from './canonical.js';
 import {
   writingContextSelectionSchema,
   writingContextSupplementSchema,
@@ -49,7 +50,7 @@ export async function admitWritingNoteSupplement(input: {
   readonly offset?: number;
   readonly maxBytes?: number;
 }): Promise<WritingContextSelection> {
-  if (canonicalSha256(input.scope) !== canonicalSha256(input.reference.scope))
+  if (hashJson(input.scope) !== hashJson(input.reference.scope))
     throw new Error('Writing note supplement is outside its admitted note scope.');
   const result = await input.repository.read({
     ...input.reference,
@@ -175,12 +176,10 @@ async function appendSupplement(
       throw new Error('Writing selection supplement quota is exhausted.');
     const { contextSelectionId: parentSelectionId, ...base } = previous;
     const nextMaterial = { ...base, parentSelectionId, supplements: [...previous.supplements, supplement] };
-    const selection = deepFreeze(
-      writingContextSelectionSchema.parse({
-        contextSelectionId: contentId('context', nextMaterial),
-        ...nextMaterial
-      })
-    );
+    const selection = writingContextSelectionSchema.parse({
+      contextSelectionId: contentId('context', nextMaterial),
+      ...nextMaterial
+    });
     try {
       await project.store.appendContextSelection(selection, operation.baseProjectRevisionId);
       return selection;

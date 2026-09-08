@@ -55,9 +55,31 @@ try {
   if (!writingPack.files.some((file) => file.path === 'dist/index.js')) throw new Error('Writing agent archive is incomplete.');
   dependencies[writingManifest.name] = `file:${path.join(packs, writingPack.filename)}`;
   await mkdir(consumer, { recursive: true });
-  await writeFile(path.join(consumer, 'package.json'), `${JSON.stringify({ name: 'coding-agent-consumer', private: true, type: 'module', dependencies, overrides: { '@ismail-elkorchi/terminal-ui': '$@ismail-elkorchi/terminal-ui' } }, null, 2)}\n`);
+  await writeFile(path.join(consumer, 'package.json'), `${JSON.stringify({ name: 'coding-agent-consumer', private: true, type: 'module', dependencies, devDependencies: { '@types/node': coreManifest.devDependencies['@types/node'] }, overrides: { '@ismail-elkorchi/terminal-ui': '$@ismail-elkorchi/terminal-ui' } }, null, 2)}\n`);
   await exec(process.execPath, [npmCli, 'install', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: consumer, maxBuffer: 20 * 1024 * 1024 });
   await writeFile(path.join(consumer, 'index.mjs'), ["import * as coding from '@ismail-elkorchi/coding-agent';", "import * as tui from '@ismail-elkorchi/coding-agent/tui';", "import * as writing from '@ismail-elkorchi/writing-agent';", "if (!coding.resolveCodingAuthority || !coding.loadCodingAgentConfiguration || !coding.createCodingSession || !tui.createCodingAgentTuiApp) throw new Error('Coding-agent public exports are incomplete');", "if (!writing.createWritingProject || !writing.admitWritingOperation || !writing.runTransientWriting) throw new Error('Writing-agent public exports are incomplete');"].join('\n'));
   await exec(process.execPath, ['index.mjs'], { cwd: consumer });
+  await writeFile(path.join(consumer, 'ownership.ts'), [
+    "import { textRangeSchema, type StructuralChange, type WritingOperation } from '@ismail-elkorchi/writing-agent';",
+    'declare const range: ReturnType<typeof textRangeSchema.parse>;',
+    'declare const change: StructuralChange;',
+    'declare const operation: WritingOperation;',
+    '// @ts-expect-error admitted nested positions are readonly',
+    'range.start.line = 2;',
+    '// @ts-expect-error admitted intent collections are readonly',
+    "change.intentIds.push('new');",
+    '// @ts-expect-error admitted JSON metadata is readonly',
+    'change.value.extra = true;',
+    '// @ts-expect-error admitted operation targets are readonly',
+    "operation.targetNodeIds.push('new');"
+  ].join('\n'));
+  for (const exactOptionalPropertyTypes of [true, false]) {
+    const config = `tsconfig-${String(exactOptionalPropertyTypes)}.json`;
+    await writeFile(path.join(consumer, config), JSON.stringify({
+      compilerOptions: { target: 'ES2022', module: 'NodeNext', moduleResolution: 'NodeNext', types: ['node'], strict: true, skipLibCheck: false, exactOptionalPropertyTypes, noEmit: true },
+      files: ['ownership.ts']
+    }));
+    await exec(process.execPath, [path.join(root, 'node_modules/typescript/bin/tsc'), '-p', config], { cwd: consumer, maxBuffer: 20 * 1024 * 1024 });
+  }
   console.log('Packed agent consumers passed.');
 } finally { await rm(temporary, { recursive: true, force: true }); }

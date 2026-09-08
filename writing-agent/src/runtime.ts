@@ -1,3 +1,4 @@
+import { hashJson } from '@agent-core/persistence';
 import path from 'node:path';
 import { InMemoryArtifactRepository, InMemoryEventRepository } from '@agent-core/persistence';
 import { JsonlEventRepository, LocalArtifactRepository } from '@agent-core/persistence/node';
@@ -25,7 +26,7 @@ import {
 } from '@agent-core/runtime/node';
 import { validateResourceScope, type ToolAuthorizationRequest } from '@agent-core/tools';
 import { createLocalToolHost, RootedFileAuthority, type LocalToolHost } from '@agent-core/tools-local';
-import { canonicalSha256, randomId } from './canonical.js';
+import { randomId } from './canonical.js';
 import {
   type WritingContextSelection,
   type DeterministicCheck,
@@ -785,7 +786,7 @@ function productionVerificationObservation(
 }
 
 function interpretiveCheckImplementationId(checker: WritingEditorialChecker): string {
-  return `writing-agent.check.semantic-production-verification@3:${canonicalSha256({ implementationId: checker.implementationId, verificationPolicyId: checker.verificationPolicyId, calibrationId: checker.calibrationId }).slice(0, 32)}`;
+  return `writing-agent.check.semantic-production-verification@3:${hashJson({ implementationId: checker.implementationId, verificationPolicyId: checker.verificationPolicyId, ...(checker.calibrationId === undefined ? {} : { calibrationId: checker.calibrationId }) }).slice(0, 32)}`;
 }
 
 function authorizeWritingTool(
@@ -881,7 +882,7 @@ function executionBinding(
     ],
     dispositionImplementationId: WRITING_DISPOSITION_IMPLEMENTATION_ID,
     authorizationPolicyId: WRITING_AUTHORIZATION_POLICY_ID,
-    configurationSha256: canonicalSha256(configuration)
+    configurationSha256: hashJson(configuration)
   };
 }
 
@@ -1002,7 +1003,7 @@ async function durableEndedExecution(
 }
 
 function executionIdentity(execution: AgentRunResult): string {
-  return canonicalSha256(
+  return hashJson(
     execution.state === 'ended' ? { state: execution.state, terminal: execution.terminal } : execution
   );
 }

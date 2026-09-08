@@ -6,7 +6,7 @@ Private state defaults to the platform user-state directory ($XDG_STATE_HOME/wri
 
 ## Model and authority boundary
 
-A direct user request is admitted as an immutable writing operation. WritingExecutionBinding freezes the operation, base project revision, context selection, and proposal vocabulary used by one run.
+A direct user request is admitted as an immutable writing operation. Domain schemas capture readonly objects and collections at admission, including nested JSON metadata. Content identities hash complete JSON; unsupported data is rejected instead of coerced or truncated. WritingExecutionBinding freezes the operation, base project revision, context selection, and proposal vocabulary used by one run.
 
 The producer receives the complete applicable WritingOperationContract: every intent instruction, dependency, target, preservation requirement, affected criterion, affected claim/evidence relation, prior decision, and exact machine constraint that may affect acceptance. Project text, sources, excerpts, and tool output remain data. Host-owned target descriptors bind admitted resource IDs to rooted paths, hashes, media types, and stable document/range anchors.
 

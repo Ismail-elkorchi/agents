@@ -1,4 +1,5 @@
-import { canonicalSha256, contentId, nowTimestamp, randomId, textSha256 } from './canonical.js';
+import { hashJson } from '@agent-core/persistence';
+import { contentId, nowTimestamp, randomId, textSha256 } from './canonical.js';
 import {
   claimEvidenceRelationSchema,
   claimSchema,
@@ -68,7 +69,7 @@ export async function addManualSource(project: WritingProject, input: {
       resourceId: input.localResourceId,
       sourceRevisionSha256: file.sha256,
       range: excerpt.range,
-      rangeSha256: canonicalSha256(excerpt.range),
+      rangeSha256: hashJson(excerpt.range),
       textSha256: textSha256(actual)
     };
   });
@@ -187,7 +188,7 @@ export async function verifyClaimEvidence(project: WritingProject, input: {
   if (file.sha256 !== source.exactSha256 || file.sha256 !== excerpt.sourceRevisionSha256) throw new Error(`Source content changed since excerpt capture: ${source.sourceId}`);
   const offsets = offsetRange(file.content, excerpt.range);
   const excerptText = file.content.slice(offsets.start, offsets.end);
-  if (textSha256(excerptText) !== excerpt.textSha256 || canonicalSha256(excerpt.range) !== excerpt.rangeSha256) throw new Error(`Source excerpt range or text hash is invalid: ${excerpt.excerptId}`);
+  if (textSha256(excerptText) !== excerpt.textSha256 || hashJson(excerpt.range) !== excerpt.rangeSha256) throw new Error(`Source excerpt range or text hash is invalid: ${excerpt.excerptId}`);
   let verification: { verdict: ClaimEvidenceRelation['verdict']; evidence: string; explanation: string };
   let verifierId: string;
   let policyId: string;
@@ -278,5 +279,5 @@ export function sourceEvidenceStatus(source: SourceRecord): 'verified' | 'inconc
 }
 
 export function evidenceGraphSha256(snapshot: ProjectSnapshot): string {
-  return canonicalSha256({ sources: snapshot.sources, claims: snapshot.claims, evidenceRelations: snapshot.evidenceRelations });
+  return hashJson({ sources: snapshot.sources, claims: snapshot.claims, evidenceRelations: snapshot.evidenceRelations });
 }

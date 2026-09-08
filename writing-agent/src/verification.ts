@@ -1,5 +1,6 @@
+import { hashJson } from '@agent-core/persistence';
 import * as z from 'zod';
-import { canonicalSha256, contentId, nowTimestamp, textSha256 } from './canonical.js';
+import { contentId, nowTimestamp, textSha256 } from './canonical.js';
 import {
   authorshipProvenanceSchema,
   criterionCoverageSchema,
@@ -107,8 +108,8 @@ export async function assembleProposalVerificationMaterial(
   if (
     input.contextSelection.operationId !== input.operation.operationId ||
     input.contextSelection.baseProjectRevisionId !== input.operation.baseProjectRevisionId ||
-    canonicalSha256(view.contextSelections.get(input.contextSelection.contextSelectionId)) !==
-      canonicalSha256(input.contextSelection)
+    hashJson(view.contextSelections.get(input.contextSelection.contextSelectionId)) !==
+      hashJson(input.contextSelection)
   )
     throw new Error('Proposal context selection is not the durable selection for this operation.');
   const targetResources = new Set(input.operation.targetResourceIds);
@@ -304,8 +305,8 @@ export async function verifyProposalProduction(input: {
     ...(input.clock === undefined ? {} : { clock: input.clock })
   });
   if (
-    canonicalSha256(verificationMaterial.preservationContract) !==
-    canonicalSha256(input.proposal.preservationContract)
+    hashJson(verificationMaterial.preservationContract) !==
+    hashJson(input.proposal.preservationContract)
   ) {
     throw new Error(
       `Proposal inputs no longer reproduce their durable deterministic verification material: ${input.proposal.proposalId}`
@@ -346,9 +347,9 @@ export async function verifyProposalProduction(input: {
       proposalId: input.proposal.proposalId,
       evaluatorImplementationId: input.checker.implementationId,
       verificationPolicyId: input.checker.verificationPolicyId,
-      calibrationId: input.checker.calibrationId,
+      ...(input.checker.calibrationId === undefined ? {} : { calibrationId: input.checker.calibrationId }),
       verificationInputSha256: verificationMaterial.verificationInputSha256,
-      deterministicChecksSha256: canonicalSha256(verificationMaterial.deterministicChecks)
+      deterministicChecksSha256: hashJson(verificationMaterial.deterministicChecks)
     }),
     proposalId: input.proposal.proposalId,
     operationId: input.operation.operationId,
@@ -493,7 +494,7 @@ function deterministicProposalChecks(input: {
   readonly proposedText: ReadonlyMap<string, string>;
   readonly preservationContract: PreservationContract;
 }): readonly DeterministicCheck[] {
-  const digest = canonicalSha256({
+  const digest = hashJson({
     operationId: input.operation.operationId,
     baseRevisionId: input.base.revision.revisionId,
     textEdits: input.textEdits,
@@ -817,7 +818,7 @@ function carryForwardProvenance(input: {
     const ranges = segments.map((segment) =>
       rangeFromOffsets(input.applied.content, segment.start, segment.end)
     );
-    if (ranges.length === 1 && canonicalSha256(ranges[0]) === canonicalSha256(prior.range)) continue;
+    if (ranges.length === 1 && hashJson(ranges[0]) === hashJson(prior.range)) continue;
     for (const [index, range] of ranges.entries()) {
       records.push(
         authorshipProvenanceSchema.parse({
@@ -875,7 +876,7 @@ function assertIntentChangeBindings(
       const anchor = descriptor.anchors.find((candidate) => candidate.anchorId === edit.anchorId);
       if (
         anchor?.textSha256 !== edit.expectedTextSha256 ||
-        canonicalSha256(anchor.range) !== canonicalSha256(edit.range)
+        hashJson(anchor.range) !== hashJson(edit.range)
       ) {
         throw new Error(
           `Canonical text change does not match its application-owned anchor: ${request.resourceId}/${edit.anchorId}`
@@ -980,8 +981,8 @@ function validateStructuralChange(
       if (
         !targetNodes.has(value.relation.sourceId) ||
         !targetNodes.has(value.relation.targetId) ||
-        canonicalSha256([...change.targetIds].sort()) !==
-          canonicalSha256([value.relation.sourceId, value.relation.targetId].sort())
+        hashJson([...change.targetIds].sort()) !==
+          hashJson([value.relation.sourceId, value.relation.targetId].sort())
       ) {
         throw new Error(
           `Structural relation expands beyond admitted endpoint nodes: ${value.relation.relationId}`
@@ -1083,7 +1084,7 @@ function sourceRecordIntegrity(
       if (
         excerpt.resourceId !== source.localResourceId ||
         excerpt.sourceRevisionSha256 !== source.exactSha256 ||
-        canonicalSha256(excerpt.range) !== excerpt.rangeSha256
+        hashJson(excerpt.range) !== excerpt.rangeSha256
       )
         return false;
       try {
@@ -1272,11 +1273,11 @@ function editorialVerificationInputSha256(input: {
   readonly declaration: SemanticChangeDeclaration;
   readonly preservationContract: PreservationContract;
 }): string {
-  return canonicalSha256({
+  return hashJson({
     contextSelectionId: input.contextSelection.contextSelectionId,
-    contextSelectionSha256: canonicalSha256(input.contextSelection),
+    contextSelectionSha256: hashJson(input.contextSelection),
     operationId: input.operation.operationId,
-    operationContractSha256: canonicalSha256(input.operationContract),
+    operationContractSha256: hashJson(input.operationContract),
     baseVerificationContext: {
       revisionId: input.base.revision.revisionId
     },
@@ -1318,7 +1319,7 @@ function assertExactVerificationCoverage(
 function assertExactSet(actual: readonly string[], expected: readonly string[], label: string): void {
   if (
     new Set(actual).size !== actual.length ||
-    canonicalSha256([...actual].sort()) !== canonicalSha256([...expected].sort())
+    hashJson([...actual].sort()) !== hashJson([...expected].sort())
   ) {
     throw new Error(`Editorial checker did not return the exact ${label}.`);
   }
@@ -1444,7 +1445,7 @@ function assertSupportingCitations(
   }
   for (const citation of finding.supportingCitations) {
     const admitted = catalog.get(citation.citationId);
-    if (admitted === undefined || canonicalSha256(admitted) !== canonicalSha256(citation)) {
+    if (admitted === undefined || hashJson(admitted) !== hashJson(citation)) {
       throw new Error(
         `Finding support is not an exact host-issued citation: ${finding.findingId}/${citation.citationId}`
       );

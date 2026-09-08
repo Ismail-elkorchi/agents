@@ -1,3 +1,4 @@
+import { hashJson } from '@agent-core/persistence';
 import path from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import * as z from 'zod';
@@ -9,7 +10,7 @@ import {
   editTextRecoveryPayloadSchema,
   type TextTransactionResult
 } from '@agent-core/tools-local';
-import { canonicalSha256, contentId, nowTimestamp, textSha256 } from './canonical.js';
+import { contentId, nowTimestamp, textSha256 } from './canonical.js';
 import {
   authorshipProvenanceSchema,
   documentNodeSchema,
@@ -182,7 +183,7 @@ export async function applyRevisionProposal(project: WritingProject, input: {
   if (verification === undefined) throw new Error(`Writing proposal production verification is unavailable: ${proposal.proposalId}`);
   const acceptanceDecision = requireProposalDecision(view.records, proposal.proposalId, 'accepted');
   const durableAuthorization = view.applyAuthorizations.get(proposal.proposalId);
-  if (durableAuthorization === undefined || canonicalSha256(durableAuthorization) !== canonicalSha256(input.authorization)) {
+  if (durableAuthorization === undefined || hashJson(durableAuthorization) !== hashJson(input.authorization)) {
     throw new Error(`Writing proposal has no matching durable apply authorization: ${proposal.proposalId}`);
   }
   assertWritingApplyAuthorization(project, input.authorization, proposal, verification, acceptanceDecision);
@@ -347,7 +348,7 @@ function assertWritingApplyAuthorization(
     humanCriterionDecisionsSha256: canonicalCriterionDecisionsSha256(decision.criterionDecisions),
     transactionId
   };
-  if (parsed.authorizationId !== contentId('writing-apply-authorization', expected) || canonicalSha256({
+  if (parsed.authorizationId !== contentId('writing-apply-authorization', expected) || hashJson({
     authorizationPolicyId: parsed.authorizationPolicyId,
     projectId: parsed.projectId,
     operationId: parsed.operationId,
@@ -359,7 +360,7 @@ function assertWritingApplyAuthorization(
     editorialDecisionId: parsed.editorialDecisionId,
     humanCriterionDecisionsSha256: parsed.humanCriterionDecisionsSha256,
     transactionId: parsed.transactionId
-  }) !== canonicalSha256(expected)) {
+  }) !== hashJson(expected)) {
     throw new Error(`Writing apply authorization does not bind the exact verified proposal transaction: ${proposal.proposalId}`);
   }
 }
@@ -369,7 +370,7 @@ function writingTransactionId(proposalId: string, textEdits: readonly LocalizedT
 }
 
 function canonicalCriterionDecisionsSha256(decisions: readonly HumanCriterionDecision[]): string {
-  return canonicalSha256(decisions);
+  return hashJson(decisions);
 }
 
 export async function undoWritingRevision(project: WritingProject, input: {

@@ -1,9 +1,10 @@
+import { hashJson } from '@agent-core/persistence';
 import { createHash } from 'node:crypto';
 import { parseJsonObject, type JsonObject } from '@agent-core/json';
 import type { ModelReasoningRequest, ModelRequest } from '@agent-core/model';
 import { type InferenceService } from '@agent-core/runtime';
 import * as z from 'zod';
-import { canonicalSha256, contentId, textSha256 } from './canonical.js';
+import { contentId, textSha256 } from './canonical.js';
 import {
   editorialFindingSchema,
   semanticPreservationFindingSchema,
@@ -290,9 +291,6 @@ function verificationPayload(
     comparisonBaselines: baselines,
     proposedResources
   };
-  const encoded = JSON.stringify(payload);
-  if (Buffer.byteLength(encoded) > 1_500_000)
-    throw new Error('Semantic verification input exceeds its complete-verification bound.');
   return parseJsonObject(payload, {
     maxDepth: 32,
     maxCollectionEntries: 100_000,
@@ -381,7 +379,7 @@ function evidenceExcerpts(
 function exactSet(actual: readonly string[], expected: readonly string[], label: string): void {
   if (
     new Set(actual).size !== actual.length ||
-    canonicalSha256([...actual].sort()) !== canonicalSha256([...expected].sort())
+    hashJson([...actual].sort()) !== hashJson([...expected].sort())
   ) {
     throw new Error(`Semantic verifier did not return the exact ${label}.`);
   }
