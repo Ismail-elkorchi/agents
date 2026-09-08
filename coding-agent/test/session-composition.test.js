@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createCodingSession, closeCodingSession, openCodingWorkspace, createTrustDecision, codingHistoryPressureTransition } from '@ismail-elkorchi/coding-agent';
 
+const rootedWorkspaceTest = { skip: process.platform !== 'linux' && 'Rooted workspaces require Linux handle-relative file authority.' };
+
 class SessionProvider {
   id = 'coding-session-test';
   implementationId = 'tests.coding-session-provider@1';
@@ -14,7 +16,7 @@ class SessionProvider {
   async complete(request) { this.requests.push(request); return { content: `Inspected the requested workspace (response ${this.requests.length}).`, model: request.model, provider: this.id, terminationReason: 'stop' }; }
 }
 
-test('programmatic coding composition keeps original requests and refreshes current application state', async () => {
+test('programmatic coding composition keeps original requests and refreshes current application state', rootedWorkspaceTest, async () => {
   const parent = await mkdtemp(path.join(tmpdir(), 'coding-session-app-'));
   const root = path.join(parent, 'workspace');
   const stateRoot = path.join(parent, 'state');
@@ -270,7 +272,7 @@ test('provider egress includes structured response controls in admission', async
   assert.equal(provider.requests.length, 0);
 });
 
-test('coding pressure uses the governed transition while retaining current user requirements', async () => {
+test('coding pressure uses the governed transition while retaining current user requirements', rootedWorkspaceTest, async () => {
   const { accountModelRequest, requestAccountingInputTokens } = await import('@agent-core/model');
   const parent = await mkdtemp(path.join(tmpdir(), 'coding-pressure-app-'));
   const root = path.join(parent, 'workspace');
@@ -336,7 +338,7 @@ test('native context transforms retain exact compiled admission and transform id
   assert.equal(sent.length, 1);
 });
 
-test('coding native transition and primary work share one durable run budget', async () => {
+test('coding native transition and primary work share one durable run budget', rootedWorkspaceTest, async () => {
   const { compileModelRequest, conservativeProtocolCapabilities } = await import('@agent-core/model');
   const { sourceRef } = await import('@agent-core/runtime');
   const { JsonlInferenceRepository } = await import('@agent-core/runtime/node');
