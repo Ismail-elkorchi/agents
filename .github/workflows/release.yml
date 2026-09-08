@@ -56,6 +56,9 @@ jobs:
       - name: Enable native namespace conformance
         if: runner.os == 'Linux'
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Install the selected Node in the test system runtime
+        if: runner.os == 'Linux'
+        run: sudo install -m 0755 "$(command -v node)" /usr/bin/node
       - name: Verify agents
         working-directory: agents
         env:

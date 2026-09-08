@@ -634,19 +634,22 @@ export async function createCodingSession(
               rootedFileAuthority: root,
               state: openedWorkspace.privateState
             });
-          const preChangeObservations = !preChangeSnapshot
-            ? Object.freeze([])
-            : await observePreChangeCommands({
-                effects,
-                ownerId: currentWork.ownerId,
-                plan: runCheckPlan,
-                runId: runtimeContext.runId,
-                root: runRoot,
-                snapshot: preChangeSnapshot.workspace,
-                runtimeDirectory: workspace.runtimeDir,
-                createCommandExecution: createCheckCommandExecution,
-                commandYieldMs: DEFAULT_LOCAL_TOOL_CONFIGURATION.process.maxYieldMs
-              });
+          const preChangeObservations =
+            !preChangeSnapshot || !workingCopy
+              ? Object.freeze([])
+              : await workingCopy.withPreChangeRoot((root) =>
+                  observePreChangeCommands({
+                    effects,
+                    ownerId: currentWork.ownerId,
+                    plan: runCheckPlan,
+                    runId: runtimeContext.runId,
+                    root,
+                    snapshot: preChangeSnapshot.workspace,
+                    runtimeDirectory: workspace.runtimeDir,
+                    createCommandExecution: createCheckCommandExecution,
+                    commandYieldMs: DEFAULT_LOCAL_TOOL_CONFIGURATION.process.maxYieldMs
+                  })
+                );
           const checks = !preChangeSnapshot
             ? Object.freeze([])
             : createRevisionAcceptanceChecks({

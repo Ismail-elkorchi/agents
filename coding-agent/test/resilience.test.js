@@ -496,6 +496,7 @@ test(
         }
       ],
       files: {
+        'package.json': JSON.stringify({ type: 'module' }),
         'src/main.js': mainBefore,
         'src/helpers.js': helpersBefore,
         'src/legacy.js': legacyBefore,

@@ -7,6 +7,56 @@ import { RootedFileAuthority, captureWorkspaceSnapshot } from '@agent-core/tools
 import { IsolatedWorkingCopy } from '../dist/changes/isolated-working-copy.js';
 
 test(
+  'reopened work reads its original checkpoint after both live workspaces change',
+  {
+    skip: process.platform !== 'linux'
+  },
+  async () => {
+    const parent = await mkdtemp(path.join(tmpdir(), 'coding-agent-baseline-continuation-'));
+    const sourceDirectory = path.join(parent, 'source');
+    await mkdir(sourceDirectory);
+    await writeFile(path.join(sourceDirectory, 'value.txt'), 'baseline\n');
+    const source = RootedFileAuthority.adopt(sourceDirectory);
+    let workingCopy;
+    try {
+      const preChange = await captureWorkspaceSnapshot(source);
+      const input = {
+        source,
+        preChange,
+        runtimeDirectory: path.join(parent, 'runtime'),
+        workId: 'continued-work'
+      };
+      workingCopy = await IsolatedWorkingCopy.open(input);
+      await writeFile(
+        path.join(workingCopy.root.identity.canonicalPath, 'value.txt'),
+        'unfinished revision\n'
+      );
+      await writeFile(path.join(sourceDirectory, 'value.txt'), 'concurrent source change\n');
+      await workingCopy.release();
+      workingCopy = await IsolatedWorkingCopy.open(input);
+      const observed = await workingCopy.withPreChangeRoot(async (root) => ({
+        snapshot: await captureWorkspaceSnapshot(root),
+        text: await readFile(path.join(root.identity.canonicalPath, 'value.txt'), 'utf8')
+      }));
+      assert.equal(observed.snapshot.digest, preChange.digest);
+      assert.equal(observed.text, 'baseline\n');
+      assert.equal(
+        await readFile(path.join(workingCopy.root.identity.canonicalPath, 'value.txt'), 'utf8'),
+        'unfinished revision\n'
+      );
+      assert.equal(
+        await readFile(path.join(sourceDirectory, 'value.txt'), 'utf8'),
+        'concurrent source change\n'
+      );
+    } finally {
+      await workingCopy?.release();
+      source.close();
+      await rm(parent, { recursive: true, force: true });
+    }
+  }
+);
+
+test(
   'isolated working copies checkpoint, roll back, and apply one exact snapshot',
   { skip: process.platform !== 'linux' },
   async () => {

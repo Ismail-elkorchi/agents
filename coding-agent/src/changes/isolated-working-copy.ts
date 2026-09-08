@@ -229,6 +229,18 @@ export class IsolatedWorkingCopy implements CodingWorkingCopy {
     }
   }
 
+  async withPreChangeRoot<T>(read: (root: RootedFileAuthority) => Promise<T>): Promise<T> {
+    this.#assertOpen();
+    const root = RootedFileAuthority.adopt(
+      path.join(this.#directory, 'checkpoints', this.preChange.checkpointId, 'workspace')
+    );
+    try {
+      return await read(root);
+    } finally {
+      root.close();
+    }
+  }
+
   async checkpoint(label: string, signal?: AbortSignal): Promise<WorkingCopyCheckpoint> {
     this.#assertOpen();
     const normalizedLabel = requiredLabel(label);
