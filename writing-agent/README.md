@@ -6,6 +6,8 @@ Private state defaults to the platform user-state directory ($XDG_STATE_HOME/wri
 
 ## Continuous terminal writing
 
+Managed-file operations currently require Agent Core's Linux rooted-file authority, descriptor-relative checks, link checks, and recoverable patch journal. Unsupported platforms fail closed.
+
 Initialize a project with `writing-agent init "Describe the writing project" --root /path/to/project`, then open `writing-agent tui --root /path/to/project`. Add an existing text file with the **Add file** control. Select a provider/model with F10, or supply `--provider` and `--model` (`WRITING_AGENT_PROVIDER` and `WRITING_AGENT_MODEL` are also supported).
 
 The document is the primary surface. Wide terminals show it beside the selected work pane; narrow terminals use focused views. F2 selects resources, F3 opens the Markdown outline, F4 toggles exact source, and F8 binds the selected passage to its current document revision. Enter submits an instruction; Shift+Enter or Ctrl+O inserts a newline. Ctrl+E uses `$VISUAL`/`$EDITOR`, Alt+D retrieves saved drafts, and Ctrl+C interrupts active work or copies a selected source. Exit is available in the bottom action row.
@@ -76,8 +78,6 @@ writing-agent revise <resource-id> --root ./manuscript --provider openai-codex -
 ~~~
 
 Exactly four provider compositions are supported: ollama, openrouter, openai, and openai-codex. Library APIs remain provider-neutral and accept an Agent Core ModelProvider. Reasoning effort accepts none, minimal, low, medium, high, xhigh, or max; WRITING_AGENT_REASONING_EFFORT is the environment equivalent.
-
-Secure local revision currently requires Agent Core's Linux rooted-file authority, descriptor-relative checks, link checks, and recoverable patch journal. Unsupported platforms fail closed.
 
 There is no autonomous mode, multi-agent orchestration, live model mutation, model-owned publication, or offline measurement corpus/campaign subsystem. This package is pre-alpha and intentionally does not translate retired unpublished state names.
 
