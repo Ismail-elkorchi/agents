@@ -28,7 +28,10 @@ export interface WritingOperationContract {
     readonly resources: readonly ProjectSnapshot['resources'][number][];
     readonly exactRanges: readonly {
       readonly resourceId: string;
-      readonly range: ProjectSnapshot['resources'][number]['protectedRanges'][number];
+      readonly range: Pick<
+        ProjectSnapshot['resources'][number]['protectedRanges'][number],
+        'rangeId' | 'range'
+      >;
     }[];
   };
   readonly briefRequirements: Omit<
@@ -94,13 +97,17 @@ export function createWritingOperationContract(
     (resource) => resource.resourceId
   );
   const targetRangeIds = new Set(operation.intents.flatMap((intent) => intent.targetRangeIds));
-  const exactRanges = Object.freeze(
-    targetResources.flatMap((resource) =>
+  const exactRanges = Object.freeze([
+    ...targetResources.flatMap((resource) =>
       resource.protectedRanges
         .filter((range) => targetRangeIds.has(range.rangeId))
         .map((range) => Object.freeze({ resourceId: resource.resourceId, range }))
-    )
-  );
+    ),
+    ...operation.selectedRanges.map((selected) => ({
+      resourceId: selected.resourceId,
+      range: { rangeId: selected.rangeId, range: selected.range }
+    }))
+  ]);
   const {
     projectId: _projectId,
     briefRevisionId: _briefRevisionId,

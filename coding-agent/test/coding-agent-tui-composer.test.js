@@ -10,7 +10,12 @@ test('composer sends with Enter and inserts newlines with Shift+Enter and Ctrl+O
   const host = createMemoryTerminalHost({ terminalSize: { columns: 80, rows: 16 } });
   const runtime = createTuiRuntime({
     app: createCodingAgentTuiApp('', {
-      commandHandler: { execute(line) { submitted.push(line); return { message: 'Run started.' }; } }
+      commandHandler: {
+        execute(line) {
+          submitted.push(line);
+          return { message: 'Run started.' };
+        }
+      }
     }),
     host,
     initialFocus: { kind: 'element', elementId: 'composer' }
@@ -25,7 +30,7 @@ test('composer sends with Enter and inserts newlines with Shift+Enter and Ctrl+O
   assert.equal(textDocumentText(runtime.state().composer.input.document), 'first\nsecond\nthird');
 
   await runtime.handleInput(key('enter'));
-  await waitFor(() => submitted.length === 1);
+  await waitFor(() => submitted.length === 1 && !runtime.state().composer.submitting);
   assert.deepEqual(submitted, ['first\nsecond\nthird']);
   assert.equal(textDocumentText(runtime.state().composer.input.document), '');
   await runtime.dispose();
@@ -33,7 +38,10 @@ test('composer sends with Enter and inserts newlines with Shift+Enter and Ctrl+O
 
 function key(name, modifiers = {}) {
   return {
-    kind: 'key', key: name, eventType: 'press', location: 'standard',
+    kind: 'key',
+    key: name,
+    eventType: 'press',
+    location: 'standard',
     modifiers: { ctrl: false, alt: false, shift: false, meta: false, ...modifiers }
   };
 }
@@ -98,15 +106,54 @@ test('non-approval suspensions remain distinct recovery decisions', async () => 
 
 function approvalSuspension() {
   return {
-    state: 'suspended', reason: 'approval_required', runId: 'run', finalizationId: 'final',
-    pendingApprovals: [{
-      runId: 'run', approvalId: 'approval', status: 'pending', toolName: 'exec_command',
-      fingerprint: 'fingerprint', input: { command: 'echo ok' },
-      effects: { accesses: [{ mode: 'execute', scope: 'workspace/command' }], lockScopes: ['workspace/command'], recovery: { kind: 'unknown' } },
-      binding: { toolImplementationId: 'shell@1', authorizationPolicyId: 'policy@1', executionTargetId: 'workspace@1' },
-      policyHash: 'policy-hash', reason: 'Shell execution requires approval.',
-      turnIndex: 1, turnId: 'turn-1', requestAttempt: 1, toolBatchId: 'batch-1', callIndex: 0, callId: 'call-1'
-    }],
-    budget: { modelTurns: 1, totalToolCalls: 1, repeatedIdenticalToolCalls: 1, revisionAttempts: 0, elapsedMs: 1, promptTokens: 0, completionTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, knownCosts: {}, pricingStatus: 'unknown', unknownPricedTokens: 0, consecutiveProviderFailures: 0, consecutiveToolFailures: 0 }
+    state: 'suspended',
+    reason: 'approval_required',
+    runId: 'run',
+    finalizationId: 'final',
+    pendingApprovals: [
+      {
+        runId: 'run',
+        approvalId: 'approval',
+        status: 'pending',
+        toolName: 'exec_command',
+        fingerprint: 'fingerprint',
+        input: { command: 'echo ok' },
+        effects: {
+          accesses: [{ mode: 'execute', scope: 'workspace/command' }],
+          lockScopes: ['workspace/command'],
+          recovery: { kind: 'unknown' }
+        },
+        binding: {
+          toolImplementationId: 'shell@1',
+          authorizationPolicyId: 'policy@1',
+          executionTargetId: 'workspace@1'
+        },
+        policyHash: 'policy-hash',
+        reason: 'Shell execution requires approval.',
+        turnIndex: 1,
+        turnId: 'turn-1',
+        requestAttempt: 1,
+        toolBatchId: 'batch-1',
+        callIndex: 0,
+        callId: 'call-1'
+      }
+    ],
+    budget: {
+      modelTurns: 1,
+      totalToolCalls: 1,
+      repeatedIdenticalToolCalls: 1,
+      revisionAttempts: 0,
+      elapsedMs: 1,
+      promptTokens: 0,
+      completionTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      knownCosts: {},
+      pricingStatus: 'unknown',
+      unknownPricedTokens: 0,
+      consecutiveProviderFailures: 0,
+      consecutiveToolFailures: 0
+    }
   };
 }

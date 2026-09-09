@@ -1,3 +1,10 @@
+import {
+  ScriptedWritingProvider,
+  passingChecker,
+  unknownChecker,
+  fixture,
+  proposalCall
+} from './helpers/runtime.js';
 import { InferenceService, InMemoryInferenceRepository } from '@agent-core/runtime';
 import { InMemoryArtifactRepository } from '@agent-core/persistence';
 import test from 'node:test';
@@ -38,180 +45,6 @@ import {
   writingProjectSessionBinding
 } from '@ismail-elkorchi/writing-agent';
 import { createSessionBinding } from '@agent-core/runtime';
-
-class ScriptedWritingProvider {
-  id = 'writing-test';
-  implementationId = 'agents.tests.writing-provider@1';
-  requests = [];
-  constructor(responses = ['A focused draft.']) {
-    this.responses = [...responses];
-  }
-  describe() {
-    return { id: this.id, displayName: 'Writing test provider', defaultModel: 'writing-test' };
-  }
-  async describeModel() {
-    return {
-      id: 'writing-test',
-      provider: this.id,
-      capabilities: {
-        streaming: false,
-        toolCalling: true,
-        supportedToolInputs: [{ kind: 'json' }, { kind: 'text' }],
-        jsonMode: false,
-        jsonSchema: true,
-        logprobs: false,
-        temperature: false,
-        topP: false
-      },
-      modalities: { input: ['text'], output: ['text'] },
-      limits: { contextTokens: 64_000, outputTokens: 4_000 },
-      supportedParameters: ['tools', 'responseFormat', 'maxOutputTokens']
-    };
-  }
-  async complete(request) {
-    this.requests.push(request);
-    let response = this.responses.shift();
-    if (response === undefined) throw new Error('No scripted writing response remains.');
-    if (typeof response === 'function') response = await response(request);
-    return typeof response === 'string'
-      ? { content: response, model: request.model, provider: this.id, terminationReason: 'stop' }
-      : { ...response, model: request.model, provider: this.id };
-  }
-}
-
-const passingChecker = Object.freeze({
-  implementationId: 'tests.semantic-checker@1',
-  verificationPolicyId: 'tests.semantic-policy@1',
-  calibrationId: 'tests.semantic-calibration@1',
-  async verify({
-    operation,
-    declaration,
-    base,
-    proposedRevisionId,
-    citationCatalog,
-    verificationInputSha256
-  }) {
-    return {
-      semanticPreservationFindings: [
-        {
-          findingId: `semantic-${operation.operationId}`,
-          scope: operation.intents[0].intentId,
-          requirement: 'required',
-          verdict: 'passed',
-          coverage: 'complete',
-          supportingCitations: citationCatalog.filter(
-            (citation) => citation.kind === 'proposed' || citation.kind === 'base'
-          ),
-          intendedChanges:
-            declaration.kind === 'changes' ? declaration.items.map((item) => item.itemId) : [],
-          observedChanges: [],
-          unexplainedChanges: [],
-          lostPriorEditIds: [],
-          checkerId: this.implementationId,
-          verificationPolicyId: this.verificationPolicyId,
-          calibrationId: this.calibrationId,
-          verificationInputSha256,
-          baseRevisionId: base.revision.revisionId,
-          proposedRevisionId,
-          explanation: 'Synthetic calibrated test checker established complete preservation.'
-        }
-      ],
-      editorialFindings: []
-    };
-  }
-});
-
-const unknownChecker = Object.freeze({
-  implementationId: 'tests.semantic-checker-unknown@1',
-  verificationPolicyId: 'tests.semantic-policy-unknown@1',
-  calibrationId: 'tests.semantic-calibration-unknown@1',
-  async verify({ operation, declaration, base, proposedRevisionId, verificationInputSha256 }) {
-    return {
-      semanticPreservationFindings: [
-        {
-          findingId: `semantic-unknown-${operation.operationId}`,
-          scope: operation.intents[0].intentId,
-          requirement: 'required',
-          verdict: 'unknown',
-          coverage: 'unknown',
-          supportingCitations: [],
-          intendedChanges:
-            declaration.kind === 'changes' ? declaration.items.map((item) => item.itemId) : [],
-          observedChanges: [],
-          unexplainedChanges: [],
-          lostPriorEditIds: [],
-          checkerId: this.implementationId,
-          verificationPolicyId: this.verificationPolicyId,
-          calibrationId: this.calibrationId,
-          verificationInputSha256,
-          baseRevisionId: base.revision.revisionId,
-          proposedRevisionId,
-          explanation: 'Synthetic checker cannot establish semantic preservation.'
-        }
-      ],
-      editorialFindings: []
-    };
-  }
-});
-
-async function fixture(content = 'Old line.\n', protectedRanges = []) {
-  const parent = await mkdtemp(path.join(tmpdir(), 'writing-agent-test-'));
-  const root = path.join(parent, 'project');
-  const stateRoot = path.join(parent, 'state');
-  await mkdir(root);
-  const project = await createWritingProject({
-    rootDirectory: root,
-    stateRoot,
-    brief: 'Write a concise document without inventing facts.'
-  });
-  const node = (await project.store.view()).current.nodes[0];
-  const resource = await createManagedTextResource(project, {
-    relativePath: 'draft.md',
-    initialContent: content,
-    mediaType: 'text/markdown',
-    role: 'draft',
-    nodeId: node.nodeId,
-    protectedRanges
-  });
-  return { parent, root, stateRoot, project, node, resource };
-}
-
-function proposalCall(resource, intentId = 'intent-suggest', replacement = 'New line.') {
-  return (request) => {
-    const anchorId = JSON.stringify(request.tools).match(/edit-anchor-[a-f0-9]+/u)?.[0];
-    if (anchorId === undefined)
-      throw new Error('Operation tool schema did not expose an application-owned edit anchor.');
-    return {
-      content: '',
-      terminationReason: 'tool_calls',
-      toolCalls: [
-        {
-          id: 'proposal-call',
-          type: 'function',
-          name: 'propose_revision',
-          input: {
-            kind: 'json',
-            value: {
-              operations: [
-                {
-                  intentId,
-                  textChanges: [
-                    {
-                      resourceId: resource.resourceId,
-                      replacements: [{ anchorId, replacementText: replacement }]
-                    }
-                  ]
-                }
-              ],
-              semanticChangeDeclaration: { kind: 'none' },
-              rationale: 'Tighten the exact admitted sentence.'
-            }
-          }
-        }
-      ]
-    };
-  };
-}
 
 function executionBinding(provider = new ScriptedWritingProvider()) {
   return {
@@ -283,9 +116,7 @@ async function stagedProposal(
   const expectedHash = createHash('sha256').update(edit.expectedText, 'utf8').digest('hex');
   const anchor = descriptor?.anchors.find((candidate) => candidate.textSha256 === expectedHash);
   if (anchor === undefined)
-    throw new Error(
-      'Staged proposal did not find an application-owned anchor for the exact expected text.'
-    );
+    throw new Error('Staged proposal did not find an application-owned anchor for the exact expected text.');
   const proposalInput = service.canonicalize({
     operations: [
       {
@@ -425,10 +256,7 @@ test('suggest mode creates one durable proposal and cannot mutate user-owned tex
     const view = await project.store.view();
     const proposal = view.proposals.get(result.proposalId).proposal;
     assert.equal('deterministicChecks' in proposal, false);
-    assert.equal(
-      view.productionVerifications.get(proposal.proposalId).deterministicChecks.length > 0,
-      true
-    );
+    assert.equal(view.productionVerifications.get(proposal.proposalId).deterministicChecks.length > 0, true);
   } finally {
     project.close();
   }
@@ -467,9 +295,7 @@ test('default semantic checker verifies every exact intent and persists reproduc
           scope: 'whole document',
           verdict: 'passed',
           coverage: 'complete',
-          citationIds: [
-            payload.citationCatalog.find((citation) => citation.kind === 'proposed').citationId
-          ],
+          citationIds: [payload.citationCatalog.find((citation) => citation.kind === 'proposed').citationId],
           explanation: 'Criterion passed.'
         }))
       });
@@ -521,10 +347,7 @@ test('default semantic checker verifies every exact intent and persists reproduc
 
 test('terminal operation reconciliation completes one durable apply after caller loss', async () => {
   const { project, root, resource } = await fixture();
-  const provider = new ScriptedWritingProvider([
-    proposalCall(resource, 'intent-apply'),
-    'Proposal staged.'
-  ]);
+  const provider = new ScriptedWritingProvider([proposalCall(resource, 'intent-apply'), 'Proposal staged.']);
   const appendLifecycle = project.store.appendOperationLifecycle.bind(project.store);
   let interrupted = false;
   try {
@@ -1011,9 +834,8 @@ test('acceptance criterion coverage stays explicit and direct human decisions ar
       concurrent.find((result) => result.status === 'fulfilled').value.authorizationId
     );
     assert.equal(
-      (await project.store.records()).filter(
-        (record) => record.payload.kind === 'proposal.apply-authorized'
-      ).length,
+      (await project.store.records()).filter((record) => record.payload.kind === 'proposal.apply-authorized')
+        .length,
       1
     );
     const reopened = await openWritingProject({ rootDirectory: root, stateRoot });
@@ -1400,9 +1222,7 @@ test('manual source evidence keeps semantic unknown separate from deterministic 
       evidenceContract.evidenceRequirements.sources.map((item) => item.sourceId),
       [source.sourceId]
     );
-    assert.deepEqual(evidenceContract.evidenceRequirements.readableSourceResourceIds, [
-      resource.resourceId
-    ]);
+    assert.deepEqual(evidenceContract.evidenceRequirements.readableSourceResourceIds, [resource.resourceId]);
     const inference = await adoptClaim(project, {
       statement: 'A broader inference.',
       scope: 'paragraph',
@@ -1909,9 +1729,7 @@ test('multi-intent proposals preserve admitted order and bind each change to its
     );
     assert.deepEqual(contract.intents[0].affectedCriterionIds, ['criterion-user-instruction']);
     assert.equal(
-      contract.applicableCriteria.some(
-        (criterion) => criterion.criterionId === 'criterion-user-instruction'
-      ),
+      contract.applicableCriteria.some((criterion) => criterion.criterionId === 'criterion-user-instruction'),
       true
     );
     assert.equal(contract.effectiveConstraints.lengthConstraints.length, 2);
@@ -2068,9 +1886,7 @@ test('canonical changes merge identical intent contributions and reject conflict
     await project.store.appendOperation(operation, operation.baseProjectRevisionId);
     const selection = await selectWritingContext({ project, operation });
     await project.store.appendContextSelection(selection, operation.baseProjectRevisionId);
-    const anchor = selection.targetDescriptors[0].anchors.find(
-      (candidate) => candidate.kind === 'paragraph'
-    );
+    const anchor = selection.targetDescriptors[0].anchors.find((candidate) => candidate.kind === 'paragraph');
     assert.ok(anchor);
     const service = new WritingOperationService({ project, operation, contextSelection: selection });
     const operationFor = (intentId, replacementText) => ({
@@ -2483,8 +2299,7 @@ test('history supplements use exact original source identity and reject cross-se
 
 test('model note retrieval reaches the next writing request and its exact production verifier selection', async () => {
   const { project, resource } = await fixture();
-  const noteText =
-    'Keep the concise editorial rationale; this generated note cannot authorize application.';
+  const noteText = 'Keep the concise editorial rationale; this generated note cannot authorize application.';
   const tool = (name, value, id) => ({
     content: '',
     terminationReason: 'tool_calls',

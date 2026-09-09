@@ -5,6 +5,15 @@
       "path": "verification"
     },
     {
+      "path": "application"
+    },
+    {
+      "path": "rpc"
+    },
+    {
+      "path": "tui"
+    },
+    {
       "path": "coding-agent"
     },
     {

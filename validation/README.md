@@ -24,3 +24,17 @@ node scripts/evaluate-harness-redesign.mjs --mode live --provider codex \
 ```
 
 Authentication is read only and is never copied into reports. Use a new output path to preserve prior measurements. Default dry mode performs no model generation.
+
+## Terminal applications
+
+`tui-baseline.json` records the inspected coding TUI before this implementation. `node --expose-gc validation/tui-performance.mjs` measures input/rendering latency and actual JSONL history reads for both consumers. The memory host records frames for inspection, so its heap measurements explicitly include retained test frames and must not be presented as live-terminal steady-state memory.
+
+`validation/terminal-session.mjs coding|writing /tmp/evidence-prefix` runs an isolated scripted application through the real Node terminal host and records plain frames, exit state and diagnostics. The fixture creates temporary product data and removes it on exit; it performs no live model evaluation. Run it inside a terminal emulator; the automated memory-host suites provide complementary deterministic interaction and domain checks. `terminal-ui-consumer-findings.md` records confirmed public API limitations without modifying that dependency.
+
+`tui-terminal-2026-09-09.json` records the xterm walkthroughs at 48 and 120 columns, including writing acceptance/application/undo, source selection, clipboard round trips, Unicode paste, resize, external editing and exit. Optional enhanced keyboard and grapheme protocols were unavailable. Exact copying of tabs, CRLF and other source changed by terminal-ui's display sanitizer remains blocked and is reported visibly by both consumers; the plan's unrestricted copy criterion is not complete.
+
+`tui-performance-2026-09-09.json` records the final measured workload. Warm history reads are bounded and do not rebuild the index; cold index construction is reported separately. The 700-entry interaction tests separately exercise complete history traversal, unloaded search, bounded page caches and draft/anchor restoration. Functional test deadlines are not latency measurements.
+
+The final recorded latency gate passed: input P95 is 13–29 ms, rendering P95 is 14–30 ms, and warm JSONL page P95 is 16 ms, within the 50/50/100 ms targets. `tui-performance-before-profiling-2026-09-09.json` and `tui-performance-measured-viewport-2026-09-09.json` preserve earlier failures. Load and sampled clock speeds differed substantially; those earlier reports sampled only CPU 0 before and after execution, while the final report records all CPUs. These results do not establish a speed improvement over the baseline or a guarantee under arbitrary host load. `terminal-measurement-repro.mjs` and its recorded result isolate repeated library measurement on unchanged content (TU04), which remains an opportunity for improvement.
+
+The local release gate passed with `taskset -c 0-2 npm run verify:release`, bounding Node's test concurrency on the shared host: 200 tests passed, six namespace-dependent tests were skipped, and independent packed consumers passed. Test workloads and deadlines were unchanged; CI retains its normal runner configuration.

@@ -7,11 +7,10 @@ import {
 } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { SearchEntry } from '@ismail-elkorchi/terminal-ui/components';
 import { textCaretAt, textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
-import { appendNotice, appendUser } from './conversation.js';
+import { appendNotice, upsertConversationEntry } from './conversation.js';
 import type { InteractiveCommandResult } from './interactive-commands.js';
 import { INTERACTIVE_COMMANDS } from './interactive-commands.js';
 import type { CodingAgentTuiState } from './state.js';
-import { normalizeTaskInput } from './task-input.js';
 
 const COMPOSER_HISTORY_LIMIT = 100;
 
@@ -28,6 +27,7 @@ export interface CodingAgentTuiCommandRequest {
   readonly id: string;
   readonly value: string;
   readonly recordResult: boolean;
+  readonly draft?: string;
 }
 
 export interface CodingAgentTuiCommandSubmitResult {
@@ -119,27 +119,28 @@ export function navigateComposerHistory(
   };
 }
 
-export function submitComposer(state: CodingAgentTuiState): CodingAgentTuiCommandSubmitResult {
-  const value = normalizeTaskInput(textDocumentText(state.composer.input.document));
-  if (value.length === 0) return { state };
+export function submitComposer(
+  state: CodingAgentTuiState,
+  delivery?: 'steer' | 'follow_up'
+): CodingAgentTuiCommandSubmitResult {
+  const value = textDocumentText(state.composer.input.document);
+  if (value.trim().length === 0 || state.composer.submitting) return { state };
   const slashCommand = value.startsWith('/');
-  const cleared: CodingAgentTuiState = {
+  const next: CodingAgentTuiState = {
     ...state,
     composer: {
-      input: composerInput(''),
-      history: [...state.composer.history, value].slice(-COMPOSER_HISTORY_LIMIT),
-      historyIndex: null,
-      historyDraft: '',
+      ...state.composer,
+      submitting: true,
       submissionCount: state.composer.submissionCount + 1
     }
   };
-  const next = slashCommand ? cleared : appendUser(cleared, value);
   return {
     state: next,
     request: {
       id: `command:${String(next.composer.submissionCount)}`,
-      value,
-      recordResult: slashCommand
+      value: delivery === undefined ? value : `${delivery === 'steer' ? '/steer' : '/follow'} ${value}`,
+      draft: textDocumentText(state.composer.input.document),
+      recordResult: slashCommand || delivery !== undefined
     }
   };
 }
@@ -155,10 +156,31 @@ function composerInput(value: string) {
 export function applyCommandExecution(
   state: CodingAgentTuiState,
   execution: CodingAgentTuiCommandExecution,
-  recordResult: boolean
+  request: CodingAgentTuiCommandRequest
 ): { readonly state: CodingAgentTuiState; readonly exit?: boolean } {
-  let next = state;
-  if (execution.view !== 'debug' && recordResult) {
+  let next: CodingAgentTuiState = { ...state, composer: { ...state.composer, submitting: false } };
+  if (request.draft !== undefined) {
+    if (textDocumentText(next.composer.input.document) === request.draft) {
+      const { commandReturnDraft, ...composer } = next.composer;
+      next = setComposerText({ ...next, composer }, commandReturnDraft ?? '');
+    }
+    next = {
+      ...next,
+      composer: {
+        ...next.composer,
+        history: [...next.composer.history, request.value].slice(-COMPOSER_HISTORY_LIMIT)
+      }
+    };
+  }
+  if (execution.submission !== undefined) {
+    const { acceptance, text } = execution.submission;
+    next = upsertConversationEntry(next, {
+      id: acceptance.kind === 'steered' ? `steering:${acceptance.submissionId}` : `input:${acceptance.runId}`,
+      kind: 'user',
+      text
+    });
+  }
+  if (execution.view !== 'debug' && request.recordResult) {
     const tone = execution.tone === 'error' ? 'error' : execution.tone === 'muted' ? 'info' : 'success';
     next = appendNotice(next, execution.message, tone);
   }
@@ -166,5 +188,5 @@ export function applyCommandExecution(
 }
 
 export function applyCommandFailure(state: CodingAgentTuiState, message: string): CodingAgentTuiState {
-  return appendNotice(state, message, 'error');
+  return appendNotice({ ...state, composer: { ...state.composer, submitting: false } }, message, 'error');
 }

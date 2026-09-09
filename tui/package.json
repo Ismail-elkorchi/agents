@@ -1,0 +1,31 @@
+{
+  "name": "@agents/tui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=24.8.0"
+  },
+  "dependencies": {
+    "@ismail-elkorchi/terminal-ui": "github:Ismail-elkorchi/terminal-ui#e9ec556d96814a8029936106e5a1a6ef70b5da3c",
+    "diff": "9.0.0",
+    "markspan": "github:Ismail-elkorchi/markspan#c883b9a518cf96b967eadba31c3f2d08db1f5946",
+    "prismjs": "1.30.0",
+    "@agent-core/runtime": "0.2.0"
+  },
+  "devDependencies": {
+    "@types/prismjs": "1.26.6"
+  }
+}

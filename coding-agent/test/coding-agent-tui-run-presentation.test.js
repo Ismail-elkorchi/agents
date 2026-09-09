@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import { runTui } from '@ismail-elkorchi/terminal-ui/tui';
-import { CodingAgentTuiEventSource, createCodingAgentTuiApp } from '@ismail-elkorchi/coding-agent/tui';
+import { createCodingTuiEventSource, createCodingAgentTuiApp } from '@ismail-elkorchi/coding-agent/tui';
 import { decodeAgentTerminalSnapshot } from '@agent-core/runtime';
 import { waitFor } from './coding-agent-tui-test-helpers.js';
 
@@ -100,7 +100,7 @@ test('advisory check failures remain visible without becoming required failures'
 
 function runPresentationApp() {
   const host = createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 20 } });
-  const events = new CodingAgentTuiEventSource();
+  const events = createCodingTuiEventSource();
   const app = createCodingAgentTuiApp('task', {
     eventSource: events,
     commandHandler: { execute: () => ({ message: 'Exiting.', exit: true }) }

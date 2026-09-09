@@ -25,79 +25,38 @@ try {
   const consumer = path.join(temporary, 'consumer');
   await mkdir(packs, { recursive: true });
   const dependencies = {};
-  for (const relative of packageDirs) {
-    const directory = path.join(core, relative);
+  const agentsManifest = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
+  const directories = [
+    ...packageDirs.map((relative) => path.join(core, relative)),
+    path.join(root, 'node_modules/@ismail-elkorchi/terminal-ui'),
+    path.join(root, 'node_modules/markspan'),
+    path.resolve(root, '../sandbox/packages/sandbox'),
+    ...agentsManifest.workspaces.map((workspace) => path.join(root, workspace))
+  ];
+  for (const directory of directories) {
     const manifest = JSON.parse(await readFile(path.join(directory, 'package.json'), 'utf8'));
     const { stdout } = await exec(
       process.execPath,
-      [npmCli, 'pack', '--json', '--pack-destination', packs],
+      [npmCli, 'pack', '--json', '--ignore-scripts', '--pack-destination', packs],
       { cwd: directory, maxBuffer: 10 * 1024 * 1024 }
     );
     const packed = JSON.parse(stdout)[0];
     if (!packed.files.some((file) => file.path.startsWith('dist/')))
-      throw new Error(`${manifest.name} is missing compiled output.`);
+      throw new Error(`${manifest.name} archive has no compiled output.`);
+    if (
+      manifest.name === '@ismail-elkorchi/coding-agent' ||
+      manifest.name === '@ismail-elkorchi/writing-agent'
+    ) {
+      for (const entry of ['index.js', 'cli.js', 'tui/index.js', 'rpc/index.js'])
+        if (!packed.files.some((file) => file.path === `dist/${entry}`))
+          throw new Error(`${manifest.name} archive is missing ${entry}.`);
+    }
     dependencies[manifest.name] = `file:${path.join(packs, packed.filename)}`;
   }
-  const terminalUiDirectory = path.join(root, 'node_modules', '@ismail-elkorchi', 'terminal-ui');
-  const terminalUiManifest = JSON.parse(
-    await readFile(path.join(terminalUiDirectory, 'package.json'), 'utf8')
-  );
-  const { stdout: terminalUiOutput } = await exec(
-    process.execPath,
-    [npmCli, 'pack', '--json', '--ignore-scripts', '--pack-destination', packs],
-    { cwd: terminalUiDirectory, maxBuffer: 10 * 1024 * 1024 }
-  );
-  const terminalUiPack = JSON.parse(terminalUiOutput)[0];
-  if (!terminalUiPack.files.some((file) => file.path.startsWith('dist/host/')))
-    throw new Error('Terminal UI archive is incomplete.');
-  dependencies[terminalUiManifest.name] = `file:${path.join(packs, terminalUiPack.filename)}`;
-  const sandboxDirectory = path.resolve(root, '../sandbox/packages/sandbox');
-  const sandboxManifest = JSON.parse(await readFile(path.join(sandboxDirectory, 'package.json'), 'utf8'));
-  const { stdout: sandboxOutput } = await exec(
-    process.execPath,
-    [npmCli, 'pack', '--json', '--pack-destination', packs],
-    { cwd: sandboxDirectory, maxBuffer: 10 * 1024 * 1024 }
-  );
-  const sandboxPack = JSON.parse(sandboxOutput)[0];
-  if (!sandboxPack.files.some((file) => file.path.startsWith('dist/')))
-    throw new Error('Sandbox archive is incomplete.');
-  dependencies[sandboxManifest.name] = `file:${path.join(packs, sandboxPack.filename)}`;
-  const verificationDirectory = path.join(root, 'verification');
-  const { stdout: verificationOutput } = await exec(
-    process.execPath,
-    [npmCli, 'pack', '--json', '--pack-destination', packs],
-    { cwd: verificationDirectory }
-  );
-  const verificationPack = JSON.parse(verificationOutput)[0];
-  dependencies['@agents/verification'] = `file:${path.join(packs, verificationPack.filename)}`;
-  const codingDirectory = path.join(root, 'coding-agent');
-  const codingManifest = JSON.parse(await readFile(path.join(codingDirectory, 'package.json'), 'utf8'));
-  const { stdout } = await exec(process.execPath, [npmCli, 'pack', '--json', '--pack-destination', packs], {
-    cwd: codingDirectory,
-    maxBuffer: 10 * 1024 * 1024
-  });
-  const codingPack = JSON.parse(stdout)[0];
-  if (
-    !codingPack.files.some((file) => file.path === 'dist/index.js') ||
-    !codingPack.files.some((file) => file.path === 'dist/tui/index.js')
-  )
-    throw new Error('Coding agent archive is incomplete.');
-  dependencies[codingManifest.name] = `file:${path.join(packs, codingPack.filename)}`;
-  const writingDirectory = path.join(root, 'writing-agent');
-  const writingManifest = JSON.parse(await readFile(path.join(writingDirectory, 'package.json'), 'utf8'));
-  const { stdout: writingOutput } = await exec(
-    process.execPath,
-    [npmCli, 'pack', '--json', '--pack-destination', packs],
-    { cwd: writingDirectory, maxBuffer: 10 * 1024 * 1024 }
-  );
-  const writingPack = JSON.parse(writingOutput)[0];
-  if (!writingPack.files.some((file) => file.path === 'dist/index.js'))
-    throw new Error('Writing agent archive is incomplete.');
-  dependencies[writingManifest.name] = `file:${path.join(packs, writingPack.filename)}`;
   await mkdir(consumer, { recursive: true });
   await writeFile(
     path.join(consumer, 'package.json'),
-    `${JSON.stringify({ name: 'coding-agent-consumer', private: true, type: 'module', dependencies, devDependencies: { '@types/node': coreManifest.devDependencies['@types/node'] }, overrides: { '@ismail-elkorchi/terminal-ui': '$@ismail-elkorchi/terminal-ui' } }, null, 2)}\n`
+    `${JSON.stringify({ name: 'coding-agent-consumer', private: true, type: 'module', dependencies, devDependencies: { '@types/node': coreManifest.devDependencies['@types/node'] }, overrides: { '@ismail-elkorchi/terminal-ui': '$@ismail-elkorchi/terminal-ui', markspan: '$markspan' } }, null, 2)}\n`
   );
   await exec(process.execPath, [npmCli, 'install', '--ignore-scripts', '--no-audit', '--no-fund'], {
     cwd: consumer,
@@ -106,11 +65,18 @@ try {
   await writeFile(
     path.join(consumer, 'index.mjs'),
     [
-      "import * as coding from '@ismail-elkorchi/coding-agent';",
-      "import * as tui from '@ismail-elkorchi/coding-agent/tui';",
-      "import * as writing from '@ismail-elkorchi/writing-agent';",
-      "if (!coding.resolveCodingAuthority || !coding.loadCodingAgentConfiguration || !coding.createCodingSession || !coding.decodeCodingHandoff || !tui.createCodingAgentTuiApp) throw new Error('Coding-agent public exports are incomplete');",
-      "if (!writing.createWritingProject || !writing.admitWritingOperation || !writing.runTransientWriting) throw new Error('Writing-agent public exports are incomplete');"
+      "import {registerHooks} from 'node:module';",
+      "const hook = registerHooks({resolve(specifier, context, next) {const resolved = next(specifier, context); if (/\\/(coding-agent|writing-agent)\\/dist\\/(cli\\.js|tui\\/|rpc\\/)/u.test(resolved.url) || resolved.url.includes('/terminal-ui/')) throw new Error('Headless package loaded an adapter: ' + resolved.url); return resolved;}});",
+      "const coding = await import('@ismail-elkorchi/coding-agent');",
+      "const writing = await import('@ismail-elkorchi/writing-agent');",
+      'hook.deregister();',
+      "const tui = await import('@ismail-elkorchi/coding-agent/tui');",
+      "const writingTui = await import('@ismail-elkorchi/writing-agent/tui');",
+      "const codingRpc = await import('@ismail-elkorchi/coding-agent/rpc');",
+      "const writingRpc = await import('@ismail-elkorchi/writing-agent/rpc');",
+      "if (!coding.openCodingApplication || !tui.createCodingAgentTuiApp || !codingRpc.runCodingRpc) throw new Error('Coding application exports are incomplete');",
+      "if (!writing.openWritingApplication || !writingTui.createWritingAgentTuiApp || !writingRpc.runWritingRpc) throw new Error('Writing application exports are incomplete');",
+      "for (const name of ['application', 'rpc', 'tui', 'verification']) await import('@agents/' + name);"
     ].join('\n')
   );
   await exec(process.execPath, ['index.mjs'], { cwd: consumer });
@@ -165,6 +131,11 @@ try {
       cwd: consumer,
       maxBuffer: 20 * 1024 * 1024
     });
+  }
+  for (const agent of ['coding-agent', 'writing-agent']) {
+    const binary = path.join(consumer, 'node_modules/@ismail-elkorchi', agent, 'dist/cli.js');
+    const { stdout } = await exec(process.execPath, [binary, '--help'], { cwd: consumer });
+    if (!stdout.includes('rpc')) throw new Error(`${agent} help omits its stdio entry point.`);
   }
   console.log('Packed agent consumers passed.');
 } finally {

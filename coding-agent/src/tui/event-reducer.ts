@@ -1,8 +1,8 @@
 import type { AgentProgressEvent, AgentRunPhase, AgentSessionState } from '@agent-core/runtime';
 import { type CheckResult } from '@agents/verification';
-import { codingHandoffUncertainties } from '../presentation/run-summary.js';
 import type { CodingHandoff } from '../changes/coding-handoff.js';
 import type { CodingEndedRunResult } from '../outcome.js';
+import { codingHandoffUncertainties } from '../presentation/run-summary.js';
 import type { CodingAgentTuiActivityEntry } from './conversation-model.js';
 import {
   appendNotice,
@@ -46,12 +46,7 @@ export function applyProgress(state: CodingAgentTuiState, event: AgentProgressEv
     case 'assistant.started':
       return upsertAssistant(withWorking(state, 'Thinking'), event.turnId, '', 'streaming');
     case 'assistant.delta':
-      return upsertAssistant(
-        withWorking(state, 'Responding'),
-        event.turnId,
-        event.accumulated,
-        'streaming'
-      );
+      return upsertAssistant(withWorking(state, 'Responding'), event.turnId, event.accumulated, 'streaming');
     case 'assistant.reasoning':
       return reduceReasoning(state, event);
     case 'assistant.status':
@@ -147,8 +142,7 @@ function reduceReasoning(
   state: CodingAgentTuiState,
   event: ProgressEvent<'assistant.reasoning'>
 ): CodingAgentTuiState {
-  if (state.runtimeDetails.showReasoning !== true || event.channel !== 'summary')
-    return withWorking(state, 'Thinking');
+  if (!state.showReasoning || event.channel !== 'summary') return withWorking(state, 'Thinking');
   return upsertReasoning(withWorking(state, 'Thinking'), event.turnId, event.accumulated);
 }
 
@@ -167,7 +161,7 @@ function reduceAssistantInterrupted(
   event: ProgressEvent<'assistant.interrupted'>
 ): CodingAgentTuiState {
   let next = upsertAssistant(withWorking(state, 'Recovering'), event.turnId, event.content, 'interrupted');
-  if (event.reasoningSummary !== undefined && state.runtimeDetails.showReasoning === true) {
+  if (event.reasoningSummary !== undefined && state.showReasoning) {
     next = upsertReasoning(next, event.turnId, event.reasoningSummary);
   }
   if (event.diagnostic !== undefined) {
@@ -189,11 +183,7 @@ function reduceToolStarted(
 ): CodingAgentTuiState {
   return upsertActivity(
     withWorking(state, 'Running tool'),
-    runningToolActivity(
-      toolActivityId({ ...event, runId: currentRunId(state) }),
-      event.input,
-      event.effects
-    )
+    runningToolActivity(toolActivityId({ ...event, runId: currentRunId(state) }), event.input, event.effects)
   );
 }
 
@@ -284,10 +274,7 @@ export function applySessionState(
   };
 }
 
-export function applyCodingHandoff(
-  state: CodingAgentTuiState,
-  handoff: CodingHandoff
-): CodingAgentTuiState {
+export function applyCodingHandoff(state: CodingAgentTuiState, handoff: CodingHandoff): CodingAgentTuiState {
   state = handoff.outcome.verification.checks.reduce(
     (current, check) => applyCheckResult(current, check, handoff.terminal.runId),
     state
@@ -295,9 +282,7 @@ export function applyCodingHandoff(
   const report = handoff.changeReport;
   const uncertainties = codingHandoffUncertainties(handoff);
   const structured = report.changes.filter((change) => change.attribution === 'structured_mutation').length;
-  const external = report.changes.filter(
-    (change) => change.attribution === 'external_or_concurrent'
-  ).length;
+  const external = report.changes.filter((change) => change.attribution === 'external_or_concurrent').length;
   const changeSummary =
     report.totalChanges === 0
       ? 'No workspace changes'
@@ -386,11 +371,7 @@ function applyTerminal(
   }
   if (presentation.status === 'warning' || presentation.status === 'error') {
     if (!hasVisibleMessage(next, presentation.headline)) {
-      next = appendNotice(
-        next,
-        presentation.headline,
-        presentation.status === 'error' ? 'error' : 'warning'
-      );
+      next = appendNotice(next, presentation.headline, presentation.status === 'error' ? 'error' : 'warning');
     }
   }
   return next;
@@ -450,7 +431,6 @@ function compact(value: string): string {
 }
 
 function diagnosticText(diagnostic: ProgressEvent<'model.failed'>['diagnostic']): string {
-  const cause =
-    diagnostic.causeSummary === undefined ? '' : ` · ${JSON.stringify(diagnostic.causeSummary)}`;
+  const cause = diagnostic.causeSummary === undefined ? '' : ` · ${JSON.stringify(diagnostic.causeSummary)}`;
   return `${diagnostic.provider} ${diagnostic.code}${cause}`;
 }

@@ -1,0 +1,192 @@
+{
+  "environment": {
+    "runtime": "v24.14.0",
+    "platform": "linux",
+    "release": "7.0.0-30-generic",
+    "cpu": "Intel(R) Core(TM) i7-4770HQ CPU @ 2.20GHz",
+    "hostBefore": {
+      "cpuSpeedMHz": 798,
+      "loadAverage": [
+        2.9,
+        3.2,
+        4.13
+      ]
+    },
+    "hostAfter": {
+      "cpuSpeedMHz": 798,
+      "loadAverage": [
+        3.1,
+        3.22,
+        4.08
+      ]
+    },
+    "cpuProfiling": false
+  },
+  "scope": "Memory-host latency includes update, layout and rendering. Heap includes the host recording all frames; it is not a live terminal steady-state heap estimate. Cold index creation and bounded warm body reads measured from JSONL.",
+  "workload": {
+    "historyEntries": 700,
+    "historySourceTextBytes": 4200000,
+    "appendUpdates": 80,
+    "inputUpdates": 60
+  },
+  "budgets": {
+    "inputP95Ms": 50,
+    "appendP95Ms": 50,
+    "historyPageP95Ms": 100
+  },
+  "sourceReads": {
+    "coldPageMs": 854.0121250000011,
+    "warmPageP95Ms": 97.7527689999988,
+    "beforeReads": {
+      "indexedRecords": 700,
+      "scannedBytes": 4349150,
+      "bodyBytesRead": 260946,
+      "bodyRecordsRead": 42
+    },
+    "afterReads": {
+      "indexedRecords": 700,
+      "scannedBytes": 4349150,
+      "bodyBytesRead": 10524314,
+      "bodyRecordsRead": 1694
+    }
+  },
+  "measurements": [
+    {
+      "agent": "coding",
+      "columns": 48,
+      "rows": 32,
+      "inputP95Ms": 55.98859000000084,
+      "appendP95Ms": 88.78760700000021,
+      "heapBefore": 44440424,
+      "heapWithRecordedFrames": 70081736,
+      "retainedFrames": 141,
+      "metrics": {
+        "decodedInputEvents": 0,
+        "wheelPackets": 0,
+        "dispatchedMessages": 140,
+        "frameCommits": 141,
+        "diagnostics": {
+          "retained": 0,
+          "omitted": 0
+        },
+        "effects": {
+          "active": 0,
+          "queued": 0,
+          "rejected": 0
+        },
+        "sources": {
+          "reliableAdmissions": 0,
+          "replaceableAdmissions": 0,
+          "replacements": 0,
+          "dispatchedMessages": 0,
+          "dispatchedBatches": 0,
+          "maximumBuffered": 0,
+          "cadenceFlushes": 0
+        }
+      }
+    },
+    {
+      "agent": "coding",
+      "columns": 120,
+      "rows": 32,
+      "inputP95Ms": 66.34665099999984,
+      "appendP95Ms": 63.474913000001834,
+      "heapBefore": 69800160,
+      "heapWithRecordedFrames": 76777648,
+      "retainedFrames": 141,
+      "metrics": {
+        "decodedInputEvents": 0,
+        "wheelPackets": 0,
+        "dispatchedMessages": 140,
+        "frameCommits": 141,
+        "diagnostics": {
+          "retained": 0,
+          "omitted": 0
+        },
+        "effects": {
+          "active": 0,
+          "queued": 0,
+          "rejected": 0
+        },
+        "sources": {
+          "reliableAdmissions": 0,
+          "replaceableAdmissions": 0,
+          "replacements": 0,
+          "dispatchedMessages": 0,
+          "dispatchedBatches": 0,
+          "maximumBuffered": 0,
+          "cadenceFlushes": 0
+        }
+      }
+    },
+    {
+      "agent": "writing",
+      "columns": 48,
+      "rows": 32,
+      "inputP95Ms": 173.84700699999667,
+      "appendP95Ms": 207.28426000000036,
+      "heapBefore": 76529264,
+      "heapWithRecordedFrames": 86743328,
+      "retainedFrames": 143,
+      "metrics": {
+        "decodedInputEvents": 0,
+        "wheelPackets": 0,
+        "dispatchedMessages": 142,
+        "frameCommits": 143,
+        "diagnostics": {
+          "retained": 0,
+          "omitted": 0
+        },
+        "effects": {
+          "active": 0,
+          "queued": 0,
+          "rejected": 0
+        },
+        "sources": {
+          "reliableAdmissions": 0,
+          "replaceableAdmissions": 0,
+          "replacements": 0,
+          "dispatchedMessages": 0,
+          "dispatchedBatches": 0,
+          "maximumBuffered": 0,
+          "cadenceFlushes": 0
+        }
+      }
+    },
+    {
+      "agent": "writing",
+      "columns": 120,
+      "rows": 32,
+      "inputP95Ms": 225.80420900000172,
+      "appendP95Ms": 127.5835420000003,
+      "heapBefore": 86038960,
+      "heapWithRecordedFrames": 94486192,
+      "retainedFrames": 143,
+      "metrics": {
+        "decodedInputEvents": 0,
+        "wheelPackets": 0,
+        "dispatchedMessages": 142,
+        "frameCommits": 143,
+        "diagnostics": {
+          "retained": 0,
+          "omitted": 0
+        },
+        "effects": {
+          "active": 0,
+          "queued": 0,
+          "rejected": 0
+        },
+        "sources": {
+          "reliableAdmissions": 0,
+          "replaceableAdmissions": 0,
+          "replacements": 0,
+          "dispatchedMessages": 0,
+          "dispatchedBatches": 0,
+          "maximumBuffered": 0,
+          "cadenceFlushes": 0
+        }
+      }
+    }
+  ],
+  "passed": false
+}

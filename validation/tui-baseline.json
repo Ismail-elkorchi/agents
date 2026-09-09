@@ -1,0 +1,36 @@
+{
+  "environment": {
+    "runtime": "v24.14.0",
+    "platform": "linux",
+    "release": "7.0.0-30-generic",
+    "cpu": "Intel(R) Core(TM) i7-4770HQ CPU @ 2.20GHz"
+  },
+  "scope": "Memory-host application rendering; no physical terminal or model latency measurement.",
+  "workload": {
+    "messages": 80,
+    "markdown": true,
+    "unicode": true,
+    "multilinePaste": true
+  },
+  "budgets": {
+    "inputP95Ms": 50,
+    "appendP95Ms": 50,
+    "historyPageP95Ms": 100
+  },
+  "measurements": [
+    {
+      "columns": 48,
+      "rows": 32,
+      "startupMs": 54.33480599999996,
+      "appendP95Ms": 16.013063999999986,
+      "inputMs": 17.769645999999966
+    },
+    {
+      "columns": 120,
+      "rows": 32,
+      "startupMs": 6.568976000000021,
+      "appendP95Ms": 10.20874200000003,
+      "inputMs": 7.531103999999914
+    }
+  ]
+}

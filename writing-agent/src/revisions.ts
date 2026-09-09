@@ -283,13 +283,20 @@ export async function applyRevisionProposal(
     authorization.proposalId !== input.proposalId
   )
     throw new Error('Writing application requires its exact durable authorization.');
+  const view = await project.store.view();
+  const proposal = view.proposals.get(input.proposalId);
+  if (proposal === undefined) throw new Error(`Unknown writing proposal: ${input.proposalId}`);
+  // Validate preimages before issuing an effect ticket; the transaction checks them again at dispatch.
+  const transactionPlan =
+    proposal.status === 'applied'
+      ? undefined
+      : await planTextTransaction(project, view.current, proposal.proposal.textEdits);
   const effects = new EffectExecutor(
     new JsonlEventRepository({
       rootDir: path.join(project.state.projectDirectory(project.store.identity.projectId), 'effects'),
       codec: effectExecutionEventCodec
     })
   );
-  const apply = () => applyAuthorizedRevision(project, { ...input, authorization });
   const result = await effects.execute<AppliedWritingRevision>(
     {
       intent: {
@@ -309,11 +316,14 @@ export async function applyRevisionProposal(
       exposure: () => knownEffectExposure([]),
       start: async (signal) => {
         signal.throwIfAborted();
-        return apply();
+        return applyAuthorizedRevision(project, { ...input, authorization }, transactionPlan);
       },
       reconcile: async (signal) => {
         signal.throwIfAborted();
-        return { status: 'settled', observation: await apply() };
+        return {
+          status: 'settled',
+          observation: await applyAuthorizedRevision(project, { ...input, authorization })
+        };
       }
     },
     input.signal
@@ -329,7 +339,8 @@ async function applyAuthorizedRevision(
     readonly proposalId: string;
     readonly authorization: WritingApplyAuthorization;
     readonly clock?: () => Date;
-  }
+  },
+  transactionPlan?: Awaited<ReturnType<typeof planTextTransaction>>
 ): Promise<AppliedWritingRevision> {
   const clock = input.clock ?? (() => new Date());
   let view = await project.store.view();
@@ -380,7 +391,7 @@ async function applyAuthorizedRevision(
   if (operation.briefRevisionId !== view.current.brief.briefRevisionId)
     throw new Error(`Writing proposal brief is stale: ${proposal.proposalId}`);
   const textEdits = proposal.textEdits;
-  const plan = await planTextTransaction(project, view.current, textEdits);
+  const plan = transactionPlan ?? (await planTextTransaction(project, view.current, textEdits));
   const transactionId = input.authorization.transactionId;
   const journalDirectory = path.join(
     project.state.projectDirectory(project.store.identity.projectId),
@@ -456,11 +467,7 @@ async function applyAuthorizedRevision(
   }
   view = await project.store.view();
   if (view.current.revision.revisionId !== proposal.baseProjectRevisionId) {
-    const completed = findCommittedProposalRevision(
-      view.records,
-      proposal.operationId,
-      proposal.proposalId
-    );
+    const completed = findCommittedProposalRevision(view.records, proposal.operationId, proposal.proposalId);
     if (completed !== undefined)
       return Object.freeze({
         proposalId: proposal.proposalId,
@@ -552,8 +559,7 @@ async function applyAuthorizedRevision(
     oldSha256: item.oldSha256,
     newSha256: item.newSha256,
     changedAnchorIds:
-      textEdits.find((request) => request.resourceId === resourceId)?.edits.map((edit) => edit.anchorId) ??
-      []
+      textEdits.find((request) => request.resourceId === resourceId)?.edits.map((edit) => edit.anchorId) ?? []
   }));
   const settlement: ProjectMutationSettlement = {
     mutationId: proposal.proposalId,
@@ -674,8 +680,7 @@ export async function undoWritingRevision(
     const missing = [...requested].filter(
       (resourceId) => !view.current.resources.some((resource) => resource.resourceId === resourceId)
     );
-    if (missing.length > 0)
-      throw new Error(`Undo targets unknown current resources: ${missing.join(', ')}.`);
+    if (missing.length > 0) throw new Error(`Undo targets unknown current resources: ${missing.join(', ')}.`);
   }
   const plan = new Map<
     string,
@@ -973,9 +978,7 @@ async function assertCommittedFiles(
   for (const item of plan.values()) {
     const file = await readRootedText(project.authority, item.path, 64 * 1024 * 1024);
     if (file.sha256 !== item.newSha256)
-      throw new Error(
-        `Committed text transaction cannot be reconciled with current file hash: ${item.path}`
-      );
+      throw new Error(`Committed text transaction cannot be reconciled with current file hash: ${item.path}`);
   }
 }
 
@@ -1019,9 +1022,7 @@ function applyStructuralChanges(
     } else if (change.kind === 'reorder') {
       const value = z
         .strictObject({
-          orders: z
-            .array(z.strictObject({ nodeId: z.string(), siblingOrder: z.int().nonnegative() }))
-            .min(1)
+          orders: z.array(z.strictObject({ nodeId: z.string(), siblingOrder: z.int().nonnegative() })).min(1)
         })
         .parse(change.value);
       const orders = new Map(value.orders.map((item) => [item.nodeId, item.siblingOrder]));

@@ -2,12 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import { runTui } from '@ismail-elkorchi/terminal-ui/tui';
-import { CodingAgentTuiEventSource, createCodingAgentTuiApp } from '@ismail-elkorchi/coding-agent/tui';
+import { createCodingTuiEventSource, createCodingAgentTuiApp } from '@ismail-elkorchi/coding-agent/tui';
 import { waitFor } from './coding-agent-tui-test-helpers.js';
 
 test('tool activity collapses success, expands failure, and keeps bounded observed facts', async () => {
   const host = createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 20 } });
-  const events = new CodingAgentTuiEventSource();
+  const events = createCodingTuiEventSource();
   const app = createCodingAgentTuiApp('', {
     eventSource: events,
     commandHandler: { execute: () => ({ message: 'Exiting.', exit: true }) }
@@ -15,7 +15,10 @@ test('tool activity collapses success, expands failure, and keeps bounded observ
   const running = runTui(app, { host });
   await waitFor(() => host.frames().length > 0);
 
-  await events.enqueue({ type: 'progress', event: { type: 'turn.started', runId: 'run', turnIndex: 1, turnId: 'turn-1', requestAttempt: 1 } });
+  await events.enqueue({
+    type: 'progress',
+    event: { type: 'turn.started', runId: 'run', turnIndex: 1, turnId: 'turn-1', requestAttempt: 1 }
+  });
   await events.enqueue({ type: 'progress', event: toolStarted('call-ok', 'echo ok') });
   await events.enqueue({ type: 'progress', event: toolEnded('call-ok', true, 'Command completed.') });
   await events.enqueue({ type: 'progress', event: toolStarted('call-failed', 'false') });
@@ -35,25 +38,52 @@ test('tool activity collapses success, expands failure, and keeps bounded observ
 });
 
 function identity(callId) {
-  return { turnIndex: 1, turnId: 'turn-1', requestAttempt: 1, toolBatchId: 'batch-1', callIndex: callId === 'call-ok' ? 0 : 1, callId, toolAttempt: 1 };
+  return {
+    turnIndex: 1,
+    turnId: 'turn-1',
+    requestAttempt: 1,
+    toolBatchId: 'batch-1',
+    callIndex: callId === 'call-ok' ? 0 : 1,
+    callId,
+    toolAttempt: 1
+  };
 }
 
 function toolStarted(callId, command) {
   return {
-    type: 'tool.started', ...identity(callId), toolName: 'exec_command',
+    type: 'tool.started',
+    ...identity(callId),
+    toolName: 'exec_command',
     input: { id: callId, name: 'exec_command', input: { kind: 'json', value: { command } } },
     fingerprint: `fingerprint-${callId}`,
-    effects: { accesses: [{ mode: 'execute', scope: 'workspace/command' }], lockScopes: ['workspace/command'], recovery: { kind: 'unknown' } }
+    effects: {
+      accesses: [{ mode: 'execute', scope: 'workspace/command' }],
+      lockScopes: ['workspace/command'],
+      recovery: { kind: 'unknown' }
+    }
   };
 }
 
 function toolEnded(callId, ok, summary) {
   return {
-    type: 'tool.ended', ...identity(callId), toolName: 'exec_command',
+    type: 'tool.ended',
+    ...identity(callId),
+    toolName: 'exec_command',
     observation: {
-      kind: 'result', ok, summary, scope: { resources: ['workspace/command'], coverage: 'complete' },
+      kind: 'result',
+      ok,
+      summary,
+      scope: { resources: ['workspace/command'], coverage: 'complete' },
       output: { outcome: ok ? 'exited' : 'runtime_error', command: callId },
-      observedFacts: { items: [{ action: 'execute', resources: [{ uri: 'workspace://command' }], outcome: ok ? 'success' : 'failure' }] }
+      observedFacts: {
+        items: [
+          {
+            action: 'execute',
+            resources: [{ uri: 'workspace://command' }],
+            outcome: ok ? 'success' : 'failure'
+          }
+        ]
+      }
     }
   };
 }

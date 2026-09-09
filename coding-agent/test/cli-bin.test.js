@@ -5,7 +5,8 @@ import { spawn } from 'node:child_process';
 import { access, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { resolveCodingAuthority, resultExitCode } from '@ismail-elkorchi/coding-agent';
+import { resolveCodingAuthority } from '@ismail-elkorchi/coding-agent';
+import { resultExitCode } from '@ismail-elkorchi/coding-agent/cli';
 import { decodeAgentTerminalSnapshot } from '@agent-core/runtime';
 
 test('permission modes expose exact tools and authority', () => {
@@ -67,7 +68,7 @@ test('permission mode and trust matrix never grants network or host escape', () 
 
 test('CLI rejects retired presentation flags', async () => {
   for (const flag of ['--tui', '--plain']) {
-    const output = await run(path.resolve('coding-agent/dist/index.js'), [flag]);
+    const output = await run(path.resolve('coding-agent/dist/cli.js'), [flag]);
     assert.equal(output.code, 1);
     assert.match(output.stderr, /Unknown option/u);
   }
@@ -100,13 +101,10 @@ test('CLI exit codes distinguish execution, completeness and application accepta
 });
 
 test('CLI binary help works through the published executable', async () => {
-  const output = await run(path.resolve('coding-agent/dist/index.js'), ['--help']);
+  const output = await run(path.resolve('coding-agent/dist/cli.js'), ['--help']);
   assert.equal(output.code, 0);
   assert.match(output.stdout + output.stderr, /coding-agent/i);
-  assert.match(
-    output.stdout + output.stderr,
-    /approval <allow\|deny> <run-id> <approval-id> <fingerprint>/u
-  );
+  assert.match(output.stdout + output.stderr, /approval <allow\|deny> <run-id> <approval-id> <fingerprint>/u);
   assert.match(output.stdout + output.stderr, /review mode exposes root-bound read tools only/iu);
   assert.match(output.stdout + output.stderr, /Commands and verification run with no network/iu);
   assert.match(
@@ -137,14 +135,12 @@ test(
         verification: { required: [], advisory: [] }
       })
     );
-    const trust = await run(
-      path.resolve('coding-agent/dist/index.js'),
-      ['trust', 'trusted', '--root', root],
-      { env: { ...process.env, HOME: home, USERPROFILE: home, XDG_STATE_HOME: stateHome } }
-    );
+    const trust = await run(path.resolve('coding-agent/dist/cli.js'), ['trust', 'trusted', '--root', root], {
+      env: { ...process.env, HOME: home, USERPROFILE: home, XDG_STATE_HOME: stateHome }
+    });
     assert.equal(trust.code, 0, trust.stderr);
     const output = await run(
-      path.resolve('coding-agent/dist/index.js'),
+      path.resolve('coding-agent/dist/cli.js'),
       ['exec', 'test', '--root', root, '--provider', 'openai-codex', '--model', 'gpt-5.6-luna'],
       {
         env: {
@@ -169,7 +165,7 @@ test(
     const stateHome = `${root}-state`;
     const environment = { ...process.env, XDG_STATE_HOME: stateHome };
     const untrusted = await run(
-      path.resolve('coding-agent/dist/index.js'),
+      path.resolve('coding-agent/dist/cli.js'),
       ['exec', 'inspect', '--root', root, '--provider', 'ollama', '--model', 'test'],
       { env: environment }
     );
@@ -190,41 +186,37 @@ test(
       })
     );
     const restricted = await run(
-      path.resolve('coding-agent/dist/index.js'),
+      path.resolve('coding-agent/dist/cli.js'),
       ['trust', 'restricted', '--root', root],
       { env: environment }
     );
     assert.equal(restricted.code, 0, restricted.stderr);
     const noRepositorySelectedProvider = await run(
-      path.resolve('coding-agent/dist/index.js'),
+      path.resolve('coding-agent/dist/cli.js'),
       ['exec', 'inspect', '--root', root],
       { env: { ...environment, CODING_AGENT_PROVIDER: '', CODING_AGENT_MODEL: '' } }
     );
     assert.equal(noRepositorySelectedProvider.code, 1);
-    assert.match(noRepositorySelectedProvider.stderr, /No model provider is configured/u);
+    assert.match(noRepositorySelectedProvider.stderr, /requires setup: provider, model/u);
 
     const trusted = await run(
-      path.resolve('coding-agent/dist/index.js'),
+      path.resolve('coding-agent/dist/cli.js'),
       ['trust', 'trusted', '--root', root],
       { env: environment }
     );
     assert.equal(trusted.code, 0, trusted.stderr);
-    const status = await run(
-      path.resolve('coding-agent/dist/index.js'),
-      ['trust', 'status', '--root', root],
-      { env: environment }
-    );
+    const status = await run(path.resolve('coding-agent/dist/cli.js'), ['trust', 'status', '--root', root], {
+      env: environment
+    });
     assert.equal(status.code, 0, status.stderr);
     assert.match(status.stdout, /Trust: trusted/u);
     assert.equal(status.stdout.includes(root), true);
-    const revoked = await run(
-      path.resolve('coding-agent/dist/index.js'),
-      ['trust', 'revoke', '--root', root],
-      { env: environment }
-    );
+    const revoked = await run(path.resolve('coding-agent/dist/cli.js'), ['trust', 'revoke', '--root', root], {
+      env: environment
+    });
     assert.equal(revoked.code, 0, revoked.stderr);
     const revokedStatus = await run(
-      path.resolve('coding-agent/dist/index.js'),
+      path.resolve('coding-agent/dist/cli.js'),
       ['trust', 'status', '--root', root],
       { env: environment }
     );

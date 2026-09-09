@@ -47,6 +47,15 @@
     },
     {
       "path": "../verification"
+    },
+    {
+      "path": "../tui"
+    },
+    {
+      "path": "../application"
+    },
+    {
+      "path": "../rpc"
     }
   ]
 }

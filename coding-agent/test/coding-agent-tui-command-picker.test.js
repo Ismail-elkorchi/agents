@@ -15,12 +15,16 @@ test('Ctrl+P opens the concise command picker and executes a selected command', 
   assert.match(plainOutput(host), /\/provider/u);
   assert.doesNotMatch(plainOutput(host), /\/state\b/u);
   host.input('status\r');
-  await waitFor(() => /Idle · test-model/u.test(plainOutput(host)));
+  await waitFor(() => /Idle · test\/test-model/u.test(plainOutput(host)));
   host.input('/exit\r');
   const result = await run;
 
   assert.equal(result.exit.status, 'completed');
-  assert.ok(result.exit.state.conversation.items.some((item) => item.kind === 'notice' && item.text.includes('test-model')));
+  assert.ok(
+    result.exit.state.conversation.items.some(
+      (item) => item.kind === 'notice' && item.text.includes('test-model')
+    )
+  );
 });
 
 test('Escape closes the command picker without cancelling the app', async () => {
@@ -44,7 +48,12 @@ test('commands with finite domain values open a second picker and submit the exa
   const host = createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 18 } });
   const runtime = createTuiRuntime({
     app: createCodingAgentTuiApp('', {
-      commandHandler: { execute(line) { submitted.push(line); return { message: 'selected' }; } }
+      commandHandler: {
+        execute(line) {
+          submitted.push(line);
+          return { message: 'selected' };
+        }
+      }
     }),
     host,
     initialFocus: { kind: 'element', elementId: 'composer' }
@@ -66,11 +75,15 @@ test('setup state remains usable and explains the required domain decisions', as
   const host = createMemoryTerminalHost({ terminalSize: { columns: 110, rows: 18 } });
   const controller = setupController();
   const running = runCodingAgentTuiApp(controller, { host, initialTask: 'inspect the workspace' });
-  await waitFor(() => controller.tasks.length === 1 && /Setup required/u.test(plainOutput(host)));
+  await waitFor(
+    () => /inspect the workspace/u.test(plainOutput(host)) && /Setup required/u.test(plainOutput(host))
+  );
   assert.match(plainOutput(host), /workspace trust, provider, model/u);
   assert.match(plainOutput(host), /inspect the workspace/u);
-  assert.deepEqual(controller.tasks, ['inspect the workspace']);
-  host.input('/exit\r');
+  assert.deepEqual(controller.tasks, []);
+  host.input('\x10');
+  await waitFor(() => /Commands/u.test(plainOutput(host)));
+  host.input('exit\r');
   await running;
 });
 
@@ -89,39 +102,61 @@ test('the normal frame contains conversation, composer, and compact chrome only'
 
 test('TUI permission labels expose trust, structured writes, sandboxing, and denied egress', async () => {
   const host = createMemoryTerminalHost({ terminalSize: { columns: 150, rows: 18 } });
-  const run = runCodingAgentTuiApp(fakeController({
-    modelId: 'test-model', permissions: {
-      mode: 'develop', trust: 'restricted', workspaceRead: 'root_bound', workspaceWrite: 'structured',
-      commandExecution: 'sandboxed', network: 'denied', hostEscape: 'denied', tools: ['read_files', 'apply_patch', 'exec_command']
-    }
-  }), { host });
+  const run = runCodingAgentTuiApp(
+    fakeController({
+      modelId: 'test-model',
+      permissions: {
+        mode: 'develop',
+        trust: 'restricted',
+        workspaceRead: 'root_bound',
+        workspaceWrite: 'structured',
+        commandExecution: 'sandboxed',
+        network: 'denied',
+        hostEscape: 'denied',
+        tools: ['read_files', 'apply_patch', 'exec_command']
+      }
+    }),
+    { host }
+  );
   await waitFor(() => host.frames().length > 0);
   const output = plainOutput(host);
-  assert.match(output, /develop\/restricted · write structured · exec sandboxed · net\/escape denied · 3 tools/u);
+  assert.match(
+    output,
+    /develop\/restricted · write structured · exec sandboxed · net\/escape denied · 3 tools/u
+  );
   host.input('/exit\r');
   await run;
 });
 
 function fakeController(runtimeDetails = { providerId: 'test', modelId: 'test-model' }) {
   const session = {
-    sessionId: 'test-session', phase: 'idle',
-    configuration: { provider: runtimeDetails.providerId ?? 'test', model: runtimeDetails.modelId ?? 'test-model' },
+    sessionId: 'test-session',
+    phase: 'idle',
+    configuration: {
+      provider: runtimeDetails.providerId ?? 'test',
+      model: runtimeDetails.modelId ?? 'test-model'
+    },
     queuedInputs: 0
   };
   return {
     state() {
       return {
-        status: 'ready', requirements: [], runtimeDetails, session
+        status: 'ready',
+        requirements: [],
+        runtimeDetails,
+        session
       };
     },
-    subscribe() { return () => {}; },
-    async start() {},
-    async submit() { throw new Error('fake controller does not execute runs'); },
-    execute(line) {
-      if (line === '/status') return { message: `Idle · ${runtimeDetails.modelId ?? 'test-model'}` };
-      throw new Error(`unexpected command: ${line}`);
+    subscribe() {
+      return () => {};
     },
-    async resolveApproval() { throw new Error('unexpected approval'); },
+    async start() {},
+    async submit() {
+      throw new Error('fake controller does not execute runs');
+    },
+    async resolveApproval() {
+      throw new Error('unexpected approval');
+    },
     async close() {}
   };
 }
@@ -136,20 +171,30 @@ function setupController() {
   return {
     tasks: [],
     state: () => state,
-    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-    async start() {
-      for (const listener of listeners) await listener({ type: 'interactive.state.changed', state });
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
     },
-    async submit(task) { this.tasks.push(task); return { message: 'Message retained.' }; },
-    execute(line) { throw new Error(`unexpected command: ${line}`); },
-    async resolveApproval() { throw new Error('unexpected approval'); },
+    async start() {
+      for (const listener of listeners) await listener({ type: 'application.state.changed', state });
+    },
+    async submit(task) {
+      this.tasks.push(task);
+      return { kind: 'rejected', reason: 'setup_required', requirements: state.requirements };
+    },
+    async resolveApproval() {
+      throw new Error('unexpected approval');
+    },
     async close() {}
   };
 }
 
 function key(name, modifiers = {}) {
   return {
-    kind: 'key', key: name, eventType: 'press', location: 'standard',
+    kind: 'key',
+    key: name,
+    eventType: 'press',
+    location: 'standard',
     modifiers: { ctrl: false, alt: false, shift: false, meta: false, ...modifiers }
   };
 }

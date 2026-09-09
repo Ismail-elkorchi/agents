@@ -8,12 +8,15 @@
   },
   "workspaces": [
     "verification",
+    "application",
+    "rpc",
+    "tui",
     "coding-agent",
     "writing-agent"
   ],
   "agentCore": {
     "path": "../agent-core",
-    "commit": "0181b1c7c0770f5d45f7ed5b27c3278288413d22"
+    "commit": "a4259d2a63cce1ca1839717eb59806c5a1c24c06"
   },
   "sandbox": {
     "path": "../sandbox",
@@ -22,7 +25,7 @@
   "scripts": {
     "check:conformance": "node --test scripts/coding-agent-conformance-metrics.test.mjs && node scripts/check-coding-agent-conformance.mjs",
     "build": "node scripts/verify-source-dependencies.mjs && tsc -b && node scripts/post-build.mjs",
-    "lint": "eslint \"verification/src/**/*.ts\" \"coding-agent/src/**/*.ts\" \"writing-agent/src/**/*.ts\"",
+    "lint": "eslint \"*/src/**/*.ts\"",
     "test": "npm run build && npm run test:unit",
     "test:unit": "node scripts/run-test-suite.mjs",
     "package": "node scripts/test-packed-consumer.mjs",

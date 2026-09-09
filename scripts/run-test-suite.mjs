@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { readdir } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -15,9 +15,8 @@ const linuxRootCapabilityTests = new Set(
     'writing-agent/test/writing-agent.test.js'
   ].map((value) => path.join(root, value))
 );
-const directories = ['verification', 'coding-agent', 'writing-agent'].map((workspace) =>
-  path.join(root, workspace, 'test')
-);
+const { workspaces } = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
+const directories = workspaces.map((workspace) => path.join(root, workspace, 'test'));
 const discovered = (
   await Promise.all(
     directories.map(async (directory) =>

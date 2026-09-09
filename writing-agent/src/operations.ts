@@ -6,13 +6,15 @@ import {
   writingOperationKindSchema,
   writingOperationModeSchema,
   writingOperationSchema,
+  writingSelectedRangeSchema,
   type EffectiveConstraintSet,
   type ExactConstraint,
   type ProjectSnapshot,
   type WritingIntent,
   type WritingOperation,
   type WritingOperationKind,
-  type WritingOperationMode
+  type WritingOperationMode,
+  type WritingSelectedRange
 } from './domain.js';
 import { createWritingOperationContract } from './operation-contract.js';
 
@@ -49,6 +51,7 @@ export interface WritingOperationAdmissionInput {
   readonly delegatedApplyPolicy?: WritingOperation['delegatedApplyPolicy'];
   readonly sessionId: string;
   readonly readableResourceIds?: readonly string[];
+  readonly selectedRanges?: readonly WritingSelectedRange[];
 }
 
 export function admitWritingOperation(
@@ -70,7 +73,28 @@ export function admitWritingOperation(
   if (input.baseProjectRevisionId !== control.project.revision.revisionId)
     throw new Error('Writing operation targets a stale project revision.');
   const intents = input.intents.map((intent) => writingIntentSchema.parse(intent));
-  validateIntentGraph(intents, kind, control.project);
+  const selectedRanges = (input.selectedRanges ?? []).map((range) => writingSelectedRangeSchema.parse(range));
+  const rangeIds = new Set(
+    control.project.resources.flatMap((resource) => resource.protectedRanges.map((range) => range.rangeId))
+  );
+  for (const selected of selectedRanges) {
+    const resource = control.project.resources.find(
+      (resource) => resource.resourceId === selected.resourceId
+    );
+    if (resource?.currentSha256 !== selected.resourceSha256)
+      throw new Error('Selected passage targets a stale resource revision.');
+    if (rangeIds.has(selected.rangeId)) throw new Error(`Duplicate selected range: ${selected.rangeId}`);
+    if (
+      !intents.some(
+        (intent) =>
+          intent.targetResourceIds.includes(selected.resourceId) &&
+          intent.targetRangeIds.includes(selected.rangeId)
+      )
+    )
+      throw new Error('Selected passage is outside the admitted intents.');
+    rangeIds.add(selected.rangeId);
+  }
+  validateIntentGraph(intents, kind, control.project, selectedRanges);
   const targetNodeIds = uniqueSorted(intents.flatMap((intent) => intent.targetNodeIds));
   const targetResourceIds = uniqueSorted(intents.flatMap((intent) => intent.targetResourceIds));
   for (const resourceId of input.readableResourceIds ?? [])
@@ -90,11 +114,10 @@ export function admitWritingOperation(
     targetResourceIds,
     readableResourceIds: uniqueSorted([...targetResourceIds, ...(input.readableResourceIds ?? [])]),
     effectiveConstraints,
+    selectedRanges,
     baseProjectRevisionId: input.baseProjectRevisionId,
     mode,
-    ...(input.delegatedApplyPolicy === undefined
-      ? {}
-      : { delegatedApplyPolicy: input.delegatedApplyPolicy }),
+    ...(input.delegatedApplyPolicy === undefined ? {} : { delegatedApplyPolicy: input.delegatedApplyPolicy }),
     sessionId: input.sessionId,
     lifecycleState: 'admitted' as const,
     admittedAt
@@ -110,7 +133,8 @@ export function admitWritingOperation(
 export function validateIntentGraph(
   intents: readonly WritingIntent[],
   operationKind: WritingOperationKind,
-  project: ProjectSnapshot
+  project: ProjectSnapshot,
+  selectedRanges: readonly WritingSelectedRange[] = []
 ): void {
   if (intents.length === 0) throw new Error('A writing operation requires at least one structured intent.');
   const ids = intents.map((intent) => intent.intentId);
@@ -125,6 +149,7 @@ export function validateIntentGraph(
       resource.protectedRanges.map((range) => [range.rangeId, resource.resourceId] as const)
     )
   );
+  for (const selected of selectedRanges) rangeOwners.set(selected.rangeId, selected.resourceId);
   const criterionKinds = new Map(
     project.brief.acceptanceCriteria.map(
       (criterion) => [criterion.criterionId, criterion.verificationKind] as const

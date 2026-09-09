@@ -7,19 +7,23 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { createSandbox } from '@ismail-elkorchi/sandbox';
 
-const cli = path.resolve('coding-agent/dist/index.js');
+const cli = path.resolve('coding-agent/dist/cli.js');
 const runFile = promisify(execFile);
 
-export const sandboxAvailable = process.platform === 'linux' && await (async () => {
-  const sandbox = await createSandbox();
-  try {
-    return (await sandbox.probe()).backends.some((backend) => backend.id === 'linux-namespace-v1' && backend.available);
-  } catch {
-    return false;
-  } finally {
-    await sandbox.dispose();
-  }
-})();
+export const sandboxAvailable =
+  process.platform === 'linux' &&
+  (await (async () => {
+    const sandbox = await createSandbox();
+    try {
+      return (await sandbox.probe()).backends.some(
+        (backend) => backend.id === 'linux-namespace-v1' && backend.available
+      );
+    } catch {
+      return false;
+    } finally {
+      await sandbox.dispose();
+    }
+  })());
 
 export async function createWorkspace({
   endpoint = 'http://127.0.0.1:1',
@@ -39,22 +43,31 @@ export async function createWorkspace({
     await mkdir(path.dirname(target), { recursive: true });
     await writeFile(target, content);
   }
-  await writeFile(path.join(root, 'coding-agent.config.json'), `${JSON.stringify({
-    version: 1,
-    provider: 'ollama',
-    model: 'v0-scripted',
-    instructions: [],
-    tools: { enabled: tools },
-    permissions: { maximumMode: 'develop', requireApprovalFor },
-    verification: { required: checks, advisory: [] },
-    ...(limits === undefined ? {} : { limits })
-  }, null, 2)}\n`);
+  await writeFile(
+    path.join(root, 'coding-agent.config.json'),
+    `${JSON.stringify(
+      {
+        version: 1,
+        provider: 'ollama',
+        model: 'v0-scripted',
+        instructions: [],
+        tools: { enabled: tools },
+        permissions: { maximumMode: 'develop', requireApprovalFor },
+        verification: { required: checks, advisory: [] },
+        ...(limits === undefined ? {} : { limits })
+      },
+      null,
+      2
+    )}\n`
+  );
   return {
     root,
     stateRoot,
     endpoint,
     trustLevel,
-    async close() { await rm(parent, { recursive: true, force: true }); }
+    async close() {
+      await rm(parent, { recursive: true, force: true });
+    }
   };
 }
 
@@ -75,8 +88,12 @@ export function spawnCli(fixture, args) {
   const child = spawn(process.execPath, cliArguments(fixture, args), { stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '';
   let stderr = '';
-  child.stdout.on('data', (chunk) => { stdout += chunk; });
-  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk;
+  });
   const result = new Promise((resolve, reject) => {
     child.once('error', reject);
     child.once('close', (code, signal) => resolve({ code, signal, stdout, stderr }));
@@ -134,11 +151,16 @@ export async function scriptedOllama(script) {
       if (request.url === '/api/show') {
         if (blockShow) {
           blockShow = false;
-          const release = new Promise((resolve) => { blockedShow = resolve; });
+          const release = new Promise((resolve) => {
+            blockedShow = resolve;
+          });
           for (const waiter of showWaiters.splice(0)) waiter();
           await release;
         }
-        sendJson(response, { capabilities: ['completion', 'tools'], model_info: { 'v0.context_length': 32_768 } });
+        sendJson(response, {
+          capabilities: ['completion', 'tools'],
+          model_info: { 'v0.context_length': 32_768 }
+        });
         return;
       }
       if (request.url === '/api/chat') {
@@ -149,7 +171,9 @@ export async function scriptedOllama(script) {
         }
         if (blockedChatIndex === chatRequests.length) {
           blockedChatIndex = undefined;
-          const pending = new Promise((resolve) => { blockedChat = resolve; });
+          const pending = new Promise((resolve) => {
+            blockedChat = resolve;
+          });
           for (const waiter of chatWaiters.splice(0)) waiter();
           const value = await pending;
           sendNdjson(response, value);
@@ -171,30 +195,58 @@ export async function scriptedOllama(script) {
     server.listen(0, '127.0.0.1', resolve);
   });
   const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('The scripted provider did not bind a TCP port.');
+  if (!address || typeof address === 'string')
+    throw new Error('The scripted provider did not bind a TCP port.');
   return {
     endpoint: `http://127.0.0.1:${String(address.port)}`,
     chatRequests,
-    enqueueResponses(...values) { responses.push(...values); },
-    blockNextShow() { blockShow = true; },
-    waitForBlockedShow() { return blockedShow ? Promise.resolve() : new Promise((resolve) => showWaiters.push(resolve)); },
-    releaseBlockedShow() { blockedShow?.(); blockedShow = undefined; },
-    blockNextChat() { blockedChatIndex = chatRequests.length + 1; },
+    enqueueResponses(...values) {
+      responses.push(...values);
+    },
+    blockNextShow() {
+      blockShow = true;
+    },
+    waitForBlockedShow() {
+      return blockedShow ? Promise.resolve() : new Promise((resolve) => showWaiters.push(resolve));
+    },
+    releaseBlockedShow() {
+      blockedShow?.();
+      blockedShow = undefined;
+    },
+    blockNextChat() {
+      blockedChatIndex = chatRequests.length + 1;
+    },
     waitForChatCount(count) {
       return chatRequests.length >= count
         ? Promise.resolve()
         : new Promise((resolve) => chatCountWaiters.push({ count, resolve }));
     },
-    waitForBlockedChat() { return blockedChat ? Promise.resolve() : new Promise((resolve) => chatWaiters.push(resolve)); },
-    releaseBlockedChat(value) { blockedChat?.(value); blockedChat = undefined; },
-    async close() { await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
+    waitForBlockedChat() {
+      return blockedChat ? Promise.resolve() : new Promise((resolve) => chatWaiters.push(resolve));
+    },
+    releaseBlockedChat(value) {
+      blockedChat?.(value);
+      blockedChat = undefined;
+    },
+    async close() {
+      await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
   };
 }
 
 function cliArguments(fixture, args) {
   return args[0] === 'trust'
     ? [cli, ...args, '--root', fixture.root, '--state-root', fixture.stateRoot]
-    : [cli, ...args, '--root', fixture.root, '--state-root', fixture.stateRoot, '--provider-endpoint', fixture.endpoint];
+    : [
+        cli,
+        ...args,
+        '--root',
+        fixture.root,
+        '--state-root',
+        fixture.stateRoot,
+        '--provider-endpoint',
+        fixture.endpoint
+      ];
 }
 
 function readRequestBody(request) {

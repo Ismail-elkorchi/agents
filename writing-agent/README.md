@@ -4,6 +4,28 @@ Writing Agent is a project-oriented application composed from Agent Core. Its ap
 
 Private state defaults to the platform user-state directory ($XDG_STATE_HOME/writing-agent or ~/.local/state/writing-agent) and must remain outside the writing project. Use --state-root for another external location. .writing-agent and .git are denied inside rooted project authority and are never authoritative state.
 
+## Continuous terminal writing
+
+Initialize a project with `writing-agent init "Describe the writing project" --root /path/to/project`, then open `writing-agent tui --root /path/to/project`. Add an existing text file with the **Add file** control. Select a provider/model with F10, or supply `--provider` and `--model` (`WRITING_AGENT_PROVIDER` and `WRITING_AGENT_MODEL` are also supported).
+
+The document is the primary surface. Wide terminals show it beside the selected work pane; narrow terminals use focused views. F2 selects resources, F3 opens the Markdown outline, F4 toggles exact source, and F8 binds the selected passage to its current document revision. Enter submits an instruction; Shift+Enter or Ctrl+O inserts a newline. Ctrl+E uses `$VISUAL`/`$EDITOR`, Alt+D retrieves saved drafts, and Ctrl+C interrupts active work or copies a selected source. Exit is available in the bottom action row.
+
+F5 opens conversation, F6 selects proposals, F7 opens sources, F9 selects an operation kind, F11 selects sessions, F12 opens recorded recovery/approval decisions, and Alt+N opens attributed model notes. Ctrl+F searches unloaded history, Ctrl+PageUp/PageDown retrieves pages, and Ctrl+End follows current output. F1 displays binding help. Tab moves through controls; Enter activates the focused action. Source readers support Ctrl+A, Shift+arrow, and pointer selection. Exact clipboard transport for text normalized by terminal-ui remains unavailable; see [the reproduced limitation](../terminal-ui-consumer-findings.md).
+
+Review original/proposed text, comparisons, findings, and sources before deciding. Acceptance, application authorization, and applying the revision are separate actions. Required human criteria are explicit controls. Rejecting a proposal leaves files unchanged. Undo uses the recorded revision service; continue with another instruction in the same session afterward. A changed source or stale selection is rejected without silently rebinding it.
+
+## Headless and stdio consumers
+
+The package root exports `WritingApplication` and writing-domain services without loading executable adapters. `/tui` and `/rpc` are explicit adapter entry points.
+
+```bash
+writing-agent rpc --root /path/to/project --provider ollama --model YOUR_MODEL
+```
+
+The UTF-8 JSONL JSON-RPC 2.0 adapter exposes project/document/session reads, `instruction.submit`, proposal comparison and decisions, revision undo, source and model-note reads, and recovery. Submission returns operation and run identities before execution completes; `operation.completed` and `operation.failed` provide subsequent outcomes. The `document.read` selection includes exact resource and project revisions; use that selection when submitting an instruction. Consult [product method definitions](src/rpc/index.ts) and [framing/delivery rules](../rpc/README.md).
+
+EOF and explicit shutdown cancel owned execution and close resources. Restart reads recorded session decisions; it does not blindly repeat effects whose outcomes are uncertain. A delivery gap requires fresh authoritative reads. Request IDs correlate responses; they do not authorize or deduplicate writing operations.
+
 ## Model and authority boundary
 
 A direct user request is admitted as an immutable writing operation. Domain schemas capture readonly objects and collections at admission, including nested JSON metadata. Content identities hash complete JSON; unsupported data is rejected instead of coerced or truncated. WritingExecutionAttempt binds each run and model to that operation. Continuing an operation can select a new model while retaining original history, exact project anchors and proposal revisions.
@@ -57,7 +79,7 @@ Exactly four provider compositions are supported: ollama, openrouter, openai, an
 
 Secure local revision currently requires Agent Core's Linux rooted-file authority, descriptor-relative checks, link checks, and recoverable patch journal. Unsupported platforms fail closed.
 
-There is no autonomous mode, multi-agent orchestration, live model mutation, model-owned publication, or offline measurement corpus/campaign subsystem. The terminal surface is intentionally non-interactive. This package is pre-alpha and intentionally does not translate retired unpublished state names.
+There is no autonomous mode, multi-agent orchestration, live model mutation, model-owned publication, or offline measurement corpus/campaign subsystem. This package is pre-alpha and intentionally does not translate retired unpublished state names.
 
 ## Optional history and editorial notes
 

@@ -22,6 +22,7 @@ export type CodingSessionSubmissionResult =
   | {
       readonly kind: 'queued';
       readonly submissionId: string;
+      readonly runId: string;
       readonly completion: Promise<CodingRunResult>;
     };
 
@@ -38,6 +39,7 @@ export class CodingSession {
   private readonly controllers = new Map<string, AbortController>();
   private readonly blocked = new Map<string, string>();
   private readonly listeners = new Set<(event: CodingSessionEvent) => void | Promise<void>>();
+  private closing = false;
   private scheduling: Promise<void> = Promise.resolve();
 
   constructor(
@@ -87,8 +89,15 @@ export class CodingSession {
       : { ...submission, completion };
   }
 
+  inspect() {
+    return this.session.inspect();
+  }
+
   configure(...args: Parameters<AgentSession['configure']>) {
     return this.session.configure(...args);
+  }
+  updateQueuedSubmission(...args: Parameters<AgentSession['updateQueuedSubmission']>) {
+    return this.session.updateQueuedSubmission(...args);
   }
   transitionContext(...args: Parameters<AgentSession['transitionContext']>) {
     return this.session.transitionContext(...args);
@@ -132,6 +141,16 @@ export class CodingSession {
     return this.session.abort(reason, expectedRunId);
   }
 
+  async close(): Promise<void> {
+    this.closing = true;
+    await this.scheduling;
+    for (const controller of this.controllers.values())
+      controller.abort(new Error('Coding application closed.'));
+    if (this.session.state().phase === 'running') await this.session.abort('Coding application closed.');
+    await this.session.waitForIdle();
+    await Promise.all(this.pending);
+  }
+
   async waitForIdle(): Promise<void> {
     for (;;) {
       await this.session.waitForIdle();
@@ -166,6 +185,7 @@ export class CodingSession {
     if (this.controllers.has(runId)) throw new Error('Coding work settlement already has a live owner.');
     const controller = new AbortController();
     this.controllers.set(runId, controller);
+    if (this.closing) controller.abort(new Error('Coding application closed.'));
     try {
       const result = await this.application.settle(execution, controller.signal);
       if (result.outcome.stage === 'awaiting_reconciliation')
@@ -182,7 +202,7 @@ export class CodingSession {
 
   private startNext(): Promise<AgentSessionSubmissionResult | undefined> {
     const action = this.scheduling.then(async () => {
-      if (this.controllers.size > 0 || this.blocked.size > 0) return undefined;
+      if (this.closing || this.controllers.size > 0 || this.blocked.size > 0) return undefined;
       const started = await this.session.startNextSubmission();
       if (started && started.kind !== 'rejected') void this.track(started.completion);
       return started;

@@ -1,3 +1,5 @@
+import type { CodingSubmissionResult } from '../application/contracts.js';
+
 export interface InteractiveCommandChoice {
   readonly value: string;
   readonly description: string;
@@ -31,6 +33,10 @@ export type InteractiveCommandName =
 export interface InteractiveCommandResult {
   readonly message: string;
   readonly view?: 'debug';
+  readonly submission?: {
+    readonly acceptance: Exclude<CodingSubmissionResult, { readonly kind: 'rejected' }>;
+    readonly text: string;
+  };
 }
 
 const PROVIDERS = Object.freeze([
@@ -99,10 +105,11 @@ export function parseInteractiveCommandLine(commandLine: string): {
   readonly command: InteractiveCommandName;
   readonly value: string;
 } {
-  const [commandName, ...rest] = commandLine.trim().split(/\s+/);
-  const value = rest.join(' ').trim();
-  if (!isInteractiveCommandName(commandName))
-    throw new Error(`Unknown interactive command: ${commandName ?? ''}`);
+  const trimmed = commandLine.trim();
+  const separator = trimmed.search(/\s/u);
+  const commandName = separator < 0 ? trimmed : trimmed.slice(0, separator);
+  const value = separator < 0 ? '' : trimmed.slice(separator).trim();
+  if (!isInteractiveCommandName(commandName)) throw new Error(`Unknown interactive command: ${commandName}`);
   const specification = INTERACTIVE_COMMAND_REGISTRY[commandName];
   if (specification.value === 'required' && value.length === 0)
     throw new Error(`${commandName} requires a value.`);

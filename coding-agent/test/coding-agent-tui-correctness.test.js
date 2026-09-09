@@ -5,7 +5,7 @@ import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import { textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
 import { createTuiRuntime, runTui } from '@ismail-elkorchi/terminal-ui/tui';
 import {
-  CodingAgentTuiEventSource,
+  createCodingTuiEventSource,
   createCodingAgentTuiApp,
   runCodingAgentTuiApp
 } from '@ismail-elkorchi/coding-agent/tui';
@@ -13,7 +13,7 @@ import { waitFor } from './coding-agent-tui-test-helpers.js';
 
 test('durable restore precedes live append and stable identities prevent duplicates', async () => {
   const host = createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 20 } });
-  const events = new CodingAgentTuiEventSource();
+  const events = createCodingTuiEventSource();
   const hydration = runningHydration();
   const running = runTui(
     createCodingAgentTuiApp('', {
@@ -215,16 +215,13 @@ test('completed hydration surfaces terminal checks and persisted workspace chang
   assert.equal(changes.status, 'success');
   assert.match(changes.summary, /1 changed path.*no remaining uncertainty/u);
   assert.match(changes.details, /Remaining uncertainty\nnone/u);
-  const history = runtime.state().conversation.items.find((entry) => entry.id === 'session:history');
-  assert.equal(history.activity, 'history');
-  assert.match(history.summary, /1 branch point · 1 terminal run/u);
-  assert.match(history.details, /final assistant-1 · run run-1 · completed · model output complete/u);
+  assert.equal(runtime.state().debug.branchPoints[0].entryId, 'assistant-1');
   await runtime.dispose();
 });
 
 test('long stream pressure retains every reliable boundary and the latest stream value', async () => {
   const host = createMemoryTerminalHost({ terminalSize: { columns: 80, rows: 12 } });
-  const events = new CodingAgentTuiEventSource();
+  const events = createCodingTuiEventSource();
   const running = runTui(
     createCodingAgentTuiApp('', {
       eventSource: events,
@@ -318,7 +315,7 @@ test('composer history restores the draft and tiny resizes preserve focus', asyn
 });
 
 test('event source cancellation and dispatch failure terminate explicitly', async () => {
-  const cancelled = new CodingAgentTuiEventSource();
+  const cancelled = createCodingTuiEventSource();
   const controller = new AbortController();
   const cancellation = cancelled.run(sourceContext(controller.signal), { emit: async () => {} });
   await cancelled.enqueue({ type: 'app.exit', reason: 'before-cancel' });
@@ -327,7 +324,7 @@ test('event source cancellation and dispatch failure terminate explicitly', asyn
   await cancelled.close();
   await assert.rejects(cancelled.enqueue({ type: 'app.exit' }), /closed/u);
 
-  const failed = new CodingAgentTuiEventSource();
+  const failed = createCodingTuiEventSource();
   const sourceRun = failed.run(sourceContext(new AbortController().signal), {
     emit: async () => {
       throw new Error('dispatch exploded');
@@ -347,7 +344,7 @@ test('event source cancellation and dispatch failure terminate explicitly', asyn
 
 test('normal shutdown drains admitted messages without source diagnostics', async () => {
   const host = createMemoryTerminalHost({ terminalSize: { columns: 60, rows: 10 } });
-  const events = new CodingAgentTuiEventSource();
+  const events = createCodingTuiEventSource();
   const running = runTui(
     createCodingAgentTuiApp('', {
       eventSource: events,
@@ -427,9 +424,9 @@ function runningHydration() {
   );
   return {
     ...hydration,
-    replay: {
-      ...hydration.replay,
-      branch: [
+    history: {
+      ...hydration.history,
+      entries: [
         entry({ id: 'input-1', type: 'input', runId: 'run-1', task: 'Existing task', instructions: [] }),
         entry({
           id: 'assistant-1',
@@ -440,8 +437,7 @@ function runningHydration() {
           requestAttempt: 1,
           content: 'Partial'
         })
-      ],
-      ledgerRunIds: ['run-1']
+      ]
     }
   };
 }
@@ -544,9 +540,9 @@ async function completedHydration() {
       queuedInputs: 0,
       configuration: { provider: 'test-provider', model: 'test-model' }
     },
-    replay: {
-      session: descriptor(),
-      branch: [
+    history: {
+      boundary: { sessionId: 'session-1', leafId: 'assistant-1', leafHash: 'fixture' },
+      entries: [
         entry({
           id: 'assistant-1',
           type: 'assistant',
@@ -556,19 +552,7 @@ async function completedHydration() {
           requestAttempt: 1,
           content: 'Completed answer.'
         })
-      ],
-      runFinalizations: [
-        {
-          type: 'run_finalization',
-          id: 'finalization-record-1',
-          timestamp: '2026-08-28T00:00:01.000Z',
-          throughEntryId: 'assistant-1',
-          runId: 'run-1',
-          finalizationId: 'final-1',
-          terminal
-        }
-      ],
-      ledgerRunIds: ['run-1']
+      ]
     },
     branchPoints: [
       {
@@ -629,11 +613,9 @@ function baseHydration(sessionOverrides, runOverrides) {
       configuration: { provider: 'test-provider', model: 'test-model' },
       ...sessionOverrides
     },
-    replay: {
-      session: descriptor(),
-      branch: [],
-      runFinalizations: [],
-      ledgerRunIds: ['run-1']
+    history: {
+      boundary: { sessionId: 'session-1', leafId: 'assistant-1', leafHash: 'fixture' },
+      entries: []
     },
     branchPoints: [],
     pendingSubmissions: [
@@ -788,7 +770,7 @@ test('restored and live context transitions share the exact window identity', as
     reason: 'Retain the original conversation.',
     createdAt: '2026-09-07T00:00:00.000Z'
   };
-  hydration.replay.branch.push(entry({ id: 'transition-entry-1', type: 'context_transition', window }));
+  hydration.history.entries.push(entry({ id: 'transition-entry-1', type: 'context_transition', window }));
   const runtime = createTuiRuntime({
     app: createCodingAgentTuiApp('', { initialHydration: hydration }),
     host: createMemoryTerminalHost()

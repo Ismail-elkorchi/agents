@@ -1,3 +1,4 @@
+import { diagnosticMessage } from '@agents/tui';
 import type { TuiEffect } from '@ismail-elkorchi/terminal-ui/tui';
 import type { CodingAgentTuiCommandHandler, CodingAgentTuiCommandRequest } from './command-surface.js';
 import type { CodingAgentTuiMessage } from './messages.js';
@@ -11,18 +12,16 @@ export function commandEffect(
     concurrency: 'parallel',
     async run(context) {
       if (context.signal.aborted) return { kind: 'none' };
-      const execution =
-        handler === undefined
-          ? { message: 'No command handler is attached.', tone: 'error' as const }
-          : await handler.execute(request.value);
+      if (handler === undefined) throw new Error('No command handler is attached.');
+      const execution = await handler.execute(request.value);
       return {
         kind: 'message',
-        message: { type: 'command.completed', execution, recordResult: request.recordResult }
+        message: { type: 'command.completed', execution, request }
       };
     },
     onError: ({ diagnostic }) => ({
       kind: 'message',
-      message: { type: 'command.failed', message: diagnostic.message }
+      message: { type: 'command.failed', message: diagnosticMessage(diagnostic) }
     })
   };
 }

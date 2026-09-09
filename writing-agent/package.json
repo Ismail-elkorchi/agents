@@ -7,10 +7,16 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "writing-agent": "./dist/index.js"
+    "writing-agent": "./dist/cli.js"
   },
   "exports": {
-    ".": "./dist/index.js"
+    ".": "./dist/index.js",
+    "./cli": "./dist/cli.js",
+    "./tui": {
+      "types": "./dist/tui/index.d.ts",
+      "default": "./dist/tui/index.js"
+    },
+    "./rpc": "./dist/rpc/index.js"
   },
   "files": [
     "dist",
@@ -31,6 +37,10 @@
     "@agent-core/tools": "0.2.0",
     "@agent-core/tools-local": "0.2.0",
     "zod": "4.4.3",
-    "@agents/verification": "0.1.0"
+    "@agents/verification": "0.1.0",
+    "@agents/tui": "0.1.0",
+    "@agents/application": "0.1.0",
+    "@ismail-elkorchi/terminal-ui": "github:Ismail-elkorchi/terminal-ui#e9ec556d96814a8029936106e5a1a6ef70b5da3c",
+    "@agents/rpc": "0.1.0"
   }
 }

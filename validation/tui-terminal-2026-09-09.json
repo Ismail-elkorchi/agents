@@ -1,0 +1,110 @@
+{
+  "date": "2026-09-09",
+  "scope": "Scripted providers in temporary product workspaces, driven through the public Node terminal host in a real xterm emulator. No live model quality evaluation.",
+  "dependencies": {
+    "agentCore": "a4259d2a63cce1ca1839717eb59806c5a1c24c06",
+    "terminalUi": "e9ec556d96814a8029936106e5a1a6ef70b5da3c",
+    "markspan": "c883b9a518cf96b967eadba31c3f2d08db1f5946"
+  },
+  "environment": {
+    "runtime": "Node 24.14.0",
+    "os": "Linux 7.0.0-30-generic",
+    "terminal": "xterm 407",
+    "display": "isolated Xvfb 21.1.22",
+    "widths": [
+      48,
+      120
+    ],
+    "rows": 32,
+    "clipboard": "OSC 52, xterm allowWindowOps enabled for round-trip checks"
+  },
+  "checks": [
+    {
+      "application": "coding",
+      "actions": [
+        "submit instruction",
+        "inspect streamed Markdown with code and Unicode",
+        "open original source",
+        "keyboard select and copy source; read system clipboard",
+        "paste multiline Unicode draft",
+        "resize from 48 to 120 columns",
+        "suspend for external editor and restore modified draft",
+        "exit through command picker"
+      ],
+      "result": "passed",
+      "preservedDraftVisibleInFinalFrame": [
+        "A multiline",
+        "Unicode 文 👩🏽‍💻 draft"
+      ],
+      "exitReason": "command",
+      "finalDraft": "A multiline\rUnicode 文 👩🏽‍💻 draft\nEdited outside the terminal UI.\n",
+      "clipboardText": "# Result\n\nUnicode café 世界 👩🏽‍💻.\n\n```ts\nconst value = 2;\n```\n",
+      "presentation": "Rechecked through measuredViewport after removing manual spacer columns."
+    },
+    {
+      "application": "writing",
+      "columns": 48,
+      "actions": [
+        "select exact source passage using keyboard",
+        "submit revision instruction",
+        "inspect proposal and word comparison",
+        "read wrapped acceptance criterion",
+        "accept",
+        "authorize exact revision",
+        "apply",
+        "undo",
+        "exit"
+      ],
+      "result": "passed",
+      "exitReason": "user",
+      "finalDocument": "# Document\n\nOld line.\n\nClosing.\n",
+      "finalDraft": ""
+    },
+    {
+      "application": "writing",
+      "columns": 120,
+      "actions": [
+        "insert newline with Ctrl+O",
+        "open source",
+        "select source using pointer",
+        "copy through OSC 52 and read system clipboard",
+        "exit"
+      ],
+      "result": "passed",
+      "clipboardText": "Old ",
+      "exitReason": "user",
+      "finalDraft": "\n"
+    },
+    {
+      "application": "writing",
+      "columns": 120,
+      "actions": [
+        "write draft",
+        "suspend terminal for external editor",
+        "editor appends text",
+        "resume terminal with modified draft",
+        "exit"
+      ],
+      "result": "passed",
+      "exitReason": "user",
+      "finalDraft": "A draft for the editor\nEdited outside the terminal UI.\n"
+    }
+  ],
+  "optionalUnsupportedCapabilities": [
+    "enhanced keyboard protocol",
+    "terminal grapheme mode"
+  ],
+  "upstreamFindings": [
+    "TU01: modal focus requirement missing from public type",
+    "TU02: clipboard display normalization prevents unrestricted exact copying",
+    "TU03: multiline document-boundary keybindings absent"
+  ],
+  "acceptance": "Unrestricted source-copy fidelity remains blocked by TU02. Applications report unavailability when the public API would change source text; terminal-ui was not modified.",
+  "notMeasured": [
+    "macOS and Windows terminal emulators",
+    "SSH and terminal multiplexers",
+    "screen readers",
+    "physical-terminal steady-state memory",
+    "live model quality"
+  ]
+}

@@ -7,11 +7,13 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "coding-agent": "./dist/index.js"
+    "coding-agent": "./dist/cli.js"
   },
   "exports": {
     ".": "./dist/index.js",
-    "./tui": "./dist/tui/index.js"
+    "./tui": "./dist/tui/index.js",
+    "./cli": "./dist/cli.js",
+    "./rpc": "./dist/rpc/index.js"
   },
   "files": [
     "dist",
@@ -22,18 +24,22 @@
   },
   "dependencies": {
     "@agent-core/auth": "0.2.0",
-    "@agent-core/runtime": "0.2.0",
-    "@agent-core/persistence": "0.2.0",
     "@agent-core/json": "0.2.0",
     "@agent-core/model": "0.2.0",
+    "@agent-core/persistence": "0.2.0",
     "@agent-core/provider-ollama": "0.2.0",
     "@agent-core/provider-openai": "0.2.0",
     "@agent-core/provider-openai-codex": "0.2.0",
     "@agent-core/provider-openrouter": "0.2.0",
+    "@agent-core/runtime": "0.2.0",
     "@agent-core/tools": "0.2.0",
     "@agent-core/tools-local": "0.2.0",
+    "@agents/verification": "0.1.0",
     "@ismail-elkorchi/sandbox": "file:../../sandbox/packages/sandbox",
-    "@ismail-elkorchi/terminal-ui": "github:Ismail-elkorchi/terminal-ui#7e0821b1fe3bd71de1d598888c689f6df0620016",
-    "@agents/verification": "0.1.0"
+    "@ismail-elkorchi/terminal-ui": "github:Ismail-elkorchi/terminal-ui#e9ec556d96814a8029936106e5a1a6ef70b5da3c",
+    "@agents/tui": "0.1.0",
+    "@agents/application": "0.1.0",
+    "@agents/rpc": "0.1.0",
+    "zod": "4.4.3"
   }
 }

@@ -1,10 +1,10 @@
 import { hashJson } from '@agent-core/persistence';
-import { contentId, textSha256 } from './canonical.js';
 import type { PromptContextItemInput } from '@agent-core/runtime';
+import { contentId, textSha256 } from './canonical.js';
 import {
   writingContextSelectionSchema,
-  type WritingContextSelection,
   type ProjectSnapshot,
+  type WritingContextSelection,
   type WritingOperation
 } from './domain.js';
 import type { WritingProject } from './project.js';
@@ -212,7 +212,11 @@ async function contextCandidates(
     const file = await readRootedText(project.authority, resource.relativePath, 16 * 1024 * 1024);
     if (file.sha256 !== resource.currentSha256)
       throw new Error(`Managed resource changed before context selection: ${resource.resourceId}`);
-    const descriptor = targetDescriptor(resource, file.content);
+    const descriptor = targetDescriptor(
+      resource,
+      file.content,
+      operation.selectedRanges.filter((range) => range.resourceId === resource.resourceId)
+    );
     targetDescriptors.push(descriptor);
     candidates.push(
       item({
@@ -315,11 +319,12 @@ async function contextCandidates(
 
 function targetDescriptor(
   resource: ProjectSnapshot['resources'][number],
-  content: string
+  content: string,
+  selectedRanges: WritingOperation['selectedRanges']
 ): WritingContextSelection['targetDescriptors'][number] {
   const anchors: WritingContextSelection['targetDescriptors'][number]['anchors'][number][] = [];
   const add = (
-    kind: 'document' | 'paragraph' | 'protected-range',
+    kind: 'document' | 'paragraph' | 'protected-range' | 'selected-range',
     range: WritingContextSelection['targetDescriptors'][number]['anchors'][number]['range'],
     label: string,
     targetRangeId?: string
@@ -343,6 +348,8 @@ function targetDescriptor(
     });
   };
   add('document', completeTextRange(content), 'Complete admitted document');
+  for (const selected of selectedRanges)
+    add('selected-range', selected.range, 'Selected passage', selected.rangeId);
   for (const protectedRange of resource.protectedRanges)
     add(
       'protected-range',

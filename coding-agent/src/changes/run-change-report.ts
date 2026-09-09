@@ -366,9 +366,7 @@ function decodeMutationReceipt(value: unknown): StructuredMutationReceipt {
     fingerprint: value.fingerprint,
     patchSha256: value.patchSha256,
     applicationStatus: value.applicationStatus,
-    ...(transactionOutcome(value.transactionOutcome)
-      ? { transactionOutcome: value.transactionOutcome }
-      : {}),
+    ...(transactionOutcome(value.transactionOutcome) ? { transactionOutcome: value.transactionOutcome } : {}),
     rootState: value.rootState
   });
 }
@@ -451,9 +449,7 @@ async function readMutationReceipts(
                 newBytes: file.newBytes,
                 plannedChange: file.plannedChange,
                 finalState: file.finalState,
-                ...(file.matchModes === undefined
-                  ? {}
-                  : { matchModes: Object.freeze([...file.matchModes]) }),
+                ...(file.matchModes === undefined ? {} : { matchModes: Object.freeze([...file.matchModes]) }),
                 ...(file.exact === undefined ? {} : { exact: file.exact })
               })
           )
@@ -619,9 +615,7 @@ function changeContent(
 }
 
 function operationPaths(file: MutationFileReceipt): readonly string[] {
-  return file.operation === 'move' && file.destinationPath
-    ? [file.path, file.destinationPath]
-    : [file.path];
+  return file.operation === 'move' && file.destinationPath ? [file.path, file.destinationPath] : [file.path];
 }
 
 function addConflict(conflicts: Map<string, Set<string>>, path: string, cause: string): void {
@@ -689,11 +683,7 @@ function changeKindValue(value: unknown): value is WorkspaceChange['kind'] {
 }
 function changeContentValue(value: unknown): value is WorkspaceChange['content'] {
   return (
-    value === 'text' ||
-    value === 'binary' ||
-    value === 'large' ||
-    value === 'non_file' ||
-    value === 'unknown'
+    value === 'text' || value === 'binary' || value === 'large' || value === 'non_file' || value === 'unknown'
   );
 }
 function applicationStatus(value: unknown): value is ApplyPatchOutput['applicationStatus'] {
@@ -712,4 +702,44 @@ function transactionOutcome(value: unknown): value is NonNullable<ApplyPatchOutp
     value === 'rolled_back' ||
     value === 'rollback_failed'
   );
+}
+
+/** Retrieve the exact patch inputs bound to the report's committed mutation receipts. */
+export async function readRecordedMutationPatches(
+  events: EventRepository<AgentEvent>,
+  runId: string,
+  receipts: readonly StructuredMutationReceipt[]
+): Promise<readonly { readonly receipt: StructuredMutationReceipt; readonly patch: string }[]> {
+  const expected = new Map(receipts.map((receipt) => [attemptKey(receipt), receipt]));
+  const starts = new Map<string, string>();
+  const patches: { readonly receipt: StructuredMutationReceipt; readonly patch: string }[] = [];
+  for await (const envelope of events.read(runId)) {
+    const event = envelope.event;
+    if (event.type !== 'tool.started' && event.type !== 'tool.ended') continue;
+    const key = attemptKey(event);
+    const receipt = expected.get(key);
+    if (receipt === undefined) continue;
+    if (event.type === 'tool.started') {
+      const patch = patchDocument(event);
+      if (
+        event.fingerprint !== receipt.fingerprint ||
+        createHash('sha256').update(patch).digest('hex') !== receipt.patchSha256
+      )
+        throw new Error('Recorded patch input does not match its change receipt.');
+      starts.set(key, patch);
+    } else {
+      const patch = starts.get(key);
+      if (
+        patch === undefined ||
+        envelope.eventId !== receipt.eventId ||
+        envelope.sequence !== receipt.sequence
+      )
+        throw new Error('Change receipt does not identify its recorded mutation.');
+      patches.push({ receipt, patch });
+      expected.delete(key);
+      starts.delete(key);
+    }
+  }
+  if (expected.size > 0) throw new Error('A reported mutation receipt is missing from recorded execution.');
+  return patches;
 }

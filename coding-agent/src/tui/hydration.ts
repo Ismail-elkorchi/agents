@@ -2,41 +2,18 @@ import type {
   AgentApprovalSuspension,
   AgentRunInspection,
   AgentRunState,
-  AgentRunSuspension,
-  AgentSessionState,
-  AgentTerminalSnapshot,
-  SessionBranchEntry,
-  SessionBranchPoint,
-  SessionPendingSubmission,
-  SessionReplayState
+  AgentRunSuspension
 } from '@agent-core/runtime';
-import { decodeToolCall } from '@agent-core/tools';
-import type { CodingHandoff } from '../changes/coding-handoff.js';
-import type { CodingAgentTuiActivityEntry } from './conversation-model.js';
-import { upsertActivity, upsertAssistant, upsertConversationEntry } from './conversation.js';
-import { applyCodingHandoff, applyHydratedTerminal, applySessionState } from './event-reducer.js';
+import type { CodingSessionView } from '../application/contracts.js';
+import { upsertConversationEntry } from './conversation.js';
+import { applyHydratedTerminal, applySessionState } from './event-reducer.js';
+import { presentHistoryPages } from './history.js';
 import type { CodingAgentTuiState } from './state.js';
-import {
-  completedSessionToolActivity,
-  pendingToolActivity,
-  sessionObservationActivityId,
-  toolActivityId
-} from './tool-presentation.js';
-
-export interface CodingAgentTuiHydration {
-  readonly session: AgentSessionState;
-  readonly replay: SessionReplayState;
-  readonly branchPoints: readonly SessionBranchPoint[];
-  readonly pendingSubmissions: readonly SessionPendingSubmission[];
-  readonly runs: readonly AgentRunInspection[];
-  readonly handoffs: readonly CodingHandoff[];
-}
 
 export function hydrateCodingAgentTuiState(
   state: CodingAgentTuiState,
-  hydration: CodingAgentTuiHydration
+  hydration: CodingSessionView
 ): CodingAgentTuiState {
-  assertHydration(hydration);
   let next: CodingAgentTuiState = {
     ...state,
     runtimeDetails: {
@@ -51,101 +28,46 @@ export function hydrateCodingAgentTuiState(
       ...state.debug,
       sessionId: hydration.session.sessionId,
       session: hydration.session,
-      replayState: hydration.replay,
       branchPoints: Object.freeze([...hydration.branchPoints]),
       pendingSubmissions: Object.freeze([...hydration.pendingSubmissions]),
       runs: Object.freeze([...hydration.runs]),
       handoffs: []
     }
   };
-  for (const entry of hydration.replay.branch) next = applyBranchEntry(next, entry);
-  next = applySessionState(next, hydration.session);
-  const latestTerminal = hydration.replay.runFinalizations.at(-1)?.terminal;
-  if (latestTerminal !== undefined) next = applyHydratedTerminal(next, latestTerminal);
-  for (const handoff of hydration.handoffs) next = applyCodingHandoff(next, handoff);
-  next = restoreSessionHistory(next, hydration.branchPoints, hydration.replay);
-  return restoreSessionRunState(next, hydration);
-}
-
-function restoreSessionHistory(
-  state: CodingAgentTuiState,
-  branchPoints: readonly SessionBranchPoint[],
-  replay: SessionReplayState
-): CodingAgentTuiState {
-  if (branchPoints.length === 0) return state;
-  const terminals = new Map<string, AgentTerminalSnapshot>(
-    replay.runFinalizations.map((finalization) => [finalization.throughEntryId, finalization.terminal])
+  const sameSession = state.debug.sessionId === hydration.session.sessionId;
+  const historical = sameSession && !state.conversation.scroll.followTail;
+  next = presentHistoryPages(
+    next,
+    historical ? state.conversation.pages : [{ history: hydration.history, handoffs: hydration.handoffs }],
+    sameSession && !historical
   );
-  const retained = branchPoints.slice(-100);
-  const lines = retained.map((point) => {
-    if (point.kind === 'context_transition') return `context ${point.entryId} · ${point.timestamp}`;
-    const terminal = terminals.get(point.entryId);
-    const identity = `final ${point.entryId}${point.runId === undefined ? '' : ` · run ${point.runId}`}`;
-    return terminal === undefined
-      ? `${identity} · terminal outside active replay · ${point.timestamp}`
-      : `${identity} · ${terminal.executionStatus} · model output ${terminal.modelOutput.status}`;
-  });
-  if (branchPoints.length > retained.length)
-    lines.unshift(`${String(branchPoints.length - retained.length)} earlier branch points omitted`);
-  const details = lines.join('\n');
-  const priorRuns = branchPoints.filter((point) => point.kind === 'run_finalization').length;
-  return upsertActivity(state, {
-    id: 'session:history',
-    kind: 'activity',
-    activity: 'history',
-    label: 'Session history',
-    status: 'success',
-    summary: `${String(branchPoints.length)} branch point${branchPoints.length === 1 ? '' : 's'} · ${String(priorRuns)} terminal run${priorRuns === 1 ? '' : 's'}`,
-    details: details.length <= 6_000 ? details : `${details.slice(0, 5_999)}…`
-  });
-}
-
-function applyBranchEntry(state: CodingAgentTuiState, entry: SessionBranchEntry): CodingAgentTuiState {
-  switch (entry.type) {
-    case 'input':
-      return upsertConversationEntry(state, {
-        id: `session:${entry.id}`,
+  if (historical)
+    next = {
+      ...next,
+      conversation: {
+        ...next.conversation,
+        unread:
+          state.conversation.unread ||
+          state.conversation.pages.at(-1)?.history.boundary.leafId !== hydration.history.boundary.leafId
+      }
+    };
+  for (const pending of hydration.pendingSubmissions) {
+    if (!historical && pending.state === 'queued')
+      next = upsertConversationEntry(next, {
+        id: `input:${pending.runId}`,
         kind: 'user',
-        text: entry.task
-      });
-    case 'steering':
-      return upsertConversationEntry(state, {
-        id: `session:${entry.id}`,
-        kind: 'user',
-        text: entry.content
-      });
-    case 'assistant':
-      return upsertAssistant(state, entry.turnId, entry.content, 'complete');
-    case 'tool_call': {
-      const call = decodeToolCall(entry.call);
-      return upsertActivity(state, pendingToolActivity(toolActivityId(entry), call));
-    }
-    case 'observation': {
-      const id = sessionObservationActivityId(entry);
-      return upsertActivity(state, completedSessionToolActivity(activity(state, id), entry));
-    }
-    case 'model_settings':
-      return state;
-    case 'context_transition':
-      return upsertConversationEntry(state, {
-        id: `session:${entry.window.windowId}`,
-        kind: 'notice',
-        tone: 'info',
-        text: `Context changed · ${entry.window.selection.strategy} · ${entry.window.windowId}\n${entry.window.reason}`
-      });
-    case 'branch':
-      return upsertConversationEntry(state, {
-        id: `session:${entry.id}`,
-        kind: 'notice',
-        tone: 'info',
-        text: `Session branched${entry.label === undefined ? '' : ` · ${entry.label}`}`
+        text: pending.input.task
       });
   }
+  next = applySessionState(next, hydration.session);
+  const latestTerminal = hydration.handoffs.at(-1)?.terminal;
+  if (latestTerminal !== undefined) next = applyHydratedTerminal(next, latestTerminal);
+  return restoreSessionRunState(next, hydration);
 }
 
 function restoreSessionRunState(
   state: CodingAgentTuiState,
-  hydration: CodingAgentTuiHydration
+  hydration: CodingSessionView
 ): CodingAgentTuiState {
   const session = hydration.session;
   const run = selectedRun(hydration);
@@ -191,7 +113,7 @@ function restoreSessionRunState(
   return state;
 }
 
-function selectedRun(hydration: CodingAgentTuiHydration): AgentRunInspection | undefined {
+function selectedRun(hydration: CodingSessionView): AgentRunInspection | undefined {
   const activeRunId = hydration.session.activeRunId;
   if (activeRunId !== undefined) {
     return hydration.runs.find((run) => run.state.runId === activeRunId);
@@ -287,33 +209,4 @@ function runLabel(run: AgentRunState): string {
       ? ` · ${String(providers)} provider request${providers === 1 ? '' : 's'} · ${String(calls)} pending tool${calls === 1 ? '' : 's'}`
       : '';
   return `Recovered ${phase}${work} · ${control}`;
-}
-
-function activity(state: CodingAgentTuiState, id: string): CodingAgentTuiActivityEntry | undefined {
-  return state.conversation.items.find(
-    (entry): entry is CodingAgentTuiActivityEntry => entry.kind === 'activity' && entry.id === id
-  );
-}
-
-function assertHydration(hydration: CodingAgentTuiHydration): void {
-  if (hydration.session.sessionId !== hydration.replay.session.id) {
-    throw new Error('TUI hydration session does not match its replay state.');
-  }
-  const pendingRunIds = new Set(hydration.pendingSubmissions.map((submission) => submission.runId));
-  for (const run of hydration.runs) {
-    if (!pendingRunIds.has(run.state.runId)) {
-      throw new Error(`TUI hydration contains an run outside the session pending set: ${run.state.runId}.`);
-    }
-  }
-  for (const handoff of hydration.handoffs) {
-    if (
-      !hydration.replay.runFinalizations.some(
-        (finalization) => finalization.runId === handoff.terminal.runId
-      )
-    ) {
-      throw new Error(
-        `TUI hydration contains a coding handoff outside the session replay: ${handoff.terminal.runId}.`
-      );
-    }
-  }
 }

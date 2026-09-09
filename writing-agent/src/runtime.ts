@@ -1,9 +1,5 @@
 import { parseJsonObject } from '@agent-core/json';
-import {
-  CompleteRequestEstimator,
-  type ModelProvider,
-  type ModelReasoningRequest
-} from '@agent-core/model';
+import { CompleteRequestEstimator, type ModelProvider, type ModelReasoningRequest } from '@agent-core/model';
 import { hashJson, InMemoryArtifactRepository, InMemoryEventRepository } from '@agent-core/persistence';
 import { JsonlEventRepository, LocalArtifactRepository } from '@agent-core/persistence/node';
 import {
@@ -100,6 +96,8 @@ export interface RunWritingOperationInput {
   readonly kind: WritingOperationKind;
   readonly instruction: string;
   readonly intents: readonly WritingIntent[];
+  readonly selectedRanges?: WritingOperation['selectedRanges'];
+  readonly expectedProjectRevisionId?: string;
   readonly mode?: WritingOperationMode;
   readonly sessionId?: string;
   readonly reasoning?: ModelReasoningRequest;
@@ -153,9 +151,21 @@ export async function runTransientWriting(input: TransientWritingInput): Promise
   return runtime.run({ task: brief, ...(input.signal ? { signal: input.signal } : {}) }).result;
 }
 
-export async function runWritingOperation(
+export interface WritingOperationSubmission {
+  readonly operationId: string;
+  readonly runId: string;
+  readonly sessionId: string;
+  readonly submissionId: string;
+  readonly completion: Promise<WritingOperationResult>;
+}
+
+export async function runWritingOperation(input: RunWritingOperationInput): Promise<WritingOperationResult> {
+  return (await startWritingOperation(input)).completion;
+}
+
+export async function startWritingOperation(
   input: RunWritingOperationInput
-): Promise<WritingOperationResult> {
+): Promise<WritingOperationSubmission> {
   if (input.mode === 'apply' && input.delegatedApplyPolicy === undefined)
     throw new Error('Apply-mode model work requires an explicit direct-user delegated apply policy.');
   const composition = await openOperationRuntime(input.project, {
@@ -171,6 +181,13 @@ export async function runWritingOperation(
   });
   const editorialChecker = composition.editorialChecker;
   const stopCancellation = followSessionAbort(composition.session, input.signal);
+  const close = async () => {
+    try {
+      await stopCancellation();
+    } finally {
+      await composition.host.close();
+    }
+  };
   try {
     await composition.session.restore();
     await reconcileWritingOperations(
@@ -183,6 +200,11 @@ export async function runWritingOperation(
     const suspension = composition.session.inspectSuspension();
     if (suspension !== undefined) throw suspensionError(suspension);
     const view = await input.project.store.view();
+    if (
+      input.expectedProjectRevisionId !== undefined &&
+      input.expectedProjectRevisionId !== view.current.revision.revisionId
+    )
+      throw new Error('Writing operation targets a stale project revision.');
     const runId = randomId('run');
     const operation = admitWritingOperation(
       {
@@ -191,15 +213,14 @@ export async function runWritingOperation(
         kind: input.kind,
         instruction: input.instruction,
         intents: input.intents,
+        ...(input.selectedRanges === undefined ? {} : { selectedRanges: input.selectedRanges }),
         baseProjectRevisionId: view.current.revision.revisionId,
         mode: input.mode ?? 'suggest',
         ...(input.delegatedApplyPolicy === undefined
           ? {}
           : { delegatedApplyPolicy: input.delegatedApplyPolicy }),
         sessionId: composition.descriptor.id,
-        ...(input.readableResourceIds === undefined
-          ? {}
-          : { readableResourceIds: input.readableResourceIds })
+        ...(input.readableResourceIds === undefined ? {} : { readableResourceIds: input.readableResourceIds })
       },
       {
         channel: 'direct-user',
@@ -239,22 +260,34 @@ export async function runWritingOperation(
       throw new Error(`Writing operation submission was rejected: ${submission.reason}.`);
     if (submission.kind !== 'started')
       throw new Error('Writing operation was not admitted as the exact queued submission.');
-    const execution = await submission.completion;
-    return await finishWritingOperation(
-      input.project,
+    const completion = submission.completion
+      .then((execution) =>
+        finishWritingOperation(
+          input.project,
+          runId,
+          execution,
+          input.clock,
+          composition.editorialChecker,
+          input.signal
+        )
+      )
+      .finally(close);
+    void completion.catch(() => undefined);
+    return {
+      operationId: operation.operationId,
       runId,
-      execution,
-      input.clock,
-      composition.editorialChecker,
-      input.signal
-    );
-  } finally {
-    try {
-      await stopCancellation();
-    } finally {
-      await composition.host.close();
-    }
+      sessionId: composition.descriptor.id,
+      submissionId: submission.submissionId,
+      completion
+    };
+  } catch (error) {
+    await close();
+    throw error;
   }
+}
+
+export function inspectWritingSession(input: RuntimeControlInput) {
+  return withControlRuntime(input, (composition) => composition.session.inspect());
 }
 
 export async function inspectWritingSuspension(
@@ -579,9 +612,7 @@ async function openOperationRuntime(
       },
       async createRuntime(configuration, sessionProgress, runtimeContext) {
         if (configuration.provider !== options.provider.id)
-          throw new Error(
-            `Provider ${configuration.provider} is unavailable in this Writing Agent runtime.`
-          );
+          throw new Error(`Provider ${configuration.provider} is unavailable in this Writing Agent runtime.`);
         const operation = await project.store.getOperationByRunId(runtimeContext.runId);
         if (operation === undefined)
           throw new Error(`No admitted writing operation owns run ${runtimeContext.runId}.`);
@@ -613,11 +644,7 @@ async function openOperationRuntime(
           model: configuration.model,
           repositories: { events, session: sessionBinding, artifacts: host.artifactRepository },
           estimator: new CompleteRequestEstimator(),
-          tools: Object.freeze([
-            ...host.tools,
-            createProposeRevisionTool(operationService),
-            ...memoryTools
-          ]),
+          tools: Object.freeze([...host.tools, createProposeRevisionTool(operationService), ...memoryTools]),
           toolBoundary: {
             authorizationPolicyId: WRITING_AUTHORIZATION_POLICY_ID,
             executionTargetId: `writing-project:${project.store.identity.projectStoreId}`
@@ -854,8 +881,7 @@ function productionVerificationObservation(
     ) ||
     verification.editorialFindings.some(
       (finding) =>
-        finding.severity === 'required' &&
-        (finding.verdict === 'unknown' || finding.coverage !== 'complete')
+        finding.severity === 'required' && (finding.verdict === 'unknown' || finding.coverage !== 'complete')
     );
   return Object.freeze({
     verdict: failed ? ('failed' as const) : incomplete ? ('unknown' as const) : ('passed' as const),
@@ -1324,9 +1350,7 @@ function currentOperationProposal(
   view: Awaited<ReturnType<WritingProject['store']['view']>>,
   operationId: string
 ) {
-  const entries = [...view.proposals.values()].filter(
-    (entry) => entry.proposal.operationId === operationId
-  );
+  const entries = [...view.proposals.values()].filter((entry) => entry.proposal.operationId === operationId);
   return (
     [...entries]
       .reverse()

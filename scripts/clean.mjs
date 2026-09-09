@@ -1,9 +1,10 @@
-import { rm } from 'node:fs/promises';
-await Promise.all([
-  rm(new URL('../verification/dist', import.meta.url), { recursive: true, force: true }),
-  rm(new URL('../verification/tsconfig.tsbuildinfo', import.meta.url), { force: true }),
-  rm(new URL('../coding-agent/dist', import.meta.url), { recursive: true, force: true }),
-  rm(new URL('../coding-agent/tsconfig.tsbuildinfo', import.meta.url), { force: true }),
-  rm(new URL('../writing-agent/dist', import.meta.url), { recursive: true, force: true }),
-  rm(new URL('../writing-agent/tsconfig.tsbuildinfo', import.meta.url), { force: true })
-]);
+import { readFile, rm } from 'node:fs/promises';
+
+const root = new URL('../', import.meta.url);
+const { workspaces } = JSON.parse(await readFile(new URL('package.json', root), 'utf8'));
+await Promise.all(
+  workspaces.flatMap((workspace) => [
+    rm(new URL(`${workspace}/dist`, root), { recursive: true, force: true }),
+    rm(new URL(`${workspace}/tsconfig.tsbuildinfo`, root), { force: true })
+  ])
+);

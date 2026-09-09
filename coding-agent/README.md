@@ -17,6 +17,26 @@ Restricted workspaces may send bounded, screened context to the configured provi
 
 Runs, sessions, artifacts, journals, trust records, and the user-selected provider/model live under the platform user-state directory. Workspace records are keyed by the adopted physical workspace identity; the provider/model selection is a user default for new interactive sessions. `--state-root` selects another dedicated Coding Agent state root. A state root must be outside the workspace and is adopted only when empty or already marked as Coding Agent state. No `.coding-agent` directory is created or read as private state.
 
+## Terminal interaction
+
+`coding-agent` opens the TUI; `coding-agent --session latest` restores recorded work. Enter submits, Shift+Enter or Ctrl+O inserts a newline, Alt+Enter steers active work, and Ctrl+Enter queues a follow-up. Rejected input stays in the composer. Ctrl+C interrupts active work; with selected source it copies, and with an empty idle composer it exits. F4 opens `$VISUAL`/`$EDITOR` while terminal ownership is suspended.
+
+F1 displays help generated from current bindings. Ctrl+P opens commands, Ctrl+Space completes commands or workspace paths, Ctrl+F searches recorded history, Ctrl+PageUp/PageDown loads history pages, and Ctrl+End follows current output. F2 selects sessions, F5 inspects branches, F6 edits or cancels accepted queued input, F7 inspects recorded working-copy patches and publication status, and F8 opens original Markdown. Alt+N opens attributed model notes. Session navigation preserves drafts and logical history positions; unloaded history remains retrievable.
+
+Ctrl+Y sends the latest Markdown source to the clipboard; Alt+Y sends displayed text, and Ctrl+Shift+Y sends code blocks. Source readers support Ctrl+A, Shift+arrow, and pointer selection and Ctrl+C. Exact copying of tabs, CRLF, or other text normalized by terminal-ui is explicitly unavailable at the pinned library revision; original source remains stored. See [terminal-ui findings](../terminal-ui-consumer-findings.md). Terminal key protocols vary; Ctrl+O provides a newline when Shift+Enter is indistinguishable from Enter.
+
+## Headless and stdio consumers
+
+The package root exports `openCodingApplication` and domain APIs without starting a CLI or loading terminal presentation. Explicit `/tui` and `/rpc` subpaths provide adapters. The TUI calls the same typed application service used by nonterminal callers.
+
+```bash
+coding-agent rpc --root /path/to/workspace --session latest
+```
+
+The stdio adapter uses UTF-8 JSONL and JSON-RPC 2.0. For example, `{"jsonrpc":"2.0","id":1,"method":"input.submit","params":{"task":"Inspect the tests"}}` returns durable acceptance identities promptly; later `run.progress`, `run.completed`, or `run.failed` notifications describe execution. A `run.completed` result can be suspended: inspect its discriminant, not the notification name. `session.read` exposes pending submissions and exact approval identities after restart; `approval.resolve` requires the recorded fingerprint. `history.read`, `history.search`, `history.entry`, `notes.list`, `notes.read`, and `change.read` expose bounded source reads. Product method definitions live in [the RPC adapter](src/rpc/index.ts).
+
+EOF and `application.shutdown` close the application's resources and interrupt active work. They do not promise background execution. After connection loss, inspect recorded state before submitting again; request IDs are not deduplication identities. On `delivery.gap`, refresh authoritative state. See [shared framing and delivery rules](../rpc/README.md).
+
 ## CLI
 
 ```bash
@@ -37,7 +57,7 @@ coding-agent exec --resume
 coding-agent exec --session SESSION_ID
 ```
 
-Interactive startup does not require provider, model, permission, or trust flags. It renders first, restores any available settings, and reports the exact missing setup. Use `/provider`, `/model`, `/permissions`, `/trust`, and `/login` inside the TUI. A message submitted before setup is complete is retained and starts automatically after setup. `coding-agent exec` remains noninteractive and fails immediately when trust or a complete model selection cannot be resolved.
+Interactive startup does not require provider, model, permission, or trust flags. It renders first, restores any available settings, and reports the exact missing setup. Use `/provider`, `/model`, `/permissions`, `/trust`, and `/login` inside the TUI. A message submitted before setup is complete remains editable; submit it again after completing setup. `coding-agent exec` remains noninteractive and fails immediately when trust or a complete model selection cannot be resolved.
 
 Session selection is not part of project configuration. A resumed session restores its latest provider and model unless explicitly overridden. Interactive model resolution order is explicit CLI options, resumed-session settings, trusted project configuration, the stored user selection, then environment values. Noninteractive execution does not consume the interactive user default. There is no provider or model fallback chosen by the application.
 

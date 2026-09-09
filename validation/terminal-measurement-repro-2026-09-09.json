@@ -1,0 +1,6 @@
+{
+  "scope": "Same element, measured collection, window, width, content and theme; only a sibling changes.",
+  "afterStart": 2,
+  "afterTenSiblingUpdates": 22,
+  "frameCommits": 11
+}

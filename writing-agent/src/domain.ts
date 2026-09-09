@@ -287,6 +287,16 @@ export const writingExecutionAttemptSchema = z
   })
   .readonly();
 
+export const writingSelectedRangeSchema = z
+  .strictObject({
+    resourceId: identifierSchema,
+    rangeId: identifierSchema,
+    range: textRangeSchema,
+    resourceSha256: sha256Schema
+  })
+  .readonly();
+export type WritingSelectedRange = z.infer<typeof writingSelectedRangeSchema>;
+
 export const writingOperationSchema = z
   .strictObject({
     projectId: identifierSchema,
@@ -299,6 +309,7 @@ export const writingOperationSchema = z
     targetResourceIds: z.array(identifierSchema).readonly(),
     readableResourceIds: z.array(identifierSchema).readonly(),
     effectiveConstraints: effectiveConstraintSetSchema,
+    selectedRanges: z.array(writingSelectedRangeSchema).readonly(),
     baseProjectRevisionId: identifierSchema,
     mode: writingOperationModeSchema,
     delegatedApplyPolicy: writingDelegatedApplyPolicySchema.optional(),
@@ -800,7 +811,7 @@ export const writingContextSelectionSchema = z
                 z
                   .strictObject({
                     anchorId: identifierSchema,
-                    kind: z.enum(['document', 'paragraph', 'protected-range']),
+                    kind: z.enum(['document', 'paragraph', 'protected-range', 'selected-range']),
                     targetRangeId: identifierSchema.optional(),
                     range: textRangeSchema,
                     textSha256: sha256Schema,

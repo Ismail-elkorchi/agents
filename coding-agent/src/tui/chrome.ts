@@ -9,7 +9,13 @@ export function statusChrome(state: CodingAgentTuiState): Element {
   const center = [modelSelectionLabel(state), permissionLabel(state)]
     .filter((value): value is string => value !== undefined)
     .join(' · ');
-  const runText = [presentation.text, queueLabel(state), driverLabel(state)]
+  const runText = [
+    presentation.text,
+    queueLabel(state),
+    driverLabel(state),
+    state.conversation.loading === undefined ? undefined : 'Loading history',
+    state.conversation.unread ? 'New output · Ctrl+End' : undefined
+  ]
     .filter((value): value is string => value !== undefined)
     .join(' · ');
   return statusBar({
@@ -53,13 +59,23 @@ function permissionLabel(state: CodingAgentTuiState): string | undefined {
   return `${permissions.mode}/${permissions.trust} · ${write} · ${command} · net/escape denied · ${String(permissions.tools.length)} tools`;
 }
 
-export function hintBar(state: CodingAgentTuiState, columns: number): Element<CodingAgentTuiMessage> {
+export function hintBar(
+  state: CodingAgentTuiState,
+  columns: number,
+  bindings: readonly { readonly label: string; readonly keys: string }[]
+): Element<CodingAgentTuiMessage> {
+  const show = (label: string, action: string) => {
+    const entry = bindings.find((item) => item.label === label);
+    return entry === undefined ? '' : `${entry.keys} ${action}`;
+  };
   const text =
     state.run.kind === 'waiting_for_approval'
       ? 'Tab move · Enter choose · Esc deny'
       : columns < 50
-        ? 'Ctrl+P commands'
-        : 'Enter send · Ctrl+P commands · F1 help';
+        ? show('commands', 'commands')
+        : [show('composer submit', 'send'), show('commands', 'commands'), show('help', 'help')]
+            .filter(Boolean)
+            .join(' · ');
   return richText({ id: 'hints', segments: muted(text), wrap: false });
 }
 
