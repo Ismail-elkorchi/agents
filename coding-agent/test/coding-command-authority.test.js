@@ -70,7 +70,7 @@ test(
 
 test('Node discovery never admits the surrounding home for standalone or user-bin installs', async () => {
   const { codingToolchain } = await import('../dist/execution/sandbox-policy.js');
-  const home = await mkdtemp(path.join(tmpdir(), 'coding-agent-node-home-'));
+  const home = await realpath(await mkdtemp(path.join(tmpdir(), 'coding-agent-node-home-')));
   try {
     await mkdir(path.join(home, 'bin'));
     const secret = path.join(home, 'credentials');
