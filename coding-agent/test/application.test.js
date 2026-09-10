@@ -106,3 +106,26 @@ test(
     }
   }
 );
+
+test('the default Codex application composition completes its first prompt without recovery', { skip: process.platform !== 'linux' }, async (t) => {
+  const { offlineCodex } = await import('../../application/test/helpers/codex.js');
+  const provider = await offlineCodex(t, 'No changes are necessary.');
+  const fixture = await createWorkspace({ tools: ['read_files'], checks: [] });
+  await trust(fixture);
+  const app = await openCodingApplication({
+    root: fixture.root, stateRoot: fixture.stateRoot,
+    provider: 'openai-codex', model: 'gpt-5.6-luna', providerEndpoint: provider.endpoint
+  });
+  t.after(async () => { await app.close(); await fixture.close(); });
+  await app.start();
+  const submission = await app.submit('Say whether a change is needed.');
+  assert.equal(submission.kind, 'started');
+  const result = await submission.completion;
+  assert.equal(result.state, 'ended', JSON.stringify(result));
+  assert.equal(result.terminal.executionStatus, 'completed', JSON.stringify(result));
+  assert.equal(provider.requests.length, 1);
+  assert.equal(app.state().session.suspension, undefined);
+  const next = await app.submit('Thank you.');
+  assert.equal((await next.completion).terminal.executionStatus, 'completed');
+  assert.equal(provider.requests.length, 2);
+});

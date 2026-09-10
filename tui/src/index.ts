@@ -1,6 +1,7 @@
 export { compareText } from './comparison.js';
 export { composerRows } from './composer.js';
 export { diagnosticMessage } from './diagnostics.js';
+export { providerFailureText, suspensionPresentation } from './recovery.js';
 export { TuiEventChannel } from './event-channel.js';
 export { editTextExternally } from './external-editor.js';
 export {

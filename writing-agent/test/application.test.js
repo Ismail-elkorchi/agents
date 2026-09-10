@@ -211,3 +211,22 @@ test('continued writing work owns cancellation and close waits for recovery clea
   await closing;
   assert.equal(app.state().status, 'closed');
 });
+
+test('the default Codex writing provider reaches inference without a wire output cap or recovery', async (t) => {
+  const { offlineCodex } = await import('../../application/test/helpers/codex.js');
+  const { createWritingProvider } = await import('@ismail-elkorchi/writing-agent');
+  const codex = await offlineCodex(t);
+  const f = await fixture('A short document.\n');
+  const binding = createWritingProvider({ provider: 'openai-codex', model: 'gpt-5.6-luna', endpoint: codex.endpoint });
+  const app = new WritingApplication(f.project, { configuration: { ...binding, editorialChecker: passingChecker } });
+  t.after(async () => { await app.close(); await rm(f.parent, { recursive: true, force: true }); });
+  await app.start();
+  const document = await app.readDocument(f.resource.resourceId);
+  const submission = await app.instruct({ kind: 'revise', instruction: 'Review this passage.', selection: document.selection });
+  assert.equal(submission.kind, 'accepted');
+  const result = await submission.completion;
+  assert.equal(result.execution.state, 'ended', JSON.stringify(result));
+  assert.equal(result.execution.terminal.executionStatus, 'completed', JSON.stringify(result));
+  assert.equal(codex.requests.length, 1);
+  assert.equal((await app.readSession()).session.suspension, undefined);
+});

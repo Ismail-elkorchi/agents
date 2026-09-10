@@ -50,9 +50,10 @@ export async function executeCodingCommand(
     case '/abort':
       if (!(await application.abort(value || undefined))) throw new Error('No active run to abort.');
       return { message: 'Abort requested.' };
-    case '/resume':
-      await application.resumeSuspension();
-      return { message: 'Suspension processed.' };
+    case '/resume': {
+      const result = await application.resumeSuspension();
+      return { message: result.state === 'suspended' ? 'The run is still paused. No recorded result is available yet.' : 'The run has finished.' };
+    }
     case '/context':
       if (value === '' || value === 'inspect')
         return { message: JSON.stringify(await application.inspectContext(), null, 2) };

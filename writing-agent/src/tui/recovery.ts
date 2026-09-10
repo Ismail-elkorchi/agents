@@ -1,4 +1,5 @@
-import { button, text, type Element } from '@ismail-elkorchi/terminal-ui/components';
+import { suspensionPresentation } from '@agents/tui';
+import { button, text, richText, type Element } from '@ismail-elkorchi/terminal-ui/components';
 import { column } from '@ismail-elkorchi/terminal-ui/layout';
 import type { WritingTuiMessage, WritingTuiState } from './state.js';
 
@@ -10,17 +11,18 @@ export function recoveryView(state: WritingTuiState): Element<WritingTuiMessage>
       content:
         suspension === undefined
           ? 'No suspended run in this session.'
-          : `${suspension.reason}\nRun ${suspension.runId}`
+          : `${suspensionPresentation(suspension.reason).title}\n${suspensionPresentation(suspension.reason).explanation}`
     })
   ];
   if (suspension !== undefined) {
+    if (state.notice) children.push(richText({ segments: [{ kind: 'text', text: state.notice }], wrap: true }));
     if (suspension.actions.includes('resume') || suspension.actions.includes('reconcile'))
       children.push(
         button({
           id: 'writing-recovery-resume',
           label: suspension.actions.includes('reconcile')
-            ? 'Reconcile recorded outcome'
-            : 'Resume implementation',
+            ? 'Check for a recorded result'
+            : 'Continue',
           onPress: () => ({ type: 'recovery.resume' })
         })
       );
@@ -39,7 +41,7 @@ export function recoveryView(state: WritingTuiState): Element<WritingTuiMessage>
     children.push(
       button({
         id: 'writing-recovery-abort',
-        label: 'Abort this run',
+        label: 'Stop this run',
         onPress: () => ({ type: 'recovery.abort' })
       })
     );
@@ -72,7 +74,7 @@ export function recoveryView(state: WritingTuiState): Element<WritingTuiMessage>
   children.push(
     button({
       id: 'writing-recovery-refresh',
-      label: 'Read current decisions',
+      label: 'Refresh',
       onPress: () => ({ type: 'recovery.open' })
     })
   );

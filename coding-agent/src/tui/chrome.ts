@@ -71,7 +71,9 @@ export function hintBar(
   const text =
     state.run.kind === 'waiting_for_approval'
       ? 'Tab move · Enter choose · Esc deny'
-      : columns < 50
+      : state.run.kind === 'waiting_for_recovery'
+        ? 'Tab move · Enter choose · Ctrl+C stop run'
+        : columns < 50
         ? show('commands', 'commands')
         : [show('composer submit', 'send'), show('commands', 'commands'), show('help', 'help')]
             .filter(Boolean)
@@ -93,7 +95,7 @@ function runPresentation(state: CodingAgentTuiState): {
     case 'waiting_for_approval':
       return { text: 'Approval required', status: 'warning' };
     case 'waiting_for_recovery':
-      return { text: 'Recovery decision required', status: 'warning' };
+      return { text: 'Run paused', status: 'warning' };
     case 'failed':
       return { text: 'Failed', status: 'error' };
     case 'ended': {

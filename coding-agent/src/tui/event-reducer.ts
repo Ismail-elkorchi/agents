@@ -1,4 +1,5 @@
 import type { AgentProgressEvent, AgentRunPhase, AgentSessionState } from '@agent-core/runtime';
+import { providerFailureText } from '@agents/tui';
 import { type CheckResult } from '@agents/verification';
 import type { CodingHandoff } from '../changes/coding-handoff.js';
 import type { CodingEndedRunResult } from '../outcome.js';
@@ -44,7 +45,7 @@ export function applyProgress(state: CodingAgentTuiState, event: AgentProgressEv
     case 'run.phase.changed':
       return reducePhaseChanged(state, event);
     case 'assistant.started':
-      return upsertAssistant(withWorking(state, 'Thinking'), event.turnId, '', 'streaming');
+      return withWorking(state, 'Thinking');
     case 'assistant.delta':
       return upsertAssistant(withWorking(state, 'Responding'), event.turnId, event.accumulated, 'streaming');
     case 'assistant.reasoning':
@@ -165,7 +166,7 @@ function reduceAssistantInterrupted(
     next = upsertReasoning(next, event.turnId, event.reasoningSummary);
   }
   if (event.diagnostic !== undefined) {
-    next = appendNotice(next, diagnosticText(event.diagnostic), 'error');
+    next = appendNotice(next, providerFailureText(event.diagnostic), 'error');
   }
   return next;
 }
@@ -174,7 +175,7 @@ function reduceModelFailed(
   state: CodingAgentTuiState,
   event: ProgressEvent<'model.failed'>
 ): CodingAgentTuiState {
-  return appendNotice(withWorking(state, 'Provider failed'), diagnosticText(event.diagnostic), 'error');
+  return appendNotice(withWorking(state, 'Provider failed'), providerFailureText(event.diagnostic), 'error');
 }
 
 function reduceToolStarted(
@@ -428,9 +429,4 @@ function phaseLabel(phase: AgentRunPhase): string {
 function compact(value: string): string {
   const normalized = value.trim().replaceAll(/\s+/g, ' ');
   return normalized.length <= 240 ? normalized : `${normalized.slice(0, 239)}…`;
-}
-
-function diagnosticText(diagnostic: ProgressEvent<'model.failed'>['diagnostic']): string {
-  const cause = diagnostic.causeSummary === undefined ? '' : ` · ${JSON.stringify(diagnostic.causeSummary)}`;
-  return `${diagnostic.provider} ${diagnostic.code}${cause}`;
 }

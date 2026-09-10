@@ -82,11 +82,13 @@ import {
   transitionHistorySearch,
   type HistorySearcher
 } from './search.js';
+import { recoveryDialog, recoveryEffect, type RecoveryHandler } from './recovery.js';
 import { restoreSessionView } from './session-view.js';
 import type { CodingAgentTuiSetupState, CodingAgentTuiState } from './state.js';
 import { createInitialCodingAgentTuiState } from './state.js';
 
 export interface CodingAgentTuiAppOptions {
+  readonly recoveryHandler?: RecoveryHandler;
   readonly navigation?: CodingNavigationOperations;
   readonly historyReader?: CodingHistoryReader;
   readonly historySearcher?: HistorySearcher;
@@ -231,7 +233,8 @@ export function createCodingAgentTuiApp(task: string, options: CodingAgentTuiApp
         'c',
         { ctrl: true },
         { type: 'work.interrupt' },
-        ({ state }) => canOpenOverlay(state) && state.composer.input.selection === undefined
+        ({ state }) => state.run.kind === 'waiting_for_recovery' ||
+          (canOpenOverlay(state) && state.composer.input.selection === undefined)
       ),
       binding(
         'copy-original-markdown',
@@ -443,15 +446,40 @@ function updateCodingAgentTui(
         context,
         { kind: 'element', elementId: 'approval-deny' }
       );
-    case 'run.suspended':
+    case 'run.suspended': {
+      const last = state.conversation.items.at(-1);
       return updated(
         {
           ...state,
-          run: { kind: 'waiting_for_recovery', suspension: message.suspension },
+          run: {
+            kind: 'waiting_for_recovery',
+            suspension: message.suspension,
+            ...(last?.kind === 'notice' && last.tone === 'error' ? { message: last.text } : {})
+          },
+          modalOffsetRow: 0,
           overlay: { kind: 'none' }
         },
-        context
+        context,
+        { kind: 'element', elementId: 'recovery-stop' }
       );
+    }
+    case 'recovery.act': {
+      if (state.run.kind !== 'waiting_for_recovery' || state.run.operation !== undefined) return { state };
+      return {
+        state: { ...state, run: { ...state.run, operation: message.action } },
+        effects: [recoveryEffect(state.run.suspension, message.action, options.recoveryHandler)]
+      };
+    }
+    case 'recovery.finished': {
+      if (state.run.kind !== 'waiting_for_recovery' || state.run.suspension.runId !== message.runId)
+        return { state };
+      return {
+        state: {
+          ...state,
+          run: { kind: 'waiting_for_recovery', suspension: state.run.suspension, message: message.message }
+        }
+      };
+    }
     case 'approval.decide': {
       if (state.run.kind !== 'waiting_for_approval') return { state };
       return {
@@ -623,7 +651,9 @@ function updateCodingAgentTui(
         { kind: 'element', elementId: 'composer' }
       );
     case 'work.interrupt':
-      if (state.run.kind === 'working' || state.run.kind === 'waiting_for_recovery')
+      if (state.run.kind === 'waiting_for_recovery')
+        return updateCodingAgentTui(state, { type: 'recovery.act', action: 'stop' }, context, options);
+      if (state.run.kind === 'working')
         return executeCommand(state, '/abort', options.commandHandler);
       if (textDocumentText(state.composer.input.document).length === 0)
         return { state, exit: { reason: 'interrupt' } };
@@ -746,7 +776,7 @@ function submit(
   handler: CodingAgentTuiCommandHandler | undefined,
   delivery?: 'steer' | 'follow_up'
 ): TuiUpdateResult<CodingAgentTuiState, CodingAgentTuiMessage> {
-  if (state.run.kind === 'waiting_for_approval') return { state };
+  if (state.run.kind === 'waiting_for_approval' || state.run.kind === 'waiting_for_recovery') return { state };
   const submission = submitComposer(state, delivery);
   return submission.request === undefined
     ? { state: submission.state }
@@ -1010,6 +1040,9 @@ function agentTuiView(
   if (state.run.kind === 'waiting_for_approval') {
     return overlay([workspace, approvalDialog(state, context)], { id: 'coding-agent-overlay' });
   }
+  if (state.run.kind === 'waiting_for_recovery') {
+    return overlay([workspace, recoveryDialog(state.run, context, state.modalOffsetRow)], { id: 'coding-agent-overlay' });
+  }
   const modal = overlayView(state, context, helpText);
   return modal === undefined
     ? overlay([workspace], { id: 'coding-agent-overlay' })
@@ -1022,7 +1055,9 @@ function composerView(state: CodingAgentTuiState): Element<CodingAgentTuiMessage
       ? 'Send a message or open commands to finish setup'
       : state.run.kind === 'working'
         ? 'Queue a follow-up'
-        : 'Send a message';
+        : state.run.kind === 'waiting_for_recovery'
+          ? 'Resolve the paused run to send a message'
+          : 'Send a message';
   return textArea({
     id: 'composer',
     meta: { accessibleName: 'Message composer' },
@@ -1425,7 +1460,7 @@ function conversationSegments(
     case 'assistant':
       return [
         { kind: 'text', text: 'Assistant\n', style: { bold: true } },
-        ...state.presentation.markdown(entry.id, entry.text.length === 0 ? '…' : entry.text).render(width)
+        ...state.presentation.markdown(entry.id, entry.text).render(width)
           .segments
       ];
     case 'reasoning':
@@ -1520,6 +1555,7 @@ function composerBindingEnabled({ state, focusPath }: TuiInputBindingContext<Cod
   return (
     state.overlay.kind === 'none' &&
     state.run.kind !== 'waiting_for_approval' &&
+    state.run.kind !== 'waiting_for_recovery' &&
     focusPath?.includes('composer') === true
   );
 }
@@ -1545,11 +1581,19 @@ function composerNewlineMessage(): CodingAgentTuiMessage {
 }
 
 function canOpenOverlay(state: CodingAgentTuiState): boolean {
-  return state.overlay.kind === 'none' && state.run.kind !== 'waiting_for_approval';
+  return (
+    state.overlay.kind === 'none' &&
+    state.run.kind !== 'waiting_for_approval' &&
+    state.run.kind !== 'waiting_for_recovery'
+  );
 }
 
 function canScroll(state: CodingAgentTuiState): boolean {
-  return state.overlay.kind === 'none' && state.run.kind !== 'waiting_for_approval';
+  return (
+    state.overlay.kind === 'none' &&
+    state.run.kind !== 'waiting_for_approval' &&
+    state.run.kind !== 'waiting_for_recovery'
+  );
 }
 
 function body(value: string): InlineContent {

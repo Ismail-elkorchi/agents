@@ -24,6 +24,7 @@ export function upsertAssistant(
   text: string,
   status: CodingAgentTuiAssistantEntry['status']
 ): CodingAgentTuiState {
+  if (text.length === 0) return state;
   const id = `assistant:${turnId}`;
   const current = state.conversation.items.find(
     (item): item is CodingAgentTuiAssistantEntry => item.id === id && item.kind === 'assistant'

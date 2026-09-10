@@ -4,6 +4,7 @@ import type {
   AgentRunState,
   AgentRunSuspension
 } from '@agent-core/runtime';
+import { suspensionPresentation } from '@agents/tui';
 import type { CodingSessionView } from '../application/contracts.js';
 import { upsertConversationEntry } from './conversation.js';
 import { applyHydratedTerminal, applySessionState } from './event-reducer.js';
@@ -92,7 +93,7 @@ function restoreSessionRunState(
         id: `recovery:${suspension.runId}`,
         kind: 'notice',
         tone: 'warning',
-        text: `Recovery required · ${suspension.reason.replaceAll('_', ' ')}${suspension.effectId === undefined ? '' : ` · effect ${suspension.effectId}`}`
+        text: suspensionPresentation(suspension.reason).explanation
       }
     );
   }

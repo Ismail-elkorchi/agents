@@ -521,13 +521,17 @@ export class CodingApplication {
     return agent.abort(reason, expectedRunId ?? agent.state().activeRunId);
   }
 
-  async resumeSuspension(): Promise<CodingRunResult> {
+  async resumeSuspension(expectedRunId?: string): Promise<CodingRunResult> {
     const agent = this.requireRuntime().agent;
     const pending = agent.state().pendingSettlement;
-    if (pending) return agent.reconcileWork(pending.runId);
+    if (pending) {
+      if (expectedRunId !== undefined && pending.runId !== expectedRunId) throw new Error('The selected run has changed.');
+      return agent.reconcileWork(pending.runId);
+    }
     await agent.restore();
     const suspension = agent.inspectSuspension();
     if (suspension === undefined) throw new Error('The selected session is not suspended.');
+    if (expectedRunId !== undefined && suspension.runId !== expectedRunId) throw new Error('The selected run has changed.');
     if (suspension.category === 'external_recovery') return agent.reconcileExternal(suspension.runId);
     if (suspension.category === 'implementation') return agent.resumeImplementation(suspension.runId);
     throw new Error('The suspension requires a decision.');

@@ -2,6 +2,7 @@ import { hashJson } from '@agent-core/persistence';
 import type { RootIdentity } from '@agent-core/tools-local';
 import { lstat } from 'node:fs/promises';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import * as z from 'zod';
 import { assertBriefIntegrity } from './brief.js';
 import { contentId, nowTimestamp, randomId, textSha256 } from './canonical.js';
@@ -496,17 +497,13 @@ export class WritingProjectStore {
   ): Promise<void> {
     const lifecycle = operationLifecycleSchema.parse(input);
     const existing = (await this.view()).operationLifecycles.get(lifecycle.runId);
-    if (
-      existing !== undefined &&
-      existing.status !== 'suspended' &&
-      existing.status !== 'awaiting_verification'
-    ) {
-      if (sameOperationSettlement(existing, lifecycle)) return;
-      throw new Error(
-        `Writing operation already has a conflicting terminal settlement: ${lifecycle.operationId}`
-      );
+    if (existing !== undefined) {
+      if (isDeepStrictEqual(existing, lifecycle)) return;
+      if (existing.status !== 'suspended' && existing.status !== 'awaiting_verification')
+        throw new Error(
+          `Writing operation already has a conflicting terminal settlement: ${lifecycle.operationId}`
+        );
     }
-    if (existing !== undefined && sameOperationSettlement(existing, lifecycle)) return;
     await this.appendMany(
       [{ payload: { kind: 'operation.lifecycle', lifecycle }, projectRevisionId: expectedRevisionId }],
       { expectedRevisionId }
@@ -1458,32 +1455,6 @@ function assertExactApplyAuthorization(
       `Writing apply authorization does not bind the exact verified proposal transaction: ${proposal.proposalId}`
     );
   }
-}
-
-function sameOperationSettlement(
-  left: WritingOperationLifecycle,
-  right: WritingOperationLifecycle
-): boolean {
-  return (
-    hashJson({
-      operationId: left.operationId,
-      runId: left.runId,
-      status: left.status,
-      executionSha256: left.executionSha256,
-      proposalId: left.proposalId,
-      committedRevisionId: left.committedRevisionId,
-      reason: left.reason
-    }) ===
-    hashJson({
-      operationId: right.operationId,
-      runId: right.runId,
-      status: right.status,
-      executionSha256: right.executionSha256,
-      proposalId: right.proposalId,
-      committedRevisionId: right.committedRevisionId,
-      reason: right.reason
-    })
-  );
 }
 
 function latestSnapshot(records: readonly ProjectLogRecord[]): ProjectSnapshot | undefined {

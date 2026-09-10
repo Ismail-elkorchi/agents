@@ -3,6 +3,8 @@ import {
   composerRows,
   copySource,
   diagnosticMessage,
+  providerFailureText,
+  suspensionPresentation,
   editTextExternally,
   historyBookmark,
   selectedSource,
@@ -217,7 +219,13 @@ function update(
         ]
       };
     case 'recovery.loaded':
-      return { state: { ...state, sessionView: message.session, overlay: { kind: 'recovery' } } };
+      return {
+        state: {
+          ...state,
+          sessionView: message.session,
+          overlay: { kind: message.session.session.suspension === undefined ? 'none' : 'recovery' }
+        }
+      };
     case 'recovery.resume':
     case 'recovery.abort':
     case 'recovery.choice': {
@@ -300,6 +308,16 @@ function update(
       const event = message.event;
       if (event.type === 'assistant.delta')
         return { state: { ...state, live: { turnId: event.turnId, content: event.accumulated } } };
+      if (event.type === 'assistant.interrupted')
+        return {
+          state: {
+            ...state,
+            live: { turnId: event.turnId, content: event.content },
+            notice: event.diagnostic === undefined ? 'Response interrupted.' : providerFailureText(event.diagnostic)
+          }
+        };
+      if (event.type === 'model.failed')
+        return { state: { ...state, notice: providerFailureText(event.diagnostic) } };
       if (event.type === 'assistant.ended')
         return { state: { ...state, live: { turnId: event.turnId, content: event.content } } };
       return { state };
@@ -311,8 +329,10 @@ function update(
           result: message.result,
           notice:
             message.result.execution.state === 'suspended'
-              ? `Suspended: ${message.result.execution.reason}`
-              : `Operation ${message.result.disposition}`
+              ? state.notice || suspensionPresentation(message.result.execution.reason).explanation
+              : message.result.execution.terminal.executionStatus === 'failed'
+                ? message.result.execution.terminal.errorMessage
+                : `Operation ${message.result.disposition}`
         },
         effects: [refresh(app, state.document?.value.resource.resourceId)]
       };
@@ -333,6 +353,8 @@ function update(
     case 'submit': {
       const original = textDocumentText(state.composer.document);
       if (state.submitting || !original.trim()) return { state };
+      if (state.sessionView?.session.suspension !== undefined)
+        return { state: { ...state, overlay: { kind: 'recovery' } } };
       if (state.document === undefined)
         return { state: { ...state, notice: 'Select a managed document first.' } };
       const document = state.document;
@@ -762,12 +784,14 @@ async function readView(
     project.snapshot.resources.find((resource) => resource.resourceId === resourceId) ??
     project.snapshot.resources[0];
   const document = selected === undefined ? undefined : await app.readDocument(selected.resourceId);
+  const application = app.state();
   return {
     type: 'loaded',
-    application: app.state(),
+    application,
     project,
     ...(document === undefined ? {} : { document }),
-    history: await app.readHistory()
+    history: await app.readHistory(),
+    ...(application.status === 'configuration_required' ? {} : { session: await app.readSession() })
   };
 }
 function effect(id: string, action: () => Promise<WritingTuiMessage>): TuiEffect<WritingTuiMessage> {
@@ -1050,6 +1074,10 @@ function loadView(
     ...next,
     project: message.project,
     application: message.application,
+    ...(message.session === undefined ? {} : { sessionView: message.session }),
+    overlay: message.session?.session.suspension !== undefined && next.overlay.kind === 'none'
+      ? { kind: 'recovery' }
+      : next.overlay,
     history: next.followTail || switched || next.history.length === 0 ? [message.history] : next.history,
     unread:
       !next.followTail &&

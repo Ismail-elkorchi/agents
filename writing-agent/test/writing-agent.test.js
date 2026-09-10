@@ -1318,6 +1318,7 @@ test('production verification persists exact host-issued proposed, base, and sou
     const proposal = await service.createProposal(canonical);
     const verifierProvider = new ScriptedWritingProvider([
       (request) => {
+        assert.equal(request.maxOutputTokens, undefined);
         const payload = JSON.parse(request.messages.find((message) => message.role === 'user').content);
         assert.deepEqual(
           new Set(payload.citationCatalog.map((citation) => citation.kind)),
@@ -1346,10 +1347,16 @@ test('production verification persists exact host-issued proposed, base, and sou
         });
       }
     ]);
+    const describeModel = verifierProvider.describeModel.bind(verifierProvider);
+    verifierProvider.describeModel = async () => {
+      const profile = await describeModel();
+      return { ...profile, supportedParameters: profile.supportedParameters.filter(parameter => parameter !== 'maxOutputTokens') };
+    };
+    const invocations = new InMemoryInferenceRepository();
     const checker = createDefaultWritingEditorialChecker({
       inference: new InferenceService({
         provider: verifierProvider,
-        repository: new InMemoryInferenceRepository(),
+        repository: invocations,
         artifacts: new InMemoryArtifactRepository()
       }),
       model: 'writing-test'
@@ -1361,6 +1368,8 @@ test('production verification persists exact host-issued proposed, base, and sou
       contextSelection: selection,
       checker
     });
+    const ledger = await invocations.load(`writing-operation:${operation.operationId}`);
+    assert.equal([...ledger.invocations.values()][0].start.reservation.completionTokens, 2048);
     const citations = verification.semanticPreservationFindings[0].supportingCitations;
     assert.deepEqual(
       new Set(citations.map((citation) => citation.kind)),

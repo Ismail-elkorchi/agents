@@ -162,6 +162,7 @@ export type WritingTuiMessage =
   | { readonly type: 'refresh' }
   | {
       readonly type: 'loaded';
+      readonly session?: Awaited<ReturnType<WritingApplication['readSession']>>;
       readonly project: WritingProjectView;
       readonly document?: WritingDocument;
       readonly history: SessionBranchPage;

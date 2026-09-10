@@ -22,7 +22,7 @@ export function historyMessages(state: WritingTuiState): readonly WritingHistory
       }
       if (message !== undefined) entries.set(message.id, message);
     }
-  if (state.followTail && state.live !== undefined)
+  if (state.followTail && state.live !== undefined && state.live.content.length > 0)
     entries.set(`assistant:${state.live.turnId}`, {
       id: `assistant:${state.live.turnId}`,
       source: state.live.content,
@@ -39,6 +39,7 @@ function presentEntry(entry: SessionBranchEntry, state: WritingTuiState): Writin
       return { id: entry.id, source: `You\n${operation?.instruction ?? entry.task}\n`, markdown: false };
     }
     case 'assistant':
+      if (entry.content.length === 0) return undefined;
       return { id: `assistant:${entry.turnId}`, source: entry.content, markdown: true };
     case 'observation':
       return { id: entry.id, source: `${entry.ok ? '✓' : '!'} ${entry.summary}\n`, markdown: false };

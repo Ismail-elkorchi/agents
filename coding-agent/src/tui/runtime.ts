@@ -47,6 +47,17 @@ export async function runCodingAgentTuiApp(
       historyReader: (request) => controller.readHistory(request),
       historySearcher: (request) => controller.searchHistory(request),
       setup: { status: initial.status, requirements: initial.requirements },
+      recoveryHandler: async (suspension, action) => {
+        if (action === 'stop') {
+          if (!await controller.abort('Stopped by the user.', suspension.runId))
+            throw new Error('This run is no longer paused. Refresh the session.');
+          return 'Stopping this run…';
+        }
+        const result = await controller.resumeSuspension(suspension.runId);
+        return result.state === 'suspended'
+          ? 'No recorded result is available yet. You can check again or stop this run.'
+          : 'The run has finished.';
+      },
       approvalHandler: async (suspension, decision) => {
         const approval = suspension.pendingApprovals[0];
         if (approval === undefined) throw new Error('Approval suspension contains no pending request.');

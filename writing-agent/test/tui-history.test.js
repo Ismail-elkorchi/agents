@@ -27,6 +27,7 @@ test(
     const state = { projectId: 'project', sessionId: session.id, status: 'ready' };
     const application = {
       state: () => state,
+      readSession: async () => ({ session: { sessionId: session.id, phase: 'idle' }, runs: [] }),
       start: async () => {},
       readProject: async () => ({ snapshot: { resources: [], sources: [] }, operations: [], proposals: [] }),
       readHistory: (request) => repository.readBranchPage(session, { ...request, limit: 8, maxBytes: 64000 }),
@@ -108,6 +109,7 @@ test(
     let selected = first;
     const application = {
       state: () => ({ projectId: 'project', sessionId: selected.id, status: 'ready' }),
+      readSession: async () => ({ session: { sessionId: selected.id, phase: 'idle' }, runs: [] }),
       start: async () => {},
       readProject: async () => ({ snapshot: { resources: [], sources: [] }, operations: [], proposals: [] }),
       readHistory: (request) => repository.readBranchPage(selected, { ...request, limit: 4 })

@@ -62,6 +62,8 @@ export type CodingAgentTuiMessage =
   | { readonly type: 'session.hydrated'; readonly hydration: CodingSessionView }
   | { readonly type: 'approval.required'; readonly suspension: AgentApprovalSuspension }
   | { readonly type: 'run.suspended'; readonly suspension: AgentRunSuspension }
+  | { readonly type: 'recovery.act'; readonly action: import('./recovery.js').RecoveryAction }
+  | { readonly type: 'recovery.finished'; readonly runId: string; readonly message: string }
   | { readonly type: 'approval.decide'; readonly decision: 'allow' | 'deny' }
   | { readonly type: 'composer.edit'; readonly transition: TextAreaTransition }
   | { readonly type: 'composer.history'; readonly direction: 'previous' | 'next' }

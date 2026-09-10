@@ -137,9 +137,12 @@ export function createDefaultWritingEditorialChecker(input: {
         editorialCriteria.map((criterion) => criterion.criterionId)
       );
       const profile = await provider.describeModel(input.model);
+      const outputReservation = Math.min(2_048, profile.limits.outputTokens ?? 2_048);
       const request: ModelRequest = {
         model: input.model,
-        maxOutputTokens: Math.min(2_048, profile.limits.outputTokens ?? 2_048),
+        ...(profile.supportedParameters.includes('maxOutputTokens')
+          ? { maxOutputTokens: outputReservation }
+          : {}),
         messages: Object.freeze([
           Object.freeze({
             role: 'system' as const,
@@ -166,6 +169,7 @@ export function createDefaultWritingEditorialChecker(input: {
         invocationId,
         ownerId: `writing-operation:${verification.operation.operationId}`,
         purpose: 'writing-semantic-editorial-verification',
+        outputReservation,
         profile,
         request,
         ...(verification.signal === undefined ? {} : { signal: verification.signal })

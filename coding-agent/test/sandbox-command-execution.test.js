@@ -261,8 +261,8 @@ test('sandbox command adapter preserves native runtime failure diagnostics', asy
 
 test(
   'sandbox adapter satisfies start, output, ownership, terminal receipt, and restart recovery',
-  { skip: !sandboxAvailable },
-  async () => {
+  { skip: !sandboxAvailable, timeout: 30_000 },
+  async (t) => {
     const parent = await mkdtemp(path.join(tmpdir(), 'coding-agent-sandbox-conformance-'));
     const workspace = path.join(parent, 'workspace');
     const repositoryPath = path.join(parent, 'executions');
@@ -284,7 +284,11 @@ test(
         createRun,
         validateAuthorization: () => undefined
       });
-      const result = await startCommand(first, { ...request(), command: 'printf durable-sandbox' });
+      let result = await startCommand(first, { ...request(), command: 'printf durable-sandbox' });
+      while (result.status === 'running') {
+        t.signal.throwIfAborted();
+        result = await first.query(result.processId, 1024, 100, 0, owner);
+      }
       assert.equal(result.status, 'exited', result.diagnostic);
       assert.equal(result.stdout.text, 'durable-sandbox');
       await assert.rejects(

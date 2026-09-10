@@ -60,7 +60,12 @@ export type CodingAgentTuiRunState =
   | { readonly kind: 'idle' }
   | { readonly kind: 'working'; readonly label: string; readonly phase?: AgentRunPhase }
   | { readonly kind: 'waiting_for_approval'; readonly suspension: AgentApprovalSuspension }
-  | { readonly kind: 'waiting_for_recovery'; readonly suspension: AgentRunSuspension }
+  | {
+      readonly kind: 'waiting_for_recovery';
+      readonly suspension: AgentRunSuspension;
+      readonly operation?: import('./recovery.js').RecoveryAction;
+      readonly message?: string;
+    }
   | { readonly kind: 'ended'; readonly terminal: AgentTerminalSnapshot }
   | { readonly kind: 'failed'; readonly message: string };
 

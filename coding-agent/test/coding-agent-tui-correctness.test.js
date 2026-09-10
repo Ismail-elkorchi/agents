@@ -101,8 +101,9 @@ test('hydration restores exact approval and unknown-effect recovery boundaries',
   assert.ok(
     recoveryRuntime
       .state()
-      .conversation.items.some((entry) => entry.kind === 'notice' && entry.text.includes('effect-unknown'))
+      .conversation.items.some((entry) => entry.kind === 'notice' && entry.text.includes('recorded result'))
   );
+  assert.ok(recoveryRuntime.frame().focusPath.includes('recovery-stop'));
   await recoveryRuntime.dispose();
 });
 

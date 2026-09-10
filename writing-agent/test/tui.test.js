@@ -178,3 +178,33 @@ test(
     });
   }
 );
+
+test('provider interruptions open recovery with the actual failure and preserve the next instruction', { timeout: 30_000 }, async (t) => {
+  const f = await fixture('A short document.\n');
+  const provider = new ScriptedWritingProvider([async () => { throw new Error('Provider connection closed'); }]);
+  const app = new WritingApplication(f.project, { configuration: { provider, model: 'writing-test', editorialChecker: passingChecker } });
+  const runtime = createTuiRuntime({ host: createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 32 } }), app: createWritingAgentTuiApp(app) });
+  const detach = app.subscribe(event => {
+    if (event.type === 'operation.completed') return runtime.dispatch({ type: 'result', result: event.result });
+    if (event.type === 'operation.progress') return runtime.dispatch({ type: 'progress', event: event.event });
+    if (event.type === 'application.state.changed') return runtime.dispatch({ type: 'application', state: event.state });
+  });
+  t.after(async () => { detach(); await runtime.dispose(); await app.close(); await rm(f.parent, { recursive: true, force: true }); });
+  await runtime.start();
+  await waitForState(runtime, t.signal, () => runtime.state().document !== undefined);
+  const document = await app.readDocument(f.resource.resourceId);
+  const submission = await app.instruct({ kind: 'revise', instruction: 'Review this passage.', selection: document.selection });
+  const result = await submission.completion;
+  assert.equal(result.execution.state, 'suspended');
+  await waitForState(runtime, t.signal, () => runtime.state().overlay.kind === 'recovery');
+  const frame = renderFramePlain(runtime.frame());
+  assert.match(frame, /Response interrupted/);
+  assert.match(frame, /Provider connection closed/);
+  assert.match(frame, /Stop this run/);
+  assert.match(frame, /Check for a recorded result/);
+  await runtime.dispatch({ type: 'composer.edit', transition: { kind: 'edit', operation: { kind: 'insert', text: 'Preserve this instruction' } } });
+  await runtime.dispatch({ type: 'submit' });
+  assert.equal(textDocumentText(runtime.state().composer.document), 'Preserve this instruction');
+  await runtime.dispatch({ type: 'recovery.abort' });
+  await waitForState(runtime, t.signal, () => runtime.state().overlay.kind === 'none');
+});
