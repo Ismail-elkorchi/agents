@@ -1,22 +1,29 @@
 import type { CommandExecutionPlanRequest } from '@agent-core/tools';
 import type { RootedFileAuthority } from '@agent-core/tools-local';
 import {
-  LINUX_PROCESS_BASELINE_REQUIREMENTS,
   createSandbox,
   openSandboxExecutionRepository,
   type SandboxDetachedRunOptions
 } from '@ismail-elkorchi/sandbox';
 import path from 'node:path';
+import {
+  codingToolchain,
+  filesystemResource,
+  isolatedPath,
+  isolatedPolicy,
+  WORKSPACE_ACCESS
+} from './sandbox-policy.js';
 import type { PrivateStateDirectory } from '../state/private-state.js';
-import { SandboxCommandExecution, type SandboxCommandAuthorization } from './sandbox-command-execution.js';
+import {
+  SandboxCommandExecution,
+  type SandboxCommandAuthorization
+} from './sandbox-command-execution.js';
 
 // System tools are mutable: observations may be reconciled only for their exact invocation.
 export const CODING_COMMAND_ENVIRONMENT_POLICY_ID = 'coding-agent.sandbox-system-environment@1';
 
 const TARGET_WORKSPACE = '/workspace';
 const MAX_RETAINED_OUTPUT_BYTES = 8 * 1024 * 1024;
-const MAX_MEMORY_BYTES = 2 * 1024 * 1024 * 1024;
-const MAX_PROCESSES = 128;
 
 export class CodingCommandUnavailableError extends Error {}
 
@@ -25,12 +32,35 @@ export async function createCodingCommandAuthority(input: {
   readonly rootedFileAuthority: RootedFileAuthority;
   readonly state: PrivateStateDirectory;
 }): Promise<SandboxCommandExecution> {
+  const toolchain = await codingToolchain(process.execPath);
+  const policy = isolatedPolicy(
+    [
+      ...toolchain.resources,
+      filesystemResource(
+        'workspace',
+        input.rootedFileAuthority.identity.canonicalPath,
+        TARGET_WORKSPACE,
+        WORKSPACE_ACCESS
+      )
+    ],
+    1_000
+  );
   const sandbox = await createSandbox();
   try {
-    const probe = await sandbox.probe();
-    const backend = probe.backends.find((candidate) => candidate.id === 'linux-namespace-v1');
-    if (!backend?.available)
-      throw new CodingCommandUnavailableError('Sandboxed command execution is unavailable on this host.');
+    const support = await sandbox.probe({ isolation: { kind: 'process' }, policy, requirements: {} });
+    if (
+      !support.implementations.some((implementation) => implementation.eligibility.state === 'eligible')
+    ) {
+      const reasons = support.implementations
+        .filter(
+          (implementation) =>
+            implementation.boundary === 'os-process' && implementation.filesystem.includes('isolated')
+        )
+        .flatMap((implementation) => implementation.eligibility.unmet);
+      throw new CodingCommandUnavailableError(
+        `Sandbox command execution is unavailable: ${reasons.join('; ') || 'no eligible implementation for isolated process execution'}.`
+      );
+    }
   } finally {
     await sandbox.dispose();
   }
@@ -44,7 +74,7 @@ export async function createCodingCommandAuthority(input: {
       rootedFileAuthority: input.rootedFileAuthority,
       state: input.state,
       maxRetainedOutputBytes: MAX_RETAINED_OUTPUT_BYTES,
-      createRun: (request, context) => commandRun(request, context.hostWorkspaceRoot),
+      createRun: (request) => commandRun(request, policy, toolchain.searchPath),
       validateAuthorization
     });
   } catch (error) {
@@ -61,43 +91,23 @@ export async function createCodingCommandAuthority(input: {
 
 function commandRun(
   request: CommandExecutionPlanRequest,
-  hostWorkspaceRoot: string
+  policy: SandboxDetachedRunOptions['policy'],
+  searchPath: string
 ): SandboxDetachedRunOptions {
   return {
     isolation: { kind: 'process' },
-    policy: {
-      filesystem: {
-        runtime: { kind: 'system' },
-        grants: [
-          {
-            hostPath: hostWorkspaceRoot,
-            targetPath: TARGET_WORKSPACE,
-            access: 'read-write',
-            execution: 'allow',
-            rootResolution: 'reject-if-link'
-          }
-        ],
-        privateHome: { enabled: true },
-        temporary: { executable: false }
-      },
-      network: { mode: 'none' },
-      process: { hostProcesses: 'deny', hostIpc: 'deny' }
-    },
-    requirements: LINUX_PROCESS_BASELINE_REQUIREMENTS,
+    policy,
+    requirements: {},
     resources: {
-      wallTimeMs: request.timeoutMs,
-      memoryBytes: MAX_MEMORY_BYTES,
-      maxProcesses: MAX_PROCESSES,
-      maxOutputBytes: MAX_RETAINED_OUTPUT_BYTES,
-      terminationGraceMs: 1_000
+      wallTime: { enforcement: 'hard', scope: 'process', value: request.timeoutMs },
+      output: { enforcement: 'hard', scope: 'process', value: MAX_RETAINED_OUTPUT_BYTES }
     },
     process: {
-      executable: '/bin/sh',
+      executable: isolatedPath('/bin/sh'),
       args: ['-c', request.command],
-      cwd: targetDirectory(request.rootedDirectory),
+      cwd: isolatedPath(targetDirectory(request.rootedDirectory)),
       environment: {
-        base: 'empty',
-        set: { PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', CI: '1' }
+        set: { PATH: searchPath, HOME: '/home/sandbox', TMPDIR: '/tmp', CI: '1' }
       },
       stdin: 'pipe',
       stdout: 'pipe',
@@ -112,37 +122,35 @@ function validateAuthorization(authorization: SandboxCommandAuthorization): void
     throw new Error('Sandbox command plan did not establish the required process boundary.');
   if (summary.network.mode !== 'none')
     throw new Error('Sandbox command plan unexpectedly permits network access.');
-  if (summary.filesystem.runtimeView !== 'system' || summary.filesystem.grants.length !== 1)
-    throw new Error('Sandbox command plan has an unexpected filesystem view.');
-  const grant = summary.filesystem.grants[0];
+  const workspace = summary.filesystem.resources.find((resource) => resource.id === 'workspace');
   if (
-    grant?.targetPath !== TARGET_WORKSPACE ||
-    grant.access !== 'read-write' ||
-    grant.execution !== 'allow'
+    summary.filesystem.kind !== 'isolated' ||
+    workspace?.target.space !== 'isolated' ||
+    workspace.target.path !== TARGET_WORKSPACE ||
+    workspace.access.content !== 'read-write' ||
+    workspace.access.directoryEntries !== 'read-write' ||
+    workspace.access.metadata !== 'read-write' ||
+    workspace.access.execution !== 'allow'
   ) {
-    throw new Error('Sandbox command plan does not contain the required workspace grant.');
+    throw new Error('Sandbox command plan does not contain the required workspace resource.');
   }
   if (
-    summary.execution.executable !== '/bin/sh' ||
+    summary.execution.executable.space !== 'isolated' ||
+    summary.execution.executable.path !== '/bin/sh' ||
     summary.execution.args.length !== 2 ||
     summary.execution.args[0] !== '-c' ||
     summary.execution.args[1] !== request.command ||
-    summary.execution.cwd !== targetDirectory(request.rootedDirectory)
+    summary.execution.cwd.space !== 'isolated' ||
+    summary.execution.cwd.path !== targetDirectory(request.rootedDirectory)
   ) {
     throw new Error('Sandbox command plan does not match the requested command identity.');
   }
   if (
     summary.execution.sensitiveEnvironmentNames.length !== 0 ||
-    summary.execution.environmentNames.length !== 2 ||
-    !summary.execution.environmentNames.includes('PATH') ||
-    !summary.execution.environmentNames.includes('CI')
+    summary.execution.environmentNames.length !== 4 ||
+    !['PATH', 'HOME', 'TMPDIR', 'CI'].every((name) => summary.execution.environmentNames.includes(name))
   ) {
     throw new Error('Sandbox command plan has an unexpected environment.');
-  }
-  for (const required of LINUX_PROCESS_BASELINE_REQUIREMENTS.required) {
-    const fact = enforcement.guarantees.find((candidate) => candidate.id === required);
-    if (fact?.status !== 'satisfied')
-      throw new Error(`Sandbox command plan did not satisfy required guarantee ${required}.`);
   }
 }
 

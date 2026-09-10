@@ -10,8 +10,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: "Ubuntu 24.04 / minimum Node 24.8.0", os: ubuntu-24.04, node: 24.8.0 }
-          - { name: "Ubuntu 24.04 / current Node 24", os: ubuntu-24.04, node: 24 }
+          - { name: "Ubuntu 26.04 / minimum Node 24.8.0", os: ubuntu-26.04, node: 24.8.0 }
+          - { name: "Ubuntu 26.04 / current Node 24", os: ubuntu-26.04, node: 24 }
           - { name: "macOS / current Node 24", os: macos-latest, node: 24 }
           - { name: "Windows / current Node 24", os: windows-latest, node: 24 }
     runs-on: ${{ matrix.os }}
@@ -53,12 +53,9 @@ jobs:
       - name: Build Sandbox package
         working-directory: sandbox
         run: npm ci && npm run build
-      - name: Enable native namespace conformance
+      - name: Install the system namespace launcher
         if: runner.os == 'Linux'
-        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      - name: Install the selected Node in the test system runtime
-        if: runner.os == 'Linux'
-        run: sudo install -m 0755 "$(command -v node)" /usr/bin/node
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
       - name: Verify agents
         working-directory: agents
         env:

@@ -25,12 +25,9 @@ if (!sandboxAvailable) {
     `${JSON.stringify(
       {
         status: 'unavailable',
-        guarantee: 'linux-namespace-v1 coding conformance task',
+        guarantee: 'isolated-process coding conformance task',
         platform: process.platform,
-        reason:
-          process.platform === 'linux'
-            ? 'The Linux namespace Sandbox backend is unavailable on this host.'
-            : 'The Linux namespace Sandbox backend is not implemented on this platform.',
+        reason: 'No eligible Sandbox implementation for isolated command execution on this host.',
         metrics: 'not_measured'
       },
       null,
@@ -52,7 +49,7 @@ process.stdout.write(
   `${JSON.stringify(
     {
       status: 'verified',
-      guarantee: 'linux-namespace-v1 coding conformance task',
+      guarantee: 'isolated-process coding conformance task',
       platform: process.platform,
       metrics
     },

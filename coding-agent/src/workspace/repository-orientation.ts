@@ -9,7 +9,7 @@ import type { RepositoryGuidanceSet } from '../instructions/repository-guidance.
 import type { ContentHazard } from '../security/content-provenance.js';
 import type { VerificationCheckProposal } from '../verification/revision-acceptance-checks.js';
 import type { OpenCodingWorkspace } from '../workspace.js';
-import type { GitRepositoryLocation, GitRepositoryObserver } from './git/repository-observer.js';
+import type { GitObservationReceipt, GitRepositoryLocation, GitRepositoryObserver } from './git/repository-observer.js';
 
 const MAX_MANIFEST_BYTES = 256 * 1024;
 
@@ -49,16 +49,7 @@ export type RepositoryVersionControl =
             readonly totalEntries: number;
             readonly omittedEntries: number;
             readonly coverage: 'complete' | 'partial';
-            readonly receipt: {
-              readonly executionId: string;
-              readonly requestDigest: string;
-              readonly policyDigest: string;
-              readonly executionDigest: string;
-              readonly backend: string;
-              readonly backendVersion: string;
-              readonly executableIdentityDigest?: string;
-              readonly executableContentSha256?: string;
-            };
+            readonly receipt: GitObservationReceipt;
           };
     }
   | { readonly kind: 'unavailable'; readonly reason: string };

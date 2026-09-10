@@ -63,6 +63,8 @@ Session selection is not part of project configuration. A resumed session restor
 
 Select one permission ceiling with `--permissions`: `review` exposes root-bound reads, `edit` adds structured patch mutation, and `develop` also exposes sandboxed commands to the model. Mutable `edit` and `develop` runs execute their admitted verification plan through a separate sandboxed verifier authority; granting verification never grants the model a shell. Project configuration can only narrow the ceiling and exact model-facing tool set. Coding Agent never falls back to ambient command execution; if Sandbox cannot establish the declared boundary, the affected model command or required check is explicitly unavailable.
 
+On Linux, Sandbox requires the system Bubblewrap launcher (`/usr/bin/bwrap`) and host policy that permits its namespaces. Ubuntu 26.04 includes that AppArmor authorization; Ubuntu 24.04's standard profile set does not. Startup reports unmet capabilities. Coding Agent admits system tools and the active Node installation explicitly, including installations managed by Volta or nvm. Commands receive a private home and temporary directory, workspace access, and no network access or ambient host environment. Time and retained-output limits apply; no aggregate memory or process-count limit is implicitly requested.
+
 A trusted project may propose a narrower boundary:
 
 ```json

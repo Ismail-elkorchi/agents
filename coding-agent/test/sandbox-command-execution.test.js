@@ -9,10 +9,10 @@ import { RootedFileAuthority } from '@agent-core/tools-local';
 import { SandboxCommandExecution } from '../dist/execution/sandbox-command-execution.js';
 import { PrivateStateDirectory } from '../dist/state/private-state.js';
 import {
-  createSandbox,
-  LINUX_PROCESS_BASELINE_REQUIREMENTS,
   openSandboxExecutionRepository
 } from '@ismail-elkorchi/sandbox';
+
+import { sandboxAvailable, commandRun, authorizationSummary, enforcement, isolatedPath } from './fixtures/sandbox.js';
 
 const owner = Object.freeze({
   ownerId: 'run-1',
@@ -21,20 +21,6 @@ const owner = Object.freeze({
   toolBatchId: 'batch-1',
   callIndex: 0
 });
-const sandboxAvailable =
-  process.platform === 'linux' &&
-  (await (async () => {
-    const sandbox = await createSandbox();
-    try {
-      return (await sandbox.probe()).backends.some(
-        (backend) => backend.id === 'linux-namespace-v1' && backend.available
-      );
-    } catch {
-      return false;
-    } finally {
-      await sandbox.dispose();
-    }
-  })());
 
 test('sandbox command adapter authorizes the exact command and preserves cursor output', async () => {
   const fixture = await createFixture();
@@ -45,7 +31,7 @@ test('sandbox command adapter authorizes the exact command and preserves cursor 
       rootedFileAuthority: fixture.root,
       state: fixture.state,
       maxRetainedOutputBytes: 1024,
-      createRun: (request) => run(fixture.workspace, request.command),
+      createRun: (request) => commandRun(fixture.workspace, request.command),
       validateAuthorization(value) {
         authorizations.push(value);
       }
@@ -53,7 +39,7 @@ test('sandbox command adapter authorizes the exact command and preserves cursor 
     assert.equal(isCommandExecution(execution), true);
     const result = await startCommand(execution, request());
     assert.equal(authorizations.length, 1);
-    assert.equal(authorizations[0].summary.execution.executable, '/bin/sh');
+    assert.deepEqual(authorizations[0].summary.execution.executable, isolatedPath('/bin/sh'));
     assert.equal(result.status, 'exited');
     assert.equal(result.exitCode, 0);
     assert.equal(result.stdout.text, 'sandboxed');
@@ -82,7 +68,7 @@ test('sandbox activation readiness is independent of the target wall-time limit'
       rootedFileAuthority: fixture.root,
       state: fixture.state,
       maxRetainedOutputBytes: 1024,
-      createRun: (requestValue) => run(fixture.workspace, requestValue.command),
+      createRun: (requestValue) => commandRun(fixture.workspace, requestValue.command),
       validateAuthorization: () => undefined
     });
     const result = await startCommand(execution, { ...request(), timeoutMs: 1 });
@@ -103,7 +89,7 @@ test('sandbox command adapter cancels invalid authorization without activation',
       rootedFileAuthority: fixture.root,
       state: fixture.state,
       maxRetainedOutputBytes: 1024,
-      createRun: (request) => run(fixture.workspace, request.command),
+      createRun: (request) => commandRun(fixture.workspace, request.command),
       validateAuthorization: () => {
         throw new Error('authorization policy rejected');
       }
@@ -126,7 +112,7 @@ test('a released command plan can be recreated with a fresh time-bound authoriza
       rootedFileAuthority: fixture.root,
       state: fixture.state,
       maxRetainedOutputBytes: 1024,
-      createRun: (requestValue) => run(fixture.workspace, requestValue.command),
+      createRun: (requestValue) => commandRun(fixture.workspace, requestValue.command),
       validateAuthorization: () => undefined
     });
     const first = await execution.plan(request());
@@ -154,7 +140,7 @@ test('sandbox command adapter blocks new effects until unknown recovery is ackno
       rootedFileAuthority: fixture.root,
       state: fixture.state,
       maxRetainedOutputBytes: 1024,
-      createRun: (request) => run(fixture.workspace, request.command),
+      createRun: (request) => commandRun(fixture.workspace, request.command),
       validateAuthorization: () => undefined
     });
     const reconciliation = await execution.reconcile();
@@ -178,12 +164,12 @@ test('sandbox command adapter rejects plans that do not bind the adopted workspa
       rootedFileAuthority: fixture.root,
       state: fixture.state,
       maxRetainedOutputBytes: 1024,
-      createRun: (request) => run('/different/root', request.command),
+      createRun: (request) => commandRun('/different/root', request.command),
       validateAuthorization: () => undefined
     });
     await assert.rejects(
       execution.plan(request()),
-      /exactly one grant for the adopted physical workspace root/
+      /exactly one resource for the adopted physical workspace root/
     );
     assert.equal(fixture.repository.prepareCount, 0);
     await execution.close();
@@ -201,7 +187,7 @@ test('sandbox command adapter rejects a receipt that conflicts with its durable 
       rootedFileAuthority: fixture.root,
       state: fixture.state,
       maxRetainedOutputBytes: 1024,
-      createRun: (requestValue) => run(fixture.workspace, requestValue.command),
+      createRun: (requestValue) => commandRun(fixture.workspace, requestValue.command),
       validateAuthorization: () => undefined
     });
     const result = await startCommand(execution, request());
@@ -216,7 +202,7 @@ test('sandbox command adapter rejects a receipt that conflicts with its durable 
         rootedFileAuthority: fixture.root,
         state: fixture.state,
         maxRetainedOutputBytes: 1024,
-        createRun: (requestValue) => run(fixture.workspace, requestValue.command),
+        createRun: (requestValue) => commandRun(fixture.workspace, requestValue.command),
         validateAuthorization: () => undefined
       }),
       /does not match its durable request binding/
@@ -236,7 +222,7 @@ test('sandbox command adapter decodes progress across byte-chunk boundaries', as
       rootedFileAuthority: fixture.root,
       state: fixture.state,
       maxRetainedOutputBytes: 1024,
-      createRun: (requestValue) => run(fixture.workspace, requestValue.command),
+      createRun: (requestValue) => commandRun(fixture.workspace, requestValue.command),
       validateAuthorization: () => undefined
     });
     const result = await startCommand(execution, request(), {
@@ -260,7 +246,7 @@ test('sandbox command adapter preserves native runtime failure diagnostics', asy
       rootedFileAuthority: fixture.root,
       state: fixture.state,
       maxRetainedOutputBytes: 1024,
-      createRun: (requestValue) => run(fixture.workspace, requestValue.command),
+      createRun: (requestValue) => commandRun(fixture.workspace, requestValue.command),
       validateAuthorization: () => undefined
     });
     const result = await startCommand(execution, request());
@@ -284,35 +270,7 @@ test(
     await mkdir(workspace);
     const root = RootedFileAuthority.adopt(workspace);
     const state = await PrivateStateDirectory.create(path.join(parent, 'state'));
-    const createRun = (request) => ({
-      isolation: { kind: 'process' },
-      policy: {
-        filesystem: {
-          runtime: { kind: 'system' },
-          grants: [
-            { hostPath: workspace, targetPath: '/workspace', access: 'read-write', execution: 'allow' }
-          ]
-        },
-        network: { mode: 'none' },
-        process: { hostProcesses: 'deny', hostIpc: 'deny' }
-      },
-      requirements: LINUX_PROCESS_BASELINE_REQUIREMENTS,
-      resources: {
-        wallTimeMs: request.timeoutMs,
-        memoryBytes: 512 * 1024 * 1024,
-        maxProcesses: 16,
-        maxOutputBytes: 1024 * 1024,
-        terminationGraceMs: 1_000
-      },
-      process: {
-        executable: '/bin/sh',
-        args: ['-lc', request.command],
-        cwd: '/workspace',
-        stdin: 'pipe',
-        stdout: 'pipe',
-        stderr: 'pipe'
-      }
-    });
+    const createRun = (request) => commandRun(workspace, request.command, request.timeoutMs);
     try {
       const firstRepository = await openSandboxExecutionRepository({
         directory: repositoryPath,
@@ -376,32 +334,6 @@ function request() {
 async function startCommand(execution, requestValue, options = {}) {
   const reservation = await execution.plan(requestValue);
   return execution.start(reservation, options);
-}
-
-function run(workspace, command) {
-  return {
-    isolation: { kind: 'process' },
-    policy: {
-      filesystem: {
-        runtime: { kind: 'system' },
-        grants: [
-          { hostPath: workspace, targetPath: '/workspace', access: 'read-write', execution: 'allow' }
-        ]
-      },
-      network: { mode: 'none' },
-      process: { hostProcesses: 'deny', hostIpc: 'deny' }
-    },
-    requirements: { boundary: 'os-process', required: [] },
-    resources: { maxOutputBytes: 1024 },
-    process: {
-      executable: '/bin/sh',
-      args: ['-lc', command],
-      cwd: '/workspace',
-      stdin: 'pipe',
-      stdout: 'pipe',
-      stderr: 'pipe'
-    }
-  };
 }
 
 async function createFixture(options = {}) {
@@ -534,39 +466,8 @@ function sandboxAuthorizationObservation(executionId) {
     policyDigest: '2'.repeat(64),
     executionDigest: '3'.repeat(64),
     expiresAtMs: Date.now() + 10_000,
-    summary: {
-      isolation: { kind: 'process' },
-      backend: { id: 'test', version: '1', stability: 'stable' },
-      filesystem: {
-        runtimeView: 'system',
-        runtimeManifestDigest: '4'.repeat(64),
-        grants: [],
-        masks: [],
-        privateHomePath: null,
-        temporaryPath: '/tmp'
-      },
-      network: { mode: 'none', topology: 'private-namespace' },
-      process: { hostProcesses: 'deny', hostIpc: 'deny' },
-      resources: {
-        wallTimeMs: 1000,
-        memoryBytes: 1,
-        maxProcesses: 1,
-        maxOutputBytes: 1024,
-        terminationGraceMs: 1
-      },
-      execution: {
-        executable: '/bin/sh',
-        args: ['-lc', 'printf sandboxed'],
-        cwd: '/workspace',
-        cwdIdentityDigest: '5'.repeat(64),
-        environmentNames: [],
-        sensitiveEnvironmentNames: [],
-        stdin: 'pipe',
-        stdout: 'pipe',
-        stderr: 'pipe'
-      }
-    },
-    enforcement: { backend: 'test', guarantees: [], caveats: [] },
+    summary: authorizationSummary(),
+    enforcement,
     output: output()
   };
 }
@@ -582,7 +483,7 @@ function settled(executionId) {
       policyDigest: '2'.repeat(64),
       executionDigest: '3'.repeat(64),
       termination: { reason: 'exit', code: 0 },
-      enforcement: { backend: 'test', guarantees: [], caveats: [] },
+      enforcement,
       violations: [],
       usage: { wallTimeMs: 1, stdoutBytes: 9, stderrBytes: 0 },
       cleanup: { completed: true, failures: [] }

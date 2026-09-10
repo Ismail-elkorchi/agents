@@ -4,18 +4,14 @@ import { access, chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { createSandbox, openSandboxExecutionRepository } from '@ismail-elkorchi/sandbox';
+import { openSandboxExecutionRepository } from '@ismail-elkorchi/sandbox';
 import { loadInitialRepositoryGuidance } from '../dist/instructions/repository-guidance.js';
 import { SandboxGitRepositoryObserver } from '../dist/workspace/git/sandbox-git-observer.js';
 import { inspectRepositoryOrientation } from '../dist/workspace/repository-orientation.js';
 import { openCodingWorkspace } from '../dist/workspace.js';
 
-const sandboxAvailable = process.platform === 'linux' && await (async () => {
-  const sandbox = await createSandbox();
-  try { return (await sandbox.probe()).backends.some((backend) => backend.id === 'linux-namespace-v1' && backend.available); }
-  catch { return false; }
-  finally { await sandbox.dispose(); }
-})();
+import { sandboxAvailable, authorizationSummary, enforcement, filesystemResource } from './fixtures/sandbox.js';
+import { READ_ONLY_ACCESS } from '../dist/execution/sandbox-policy.js';
 
 test('sandboxed Git observation uses an inert bounded request and parses porcelain output', async () => {
   const repository = new FakeExecutionRepository(statusOutput([
@@ -35,11 +31,10 @@ test('sandboxed Git observation uses an inert bounded request and parses porcela
   ]);
   const run = repository.request.run;
   assert.deepEqual(run.policy.network, { mode: 'none' });
-  assert.deepEqual(run.policy.process, { hostProcesses: 'deny', hostIpc: 'deny' });
-  assert.deepEqual(run.policy.filesystem.grants, [{
-    hostPath: '/physical/workspace', targetPath: '/workspace', access: 'read', execution: 'deny', rootResolution: 'reject-if-link'
-  }]);
-  assert.equal(run.process.environment.base, 'empty');
+  assert.deepEqual(run.policy.process, { visibility: 'session', control: 'session', termination: { scope: 'descendant-tree', graceMs: 500 } });
+  assert.deepEqual(run.policy.ipc, { visibility: 'session' });
+  assert.deepEqual(run.policy.filesystem.resources.find((resource) => resource.id === 'workspace'),
+    filesystemResource('workspace', '/physical/workspace', '/workspace', READ_ONLY_ACCESS));
   assert.equal(run.process.environment.set.GIT_CONFIG_GLOBAL, '/dev/null');
   assert.equal(run.process.environment.set.GIT_TERMINAL_PROMPT, '0');
   assert.ok(run.process.args.includes('core.fsmonitor=false'));
@@ -69,7 +64,7 @@ test('repository orientation resolves linked worktree metadata and makes hostile
         coverage: 'complete',
         receipt: {
           executionId: 'fixture', requestDigest: `sha256:${'1'.repeat(64)}`, policyDigest: '2'.repeat(64),
-          executionDigest: '3'.repeat(64), backend: 'fixture', backendVersion: '1'
+          executionDigest: '3'.repeat(64), implementation: 'fixture', implementationVersion: '1', executableIdentityDigest: '5'.repeat(64), executableContentSha256: '6'.repeat(64)
         }
       };
     },
@@ -181,14 +176,8 @@ function statusOutput(records) { return Buffer.from(`${records.join('\0')}\0`); 
 function prepared(executionId) {
   return {
     kind: 'prepared', executionId, requestDigest: `sha256:${'1'.repeat(64)}`, policyDigest: '2'.repeat(64), executionDigest: '3'.repeat(64), expiresAtMs: Date.now() + 30_000,
-    summary: {
-      isolation: { kind: 'process' }, backend: { id: 'fixture', version: '1', stability: 'stable' },
-      filesystem: { runtimeView: 'system', runtimeManifestDigest: '4'.repeat(64), grants: [], masks: [], privateHomePath: '/home/sandbox', temporaryPath: '/tmp' },
-      network: { mode: 'none', topology: 'private-namespace' }, process: { hostProcesses: 'deny', hostIpc: 'deny' },
-      resources: { wallTimeMs: 15_000, memoryBytes: 1, maxProcesses: 1, maxOutputBytes: 2 * 1024 * 1024, terminationGraceMs: 500 },
-      execution: { executable: '/usr/bin/git', executableIdentityDigest: '5'.repeat(64), executableContentSha256: '6'.repeat(64), args: [], cwd: '/workspace', cwdIdentityDigest: '7'.repeat(64), environmentNames: [], sensitiveEnvironmentNames: [], stdin: 'closed', stdout: 'pipe', stderr: 'pipe' }
-    },
-    enforcement: { backend: 'fixture', guarantees: [], caveats: [] },
+    summary: authorizationSummary('/usr/bin/git', []),
+    enforcement,
     output: emptyOutput()
   };
 }
@@ -203,7 +192,7 @@ function settled(executionId, stdout) {
     },
     result: {
       processId: 'fixture-process', policyDigest: '2'.repeat(64), executionDigest: '3'.repeat(64),
-      termination: { reason: 'exit', code: 0 }, enforcement: { backend: 'fixture', guarantees: [], caveats: [] },
+      termination: { reason: 'exit', code: 0 }, enforcement,
       violations: [], usage: { wallTimeMs: 1, stdoutBytes: stdout.byteLength, stderrBytes: 0 }, cleanup: { completed: true, failures: [] }
     }
   };

@@ -1,13 +1,17 @@
 import type {
-  EnforcementRequirements,
-  FilesystemGrant,
-  GuaranteeId,
   SandboxDetachedRunOptions,
   SandboxExecutionObservation,
   SandboxExecutionRepository
 } from '@ismail-elkorchi/sandbox';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import {
+  filesystemResource,
+  isolatedPath,
+  isolatedPolicy,
+  READ_ONLY_ACCESS,
+  systemRuntimeResources
+} from '../../execution/sandbox-policy.js';
 import type {
   GitObservationReceipt,
   GitRepositoryLocation,
@@ -19,32 +23,6 @@ import type {
 const MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
 const MAX_STATUS_ENTRIES = 2_000;
 const STATUS_TIMEOUT_MS = 15_000;
-
-const requiredGuarantees: readonly GuaranteeId[] = Object.freeze([
-  'runtime.setup-before-exec',
-  'runtime.no-ambient-environment',
-  'runtime.no-ambient-handles',
-  'runtime.executable-identity-bound',
-  'filesystem.grant-roots-identity-bound',
-  'filesystem.read-confined',
-  'filesystem.content-write-confined',
-  'filesystem.namespace-mutation-confined',
-  'filesystem.metadata-mutation-confined',
-  'filesystem.host-user-data-hidden',
-  'network.no-external-connect',
-  'network.no-external-listen',
-  'network.no-host-loopback',
-  'process.host-enumeration-denied',
-  'process.host-control-denied',
-  'process.complete-tree-termination',
-  'resource.wall-time-hard',
-  'resource.output-hard'
-]);
-
-const requirements: EnforcementRequirements = Object.freeze({
-  boundary: 'os-process',
-  required: requiredGuarantees
-});
 
 export interface SandboxGitRepositoryObserverOptions {
   readonly repository: SandboxExecutionRepository;
@@ -64,11 +42,14 @@ export class SandboxGitRepositoryObserver implements GitRepositoryObserver {
     this.#gitExecutable = path.normalize(options.gitExecutable);
   }
 
-  async observe(location: GitRepositoryLocation, signal?: AbortSignal): Promise<GitRepositoryObservation> {
+  async observe(
+    location: GitRepositoryLocation,
+    signal?: AbortSignal
+  ): Promise<GitRepositoryObservation> {
     if (this.#closed) throw new Error('Sandboxed Git observer is closed.');
     if (signal?.aborted) throw abortError(signal);
     const executionId = `git-status-${randomUUID()}`;
-    const run = gitStatusRun(this.#gitExecutable, location);
+    const run = await gitStatusRun(this.#gitExecutable, location);
     let authorizationObservation: SandboxExecutionObservation;
     try {
       // `prepare` and the matching state tags are names fixed by the upstream sandbox protocol.
@@ -92,14 +73,10 @@ export class SandboxGitRepositoryObserver implements GitRepositoryObserver {
       requestDigest: authorizationObservation.requestDigest,
       policyDigest: authorizationObservation.policyDigest,
       executionDigest: authorizationObservation.executionDigest,
-      backend: authorizationObservation.summary.backend.id,
-      backendVersion: authorizationObservation.summary.backend.version,
-      ...(authorizationObservation.summary.execution.executableIdentityDigest
-        ? { executableIdentityDigest: authorizationObservation.summary.execution.executableIdentityDigest }
-        : {}),
-      ...(authorizationObservation.summary.execution.executableContentSha256
-        ? { executableContentSha256: authorizationObservation.summary.execution.executableContentSha256 }
-        : {})
+      implementation: authorizationObservation.summary.implementation.id,
+      implementationVersion: authorizationObservation.summary.implementation.version,
+      executableIdentityDigest: authorizationObservation.summary.execution.executableIdentityDigest,
+      executableContentSha256: authorizationObservation.summary.execution.executableContentSha256
     });
     const terminateOnAbort = () => {
       void this.#repository.terminate(executionId).catch(() => undefined);
@@ -136,40 +113,26 @@ export class SandboxGitRepositoryObserver implements GitRepositoryObserver {
   }
 }
 
-function gitStatusRun(gitExecutable: string, location: GitRepositoryLocation): SandboxDetachedRunOptions {
+async function gitStatusRun(
+  gitExecutable: string,
+  location: GitRepositoryLocation
+): Promise<SandboxDetachedRunOptions> {
   const workspace = path.resolve(location.workspaceRoot);
   const gitDirectory = path.resolve(location.gitDirectory);
   const commonDirectory = path.resolve(location.commonDirectory ?? gitDirectory);
-  const grants: FilesystemGrant[] = [
-    {
-      hostPath: workspace,
-      targetPath: '/workspace',
-      access: 'read',
-      execution: 'deny',
-      rootResolution: 'reject-if-link'
-    }
+  const resources = [
+    ...(await systemRuntimeResources()),
+    filesystemResource('workspace', workspace, '/workspace', READ_ONLY_ACCESS)
   ];
   let sandboxGitDirectory = mappedChild(workspace, gitDirectory, '/workspace');
   let sandboxCommonDirectory = mappedChild(workspace, commonDirectory, '/workspace');
   if (!sandboxCommonDirectory) {
-    grants.push({
-      hostPath: commonDirectory,
-      targetPath: '/git-common',
-      access: 'read',
-      execution: 'deny',
-      rootResolution: 'reject-if-link'
-    });
+    resources.push(filesystemResource('git-common', commonDirectory, '/git-common', READ_ONLY_ACCESS));
     sandboxCommonDirectory = '/git-common';
     sandboxGitDirectory = mappedChild(commonDirectory, gitDirectory, '/git-common');
   }
   if (!sandboxGitDirectory) {
-    grants.push({
-      hostPath: gitDirectory,
-      targetPath: '/git-directory',
-      access: 'read',
-      execution: 'deny',
-      rootResolution: 'reject-if-link'
-    });
+    resources.push(filesystemResource('git-directory', gitDirectory, '/git-directory', READ_ONLY_ACCESS));
     sandboxGitDirectory = '/git-directory';
   }
   const environment: Record<string, string> = {
@@ -190,26 +153,14 @@ function gitStatusRun(gitExecutable: string, location: GitRepositoryLocation): S
   };
   return {
     isolation: { kind: 'process' },
-    policy: {
-      filesystem: {
-        runtime: { kind: 'system' },
-        grants,
-        privateHome: { enabled: true },
-        temporary: { executable: false }
-      },
-      network: { mode: 'none' },
-      process: { hostProcesses: 'deny', hostIpc: 'deny' }
-    },
-    requirements,
+    policy: isolatedPolicy(resources, 500),
+    requirements: {},
     resources: {
-      wallTimeMs: STATUS_TIMEOUT_MS,
-      memoryBytes: 512 * 1024 * 1024,
-      maxProcesses: 16,
-      maxOutputBytes: MAX_OUTPUT_BYTES,
-      terminationGraceMs: 500
+      wallTime: { enforcement: 'hard', scope: 'process', value: STATUS_TIMEOUT_MS },
+      output: { enforcement: 'hard', scope: 'process', value: MAX_OUTPUT_BYTES }
     },
     process: {
-      executable: gitExecutable,
+      executable: isolatedPath(gitExecutable),
       args: [
         '--no-pager',
         '--no-optional-locks',
@@ -232,8 +183,8 @@ function gitStatusRun(gitExecutable: string, location: GitRepositoryLocation): S
         '--untracked-files=all',
         '--ignore-submodules=none'
       ],
-      cwd: '/workspace',
-      environment: { base: 'empty', set: environment },
+      cwd: isolatedPath('/workspace'),
+      environment: { set: environment },
       stdin: 'closed',
       stdout: 'pipe',
       stderr: 'pipe'

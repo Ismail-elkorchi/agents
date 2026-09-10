@@ -20,7 +20,7 @@
   },
   "sandbox": {
     "path": "../sandbox",
-    "commit": "d18b5eb44b500bebf6531761b9f0bb26beddfef9"
+    "commit": "e687a08168e33ffe893b66e3ffc0fbb771eb0d42"
   },
   "scripts": {
     "check:conformance": "node --test scripts/coding-agent-conformance-metrics.test.mjs && node scripts/check-coding-agent-conformance.mjs",

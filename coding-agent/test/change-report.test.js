@@ -251,8 +251,10 @@ function gitReceipt() {
     requestDigest: hash('1'),
     policyDigest: hash('2'),
     executionDigest: hash('3'),
-    backend: 'test',
-    backendVersion: '1'
+    implementation: 'test',
+    implementationVersion: '1',
+    executableIdentityDigest: hash('5'),
+    executableContentSha256: hash('6')
   };
 }
 

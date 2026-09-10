@@ -138,7 +138,7 @@ export class SandboxCommandExecution implements CommandExecution {
       hostWorkspaceRoot: this.options.rootedFileAuthority.identity.canonicalPath,
       workspacePath: request.rootedDirectory
     });
-    validateWorkspaceGrant(run, this.options.rootedFileAuthority.identity.canonicalPath);
+    validateWorkspaceResource(run, this.options.rootedFileAuthority.identity.canonicalPath);
     // `prepare` is fixed by the upstream Sandbox protocol. Coding Agent treats its result as authorization.
     const observation = await this.options.repository.prepare(
       { executionId: processId, run },
@@ -776,11 +776,14 @@ function statusFromTermination(
   return 'stopped';
 }
 
-function validateWorkspaceGrant(run: SandboxDetachedRunOptions, canonicalRoot: string): void {
-  const grants = run.policy.filesystem.grants.filter((grant) => grant.hostPath === canonicalRoot);
-  if (grants.length !== 1)
+function validateWorkspaceResource(run: SandboxDetachedRunOptions, canonicalRoot: string): void {
+  const filesystem = run.policy.filesystem;
+  if (
+    filesystem.kind !== 'isolated' ||
+    filesystem.resources.filter((resource) => resource.source.path === canonicalRoot).length !== 1
+  )
     throw new Error(
-      'Sandbox command plan must contain exactly one grant for the adopted physical workspace root.'
+      'Sandbox command plan must contain exactly one resource for the adopted physical workspace root.'
     );
   if (run.process.stdout !== 'pipe' || run.process.stderr !== 'pipe')
     throw new Error('Sandbox command plan must expose stdout and stderr as durable output streams.');

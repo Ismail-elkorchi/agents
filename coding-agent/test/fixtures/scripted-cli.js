@@ -5,25 +5,11 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { createSandbox } from '@ismail-elkorchi/sandbox';
+export { sandboxAvailable } from './sandbox.js';
 
 const cli = path.resolve('coding-agent/dist/cli.js');
 const runFile = promisify(execFile);
 
-export const sandboxAvailable =
-  process.platform === 'linux' &&
-  (await (async () => {
-    const sandbox = await createSandbox();
-    try {
-      return (await sandbox.probe()).backends.some(
-        (backend) => backend.id === 'linux-namespace-v1' && backend.available
-      );
-    } catch {
-      return false;
-    } finally {
-      await sandbox.dispose();
-    }
-  })());
 
 export async function createWorkspace({
   endpoint = 'http://127.0.0.1:1',

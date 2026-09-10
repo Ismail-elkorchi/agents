@@ -14,10 +14,10 @@ export interface GitObservationReceipt {
   readonly requestDigest: string;
   readonly policyDigest: string;
   readonly executionDigest: string;
-  readonly backend: string;
-  readonly backendVersion: string;
-  readonly executableIdentityDigest?: string;
-  readonly executableContentSha256?: string;
+  readonly implementation: string;
+  readonly implementationVersion: string;
+  readonly executableIdentityDigest: string;
+  readonly executableContentSha256: string;
 }
 
 export type GitRepositoryObservation =

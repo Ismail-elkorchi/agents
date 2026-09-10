@@ -85,7 +85,10 @@ export async function loadPreChangeSnapshot(
   return loadPreChange(state, directory, workId, manifestText);
 }
 
-export async function deletePreChangeSnapshot(state: PrivateStateDirectory, workId: string): Promise<void> {
+export async function deletePreChangeSnapshot(
+  state: PrivateStateDirectory,
+  workId: string
+): Promise<void> {
   const directory = preChangeSnapshotDirectory(workId);
   const stored = await state.read(`${directory}/manifest.json`);
   if (stored === undefined) return;
@@ -299,7 +302,9 @@ function decodeVersionControl(value: unknown): RepositoryVersionControl {
     status.entries.map((entry) => {
       if (
         !isRecord(entry) ||
-        Object.keys(entry).some((key) => !['path', 'state', 'sourcePathSha256', 'hazards'].includes(key)) ||
+        Object.keys(entry).some(
+          (key) => !['path', 'state', 'sourcePathSha256', 'hazards'].includes(key)
+        ) ||
         typeof entry.path !== 'string' ||
         typeof entry.state !== 'string' ||
         !sha256(entry.sourcePathSha256) ||
@@ -333,43 +338,32 @@ function decodeVersionControl(value: unknown): RepositoryVersionControl {
 }
 
 function decodeReceipt(value: Record<string, unknown>): GitObservationReceipt {
-  const required = [
+  const keys = [
     'executionId',
     'requestDigest',
     'policyDigest',
     'executionDigest',
-    'backend',
-    'backendVersion'
+    'implementation',
+    'implementationVersion',
+    'executableIdentityDigest',
+    'executableContentSha256'
   ];
   if (
-    Object.keys(value).some(
-      (key) => ![...required, 'executableIdentityDigest', 'executableContentSha256'].includes(key)
-    ) ||
-    required.some((key) => typeof value[key] !== 'string') ||
-    (value.executableIdentityDigest !== undefined && !sha256(value.executableIdentityDigest)) ||
-    (value.executableContentSha256 !== undefined && !sha256(value.executableContentSha256))
+    Object.keys(value).some((key) => !keys.includes(key)) ||
+    !sha256(value.executableIdentityDigest) ||
+    !sha256(value.executableContentSha256)
   ) {
     throw new Error('Pre-change snapshot Git receipt is invalid.');
   }
-  const executionId = requiredString(value.executionId);
-  const requestDigest = requiredString(value.requestDigest);
-  const policyDigest = requiredString(value.policyDigest);
-  const executionDigest = requiredString(value.executionDigest);
-  const backend = requiredString(value.backend);
-  const backendVersion = requiredString(value.backendVersion);
   return Object.freeze({
-    executionId,
-    requestDigest,
-    policyDigest,
-    executionDigest,
-    backend,
-    backendVersion,
-    ...(typeof value.executableIdentityDigest === 'string'
-      ? { executableIdentityDigest: value.executableIdentityDigest }
-      : {}),
-    ...(typeof value.executableContentSha256 === 'string'
-      ? { executableContentSha256: value.executableContentSha256 }
-      : {})
+    executionId: requiredString(value.executionId),
+    requestDigest: requiredString(value.requestDigest),
+    policyDigest: requiredString(value.policyDigest),
+    executionDigest: requiredString(value.executionDigest),
+    implementation: requiredString(value.implementation),
+    implementationVersion: requiredString(value.implementationVersion),
+    executableIdentityDigest: value.executableIdentityDigest,
+    executableContentSha256: value.executableContentSha256
   });
 }
 
