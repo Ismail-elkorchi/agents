@@ -175,9 +175,7 @@ export class CodingApplication {
     const failures: unknown[] = [];
     if (runtime !== undefined) {
       try {
-        if (runtime.agent.state().phase === 'running')
-          await runtime.agent.abort('Coding application closed.');
-        await runtime.agent.waitForIdle();
+        await runtime.agent.close();
       } catch (error) {
         failures.push(error);
       }

@@ -16,7 +16,7 @@ export async function runWritingAgentTuiApp(
       message.type === 'progress'
         ? progressReplacementKey(message.event)
         : message.type === 'refresh'
-          ? 'project-refresh'
+          ? 'session-refresh'
           : undefined,
     failureMessage: (message) => ({ type: 'notice', message })
   });
@@ -25,15 +25,18 @@ export async function runWritingAgentTuiApp(
       switch (event.type) {
         case 'application.state.changed':
           return events.enqueue({ type: 'application', state: application.state() });
-        case 'operation.progress':
+        case 'run.progress':
           return events.enqueue({ type: 'progress', event: event.event });
-        case 'operation.completed':
+        case 'run.completed':
           return events.enqueue({ type: 'result', result: event.result });
-        case 'operation.failed':
+        case 'run.failed':
           return events.enqueue({ type: 'notice', message: event.error.message });
         case 'delivery.gap':
-        case 'project.changed':
-        case 'operation.accepted':
+        case 'configuration.changed':
+        case 'input.queued':
+        case 'input.revised':
+        case 'input.cancelled':
+        case 'context.transitioned':
           return events.enqueue({ type: 'refresh' });
       }
     },

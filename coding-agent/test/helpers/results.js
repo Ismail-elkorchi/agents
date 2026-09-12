@@ -22,8 +22,6 @@ export function testTerminal(overrides = {}) {
       knownCosts: {},
       pricingStatus: 'unknown',
       unknownPricedTokens: 0,
-      consecutiveProviderFailures: 0,
-      consecutiveToolFailures: 0
     },
     ...overrides
   });

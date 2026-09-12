@@ -43,9 +43,6 @@
       "path": "../../agent-core/packages/tools-local"
     },
     {
-      "path": "../verification"
-    },
-    {
       "path": "../tui"
     },
     {

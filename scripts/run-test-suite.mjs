@@ -9,11 +9,7 @@ const linuxRootCapabilityTests = new Set(
     'coding-agent/test/project.test.js',
     'coding-agent/test/resilience.test.js',
     'coding-agent/test/sandbox-command-execution.test.js',
-    'coding-agent/test/tool-composition.test.js',
-    'writing-agent/test/application.test.js',
-    'writing-agent/test/rpc.test.js',
-    'writing-agent/test/tui.test.js',
-    'writing-agent/test/writing-agent.test.js'
+    'coding-agent/test/tool-composition.test.js'
   ].map((value) => path.join(root, value))
 );
 const { workspaces } = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));

@@ -1,20 +1,14 @@
 import { textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
 // Run inside a real terminal emulator. All product data is isolated in temporary fixtures.
 import { writeFileSync } from 'node:fs';
-import { rm, readFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import { renderFramePlain } from '@ismail-elkorchi/terminal-ui/renderer';
 import { openCodingApplication } from '@ismail-elkorchi/coding-agent';
 import { runCodingAgentTuiApp } from '@ismail-elkorchi/coding-agent/tui';
-import { WritingApplication } from '@ismail-elkorchi/writing-agent';
 import { runWritingAgentTuiApp } from '@ismail-elkorchi/writing-agent/tui';
-import {
-  fixture,
-  passingChecker,
-  ScriptedWritingProvider,
-  revisionResponse
-} from '../writing-agent/test/helpers/runtime.js';
+import { fixture, patchResponse } from '../writing-agent/test/helpers/runtime.js';
 import {
   createWorkspace,
   scriptedOllama,
@@ -60,27 +54,22 @@ try {
       await f.close();
     }
   } else {
-    const f = await fixture('# Document\n\nOld line.\n\nClosing.\n');
+    const f = await fixture('# Document\n\nOld line.\n\nClosing.\n', { responses: [
+      patchResponse('*** Begin Patch\n*** Update File: document.txt\n@@\n-Old line.\n+New line.\n*** End Patch'), 'Updated.'
+    ] });
     try {
-      const provider = new ScriptedWritingProvider([
-        revisionResponse(f.resource.resourceId, 'New line.'),
-        'Proposal ready.'
-      ]);
-      const application = new WritingApplication(f.project, {
-        configuration: { provider, model: 'writing-test', editorialChecker: passingChecker }
-      });
-      const result = await runWritingAgentTuiApp(application, { host });
+      const result = await runWritingAgentTuiApp(f.application, { host });
       writeFileSync(
         `${evidence}.result.json`,
         JSON.stringify({
           reason: result.reason,
-          document: await readFile(path.join(f.root, f.resource.relativePath), 'utf8'),
+          document: await readFile(path.join(f.root, 'document.txt'), 'utf8'),
           draft: textDocumentText(result.state.composer.document),
           diagnostics: result.diagnostics
         })
       );
     } finally {
-      await rm(f.parent, { recursive: true, force: true });
+      await f.close();
     }
   }
 } catch (error) {

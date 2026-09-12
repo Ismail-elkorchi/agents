@@ -11,10 +11,12 @@ The adjacent JSON files are recorded results from those programs. Memory-termina
 
 Run the source and package gate with `npm run verify:release`.
 
-`coding-agent-reliability.mjs` is an opt-in live evaluation of reading, a 1,000-word expansion, critique, and a follow-up revision in one session, followed by a separate command-execution scenario. It uses fresh temporary workspaces and records actual file counts, revision digests, model settings, tool failures, and durable record locations. It checks objective outcomes; it does not grade prose quality or guarantee future model behavior. Results and session data stay outside committed source.
+`coding-agent-evaluation.mjs` is an opt-in live evaluation with independent fixtures for code repair, changing JSON requirements across prompts, read-only inspection of mixed files, and a command request. Checks execute the repaired module or inspect final files; tool choices are recorded, not prescribed by a task-specific verification tool. The review scenario checks that files remain unchanged; it does not grade the explanation. The command scenario checks its saved result; process control is covered by the structural tests below. These fixtures are evaluation inputs, never product instructions or tools.
 
 ```sh
-node validation/coding-agent-reliability.mjs --live --model gpt-5.6-luna --reasoning low --output coding-agent/evals/results/reliability.json
+node validation/coding-agent-evaluation.mjs --live --provider PROVIDER --model MODEL --reasoning EFFORT --output /absolute/new-report.json
 ```
 
-The default is two trials with identical settings; `--commands-only` runs the shell scenario separately. The output file must be new. Provider credentials use the application's normal credential store. `coding-agent/test/process-control.test.js` exercises input, stopping, and workspace access after process settlement; `coding-agent/test/interrupted-response.test.js` injects a broken response after an applied patch and verifies reopen, reconciliation, stopping, and a subsequent prompt.
+Provider and model are required. Reasoning is optional and otherwise uses provider defaults. `--trials N` repeats each scenario; `--scenario ID` selects one. Each trial uses a new workspace and session. The report records model settings, execution outcomes, responses, checks, and diagnostic tool traces. The output file must be new; partial results survive a failed trial. Credentials use the application's normal store. Keep reports and session data outside committed source.
+
+The live evaluator does not exercise the TUI or establish writing quality. `coding-agent/test/process-control.test.js` covers process input, stopping, and workspace access after settlement. `coding-agent/test/interrupted-response.test.js` covers a broken response after an applied patch, reconciliation, and a subsequent prompt. Both agents also have memory-terminal interaction and retained-history tests.

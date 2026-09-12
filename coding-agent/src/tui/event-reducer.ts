@@ -5,7 +5,6 @@ import type {
   AgentSessionState
 } from '@agent-core/runtime';
 import { providerFailureText } from '@agents/tui';
-import { type CheckResult } from '@agents/verification';
 import type { CodingAgentTuiActivityEntry } from './conversation-model.js';
 import type { CodingRunVerification } from '../verification/configured-check-tool.js';
 import {
@@ -223,39 +222,6 @@ function reduceToolEnded(
     withWorking(state, event.observation.ok ? 'Working' : 'Tool failed'),
     completedToolActivity(activity(state, id), id, event.toolName, event.observation)
   );
-}
-
-export function applyCheckResult(
-  state: CodingAgentTuiState,
-  result: CheckResult,
-  runId: string
-): CodingAgentTuiState {
-  const status =
-    result.verdict === 'passed'
-      ? 'success'
-      : result.verdict === 'failed' && result.requirement === 'required'
-        ? 'failed'
-        : 'warning';
-  const details = [
-    result.diagnostic?.message,
-    result.output === undefined ? undefined : JSON.stringify(result.output, null, 2),
-    result.artifacts === undefined || result.artifacts.length === 0
-      ? undefined
-      : `Artifacts\n${result.artifacts.map((artifact) => artifact.artifactId).join('\n')}`
-  ]
-    .filter((part): part is string => part !== undefined && part.length > 0)
-    .join('\n\n');
-  return upsertActivity(state, {
-    id: `check:${runId}:${result.id}`,
-    kind: 'activity',
-    activity: 'check',
-    label: `Check ${result.id}`,
-    status,
-    summary: compact(result.summary),
-    ...(details.length === 0
-      ? {}
-      : { details: details.length <= 6_000 ? details : `${details.slice(0, 5_999)}…` })
-  });
 }
 
 export function applySessionState(

@@ -76,32 +76,22 @@ try {
       "const writingRpc = await import('@ismail-elkorchi/writing-agent/rpc');",
       "if (!coding.openCodingApplication || !tui.createCodingAgentTuiApp || !codingRpc.runCodingRpc) throw new Error('Coding application exports are incomplete');",
       "if (!writing.openWritingApplication || !writingTui.createWritingAgentTuiApp || !writingRpc.runWritingRpc) throw new Error('Writing application exports are incomplete');",
-      "for (const name of ['application', 'rpc', 'tui', 'verification']) await import('@agents/' + name);"
+      "for (const name of ['application', 'rpc', 'tui']) await import('@agents/' + name);"
     ].join('\n')
   );
   await exec(process.execPath, ['index.mjs'], { cwd: consumer });
   await writeFile(
     path.join(consumer, 'ownership.ts'),
     [
-      "import { textRangeSchema, type StructuralChange, type WritingOperation } from '@ismail-elkorchi/writing-agent';",
-      "import { type RunChangeReport } from '@ismail-elkorchi/coding-agent';",
-      "import type { CheckContext } from '@agents/verification';",
-      "const context: CheckContext = { executionId: 'verification', signal: new AbortController().signal };",
+      "import type { WritingDocument, WritingMode } from '@ismail-elkorchi/writing-agent';",
+      "import type { RunChangeReport } from '@ismail-elkorchi/coding-agent';",
       'declare const changes: RunChangeReport;',
       'changes.mutationReceipts;',
-      '// @ts-expect-error verification does not inherit inference context',
-      'context.modelOutput;',
-      'declare const range: ReturnType<typeof textRangeSchema.parse>;',
-      'declare const change: StructuralChange;',
-      'declare const operation: WritingOperation;',
-      '// @ts-expect-error admitted nested positions are readonly',
-      'range.start.line = 2;',
-      '// @ts-expect-error admitted intent collections are readonly',
-      "change.intentIds.push('new');",
-      '// @ts-expect-error admitted JSON metadata is readonly',
-      'change.value.extra = true;',
-      '// @ts-expect-error admitted operation targets are readonly',
-      "operation.targetNodeIds.push('new');"
+      'declare const document: WritingDocument;',
+      '// @ts-expect-error admitted documents are readonly',
+      "document.content = 'changed';",
+      '// @ts-expect-error modes cannot grant arbitrary capabilities',
+      "const mode: WritingMode = 'unrestricted';"
     ].join('\n')
   );
   for (const exactOptionalPropertyTypes of [true, false]) {

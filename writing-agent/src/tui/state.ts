@@ -1,4 +1,9 @@
-import type { AgentProgressEvent, SessionBranchEntry, SessionBranchPage } from '@agent-core/runtime';
+import type {
+  AgentProgressEvent,
+  AgentRunResult,
+  SessionBranchEntry,
+  SessionBranchPage
+} from '@agent-core/runtime';
 import type { NotesState } from '@agents/tui';
 import { MarkdownDocument, RetainedListPresentation } from '@agents/tui';
 import type {
@@ -11,12 +16,9 @@ import { createTextAreaState } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { MeasuredWindowAnchor } from '@ismail-elkorchi/terminal-ui/collection';
 import type { ScrollRequest } from '@ismail-elkorchi/terminal-ui/interaction';
 import type { WritingApplication, WritingApplicationState, WritingDocument } from '../application/service.js';
-import type { WritingOperationKind, WritingOperationResult, WritingSelectedRange } from '../domain.js';
 import type { WritingHistoryMessage } from './history.js';
 
-export type WritingProjectView = Awaited<ReturnType<WritingApplication['readProject']>>;
-export type WritingProposalReview = Awaited<ReturnType<WritingApplication['compareProposal']>>;
-export type WritingView = 'document' | 'conversation' | 'proposal' | 'sources' | 'findings';
+export type WritingView = 'document' | 'conversation';
 export type WritingTuiOverlay =
   | { readonly kind: 'none' }
   | { readonly kind: 'notes'; readonly state: NotesState }
@@ -32,23 +34,20 @@ export type WritingTuiOverlay =
     }
   | {
       readonly kind: 'picker';
-      readonly subject:
-        | 'resources'
-        | 'outline'
-        | 'proposals'
-        | 'sessions'
-        | 'operation'
-        | 'sources'
-        | 'drafts'
-        | 'proposal-sources';
-      readonly entries: readonly { readonly id: string; readonly label: string }[];
+      readonly subject: 'resources' | 'outline' | 'sessions' | 'drafts';
+      readonly entries: readonly {
+        readonly id: string;
+        readonly label: string;
+      }[];
       readonly picker: UnscrolledSearchPickerState;
     }
-  | { readonly kind: 'accept'; readonly selectedCriteria: readonly string[] }
   | {
       readonly kind: 'form';
-      readonly subject: 'configure' | 'register';
-      readonly fields: readonly { readonly name: string; readonly input: TextAreaState }[];
+      readonly subject: 'configure';
+      readonly fields: readonly {
+        readonly name: string;
+        readonly input: TextAreaState;
+      }[];
     };
 
 export interface WritingTuiState {
@@ -63,24 +62,16 @@ export interface WritingTuiState {
     >
   >;
   readonly application: WritingApplicationState;
-  readonly project?: WritingProjectView;
   readonly document?: {
     readonly value: WritingDocument;
     readonly input: TextAreaState;
     readonly markdown: MarkdownDocument;
     readonly source: boolean;
     readonly offsetRow: number;
-    readonly selectedRange?: WritingSelectedRange['range'];
   };
-  readonly proposal?: WritingProposalReview;
-  readonly comparisonCache: WeakMap<
-    WritingProposalReview,
-    import('@ismail-elkorchi/terminal-ui/components').InlineContent
-  >;
-  readonly proposalView: 'comparison' | 'original' | 'proposed';
   readonly composer: TextAreaState;
   readonly submitting: boolean;
-  readonly instructionKind: WritingOperationKind;
+  readonly directory: string;
   readonly view: WritingView;
   readonly overlay: WritingTuiOverlay;
   readonly history: readonly SessionBranchPage[];
@@ -96,9 +87,9 @@ export interface WritingTuiState {
   readonly source?: { readonly title: string; readonly input: TextAreaState };
   readonly sessionView?: Awaited<ReturnType<WritingApplication['readSession']>>;
   readonly live?: { readonly turnId: string; readonly content: string };
-  readonly result?: WritingOperationResult;
+  readonly result?: AgentRunResult;
+  readonly failure?: string;
   readonly notice: string;
-  readonly busy: boolean;
 }
 
 export function initialWritingState(application: WritingApplicationState): WritingTuiState {
@@ -107,11 +98,9 @@ export function initialWritingState(application: WritingApplicationState): Writi
     sessionViews: {},
     composer: createTextAreaState({ value: '' }),
     submitting: false,
-    instructionKind: 'revise',
-    view: 'document',
+    directory: '.',
+    view: 'conversation',
     overlay: { kind: 'none' },
-    proposalView: 'comparison',
-    comparisonCache: new WeakMap(),
     history: [],
     conversationOffset: 0,
     presentation: new RetainedListPresentation(),
@@ -120,8 +109,7 @@ export function initialWritingState(application: WritingApplicationState): Writi
     unread: false,
     offsets: {},
     savedDrafts: [],
-    notice: '',
-    busy: false
+    notice: ''
   };
 }
 
@@ -136,12 +124,27 @@ export type WritingTuiMessage =
       readonly requestId: string;
       readonly result: import('@agent-core/runtime').SessionBranchSearchResult;
     }
-  | { readonly type: 'search.failed'; readonly requestId: string; readonly message: string }
+  | {
+      readonly type: 'search.failed';
+      readonly requestId: string;
+      readonly message: string;
+    }
   | { readonly type: 'search.jump'; readonly entryId: string }
-  | { readonly type: 'search.jumped'; readonly page: SessionBranchPage; readonly entryId: string }
-  | { readonly type: 'proposal.source'; readonly resourceId: string; readonly side: 'original' | 'proposed' }
-  | { readonly type: 'section.scroll'; readonly id: string; readonly request: ScrollRequest }
-  | { readonly type: 'source.loaded'; readonly title: string; readonly content: string }
+  | {
+      readonly type: 'search.jumped';
+      readonly page: SessionBranchPage;
+      readonly entryId: string;
+    }
+  | {
+      readonly type: 'section.scroll';
+      readonly id: string;
+      readonly request: ScrollRequest;
+    }
+  | {
+      readonly type: 'source.loaded';
+      readonly title: string;
+      readonly content: string;
+    }
   | { readonly type: 'source.edit'; readonly transition: TextAreaTransition }
   | { readonly type: 'recovery.open' }
   | {
@@ -163,16 +166,20 @@ export type WritingTuiMessage =
   | {
       readonly type: 'loaded';
       readonly session?: Awaited<ReturnType<WritingApplication['readSession']>>;
-      readonly project: WritingProjectView;
-      readonly document?: WritingDocument;
+      readonly document?:
+        | { readonly kind: 'available'; readonly value: WritingDocument }
+        | { readonly kind: 'unavailable'; readonly message: string };
       readonly history: SessionBranchPage;
       readonly application: WritingApplicationState;
     }
   | { readonly type: 'notice'; readonly message: string }
   | { readonly type: 'application'; readonly state: WritingApplicationState }
   | { readonly type: 'progress'; readonly event: AgentProgressEvent }
-  | { readonly type: 'result'; readonly result: WritingOperationResult }
-  | { readonly type: 'composer.edit' | 'document.edit'; readonly transition: TextAreaTransition }
+  | { readonly type: 'result'; readonly result: AgentRunResult }
+  | {
+      readonly type: 'composer.edit' | 'document.edit';
+      readonly transition: TextAreaTransition;
+    }
   | { readonly type: 'submit' }
   | {
       readonly type: 'submitted';
@@ -185,13 +192,19 @@ export type WritingTuiMessage =
       readonly type:
         | 'document.toggle-source'
         | 'document.use-passage'
-        | 'document.clear-passage'
         | 'external-editor'
         | 'interrupt'
         | 'exit';
     }
-  | { readonly type: 'external-edited'; readonly original: string; readonly text: string }
-  | { readonly type: 'document.scroll' | 'conversation.scroll'; readonly request: ScrollRequest }
+  | {
+      readonly type: 'external-edited';
+      readonly original: string;
+      readonly text: string;
+    }
+  | {
+      readonly type: 'document.scroll' | 'conversation.scroll';
+      readonly request: ScrollRequest;
+    }
   | {
       readonly type: 'picker.open';
       readonly subject: Extract<WritingTuiOverlay, { kind: 'picker' }>['subject'];
@@ -200,38 +213,37 @@ export type WritingTuiMessage =
       readonly type: 'picker.loaded';
       readonly requestId: string;
       readonly subject: Extract<WritingTuiOverlay, { kind: 'picker' }>['subject'];
-      readonly entries: readonly { readonly id: string; readonly label: string }[];
+      readonly entries: readonly {
+        readonly id: string;
+        readonly label: string;
+      }[];
     }
-  | { readonly type: 'picker.transition'; readonly transition: SearchPickerControlTransition }
+  | {
+      readonly type: 'picker.transition';
+      readonly transition: SearchPickerControlTransition;
+    }
   | { readonly type: 'picker.accept'; readonly id: string }
   | { readonly type: 'document.loaded'; readonly document: WritingDocument }
+  | { readonly type: 'form.open'; readonly subject: 'configure' }
   | {
-      readonly type: 'revision.completed';
-      readonly refreshed: Extract<WritingTuiMessage, { type: 'loaded' }>;
-      readonly review?: WritingProposalReview;
+      readonly type: 'form.edit';
+      readonly index: number;
+      readonly transition: TextAreaTransition;
     }
-  | { readonly type: 'revision.failed'; readonly message: string }
-  | { readonly type: 'proposal.loaded'; readonly review: WritingProposalReview }
-  | { readonly type: 'proposal.view'; readonly view: WritingTuiState['proposalView'] }
-  | {
-      readonly type:
-        | 'proposal.accept'
-        | 'proposal.reject'
-        | 'proposal.authorize'
-        | 'proposal.apply'
-        | 'revision.undo';
-    }
-  | { readonly type: 'criterion.toggle'; readonly id: string }
-  | { readonly type: 'proposal.confirm-accept' }
-  | { readonly type: 'form.open'; readonly subject: 'configure' | 'register' }
-  | { readonly type: 'form.edit'; readonly index: number; readonly transition: TextAreaTransition }
   | { readonly type: 'form.submit' }
-  | { readonly type: 'history.failed'; readonly requestId: string; readonly message: string }
-  | { readonly type: 'history.load'; readonly direction: 'older' | 'newer' | 'tail' }
+  | {
+      readonly type: 'history.failed';
+      readonly requestId: string;
+      readonly message: string;
+    }
+  | {
+      readonly type: 'history.load';
+      readonly direction: 'older' | 'newer' | 'tail';
+    }
   | {
       readonly type: 'history.loaded';
       readonly requestId: string;
       readonly pages: readonly SessionBranchPage[];
       readonly direction: 'older' | 'newer' | 'tail' | 'restore';
     }
-  | { readonly type: 'overlay.close' };
+  | { readonly type: 'overlay.close' | 'mode.toggle' | 'session.new' };

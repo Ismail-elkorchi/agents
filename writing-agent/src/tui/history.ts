@@ -17,7 +17,7 @@ export function historyMessages(state: WritingTuiState): readonly WritingHistory
     for (const entry of page.entries) {
       let message = state.historyEntryCache.get(entry);
       if (message === undefined) {
-        message = presentEntry(entry, state);
+        message = presentEntry(entry);
         if (message !== undefined) state.historyEntryCache.set(entry, message);
       }
       if (message !== undefined) entries.set(message.id, message);
@@ -30,14 +30,10 @@ export function historyMessages(state: WritingTuiState): readonly WritingHistory
     });
   return [...entries.values()];
 }
-function presentEntry(entry: SessionBranchEntry, state: WritingTuiState): WritingHistoryMessage | undefined {
+function presentEntry(entry: SessionBranchEntry): WritingHistoryMessage | undefined {
   switch (entry.type) {
-    case 'input': {
-      const operation = state.project?.operations.find((operation) =>
-        operation.attempts.some((attempt) => attempt.runId === entry.runId)
-      );
-      return { id: entry.id, source: `You\n${operation?.instruction ?? entry.task}\n`, markdown: false };
-    }
+    case 'input':
+      return { id: entry.id, source: `You\n${entry.task}\n`, markdown: false };
     case 'assistant':
       if (entry.content.length === 0) return undefined;
       return { id: `assistant:${entry.turnId}`, source: entry.content, markdown: true };

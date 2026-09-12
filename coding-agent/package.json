@@ -34,7 +34,6 @@
     "@agent-core/runtime": "0.2.0",
     "@agent-core/tools": "0.2.0",
     "@agent-core/tools-local": "0.2.0",
-    "@agents/verification": "0.1.0",
     "@ismail-elkorchi/sandbox": "file:../../sandbox/packages/sandbox",
     "@ismail-elkorchi/terminal-ui": "github:Ismail-elkorchi/terminal-ui#e9ec556d96814a8029936106e5a1a6ef70b5da3c",
     "@agents/tui": "0.1.0",

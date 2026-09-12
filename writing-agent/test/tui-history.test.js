@@ -24,12 +24,11 @@ test(
           task: `${i === 0 ? 'EARLIEST_PASSAGE' : `Instruction ${i}`}\n${'文 '.repeat(1500)}`
         })
       );
-    const state = { projectId: 'project', sessionId: session.id, status: 'ready' };
+    const state = { workspace: '/workspace', mode: 'edit', sessionId: session.id, status: 'ready' };
     const application = {
       state: () => state,
       readSession: async () => ({ session: { sessionId: session.id, phase: 'idle' }, runs: [] }),
       start: async () => {},
-      readProject: async () => ({ snapshot: { resources: [], sources: [] }, operations: [], proposals: [] }),
       readHistory: (request) => repository.readBranchPage(session, { ...request, limit: 8, maxBytes: 64000 }),
       searchHistory: (request) => repository.searchBranch(session, request)
     };
@@ -108,10 +107,9 @@ test(
       await repository.appendInput(first, { runId: `first-${i}`, task: `Instruction ${i}` });
     let selected = first;
     const application = {
-      state: () => ({ projectId: 'project', sessionId: selected.id, status: 'ready' }),
+      state: () => ({ workspace: '/workspace', mode: 'edit', sessionId: selected.id, status: 'ready' }),
       readSession: async () => ({ session: { sessionId: selected.id, phase: 'idle' }, runs: [] }),
       start: async () => {},
-      readProject: async () => ({ snapshot: { resources: [], sources: [] }, operations: [], proposals: [] }),
       readHistory: (request) => repository.readBranchPage(selected, { ...request, limit: 4 })
     };
     const host = createMemoryTerminalHost({ terminalSize: { columns: 48, rows: 24 } });

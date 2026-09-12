@@ -28,9 +28,7 @@ import type {
 import { defineTui, tuiBindingHelp } from '@ismail-elkorchi/terminal-ui/tui';
 import { formatKeyboardBinding } from '@ismail-elkorchi/terminal-ui/interaction';
 import type { WritingApplication, WritingDocument } from '../application/service.js';
-import { writingOperationKindSchema } from '../domain.js';
 import { createWritingProvider, parseWritingProviderId } from '../provider.js';
-import { rangeFromOffsets } from '../text-ranges.js';
 import { pickerIndex } from './picker.js';
 import { updateHistorySearch } from './search.js';
 import {
@@ -77,21 +75,30 @@ export function createWritingAgentTuiApp(application: WritingApplication, option
         triggers: [{ kind: 'key', key: 'f1' }],
         phase: 'beforeFocus',
         enabled: ({ state }: TuiInputBindingContext<WritingTuiState>) => state.overlay.kind === 'none',
-        toMessage: () => ({ type: 'source.loaded', title: 'Keyboard controls', content: help })
+        toMessage: () => ({
+          type: 'source.loaded',
+          title: 'Keyboard controls',
+          content: help
+        })
       },
       binding('Resources', 'f2', { type: 'picker.open', subject: 'resources' }),
       binding('Outline', 'f3', { type: 'picker.open', subject: 'outline' }),
       binding('Document source', 'f4', { type: 'document.toggle-source' }),
       binding('Conversation', 'f5', { type: 'view', view: 'conversation' }),
-      binding('Proposals', 'f6', { type: 'picker.open', subject: 'proposals' }),
-      binding('Sources', 'f7', { type: 'view', view: 'sources' }),
+      binding('New conversation', 'f6', { type: 'session.new' }),
+      binding('Edit or review', 'f7', { type: 'mode.toggle' }),
       binding('Use selected passage', 'f8', { type: 'document.use-passage' }),
-      binding('Operation kind', 'f9', { type: 'picker.open', subject: 'operation' }),
-      binding('Model configuration', 'f10', { type: 'form.open', subject: 'configure' }),
+      binding('Model configuration', 'f10', {
+        type: 'form.open',
+        subject: 'configure'
+      }),
       binding('Sessions', 'f11', { type: 'picker.open', subject: 'sessions' }),
       binding('Recovery', 'f12', { type: 'recovery.open' }),
       {
-        ...binding('Find matches', 'enter', { type: 'search.submit', more: false }),
+        ...binding('Find matches', 'enter', {
+          type: 'search.submit',
+          more: false
+        }),
         enabled: ({ state }: TuiInputBindingContext<WritingTuiState>) => state.overlay.kind === 'search'
       },
       binding('Search history', 'f', { type: 'search.open' }, { ctrl: true }),
@@ -130,7 +137,13 @@ export function createWritingAgentTuiApp(application: WritingApplication, option
         ...binding(
           `New line (${key})`,
           key,
-          { type: 'composer.edit', transition: { kind: 'edit', operation: { kind: 'insert', text: '\n' } } },
+          {
+            type: 'composer.edit',
+            transition: {
+              kind: 'edit',
+              operation: { kind: 'insert', text: '\n' }
+            }
+          },
           modifiers
         ),
         enabled: ({ state, focusPath }: TuiInputBindingContext<WritingTuiState>) =>
@@ -161,7 +174,10 @@ function update(
 ): Update {
   switch (message.type) {
     case 'source.copy':
-      return { state, effects: [copySource(message.text, (message) => ({ type: 'notice', message }))] };
+      return {
+        state,
+        effects: [copySource(message.text, (message) => ({ type: 'notice', message }))]
+      };
     case 'notes.open':
     case 'notes.listed':
     case 'notes.read':
@@ -189,25 +205,6 @@ function update(
     case 'search.jump':
     case 'search.jumped':
       return updateHistorySearch(state, message, app);
-    case 'proposal.source': {
-      const comparison = state.proposal?.comparisons.find(
-        (comparison) => comparison.resourceId === message.resourceId
-      );
-      return comparison === undefined
-        ? { state }
-        : {
-            state: {
-              ...state,
-              source: {
-                title: `${comparison.path} · ${message.side}`,
-                input: createTextAreaState({
-                  value: message.side === 'original' ? comparison.before : comparison.after
-                })
-              },
-              overlay: { kind: 'source' }
-            }
-          };
-    }
     case 'recovery.open':
       return {
         state,
@@ -223,7 +220,9 @@ function update(
         state: {
           ...state,
           sessionView: message.session,
-          overlay: { kind: message.session.session.suspension === undefined ? 'none' : 'recovery' }
+          overlay: {
+            kind: message.session.session.suspension === undefined ? 'none' : 'recovery'
+          }
         }
       };
     case 'recovery.resume':
@@ -247,7 +246,10 @@ function update(
                 fingerprint: decision.fingerprint,
                 expectedRunRevision: decision.runRevision
               });
-            return { type: 'recovery.loaded', session: await app.readSession() };
+            return {
+              type: 'recovery.loaded',
+              session: await app.readSession()
+            };
           })
         ]
       };
@@ -263,24 +265,36 @@ function update(
               fingerprint: message.fingerprint,
               decision: message.decision
             });
-            return { type: 'recovery.loaded', session: await app.readSession() };
+            return {
+              type: 'recovery.loaded',
+              session: await app.readSession()
+            };
           })
         ]
       };
     case 'form.completed':
       return {
         state: { ...state, overlay: { kind: 'none' } },
-        effects: [refresh(app, state.document?.value.resource.resourceId)]
+        effects: [refresh(app, state.document?.value.path)]
       };
     case 'section.scroll':
       return {
-        state: { ...state, offsets: { ...state.offsets, [message.id]: message.request.nextState.offsetRow } }
+        state: {
+          ...state,
+          offsets: {
+            ...state.offsets,
+            [message.id]: message.request.nextState.offsetRow
+          }
+        }
       };
     case 'source.loaded':
       return {
         state: {
           ...state,
-          source: { title: message.title, input: createTextAreaState({ value: message.content }) },
+          source: {
+            title: message.title,
+            input: createTextAreaState({ value: message.content })
+          },
           overlay: { kind: 'source' }
         }
       };
@@ -297,29 +311,52 @@ function update(
             }
           };
     case 'refresh':
-      return { state, effects: [refresh(app, state.document?.value.resource.resourceId)] };
+      return { state, effects: [refresh(app, state.document?.value.path)] };
     case 'loaded':
       return loadView(state, message, app);
     case 'application':
       return { state: { ...state, application: message.state } };
     case 'notice':
-      return { state: { ...state, notice: message.message, submitting: false } };
+      return {
+        state: { ...state, notice: message.message, submitting: false }
+      };
     case 'progress': {
       const event = message.event;
       if (event.type === 'assistant.delta')
-        return { state: { ...state, live: { turnId: event.turnId, content: event.accumulated } } };
+        return {
+          state: {
+            ...state,
+            live: { turnId: event.turnId, content: event.accumulated }
+          }
+        };
       if (event.type === 'assistant.interrupted')
         return {
           state: {
             ...state,
             live: { turnId: event.turnId, content: event.content },
-            notice: event.diagnostic === undefined ? 'Response interrupted.' : providerFailureText(event.diagnostic)
+            failure:
+              event.diagnostic === undefined
+                ? 'Response interrupted.'
+                : providerFailureText(event.diagnostic),
+            notice:
+              event.diagnostic === undefined ? 'Response interrupted.' : providerFailureText(event.diagnostic)
           }
         };
       if (event.type === 'model.failed')
-        return { state: { ...state, notice: providerFailureText(event.diagnostic) } };
+        return {
+          state: {
+            ...state,
+            failure: providerFailureText(event.diagnostic),
+            notice: providerFailureText(event.diagnostic)
+          }
+        };
       if (event.type === 'assistant.ended')
-        return { state: { ...state, live: { turnId: event.turnId, content: event.content } } };
+        return {
+          state: {
+            ...state,
+            live: { turnId: event.turnId, content: event.content }
+          }
+        };
       return { state };
     }
     case 'result':
@@ -328,16 +365,41 @@ function update(
           ...state,
           result: message.result,
           notice:
-            message.result.execution.state === 'suspended'
-              ? state.notice || suspensionPresentation(message.result.execution.reason).explanation
-              : message.result.execution.terminal.executionStatus === 'failed'
-                ? message.result.execution.terminal.errorMessage
-                : `Operation ${message.result.disposition}`
+            message.result.state === 'suspended'
+              ? (state.failure ?? suspensionPresentation(message.result.reason).explanation)
+              : message.result.terminal.executionStatus === 'failed'
+                ? message.result.terminal.errorMessage
+                : `Run ${message.result.terminal.executionStatus}`
         },
-        effects: [refresh(app, state.document?.value.resource.resourceId)]
+        effects: [refresh(app, state.document?.value.path)]
+      };
+    case 'mode.toggle':
+      return {
+        state,
+        effects: [
+          effect('writing-mode', async () => {
+            await app.setMode(state.application.mode === 'edit' ? 'review' : 'edit');
+            return { type: 'refresh' };
+          })
+        ]
+      };
+    case 'session.new':
+      return {
+        state,
+        effects: [
+          effect('writing-new-session', async () => {
+            await app.newSession();
+            return { type: 'refresh' };
+          })
+        ]
       };
     case 'composer.edit':
-      return { state: { ...state, composer: textAreaReducer(state.composer, message.transition).state } };
+      return {
+        state: {
+          ...state,
+          composer: textAreaReducer(state.composer, message.transition).state
+        }
+      };
     case 'document.edit':
       return state.document === undefined
         ? { state }
@@ -355,28 +417,18 @@ function update(
       if (state.submitting || !original.trim()) return { state };
       if (state.sessionView?.session.suspension !== undefined)
         return { state: { ...state, overlay: { kind: 'recovery' } } };
-      if (state.document === undefined)
-        return { state: { ...state, notice: 'Select a managed document first.' } };
-      const document = state.document;
       return {
-        state: { ...state, submitting: true },
+        state: { ...withoutFailure(state), submitting: true },
         effects: [
           effect('writing-submit', async () => {
-            const result = await app.instruct({
-              kind: state.instructionKind,
-              instruction: original,
-              selection: {
-                ...document.value.selection,
-                ...(document.selectedRange === undefined ? {} : { range: document.selectedRange })
-              }
-            });
+            const result = await app.submit(original);
             return {
               type: 'submitted',
               original,
-              accepted: result.kind === 'accepted',
+              accepted: result.kind !== 'rejected',
               message:
-                result.kind === 'accepted'
-                  ? `Accepted · ${result.operationId}`
+                result.kind !== 'rejected'
+                  ? `Request ${result.kind}`
                   : `Instruction rejected: ${result.reason.replaceAll('_', ' ')}`
             };
           })
@@ -389,7 +441,7 @@ function update(
           ...state,
           submitting: false,
           savedDrafts: message.accepted ? [...state.savedDrafts, message.original] : state.savedDrafts,
-          notice: message.message,
+          notice: state.failure ?? message.message,
           composer:
             message.accepted && textDocumentText(state.composer.document) === message.original
               ? createTextAreaState({ value: '' })
@@ -413,35 +465,29 @@ function update(
             }
           };
     case 'document.use-passage': {
-      if (state.document?.input.selection === undefined)
+      const selected = selectedSource(state.document?.input);
+      if (selected === undefined || !state.document)
         return {
           state: {
             ...state,
-            notice:
-              'Open document source, select text with Shift or the pointer, then use the passage control.'
+            notice: 'Select text in the document source first.'
           }
         };
-      const selection = state.document.input.selection;
-      const start = Math.min(selection.anchor.offset, selection.focus.offset),
-        end = Math.max(selection.anchor.offset, selection.focus.offset);
-      if (start === end) return { state: { ...state, notice: 'Select a nonempty passage.' } };
+      const quote = selected
+        .split('\n')
+        .map((line) => `> ${line}`)
+        .join('\n');
+      const original = textDocumentText(state.composer.document);
       return {
         state: {
           ...state,
-          document: {
-            ...state.document,
-            selectedRange: rangeFromOffsets(state.document.value.content, start, end)
-          },
-          notice: 'The next instruction targets the selected passage.'
+          view: 'conversation',
+          composer: createTextAreaState({
+            value: `${original}\n\nPassage from ${state.document.value.path}:\n${quote}`
+          })
         },
         focus: { kind: 'element', elementId: 'writing-composer' }
       };
-    }
-    case 'document.clear-passage': {
-      if (state.document === undefined) return { state };
-      const document = { ...state.document };
-      delete document.selectedRange;
-      return { state: { ...state, document, notice: 'The next instruction targets the document.' } };
     }
     case 'document.scroll':
       return state.document === undefined
@@ -449,7 +495,10 @@ function update(
         : {
             state: {
               ...state,
-              document: { ...state.document, offsetRow: message.request.nextState.offsetRow }
+              document: {
+                ...state.document,
+                offsetRow: message.request.nextState.offsetRow
+              }
             }
           };
     case 'conversation.scroll': {
@@ -508,86 +557,6 @@ function update(
           notice: ''
         }
       };
-    case 'proposal.loaded':
-      return {
-        state: {
-          ...state,
-          proposal: message.review,
-          proposalView: 'comparison',
-          view: 'proposal',
-          overlay: { kind: 'none' }
-        }
-      };
-    case 'revision.completed': {
-      const loaded = loadView(state, message.refreshed, app);
-      return {
-        ...loaded,
-        state: {
-          ...loaded.state,
-          busy: false,
-          overlay: { kind: 'none' },
-          ...(message.review === undefined ? {} : { proposal: message.review })
-        }
-      };
-    }
-    case 'revision.failed':
-      return { state: { ...state, busy: false, notice: message.message } };
-    case 'proposal.view':
-      return { state: { ...state, proposalView: message.view } };
-    case 'proposal.accept':
-      return { state: { ...state, overlay: { kind: 'accept', selectedCriteria: [] } } };
-    case 'criterion.toggle':
-      return state.overlay.kind !== 'accept'
-        ? { state }
-        : {
-            state: {
-              ...state,
-              overlay: {
-                ...state.overlay,
-                selectedCriteria: state.overlay.selectedCriteria.includes(message.id)
-                  ? state.overlay.selectedCriteria.filter((id) => id !== message.id)
-                  : [...state.overlay.selectedCriteria, message.id]
-              }
-            }
-          };
-    case 'proposal.confirm-accept': {
-      if (state.proposal === undefined || state.overlay.kind !== 'accept') return { state };
-      const selected = state.overlay.selectedCriteria;
-      const proposalId = state.proposal.review.proposal.proposalId;
-      return revise(state, app, () =>
-        app.accept({
-          proposalId,
-          explanation: 'I accept this exact proposed revision.',
-          humanCriterionDecisions: selected.map((criterionId) => ({
-            criterionId,
-            verdict: 'passed',
-            explanation: 'Confirmed by the user during revision review.'
-          }))
-        })
-      );
-    }
-    case 'proposal.reject':
-    case 'proposal.authorize': {
-      const proposal = state.proposal;
-      if (proposal === undefined) return { state };
-      const proposalId = proposal.review.proposal.proposalId;
-      return revise(state, app, () =>
-        message.type === 'proposal.reject'
-          ? app.reject(proposalId, 'I reject this proposed revision.')
-          : app.authorize(proposalId)
-      );
-    }
-    case 'proposal.apply': {
-      const review = state.proposal?.review;
-      if (review?.authorization === undefined)
-        return { state: { ...state, notice: 'Authorize this exact proposal before applying it.' } };
-      const authorization = review.authorization;
-      return revise(state, app, () => app.apply({ proposalId: review.proposal.proposalId, authorization }));
-    }
-    case 'revision.undo':
-      return revise(state, app, () =>
-        app.undo({ explanation: 'Undo requested through the document interface.' })
-      );
     case 'form.open':
       return {
         state: {
@@ -595,14 +564,17 @@ function update(
           overlay: {
             kind: 'form',
             subject: message.subject,
-            fields: (message.subject === 'configure'
-              ? [
-                  { name: 'Provider', value: state.application.provider ?? 'ollama' },
-                  { name: 'Model', value: state.application.model ?? '' },
-                  { name: 'Endpoint (optional)', value: '' }
-                ]
-              : [{ name: 'Existing project path', value: '' }]
-            ).map((field) => ({ name: field.name, input: createTextAreaState({ value: field.value }) }))
+            fields: [
+              {
+                name: 'Provider',
+                value: state.application.provider ?? 'ollama'
+              },
+              { name: 'Model', value: state.application.model ?? '' },
+              { name: 'Endpoint (optional)', value: '' }
+            ].map((field) => ({
+              name: field.name,
+              input: createTextAreaState({ value: field.value })
+            }))
           }
         }
       };
@@ -617,7 +589,10 @@ function update(
                 fields: state.overlay.fields.map((field, index) =>
                   index !== message.index
                     ? field
-                    : { ...field, input: textAreaReducer(field.input, message.transition).state }
+                    : {
+                        ...field,
+                        input: textAreaReducer(field.input, message.transition).state
+                      }
                 )
               }
             }
@@ -625,26 +600,17 @@ function update(
     case 'form.submit': {
       if (state.overlay.kind !== 'form') return { state };
       const values = state.overlay.fields.map((field) => textDocumentText(field.input.document).trim());
-      const subject = state.overlay.subject;
       return {
         state,
         effects: [
           effect('writing-form', async () => {
-            if (subject === 'configure')
-              await app.configure(
-                createWritingProvider({
-                  provider: parseWritingProviderId(values[0] ?? ''),
-                  model: values[1] ?? '',
-                  ...(!values[2] ? {} : { endpoint: values[2] })
-                })
-              );
-            else
-              await app.registerResource({
-                relativePath: values[0] ?? '',
-                mediaType: 'text/markdown',
-                role: 'draft',
-                ownership: 'user-owned'
-              });
+            await app.configure(
+              createWritingProvider({
+                provider: parseWritingProviderId(values[0] ?? ''),
+                model: values[1] ?? '',
+                ...(!values[2] ? {} : { endpoint: values[2] })
+              })
+            );
             return { type: 'form.completed' };
           })
         ],
@@ -673,7 +639,11 @@ function update(
             concurrency: 'replace',
             onError: ({ diagnostic }) => ({
               kind: 'message',
-              message: { type: 'history.failed', requestId, message: diagnosticMessage(diagnostic) }
+              message: {
+                type: 'history.failed',
+                requestId,
+                message: diagnosticMessage(diagnostic)
+              }
             })
           }
         ]
@@ -727,11 +697,17 @@ function update(
               const text = await context.withTerminalSuspended(() =>
                 (options.externalEditor ?? editTextExternally)(original, context.signal)
               );
-              return { kind: 'message', message: { type: 'external-edited', original, text } };
+              return {
+                kind: 'message',
+                message: { type: 'external-edited', original, text }
+              };
             },
             onError: ({ diagnostic }) => ({
               kind: 'message',
-              message: { type: 'notice', message: diagnosticMessage(diagnostic) }
+              message: {
+                type: 'notice',
+                message: diagnosticMessage(diagnostic)
+              }
             })
           }
         ]
@@ -741,7 +717,10 @@ function update(
       return {
         state:
           textDocumentText(state.composer.document) === message.original
-            ? { ...state, composer: createTextAreaState({ value: message.text }) }
+            ? {
+                ...state,
+                composer: createTextAreaState({ value: message.text })
+              }
             : {
                 ...state,
                 savedDrafts: [...state.savedDrafts, message.text],
@@ -750,7 +729,7 @@ function update(
         focus: { kind: 'element', elementId: 'writing-composer' }
       };
     case 'interrupt':
-      return ['running', 'recovering', 'admitting'].includes(state.application.status)
+      return ['running', 'suspended'].includes(state.application.status)
         ? {
             state,
             effects: [
@@ -760,7 +739,12 @@ function update(
               })
             ]
           }
-        : { state: { ...state, notice: 'No active operation. Your draft is preserved.' } };
+        : {
+            state: {
+              ...state,
+              notice: 'No active run. Your draft is preserved.'
+            }
+          };
     case 'overlay.close':
       return {
         state: { ...state, overlay: { kind: 'none' } },
@@ -772,23 +756,30 @@ function update(
 }
 
 function refresh(app: WritingApplication, resourceId?: string): TuiEffect<WritingTuiMessage> {
-  return { ...effect('writing-refresh', () => readView(app, resourceId)), concurrency: 'enqueue' };
+  return {
+    ...effect('writing-refresh', () => readView(app, resourceId)),
+    concurrency: 'enqueue'
+  };
 }
 async function readView(
   app: WritingApplication,
   resourceId?: string
 ): Promise<Extract<WritingTuiMessage, { type: 'loaded' }>> {
   await app.start();
-  const project = await app.readProject();
-  const selected =
-    project.snapshot.resources.find((resource) => resource.resourceId === resourceId) ??
-    project.snapshot.resources[0];
-  const document = selected === undefined ? undefined : await app.readDocument(selected.resourceId);
+  const document =
+    resourceId === undefined
+      ? undefined
+      : await app.readDocument(resourceId).then(
+          (value) => ({ kind: 'available' as const, value }),
+          (error: unknown) => ({
+            kind: 'unavailable' as const,
+            message: error instanceof Error ? error.message : String(error)
+          })
+        );
   const application = app.state();
   return {
     type: 'loaded',
     application,
-    project,
     ...(document === undefined ? {} : { document }),
     history: await app.readHistory(),
     ...(application.status === 'configuration_required' ? {} : { session: await app.readSession() })
@@ -807,43 +798,11 @@ function effect(id: string, action: () => Promise<WritingTuiMessage>): TuiEffect
     })
   };
 }
-function revise(state: WritingTuiState, app: WritingApplication, action: () => Promise<unknown>): Update {
-  if (state.busy) return { state };
-  const proposalId = state.proposal?.review.proposal.proposalId;
-  return {
-    state: { ...state, busy: true },
-    effects: [
-      {
-        id: 'writing-revision',
-        concurrency: 'enqueue',
-        async run() {
-          await action();
-          const review = proposalId === undefined ? undefined : await app.compareProposal(proposalId);
-          return {
-            kind: 'message',
-            message: {
-              type: 'revision.completed',
-              refreshed: await readView(app, state.document?.value.resource.resourceId),
-              ...(review === undefined ? {} : { review })
-            }
-          };
-        },
-        onError: ({ diagnostic }) => ({
-          kind: 'message',
-          message: { type: 'revision.failed', message: diagnosticMessage(diagnostic) }
-        })
-      }
-    ]
-  };
-}
 function documentState(
   value: WritingDocument,
   previous?: WritingTuiState['document']
 ): NonNullable<WritingTuiState['document']> {
-  if (
-    previous?.value.resource.resourceId === value.resource.resourceId &&
-    previous.value.selection.resourceSha256 === value.selection.resourceSha256
-  )
+  if (previous?.value.path === value.path && previous.value.sha256 === value.sha256)
     return { ...previous, value };
   return {
     value,
@@ -864,39 +823,31 @@ function openPicker(
     effects: [
       {
         ...effect('writing-picker', async () => {
-          const entries =
-            subject === 'proposal-sources'
-              ? (state.proposal?.comparisons.flatMap((comparison) =>
-                  ['original', 'proposed'].map((side) => ({
-                    id: `${side}:${comparison.resourceId}`,
-                    label: `${side} · ${comparison.path}`
+          const entries: { id: string; label: string }[] =
+            subject === 'drafts'
+              ? state.savedDrafts.map((draft, index) => ({
+                  id: String(index),
+                  label: draft
+                }))
+              : subject === 'resources'
+                ? (await app.listDocuments(state.directory)).map((entry) => ({
+                    id: entry.path + (entry.type === 'directory' ? '/' : ''),
+                    label: entry.path + (entry.type === 'directory' ? '/' : '')
                   }))
-                ) ?? [])
-              : subject === 'sources'
-                ? (state.project?.snapshot.sources.map((source) => ({
-                    id: source.sourceId,
-                    label: source.title ?? source.sourceId
-                  })) ?? [])
-                : subject === 'drafts'
-                  ? state.savedDrafts.map((draft, index) => ({ id: String(index), label: draft }))
-                  : subject === 'resources'
-                    ? (state.project?.snapshot.resources.map((resource) => ({
-                        id: resource.resourceId,
-                        label: resource.relativePath
-                      })) ?? [])
-                    : subject === 'proposals'
-                      ? (state.project?.proposals.map((proposal) => ({
-                          id: proposal.proposalId,
-                          label: `${proposal.status} · ${proposal.proposalId}`
-                        })) ?? [])
-                      : subject === 'outline'
-                        ? flattenOutline(state.document?.markdown.outline() ?? [])
-                        : subject === 'operation'
-                          ? writingOperationKindSchema.options.map((kind) => ({ id: kind, label: kind }))
-                          : (await app.listSessions()).map((session) => ({
-                              id: session.id,
-                              label: `${session.updatedAt} · ${session.id}`
-                            }));
+                : subject === 'outline'
+                  ? [...flattenOutline(state.document?.markdown.outline() ?? [])]
+                  : [
+                      { id: ':new', label: 'New conversation' },
+                      ...(await app.listSessions()).map((session) => ({
+                        id: session.id,
+                        label: `${session.updatedAt} · ${session.id}`
+                      }))
+                    ];
+          if (subject === 'resources' && state.directory !== '.')
+            entries.unshift({
+              id: state.directory.split('/').slice(0, -1).join('/') + '/',
+              label: '../'
+            });
           return { type: 'picker.loaded', requestId, subject, entries };
         }),
         concurrency: 'replace'
@@ -908,7 +859,10 @@ function flattenOutline(
   outline: ReturnType<MarkdownDocument['outline']>
 ): readonly { readonly id: string; readonly label: string }[] {
   return outline.flatMap((heading) => [
-    { id: String(heading.span.start), label: `${'  '.repeat(heading.depth - 1)}${heading.text}` },
+    {
+      id: String(heading.span.start),
+      label: `${'  '.repeat(heading.depth - 1)}${heading.text}`
+    },
     ...flattenOutline(heading.children)
   ]);
 }
@@ -916,10 +870,6 @@ function acceptPicker(state: WritingTuiState, id: string, app: WritingApplicatio
   if (state.overlay.kind !== 'picker' || !state.overlay.entries.some((entry) => entry.id === id))
     return { state };
   switch (state.overlay.subject) {
-    case 'operation':
-      return {
-        state: { ...state, instructionKind: writingOperationKindSchema.parse(id), overlay: { kind: 'none' } }
-      };
     case 'outline':
       return state.document === undefined
         ? { state }
@@ -933,7 +883,9 @@ function acceptPicker(state: WritingTuiState, id: string, app: WritingApplicatio
                 source: true,
                 input: {
                   ...state.document.input,
-                  caret: { position: { offset: Number(id), affinity: 'downstream' } },
+                  caret: {
+                    position: { offset: Number(id), affinity: 'downstream' }
+                  },
                   revealCaret: true
                 }
               }
@@ -941,6 +893,8 @@ function acceptPicker(state: WritingTuiState, id: string, app: WritingApplicatio
             focus: { kind: 'element', elementId: 'writing-document-source' }
           };
     case 'resources':
+      if (id.endsWith('/'))
+        return openPicker({ ...state, directory: id.slice(0, -1) || '.' }, 'resources', app);
       return {
         state,
         effects: [
@@ -948,42 +902,6 @@ function acceptPicker(state: WritingTuiState, id: string, app: WritingApplicatio
             type: 'document.loaded',
             document: await app.readDocument(id)
           }))
-        ]
-      };
-    case 'proposals':
-      return {
-        state,
-        effects: [
-          effect('writing-proposal', async () => ({
-            type: 'proposal.loaded',
-            review: await app.compareProposal(id)
-          }))
-        ]
-      };
-    case 'proposal-sources': {
-      for (const comparison of state.proposal?.comparisons ?? [])
-        for (const side of ['original', 'proposed'] as const)
-          if (id === `${side}:${comparison.resourceId}`)
-            return update(
-              state,
-              { type: 'proposal.source', resourceId: comparison.resourceId, side },
-              app,
-              {}
-            );
-      return { state };
-    }
-    case 'sources':
-      return {
-        state,
-        effects: [
-          effect('writing-source', async () => {
-            const { source, content } = await app.readSource(id);
-            return {
-              type: 'source.loaded',
-              title: `${source.title ?? source.sourceId} · ${source.exactSha256}`,
-              content
-            };
-          })
         ]
       };
     case 'drafts': {
@@ -1004,7 +922,8 @@ function acceptPicker(state: WritingTuiState, id: string, app: WritingApplicatio
         state: { ...state, overlay: { kind: 'none' } },
         effects: [
           effect('writing-session', async () => {
-            await app.selectSession(id);
+            if (id === ':new') await app.newSession();
+            else await app.selectSession(id);
             return { type: 'refresh' };
           })
         ]
@@ -1055,7 +974,7 @@ function loadView(
       ...state,
       sessionViews,
       composer: saved?.composer ?? createTextAreaState({ value: '' }),
-      view: saved?.view ?? 'document',
+      view: saved?.view ?? 'conversation',
       history: [],
       followTail: saved?.bookmark.followTail ?? true,
       conversationOffset: 0,
@@ -1067,24 +986,32 @@ function loadView(
     delete cleared.live;
     delete cleared.result;
     delete cleared.sessionView;
+    delete cleared.failure;
     next = cleared;
     if (saved?.bookmark.anchor !== undefined) next = { ...next, conversationAnchor: saved.bookmark.anchor };
   }
   next = {
     ...next,
-    project: message.project,
     application: message.application,
     ...(message.session === undefined ? {} : { sessionView: message.session }),
-    overlay: message.session?.session.suspension !== undefined && next.overlay.kind === 'none'
-      ? { kind: 'recovery' }
-      : next.overlay,
+    overlay:
+      message.session?.session.suspension !== undefined && next.overlay.kind === 'none'
+        ? { kind: 'recovery' }
+        : next.overlay,
     history: next.followTail || switched || next.history.length === 0 ? [message.history] : next.history,
     unread:
       !next.followTail &&
       !switched &&
       (next.unread || next.history.at(-1)?.boundary.leafId !== message.history.boundary.leafId),
-    ...(message.document === undefined ? {} : { document: documentState(message.document, next.document) })
+    ...(message.document?.kind === 'available'
+      ? { document: documentState(message.document.value, next.document) }
+      : {})
   };
+  if (message.document?.kind === 'unavailable') {
+    const updated = { ...next, notice: message.document.message };
+    delete updated.document;
+    next = updated;
+  }
   const cursor = switched
     ? next.sessionViews[message.history.boundary.sessionId]?.bookmark.cursor
     : undefined;
@@ -1101,12 +1028,21 @@ function loadView(
             if (next === undefined) break;
             pages.push(await app.readHistory({ cursor: next, direction: 'newer' }));
           }
-          return { type: 'history.loaded', requestId, direction: 'restore', pages };
+          return {
+            type: 'history.loaded',
+            requestId,
+            direction: 'restore',
+            pages
+          };
         }),
         concurrency: 'replace',
         onError: ({ diagnostic }) => ({
           kind: 'message',
-          message: { type: 'history.failed', requestId, message: diagnosticMessage(diagnostic) }
+          message: {
+            type: 'history.failed',
+            requestId,
+            message: diagnosticMessage(diagnostic)
+          }
         })
       }
     ]
@@ -1127,4 +1063,10 @@ function copyInput(state: WritingTuiState, focusPath?: readonly string[]) {
             : selectedSource(state.composer) !== undefined
               ? state.composer
               : state.document?.input;
+}
+
+function withoutFailure(state: WritingTuiState): WritingTuiState {
+  const updated = { ...state };
+  delete updated.failure;
+  return updated;
 }

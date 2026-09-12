@@ -32,8 +32,6 @@ export interface CodingAgentLimitConfiguration {
   readonly activeImageBytes?: number;
   readonly activeImageTokens?: number;
   readonly knownCost?: { readonly amount: number; readonly currency: string };
-  readonly consecutiveProviderFailures?: number;
-  readonly consecutiveToolFailures?: number;
 }
 export interface CodingAgentConfiguration {
   readonly version: 1;
@@ -225,8 +223,6 @@ function validLimits(value: unknown): value is CodingAgentLimitConfiguration {
     'activeImageCount',
     'activeImageBytes',
     'activeImageTokens',
-    'consecutiveProviderFailures',
-    'consecutiveToolFailures'
   ];
   if (Object.keys(value).some((key) => ![...numeric, 'knownCost'].includes(key))) return false;
   if (numeric.some((key) => value[key] !== undefined && !optionalPositive(value[key]))) return false;

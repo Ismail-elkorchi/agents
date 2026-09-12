@@ -1,114 +1,27 @@
 # Writing Agent
 
-Writing Agent is a project-oriented application composed from Agent Core. Its append-only private project log retains briefs, structured operations and intents, context selections, proposals, claim/source evidence, editorial decisions, authorship provenance, production verification, transaction settlements, and content-addressed project revisions.
+A workspace assistant for writing, revising, researching from local sources, and discussing text. Requests run in a persistent conversation. Editing writes directly to files; review mode exposes read-only workspace tools. There is no required brief schema, document registration, proposal approval sequence, or automatic editorial judge.
 
-Private state defaults to the platform user-state directory ($XDG_STATE_HOME/writing-agent or ~/.local/state/writing-agent) and must remain outside the writing project. Use --state-root for another external location. .writing-agent and .git are denied inside rooted project authority and are never authoritative state.
+Build from the repository root with `npm run build`, then launch:
 
-## Continuous terminal writing
-
-Managed-file operations currently require Agent Core's Linux rooted-file authority, descriptor-relative checks, link checks, and recoverable patch journal. Unsupported platforms fail closed.
-
-Initialize a project with `writing-agent init "Describe the writing project" --root /path/to/project`, then open `writing-agent tui --root /path/to/project`. Add an existing text file with the **Add file** control. Select a provider/model with F10, or supply `--provider` and `--model` (`WRITING_AGENT_PROVIDER` and `WRITING_AGENT_MODEL` are also supported).
-
-The document is the primary surface. Wide terminals show it beside the selected work pane; narrow terminals use focused views. F2 selects resources, F3 opens the Markdown outline, F4 toggles exact source, and F8 binds the selected passage to its current document revision. Enter submits an instruction; Shift+Enter or Ctrl+O inserts a newline. Ctrl+E uses `$VISUAL`/`$EDITOR`, Alt+D retrieves saved drafts, and Ctrl+C interrupts active work or copies a selected source. Exit is available in the bottom action row.
-
-F5 opens conversation, F6 selects proposals, F7 opens sources, F9 selects an operation kind, F11 selects sessions, F12 opens recorded recovery/approval decisions, and Alt+N opens attributed model notes. Ctrl+F searches unloaded history, Ctrl+PageUp/PageDown retrieves pages, and Ctrl+End follows current output. F1 displays binding help. Tab moves through controls; Enter activates the focused action. Source readers support Ctrl+A, Shift+arrow, and pointer selection. Exact clipboard transport for text normalized by terminal-ui remains unavailable; see [the reproduced limitation](../terminal-ui-consumer-findings.md).
-
-Review original/proposed text, comparisons, findings, and sources before deciding. Acceptance, application authorization, and applying the revision are separate actions. Required human criteria are explicit controls. Rejecting a proposal leaves files unchanged. Undo uses the recorded revision service; continue with another instruction in the same session afterward. A changed source or stale selection is rejected without silently rebinding it.
-
-## Headless and stdio consumers
-
-The package root exports `WritingApplication` and writing-domain services without loading executable adapters. `/tui` and `/rpc` are explicit adapter entry points.
-
-```bash
-writing-agent rpc --root /path/to/project --provider ollama --model YOUR_MODEL
+```sh
+node writing-agent/dist/cli.js tui --root /path/to/workspace --provider openai-codex --model MODEL
+node writing-agent/dist/cli.js review --root /path/to/workspace --provider openai-codex --model MODEL 'Review the introduction in article.txt.'
+node writing-agent/dist/cli.js write --root /path/to/workspace --provider openai-codex --model MODEL 'Revise the introduction in article.txt.'
 ```
 
-The UTF-8 JSONL JSON-RPC 2.0 adapter exposes project/document/session reads, `instruction.submit`, proposal comparison and decisions, revision undo, source and model-note reads, and recovery. Submission returns operation and run identities before execution completes; `operation.completed` and `operation.failed` provide subsequent outcomes. The `document.read` selection includes exact resource and project revisions; use that selection when submitting an instruction. Consult [product method definitions](src/rpc/index.ts) and [framing/delivery rules](../rpc/README.md).
+With an installed executable, use `writing-agent` in place of `node writing-agent/dist/cli.js`. No arguments opens the TUI in an interactive terminal. `WRITING_AGENT_PROVIDER` and `WRITING_AGENT_MODEL` supply defaults. Providers are `ollama`, `openai`, `openai-codex`, and `openrouter`; `--endpoint` selects an endpoint and `--reasoning` requests a reasoning effort.
 
-EOF and explicit shutdown cancel owned execution and close resources. Restart reads recorded session decisions; it does not blindly repeat effects whose outcomes are uncertain. A delivery gap requires fresh authoritative reads. Request IDs correlate responses; they do not authorize or deduplicate writing operations.
+The TUI starts in the conversation, without requiring a selected document. Enter sends; Shift+Enter or Ctrl+O inserts a newline. F1 shows controls, F2 browses workspace files, F3 opens the displayed Markdown outline, F4 switches source/rendered views, F5 opens the conversation, F6 starts a new conversation, F7 switches edit/review mode, F8 quotes a selected passage into the visible composer, F10 configures the model, F11 selects a session, and F12 opens recovery. Ctrl+F searches recorded history, Alt+N opens model notes, and Ctrl+E opens an external instruction editor. Ctrl+C copies selected text or interrupts active work.
 
-## Model and authority boundary
+Choose review mode for suggestions before editing. Ask a later edit-mode request to apply chosen suggestions or undo a change; original requests, patches, and observations remain available through history. Source and rendered views are presentation choices, not a mandated output format. The agent does not assume a language, word-count convention, entity catalog, or preservation criterion. State those requirements in the conversation when relevant.
 
-A direct user request is admitted as an immutable writing operation. Domain schemas capture readonly objects and collections at admission, including nested JSON metadata. Content identities hash complete JSON; unsupported data is rejected instead of coerced or truncated. WritingExecutionAttempt binds each run and model to that operation. Continuing an operation can select a new model while retaining original history, exact project anchors and proposal revisions.
+Tools read, list, search, and patch workspace files. Model-managed history, notes, and context selection support continuing work. Documents are retrieved when needed instead of filling a fixed-size excerpt template. Notes cannot grant permission or establish that a claim is verified. Model judgments and review responses are not independent verification certificates.
 
-The producer receives the complete applicable WritingOperationContract: every intent instruction, dependency, target, preservation requirement, affected criterion, affected claim/evidence relation, prior decision, and exact machine constraint that may affect acceptance. Project text, sources, excerpts, and tool output remain data. Host-owned target descriptors bind admitted resource IDs to rooted paths, hashes, media types, and stable document/range anchors.
+The application API and state layout are breaking replacements; existing project-state directories are not migrated.
 
-In suggest mode, the model can read only explicitly granted readable resources and affected local source resources; read grants are independent of edit targets. propose_revision is its only write-shaped capability. The model supplies admitted IDs and replacement prose; it cannot choose paths, hashes, preimages, verification verdicts, criterion coverage, or mutation authority. The host validates proposals and retains immutable predecessors with one selected successor without modifying managed files.
+Private state defaults to `$XDG_STATE_HOME/writing-agent` or `~/.local/state/writing-agent`; `--state-root` must point outside the workspace. File access uses Agent Core's rooted authority, which currently requires Linux. Symlinks, reserved state directories, and `.git` are excluded. The tool catalog contains no shell or network execution capability; requests to a configured model provider still use its connection. Pending runs retain their admitted file permission mode across restart. Unknown provider or tool outcomes require reconciliation or stopping through the recovery controls.
 
-All model calls, including semantic verification, pass through Agent Core's governed InferenceService and share the owning operation's budget across attempts. Writing performs one ordered WritingContextSelection; Core preserves that order in PromptMaterial and does not run another relevance selector.
+Headless applications import `openWritingApplication` from `@ismail-elkorchi/writing-agent`, call `start()`, submit an instruction string, await the returned completion, and close the application. An explicit configuration can set run limits or a session inference budget; ordinary work has no preset task budget. Runtime capacity and compiled-request limits still apply.
 
-Blocking deterministic failures stop semantic work. Operations with no semantic preservation or editorial criteria require no semantic model call. Verification reuse binds the exact deterministic implementation, checker, policy, material and selected proposal. Each attempt records the verification ID it used; historical checks retain their original attribution. Caller cancellation reaches model work and application verification through the same signal.
-
-## Verification and evidence
-
-Evidence means material that supports or contradicts a claim. Tool outputs are observations, deterministic check details are observations, and model-returned prose is model output.
-
-ProposalProductionVerification records applicable operation-derived checks:
-
-- deterministic structural, range, hash, provenance, length, citation, number, and named-entity checks;
-- semantic-preservation and editorial findings against the exact proposed revision;
-- exact claim/source evidence excerpts relevant to the admitted operation;
-- criterion-level human decisions where machine verification is insufficient.
-
-Unknown, stale, partially covered, or failed required verification blocks acceptance. Semantic findings cannot override deterministic failures. Findings bind the proposed revision, base revision, operation contract, verification-input hash, and exact host-issued proposed/base/source citations.
-
-The CLI requires one --human-criterion option for every human criterion the user explicitly passes when applying a proposal. An apply command alone does not imply those decisions.
-
-## Apply and recovery
-
-Applying an accepted proposal is a separate application action. A pre-run delegated apply policy may ask the application to accept a future passing result, but it is not mutation authority. After verification and acceptance, the application persists a WritingApplyAuthorization bound to the exact proposal, project revision, resource preimages, production verification, human decisions, and recoverable transaction identity. The revision service rejects missing, altered, or stale authorization.
-
-Initial execution, user decisions, recovery, and abort converge through the same idempotent finalization path. A run that outlives its caller is reconciled from durable run events. A committed text transaction is recovered before one terminal writing lifecycle is appended. Stale content is never force-overwritten, and rejection leaves managed files unchanged.
-
-## Commands
-
-One-shot transient writing remains explicit:
-
-~~~bash
-writing-agent write "Draft a concise product announcement."
-~~~
-
-Project commands include init, status, brief show, brief amend, plan, draft, revise, review, diff, apply, reject, undo, suspension, resume, decide, approval, abort, source add, and source list.
-
-~~~bash
-writing-agent init --root ./manuscript "Write a sourced technical essay."
-writing-agent status --root ./manuscript
-writing-agent revise <resource-id> --root ./manuscript --provider openai-codex --model <model> --reasoning-effort medium --min-words 1200 --max-words 1500 --preserve-existing-numbers --forbid-new-citations "Tighten the opening without changing claims."
-~~~
-
-Exactly four provider compositions are supported: ollama, openrouter, openai, and openai-codex. Library APIs remain provider-neutral and accept an Agent Core ModelProvider. Reasoning effort accepts none, minimal, low, medium, high, xhigh, or max; WRITING_AGENT_REASONING_EFFORT is the environment equivalent.
-
-There is no autonomous mode, multi-agent orchestration, live model mutation, model-owned publication, or offline measurement corpus/campaign subsystem. This package is pre-alpha and intentionally does not translate retired unpublished state names.
-
-## Optional history and editorial notes
-
-Project operations can opt into Core's bounded session history and branch-scoped
-notes through `runWritingOperation({ ..., memory: { history: true, notes: true } })`.
-The default operation exposes its existing project tools. Enabled history tools
-read original sources by exact identity; note writes use compare-and-swap and
-preserve immutable revisions. Neither capability can edit a brief, expand a
-proposal target, authorize application, or make generated text a verified source.
-
-Each delivered history excerpt, note read, or note-index result appends an immutable
-`WritingContextSelection` revision. It binds the operation, base project revision,
-parent selection, exact history cut/source hash or note revision, excerpt content
-hash, and delivery bounds. Search excerpts are identified as search excerpts,
-without inventing a byte position. The store preserves the original brief,
-selected control items and protected edit-anchor descriptors unchanged.
-
-The next model invocation identifies its delivered selection revision. A canonical
-proposal captures that revision before tool execution. A durable request binding
-keeps recovery tied to the originating turn and request attempt. Production semantic
-verification hashes and receives the same selection. Later note edits cannot
-change an already admitted proposal or its verification input. Repeated delivery
-of the same exact note revision is idempotent; conflicting selection parents fail
-or are retried after reading the committed parent.
-
-Primary work and the default semantic verifier share an `InferenceService`, a
-private durable invocation repository, and the run's budget owner. Optional
-`inferenceBudget` limits apply to their combined invocation and token spend.
-The verifier uses a bounded output reservation and exact invocation identity;
-cancellation propagates without automatically repeating an uncertain invocation.
-Custom hosts constructing `createDefaultWritingEditorialChecker` supply an
-`inference` service with explicit invocation and artifact repositories.
+`writing-agent rpc` serves JSON-RPC 2.0 on standard input/output. Methods cover instruction submission, edit/review selection, documents, sessions, history, notes, and recovery. Terminal rendering is exposed separately through `@ismail-elkorchi/writing-agent/tui`; neither adapter owns editing or session policy.

@@ -46,13 +46,9 @@ try {
       const heapBefore = process.memoryUsage().heapUsed;
       const host = createMemoryTerminalHost({ terminalSize: { columns, rows: 32 } });
       const service = {
-        state: () => ({ projectId: 'validation', sessionId: descriptor.id, status: 'ready' }),
+        state: () => ({ workspace: '/workspace', mode: 'edit', sessionId: descriptor.id, status: 'ready' }),
         start: async () => {},
-        readProject: async () => ({
-          snapshot: { resources: [], sources: [] },
-          operations: [],
-          proposals: []
-        }),
+        readSession: async () => ({ session: { sessionId: descriptor.id, phase: 'idle' }, runs: [] }),
         readHistory: (request) => coldReader.readBranchPage(descriptor, request)
       };
       const runtime = createTuiRuntime({

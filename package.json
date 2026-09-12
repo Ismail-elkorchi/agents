@@ -7,7 +7,6 @@
     "node": ">=24.8.0"
   },
   "workspaces": [
-    "verification",
     "application",
     "rpc",
     "tui",
@@ -16,7 +15,7 @@
   ],
   "agentCore": {
     "path": "../agent-core",
-    "commit": "c5a7e678240341e2ed974a5d54baca2a7e302976"
+    "commit": "3fc4b2cbf288e4c226d23f2ed8ac2a83d23fb1ab"
   },
   "sandbox": {
     "path": "../sandbox",

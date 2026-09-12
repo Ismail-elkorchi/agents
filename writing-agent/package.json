@@ -1,7 +1,7 @@
 {
   "name": "@ismail-elkorchi/writing-agent",
   "version": "0.1.0",
-  "description": "Focused writing workflow composed from Agent Core.",
+  "description": "Writing, editing, and review in a persistent workspace session.",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
@@ -27,7 +27,6 @@
   },
   "dependencies": {
     "@agent-core/persistence": "0.2.0",
-    "@agent-core/json": "0.2.0",
     "@agent-core/model": "0.2.0",
     "@agent-core/provider-ollama": "0.2.0",
     "@agent-core/provider-openai": "0.2.0",
@@ -37,7 +36,6 @@
     "@agent-core/tools": "0.2.0",
     "@agent-core/tools-local": "0.2.0",
     "zod": "4.4.3",
-    "@agents/verification": "0.1.0",
     "@agents/tui": "0.1.0",
     "@agents/application": "0.1.0",
     "@ismail-elkorchi/terminal-ui": "github:Ismail-elkorchi/terminal-ui#e9ec556d96814a8029936106e5a1a6ef70b5da3c",
