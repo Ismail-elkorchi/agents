@@ -7,7 +7,7 @@ import type {
 import { suspensionPresentation } from '@agents/tui';
 import type { CodingSessionView } from '../application/contracts.js';
 import { upsertConversationEntry } from './conversation.js';
-import { applyHydratedTerminal, applySessionState } from './event-reducer.js';
+import { applySessionState } from './event-reducer.js';
 import { presentHistoryPages } from './history.js';
 import type { CodingAgentTuiState } from './state.js';
 
@@ -32,14 +32,17 @@ export function hydrateCodingAgentTuiState(
       branchPoints: Object.freeze([...hydration.branchPoints]),
       pendingSubmissions: Object.freeze([...hydration.pendingSubmissions]),
       runs: Object.freeze([...hydration.runs]),
-      handoffs: []
+      changes: [],
+      verification: []
     }
   };
   const sameSession = state.debug.sessionId === hydration.session.sessionId;
   const historical = sameSession && !state.conversation.scroll.followTail;
   next = presentHistoryPages(
     next,
-    historical ? state.conversation.pages : [{ history: hydration.history, handoffs: hydration.handoffs }],
+    historical
+      ? state.conversation.pages
+      : [{ history: hydration.history, changes: hydration.changes, verification: hydration.verification }],
     sameSession && !historical
   );
   if (historical)
@@ -61,8 +64,6 @@ export function hydrateCodingAgentTuiState(
       });
   }
   next = applySessionState(next, hydration.session);
-  const latestTerminal = hydration.handoffs.at(-1)?.terminal;
-  if (latestTerminal !== undefined) next = applyHydratedTerminal(next, latestTerminal);
   return restoreSessionRunState(next, hydration);
 }
 

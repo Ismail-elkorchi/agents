@@ -1,10 +1,31 @@
-# Usage
+# Coding Agent
 
-Coding Agent is pre-alpha and intentionally uses breaking contracts. Import documented package exports only.
+Coding Agent is a conversational coding application composed from Agent Core. It works in the selected workspace, keeps durable conversation history, and exposes the same application service through its CLI, TUI, package API, and JSON-RPC adapter. Its contracts are pre-alpha and may change without compatibility layers.
 
-## Workspace trust and private state
+## Start the application
 
-A new workspace is inspection-only until the user records a trust decision. The interactive TUI opens before that decision and offers `/trust restricted` and `/trust trusted`; the equivalent standalone commands are:
+```bash
+# Interactive TUI
+coding-agent
+coding-agent "inspect the failing checks"
+
+# One noninteractive request
+coding-agent exec "summarize the workspace"
+printf '%s\n' 'summarize the workspace' | coding-agent exec -
+
+# Continue recorded work
+coding-agent --resume
+coding-agent --session SESSION_ID
+coding-agent exec --resume
+```
+
+Interactive startup renders before setup is complete. Use `/provider`, `/model`, `/permissions`, `/trust`, and `/login` to satisfy the displayed requirements. Run `coding-agent --help` for the complete CLI option reference.
+
+The TUI submits with Enter, inserts a newline with Shift+Enter or Ctrl+O, steers active work with Alt+Enter, and queues a follow-up with Ctrl+Enter. Ctrl+C interrupts active work. Ctrl+P opens commands; F1 opens help; F2 selects sessions; F5 inspects branches; F6 manages queued input; F7 inspects recorded workspace changes; F8 opens original Markdown; Alt+N opens model-authored notes. Ctrl+PageUp/PageDown loads history and Ctrl+End follows current output.
+
+## Workspace authority
+
+A new workspace starts untrusted. Record a decision from the TUI or CLI:
 
 ```bash
 coding-agent trust status --root .
@@ -13,59 +34,35 @@ coding-agent trust trusted --root .
 coding-agent trust revoke --root .
 ```
 
-Restricted workspaces may send bounded, screened context to the configured provider, but every mutation or command requires exact approval and repository execution policy remains inactive. Trusted workspaces may activate project proposals within the user-provided CLI authority. Repository files never grant trust or tool authority.
+Repository content cannot grant trust, tools, provider egress, command execution, network access, or approval. Restricted workspaces require approval for mutations and commands. Trusted workspaces use the selected permission mode and any narrower project policy.
 
-Runs, sessions, artifacts, journals, trust records, and the user-selected provider/model live under the platform user-state directory. Workspace records are keyed by the adopted physical workspace identity; the provider/model selection is a user default for new interactive sessions. `--state-root` selects another dedicated Coding Agent state root. A state root must be outside the workspace and is adopted only when empty or already marked as Coding Agent state. No `.coding-agent` directory is created or read as private state.
+Permission modes are:
 
-## Terminal interaction
+| Mode | Workspace capability |
+| --- | --- |
+| `review` | Root-bound reads |
+| `edit` | Reads and structured patches |
+| `develop` | Reads, structured patches, and sandboxed commands |
 
-`coding-agent` opens the TUI; `coding-agent --session latest` restores recorded work. Enter submits, Shift+Enter or Ctrl+O inserts a newline, Alt+Enter steers active work, and Ctrl+Enter queues a follow-up. Rejected input stays in the composer. Ctrl+C interrupts active work; with selected source it copies, and with an empty idle composer it exits. F4 opens `$VISUAL`/`$EDITOR` while terminal ownership is suspended.
+Authorized patches change the selected workspace directly and return their committed transaction receipt before the model observes success. Unrelated workspace changes are preserved. A later failure does not roll back an earlier successful edit. Run change reports are derived from authoritative `apply_patch` start and result records; command-created and external changes remain separate workspace facts.
 
-F1 displays help generated from current bindings. Ctrl+P opens commands, Ctrl+Space completes commands or workspace paths, Ctrl+F searches recorded history, Ctrl+PageUp/PageDown loads history pages, and Ctrl+End follows current output. F2 selects sessions, F5 inspects branches, F6 edits or cancels accepted queued input, F7 inspects recorded working-copy patches and publication status, and F8 opens original Markdown. Alt+N opens attributed model notes. Session navigation preserves drafts and logical history positions; unloaded history remains retrievable.
+Runs, sessions, artifacts, journals, trust decisions, and user model settings live in the platform user-state directory. `--state-root` selects another dedicated state directory outside the workspace. Coding Agent does not create private state inside the project.
 
-Ctrl+Y sends the latest Markdown source to the clipboard; Alt+Y sends displayed text, and Ctrl+Shift+Y sends code blocks. Source readers support Ctrl+A, Shift+arrow, and pointer selection and Ctrl+C. Exact copying of tabs, CRLF, or other text normalized by terminal-ui is explicitly unavailable at the pinned library revision; original source remains stored. See [terminal-ui findings](../terminal-ui-consumer-findings.md). Terminal key protocols vary; Ctrl+O provides a newline when Shift+Enter is indistinguishable from Enter.
+## Command execution
 
-## Headless and stdio consumers
+Command execution initializes on first use. Coding Agent observes the active platform shell, search path, Node installation, and runtime roots. On Linux it first prepares Sandbox's isolated namespace layout, then prepares the stable host-layout confinement backend when the strict requirements are unavailable. macOS and Windows use their stable native host-layout backends. Selection completes before effect authorization and remains bound for dispatch and recovery.
 
-The package root exports `openCodingApplication` and domain APIs without starting a CLI or loading terminal presentation. Explicit `/tui` and `/rpc` subpaths provide adapters. The TUI calls the same typed application service used by nonterminal callers.
+Both layouts grant workspace writes, grant observed toolchain inputs read-only, pass an explicit environment, deny network access, and own process termination. The authorization report identifies the result as `isolated workspace` or `workspace confined`. If no backend satisfies the policy, command tools report the unmet Sandbox requirement; questions, reads, and structured patches remain available.
 
-```bash
-coding-agent rpc --root /path/to/workspace --session latest
-```
+Sandbox currently exposes no PTY capability, so commands use pipes for stdin, stdout, and stderr. `write_stdin` and `stop_process` operate on recorded live processes.
 
-The stdio adapter uses UTF-8 JSONL and JSON-RPC 2.0. For example, `{"jsonrpc":"2.0","id":1,"method":"input.submit","params":{"task":"Inspect the tests"}}` returns durable acceptance identities promptly; later `run.progress`, `run.completed`, or `run.failed` notifications describe execution. A `run.completed` result can be suspended: inspect its discriminant, not the notification name. `session.read` exposes pending submissions and exact approval identities after restart; `approval.resolve` requires the recorded fingerprint. `history.read`, `history.search`, `history.entry`, `notes.list`, `notes.read`, and `change.read` expose bounded source reads. Product method definitions live in [the RPC adapter](src/rpc/index.ts).
+## Repository guidance
 
-EOF and `application.shutdown` close the application's resources and interrupt active work. They do not promise background execution. After connection loss, inspect recorded state before submitting again; request IDs are not deduplication identities. On `delivery.gap`, refresh authoritative state. See [shared framing and delivery rules](../rpc/README.md).
+Coding Agent loads the root `AGENTS.md` and configured instruction files when a run starts. It discovers nested `AGENTS.md` files from the root to a concrete tool target without recursively loading unrelated directories. Before the first mutation or command in a newly discovered scope, Core returns the applicable guidance with `effectStarted: false`; the model then chooses the next action with that guidance in context. Symbolic-link guidance is not followed, and unreadable or oversized applicable guidance blocks the affected mutation.
 
-## CLI
+## Explicit checks
 
-```bash
-# Interactive TUI, optionally with an initial task
-coding-agent
-coding-agent "inspect the failing checks"
-
-# Noninteractive task or piped input
-coding-agent exec "summarize the workspace"
-printf '%s\n' 'summarize the workspace' | coding-agent exec -
-
-# Resume the most recently active session or open an existing ID
-coding-agent --resume
-coding-agent --session SESSION_ID
-
-# Noninteractive recovery drives the unfinished accepted run without queuing a new task
-coding-agent exec --resume
-coding-agent exec --session SESSION_ID
-```
-
-Interactive startup does not require provider, model, permission, or trust flags. It renders first, restores any available settings, and reports the exact missing setup. Use `/provider`, `/model`, `/permissions`, `/trust`, and `/login` inside the TUI. A message submitted before setup is complete remains editable; submit it again after completing setup. `coding-agent exec` remains noninteractive and fails immediately when trust or a complete model selection cannot be resolved.
-
-Session selection is not part of project configuration. A resumed session restores its latest provider and model unless explicitly overridden. Interactive model resolution order is explicit CLI options, resumed-session settings, trusted project configuration, the stored user selection, then environment values. Noninteractive execution does not consume the interactive user default. There is no provider or model fallback chosen by the application.
-
-Select one permission ceiling with `--permissions`: `review` exposes root-bound reads, `edit` adds structured patch mutation, and `develop` also exposes sandboxed commands to the model. Mutable `edit` and `develop` runs execute their admitted verification plan through a separate sandboxed verifier authority; granting verification never grants the model a shell. Project configuration can only narrow the ceiling and exact model-facing tool set. Coding Agent never falls back to ambient command execution; if Sandbox cannot establish the declared boundary, the affected model command or required check is explicitly unavailable.
-
-On Linux, Sandbox requires the system Bubblewrap launcher (`/usr/bin/bwrap`) and host policy that permits its namespaces. Ubuntu 26.04 includes that AppArmor authorization; Ubuntu 24.04's standard profile set does not. Startup reports unmet capabilities. Coding Agent admits system tools and the active Node installation explicitly, including installations managed by Volta or nvm. Commands receive a private home and temporary directory, workspace access, and no network access or ambient host environment. Time and retained-output limits apply; no aggregate memory or process-count limit is implicitly requested.
-
-A trusted project may propose a narrower boundary:
+Project configuration may name required and advisory commands. Coding Agent exposes them through `run_check`; it does not infer commands or coverage from package manifests. Each result records the process outcome, retained output, output completeness, and passed, failed, or inconclusive status. A check not invoked remains `not_run` in the run's verification view.
 
 ```json
 {
@@ -73,175 +70,44 @@ A trusted project may propose a narrower boundary:
   "provider": "openai",
   "model": "gpt-5.6-sol",
   "instructions": [],
-  "tools": { "enabled": ["read_files", "search_text", "apply_patch"] },
-  "permissions": { "maximumMode": "edit", "requireApprovalFor": ["write", "delete"] },
+  "tools": { "enabled": ["read_files", "search_text", "apply_patch", "exec_command"] },
+  "permissions": {
+    "maximumMode": "develop",
+    "requireApprovalFor": ["write", "delete", "command"]
+  },
   "verification": {
-    "required": [{ "id": "test", "command": "npm test", "coverage": "full" }],
+    "required": [
+      { "id": "test", "command": "npm test", "coverage": "full", "timeoutMs": 120000 }
+    ],
     "advisory": []
   }
 }
 ```
 
-The repository cannot activate this policy or raise trust. Restricted workspaces treat configuration as attributed data and independently require approval for every mutation and command.
+The optional `limits` object accepts Agent Core's current run limits. Project configuration can narrow the selected tool and permission ceiling. It cannot activate itself in an untrusted workspace.
 
-## Repository guidance
+## Durable conversation and recovery
 
-Coding Agent loads the root `AGENTS.md` and explicitly configured guidance at run start. It does not recursively place unrelated descendant guidance in the initial model request. When a read enters a deeper target, Coding Agent walks that target's root-to-directory ancestry, securely loads any newly applicable `AGENTS.md`, persists the active set with the run, and includes it in the next model request. A command working directory is treated as a concrete target in the same way.
+Informational questions and editing tasks use the same Agent Core session contract. A user prompt does not create a separate revision workflow. Original contributions, corrections, tool observations, provider state, context selections, notes, branches, queued input, approvals, and uncertain effects remain durable.
 
-The first write, delete, or command entering a scope whose guidance has not yet been delivered is denied without starting the effect. The resulting observation names the newly active guidance; the model retries after that guidance is present. Hidden and ignored paths do not bypass ancestry lookup, symbolic-link guidance is never followed, and guidance content cannot grant filesystem, shell, network, credential, approval, or publication authority.
+An approval binds the exact tool input, effects, implementation, policy, and execution target. Changed facts invalidate it. Effects with an unknown outcome are not replayed automatically. `--resume` without a task drives only an unfinished accepted run.
 
-## Approvals
+Conversation storage is authoritative. Live TUI delivery is a projection: a delivery gap or listener failure triggers a fresh state/history read, and stale asynchronous pages cannot replace newer conversation state. Browsing older history keeps live updates and Ctrl+End returns to the current tail.
 
-Input is parsed and canonicalized before authorization. When a call requires approval, `run()` returns a durable suspension:
+## Package and RPC use
 
-```ts
-const result = await runtime.run({ task: 'update the workspace' }).result;
-if (result.state === 'suspended') {
-  const approval = result.pendingApprovals[0];
-  const resumedControl = await reopenedRuntime.resolveApproval({
-    runId: result.runId,
-    approvalId: approval.approvalId,
-    fingerprint: approval.fingerprint,
-    decision: 'allow'
-  });
-  const resumed = await resumedControl.result;
-}
-```
-
-Changed input, effects, implementation, policy, or execution boundary invalidates the approval. Non-idempotent uncertain work is never retried automatically.
-
-The CLI supports the same persisted run after process restart:
+The package root exports `openCodingApplication`, `createCodingSession`, workspace and permission APIs, structured mutation reports, and configuration parsing without loading terminal presentation. Import `@ismail-elkorchi/coding-agent/tui` or `/rpc` for those adapters.
 
 ```bash
-coding-agent approval allow RUN_ID APPROVAL_ID FINGERPRINT --root . --config coding-agent.config.json --permissions develop
+coding-agent rpc --root /path/to/workspace --session latest
 ```
 
-## Checks
+The stdio adapter uses UTF-8 JSONL with JSON-RPC 2.0. `input.submit` accepts the Core session submission fields (`task`, `instructions`, `contextItems`, and `relationship`) and returns durable submission identities; notifications carry progress and terminal results. `session.read`, history, notes, approvals, and change methods read the same recorded state. On `delivery.gap`, refresh the authoritative session. EOF and `application.shutdown` close application resources.
 
-```ts
-const checks = [{
-  id: 'mentions-risk',
-  implementationId: 'my-application/mentions-risk@1',
-  kind: 'deterministic' as const,
-  requirement: 'required' as const,
-  timeoutMs: 2_000,
-  async run({ modelOutput, signal }) {
-    signal.throwIfAborted();
-    return modelOutput.message.includes('risk')
-      ? { verdict: 'passed' as const, summary: 'Risk is covered.' }
-      : { verdict: 'failed' as const, summary: 'Risk is missing.' };
-  }
-}];
-```
+## Development
 
-Application checks use `@agents/verification` and the shared Core effect executor. A coding work record owns references to original user contributions, the baseline, private working copy, admitted verifier contract, and budget/resource owner across attempts and model changes. Corrections preserve the source contribution and its other constraints; only an explicit whole-contribution replacement supersedes it. A side question submitted with `relationship: { kind: 'side_question' }` has read-only authority and leaves revision work available for continuation.
-
-An independent verifier names its protected `verifierInputs` explicitly. These identify the admitted program, tests, fixtures and relevant dependency inputs; command text and a declared coverage label alone are observational. All selected inputs are bound by exact hashes. Test, dependency, build and CI files can change legitimately when the independent verifier covering those changes remains intact. Changing a protected verifier input requires a new admitted contract; filenames do not determine authority.
-
-Commands run against isolated snapshots through no-network Sandbox execution. The system runtime is mutable and is described by an environment policy, not an invented content attestation. New attempts obtain fresh command observations; only an exact invocation may reconcile its recorded result. There is no separate baseline-result cache. Exact baseline output comparison is diagnostic: matching failures never pass a check, and incomplete output cannot establish coverage.
-
-`IsolatedWorkingCopy` and `PreChangeSnapshot` belong to work. Publication requires passed required checks covering the exact private revision and unchanged source content since isolation. The application coordinator records verification, acceptance and publication independently of Core's immutable execution outcome. Unknown effects hold subsequent prompts durably until reconciliation. A later prompt can continue an unaccepted working copy; it does not implicitly reset its baseline or allowance.
-
-## Result semantics
-
-- Normal stop with visible content: completed execution and complete model output.
-- Output limit or content filter with visible content: completed execution and partial model output.
-- Interrupted stream or abort after visible content: failed/aborted execution, partial model output, verification not run.
-- Failure before visible content: absent model output.
-- Missing or unknown required check: inconclusive verification.
-
-For settled revision work, Coding Agent emits one persisted `CodingHandoff` for both CLI and TUI. It binds the admitted task, model summary, exact reviewed working-copy digest, changed files, bounded change artifact, revision acceptance results, usage, publication status, unresolved facts, and unknown effects. The underlying change report compares the `PreChangeSnapshot` with the private working copy—even when publication is rejected—so a failed apply never erases the revision the user is reviewing. `apply_patch` ledger observations distinguish structured mutations from unaccounted working-copy changes. A path already reported by the initial Git observation remains marked as changed before the run; Coding Agent never assumes the workspace started clean. Binary, oversized, aliased, unreadable, or truncated observations make coverage explicitly partial. Model prose is not authority for changed paths, checks, publication, or usage.
-
-The interactive TUI renders before runtime activation, then restores durable conversation, execution outcomes, application checks and Coding handoffs, queued work, driver control, approvals, and unknown-effect recovery. Its status line retains the active provider, model, trust, sandbox, and permission boundary. Provider, model, permission mode, and trust changes are admitted only while the session is idle with no queued submissions. Use Ctrl+P for commands. Use Up and Down at the first or last composer line to browse sent messages; the current draft is restored when history browsing ends.
-
-Run `npm run verify:release` for the full repository gate.
-
-## Complete CLI option reference
-
-Run `coding-agent [initial task] [options]` for the interactive TUI. Run `coding-agent exec <task|-> [options]` for one noninteractive task; `-` reads the task from standard input.
-
-| Option | Parameter and behavior |
-| --- | --- |
-| `--root <dir>` | Workspace root. Defaults to the current directory. |
-| `--state-root <dir>` | Dedicated private Coding Agent state root. Defaults to the platform user-state location. |
-| `--config <path>` | Load a project configuration proposal. `coding-agent.config.json` is discovered when present. |
-| `--provider <name>` | Select `ollama`, `openrouter`, `openai`, or `openai-codex`. |
-| `--model <name>` | Select the provider model, such as `gpt-5.6-luna`. |
-| `--provider-endpoint <url>` | Override the Ollama host or hosted-provider base URL. |
-| `--codex-transport <http_sse\|websocket>` | Select OpenAI Codex HTTP full-replay streaming or live WebSocket continuation. Defaults to `http_sse`. |
-| `--max-output-tokens <n>` | Set a positive per-request output-token limit. |
-| `--temperature <n>` | Set a finite temperature when the selected provider/model supports it. OpenAI Codex subscription requests do not support temperature. |
-| `--reasoning-effort <level>` | Select `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`, subject to provider/model support. |
-| `--show-reasoning` | Render reasoning text or summaries exposed by the provider. It does not expose private chain-of-thought. |
-| `--permissions <review\|edit\|develop>` | Select the model authority ceiling. Defaults to `review`; `edit` adds structured patches; `develop` adds sandboxed model commands. Mutable modes run the separately admitted verifier plan. |
-| `--resume` | Select the most recently active session. In taskless `exec` mode, drive its unfinished accepted run without creating another submission. |
-| `--session <id>` | Select an existing session by exact ID. In taskless `exec` mode, drive its unfinished accepted run without creating another submission. |
-| `--branch <entry-id>` | Branch the selected existing session from an entry. Requires `--resume` or `--session`. |
-
-For interactive sessions, model-selection precedence is explicit CLI option, resumed-session setting, matching trusted project configuration, stored user selection, then environment. For `exec`, precedence is explicit CLI option, resumed-session setting, matching trusted project configuration, then environment. Provider-specific project settings are meaningful only for their configured provider. A provider and model must be selected explicitly through one of those sources or through the interactive `/provider` and `/model` commands.
-
-Provider environment variables are `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `OPENROUTER_APP_URL`, and `OPENROUTER_APP_TITLE`. Runtime defaults can be supplied with `CODING_AGENT_PROVIDER`, `CODING_AGENT_MODEL`, `CODING_AGENT_PROVIDER_ENDPOINT`, and `CODING_AGENT_REASONING_EFFORT`.
-
-Credential commands are:
+The repository pins exact Agent Core, Sandbox, terminal-ui, and markspan revisions. Run the complete gate with:
 
 ```bash
-coding-agent auth status openai
-coding-agent auth status openai-codex
-coding-agent auth login openai-codex
-coding-agent auth logout openai-codex
+npm run verify:release
 ```
-
-OpenAI Platform authentication comes from `OPENAI_API_KEY`; ChatGPT subscription authentication is stored by `auth login openai-codex` outside the workspace.
-
-## Reusable persistent sessions
-
-`createCodingSession` composes the same workspace authority, isolated working copy,
-Sandbox tools, check plans, work settlement, and handoff service used by the CLI and TUI.
-It accepts an already opened and admitted workspace, a `ModelProvider`, exact session
-settings, and a permission mode. `closeCodingSession` settles application cleanup;
-the caller closes its opened workspace after the session finishes.
-
-```ts
-import { createCodingSession, closeCodingSession } from '@ismail-elkorchi/coding-agent';
-
-const coding = await createCodingSession({
-  workspace,
-  provider,
-  settings: { provider: provider.id, model },
-  permissionMode: 'review'
-});
-try {
-  const submission = await coding.agent.submit({ task: 'Inspect this implementation.' });
-  if (submission.kind === 'started') await submission.completion;
-} finally {
-  await closeCodingSession(coding);
-}
-```
-
-The package exports `decodeCodingHandoff` for integrations reading persisted handoffs. Its `outcome` records application verification, acceptance, and publication; `changeReport` records the reviewed revision, workspace changes, and coverage; `terminal` records execution and usage. `deliveryDiagnostics` preserves delivery failures separately. `codingHandoffUncertainties` derives presentation from these records. The current handoff shape is required; incompatible records are rejected without rewriting them.
-
-Original user contributions remain available across completed runs. The optional
-attention tools are composed for every Coding session: `history_read`,
-`history_search`, `notes_list`, `notes_search`, `notes_read`, `notes_write`,
-`notes_remove`, `context_inspect`, and `context_transition`. They are confined to
-the selected session branch. Notes are generated material and cannot authorize
-workspace effects, change a check result, or publish a working copy. Review mode
-can maintain private notes while workspace writes remain unavailable.
-
-`/context` or `/context inspect` shows the committed window and pending work.
-`/context retain` requests a validated window retaining original history after a
-run has established the complete tool catalog. Model
-context requests are scheduled for a legal runtime boundary. Both controls use
-Core's context service and compiled bootstrap validation. A failed admission keeps
-the previous committed window. A provider-native strategy requires an active run,
-an explicit provider capability and a governed transform of completed history;
-the current run's source and synchronous tool obligations remain original.
-Primary generation and native transforms share `coding.inference`, durable
-invocation records and one owning work budget. Hosts may set `inferenceBudget`.
-
-Active repository guidance is reread at request and authorization boundaries. Each
-request includes current source and working-copy revision identities, actual
-changed resources, the admitted check plan, the latest observed check, and the
-latest handoff's exact reviewed revision and publication status. A prior check is
-labelled applicable only when its checked revision equals the current working
-copy; model notes cannot change that binding.

@@ -100,13 +100,13 @@ export function openPanel(
               label: `${point.timestamp} · ${point.kind.replaceAll('_', ' ')} · ${point.runId ?? point.entryId}`
             }));
           else if (panel === 'changes')
-            items = state.debug.handoffs.flatMap((handoff) =>
-              handoff.changeReport.changes.map((change) => ({
+            items = state.debug.changes.flatMap((report) =>
+              report.changes.map((change) => ({
                 kind: 'change' as const,
-                id: `${handoff.terminal.runId}:${change.path}`,
-                label: `${change.kind} · ${change.path} · ${change.attribution.replaceAll('_', ' ')}`,
+                id: `${report.runId}:${change.path}`,
+                label: `${change.kind} · ${change.path} · ${change.state}`,
                 change,
-                runId: handoff.terminal.runId
+                runId: report.runId
               }))
             );
           else {
@@ -401,7 +401,7 @@ export function panelView(panel: CodingPanel, width: number, height: number): El
 
 function describeChange(item: Extract<PanelItem, { kind: 'change' }>): string {
   const change = item.change;
-  return `${change.path}\n${change.kind} · ${change.content}\nRun: ${item.runId}\nAttribution: ${change.attribution}\nBefore: ${change.beforeSha256 ?? change.initial}\nAfter: ${change.afterSha256 ?? 'absent'}\nBytes: ${String(change.beforeBytes ?? 0)} → ${String(change.afterBytes ?? 0)}\n${change.conflicts.join('\n')}`;
+  return `${change.path}${change.destinationPath ? ` → ${change.destinationPath}` : ''}\nSource: ${change.absolutePath}${change.destinationAbsolutePath ? ` → ${change.destinationAbsolutePath}` : ''}\n${change.kind} · ${change.state}\nRun: ${item.runId}\nBefore: ${change.beforeSha256 ?? 'absent'}\nAfter: ${change.afterSha256 ?? 'absent'}\nBytes: ${String(change.beforeBytes)} → ${String(change.afterBytes)}`;
 }
 
 function acceptPanelItem(
@@ -448,7 +448,7 @@ function acceptPanelItem(
               const patches = inspection.patches
                 .map(
                   ({ receipt, patch }) =>
-                    `Working-copy patch · ${receipt.applicationStatus} · ${receipt.patchSha256}\n${patch}`
+                    `Workspace patch · ${receipt.applicationStatus} · ${receipt.patchSha256}\n${patch}`
                 )
                 .join('\n\n');
               return {
@@ -456,7 +456,7 @@ function acceptPanelItem(
                 message: {
                   type: 'panel.source-loaded',
                   title: item.change.path,
-                  content: `${describeChange(item)}\nAcceptance: ${inspection.outcome.acceptance}\nPublication: ${inspection.outcome.publication}\n${inspection.outcome.reason ?? ''}\n\n${patches || 'No structured patch is recorded for this change. The report identifies the observed hashes; it does not retain a text comparison for external changes.'}`
+                  content: `${describeChange(item)}\n\n${patches || 'No structured patch is recorded for this change.'}`
                 }
               };
             },

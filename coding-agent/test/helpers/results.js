@@ -1,6 +1,4 @@
 import { decodeAgentTerminalSnapshot } from '@agent-core/runtime';
-import { hashJson } from '@agent-core/persistence';
-import { decodeCodingWorkOutcome } from '@ismail-elkorchi/coding-agent';
 
 export function testTerminal(overrides = {}) {
   return decodeAgentTerminalSnapshot({
@@ -15,7 +13,6 @@ export function testTerminal(overrides = {}) {
     budget: {
       modelTurns: 1,
       totalToolCalls: 0,
-      repeatedIdenticalToolCalls: 0,
       elapsedMs: 1,
       promptTokens: 0,
       completionTokens: 0,
@@ -32,19 +29,6 @@ export function testTerminal(overrides = {}) {
   });
 }
 
-export function testOutcome(terminal, overrides = {}) {
-  return decodeCodingWorkOutcome({
-    runId: terminal.runId,
-    workId: 'work',
-    terminalSha256: hashJson(terminal),
-    stage: 'settled',
-    verification: { status: 'not_required', checks: [] },
-    acceptance: 'not_required',
-    publication: 'not_applicable',
-    ...overrides
-  });
-}
-
-export function testResult(terminal = testTerminal(), outcome = {}) {
-  return { state: 'ended', terminal, outcome: testOutcome(terminal, outcome), deliveryDiagnostics: [] };
+export function testResult(terminal = testTerminal()) {
+  return { state: 'ended', terminal, deliveryDiagnostics: [] };
 }

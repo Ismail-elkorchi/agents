@@ -3,10 +3,9 @@ import { OllamaProvider } from '@agent-core/provider-ollama';
 import { OpenAIProvider } from '@agent-core/provider-openai';
 import { OpenAICodexProvider, type OpenAICodexTransport } from '@agent-core/provider-openai-codex';
 import { OpenRouterProvider } from '@agent-core/provider-openrouter';
-import { type SessionBindingInput, type SessionDescriptor } from '@agent-core/runtime';
+import { type AgentSession, type SessionBindingInput, type SessionDescriptor } from '@agent-core/runtime';
 import { JsonlSessionRepository } from '@agent-core/runtime/node';
-import type { CodingHandoff } from '../changes/coding-handoff.js';
-import type { CodingSession } from '../coding-session.js';
+import { readRunChangeReport } from '../changes/run-change-report.js';
 import {
   isCodingAgentProviderId,
   loadCodingAgentConfiguration,
@@ -14,6 +13,7 @@ import {
   type CodingAgentProviderId
 } from '../configuration.js';
 import { type CodingPermissionMode } from '../security/permission-mode.js';
+import { readConfiguredCheckResults } from '../verification/configured-check-tool.js';
 import { createCodingSession, type CodingSessionComposition } from '../session.js';
 import { type CodingAgentModelSelection } from '../state/model-selection-store.js';
 import { codingWorkspaceSessionBinding, type OpenCodingWorkspace } from '../workspace.js';
@@ -152,7 +152,7 @@ export function resolveRuntimeSettingsSelection(
   });
 }
 
-export function requireIdleSession(agent: CodingSession): void {
+export function requireIdleSession(agent: AgentSession): void {
   const state = agent.state();
   if (state.phase !== 'idle' || state.queuedInputs > 0) {
     throw new Error(
@@ -185,8 +185,15 @@ export async function readCodingHistoryPage(
 ) {
   const history = await runtime.sessions.readBranchPage(runtime.session, request);
   const runIds = [...new Set(history.entries.flatMap((entry) => ('runId' in entry ? [entry.runId] : [])))];
-  const handoffs = await Promise.all(runIds.map((runId) => runtime.handoffs.read(runId)));
-  return { history, handoffs: handoffs.filter((handoff): handoff is CodingHandoff => handoff !== undefined) };
+  const [changes, verification] = await Promise.all([
+    Promise.all(
+      runIds.map((runId) => readRunChangeReport(runtime.events, runId, runtime.workspaceRoot))
+    ),
+    Promise.all(
+      runIds.map((runId) => readConfiguredCheckResults(runtime.events, runId, runtime.configuration))
+    )
+  ]);
+  return { history, changes, verification };
 }
 
 export async function createRuntime(

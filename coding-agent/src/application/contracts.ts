@@ -1,13 +1,15 @@
 import type {
   AgentRunInspection,
+  AgentSessionEvent,
   AgentSessionState,
+  AgentSessionSubmissionResult,
   SessionBranchPage,
   SessionBranchPoint,
   SessionPendingSubmission
 } from '@agent-core/runtime';
 import type { ApplicationDeliveryEvent } from '@agents/application';
-import type { CodingHandoff } from '../changes/coding-handoff.js';
-import type { CodingSessionEvent, CodingSessionSubmissionResult } from '../coding-session.js';
+import type { RunChangeReport } from '../changes/run-change-report.js';
+import type { CodingRunVerification } from '../verification/configured-check-tool.js';
 
 export interface CodingRuntimeDetails {
   readonly providerId?: string;
@@ -30,7 +32,8 @@ export interface CodingRuntimeDetails {
 
 export interface CodingHistoryPage {
   readonly history: SessionBranchPage;
-  readonly handoffs: readonly CodingHandoff[];
+  readonly changes: readonly RunChangeReport[];
+  readonly verification: readonly CodingRunVerification[];
 }
 
 export interface CodingSessionView extends CodingHistoryPage {
@@ -48,7 +51,7 @@ export interface CodingApplicationState {
   readonly session?: AgentSessionState;
 }
 export type CodingSubmissionResult =
-  | CodingSessionSubmissionResult
+  | AgentSessionSubmissionResult
   | {
       readonly kind: 'rejected';
       readonly reason: 'setup_required';
@@ -59,7 +62,7 @@ export type CodingLoginResult =
   | { readonly kind: 'api_key'; readonly provider: 'openai' | 'openrouter'; readonly available: boolean }
   | { readonly kind: 'authenticated'; readonly provider: 'openai-codex' };
 export type CodingApplicationEvent =
-  | CodingSessionEvent
+  | AgentSessionEvent
   | ApplicationDeliveryEvent
   | { readonly type: 'application.state.changed'; readonly state: CodingApplicationState }
   | {
@@ -69,4 +72,4 @@ export type CodingApplicationEvent =
       readonly expiresInSeconds: number;
     }
   | { readonly type: 'session.restored'; readonly view: CodingSessionView }
-  | { readonly type: 'handoff.ready'; readonly handoff: CodingHandoff };
+  | { readonly type: 'verification.updated'; readonly verification: CodingRunVerification };

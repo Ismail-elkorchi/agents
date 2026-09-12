@@ -1,33 +1,19 @@
 # Agents
 
-Concrete products composed from Agent Core:
+Runnable applications composed from [Agent Core](https://github.com/Ismail-elkorchi/agent-core):
 
-- `@ismail-elkorchi/coding-agent`: interactive coding product with local tools, approvals, recovery, and a TUI.
-- `@ismail-elkorchi/writing-agent`: narrow drafting and durable document-revision workflows used to keep the shared Core composition-neutral.
+- `@ismail-elkorchi/coding-agent` is a conversational coding application with workspace tools, explicit permissions, Sandbox command execution, durable sessions, a TUI, and a JSON-RPC adapter.
+- `@ismail-elkorchi/writing-agent` is a writing application with source evidence, document proposals, verification, explicit revision application, a TUI, and a JSON-RPC adapter.
 
-Runnable applications composed from [Agent Core](https://github.com/Ismail-elkorchi/agent-core).
+Agent Core owns provider-neutral inference, conversation history, model-managed context and notes, durable effects, resource accounting, recovery, and session branches. Each application owns its domain tools, permission choices, verification meaning, and presentation.
 
-Agent Core owns persistent conversation, scoped history and model notes, context
-transitions, provider request accounting, inference invocation, tool/effect truth,
-persistence, and recovery. Coding Agent owns target-scoped
-repository guidance, isolated working copies, revision-bound acceptance checks,
-review handoffs, and publication; Writing Agent owns operations, context selection,
-claim evidence, proposals, production verification, exact apply authorization, and revision application. Offline
-product/model measurement infrastructure is intentionally outside this
-production workspace.
+The applications share delivery, RPC framing, terminal presentation, and deterministic verification utilities. Shared packages contain no coding or writing workflow policy.
 
-Completing a user request does not discard its conversation. Model notes help
-retain decisions and retrieve earlier work; they do not change repository
-permissions, editorial requirements, or verification results. Both products use
-Core's shared continuity services while retaining their own acceptance contracts.
-Coding keeps the original work objective and its corrections (or an explicit whole replacement) in context;
-other relevant requirements and history use explicit model context selection.
-Original user contributions remain retrievable, and selecting or omitting a source
-never changes its authority.
+Development uses adjacent `agents`, `agent-core`, and `sandbox` checkouts. Exact upstream commits are recorded in the root `package.json`. Build the upstream repositories, then run:
 
-| Package | Status |
-| --- | --- |
-| `@ismail-elkorchi/coding-agent` | Interactive coding agent with local tools and a terminal UI. |
-| `@ismail-elkorchi/writing-agent` | Narrow drafting and durable document-revision workflows. |
+```bash
+npm ci
+npm run verify:release
+```
 
-Development currently requires `agents` and `agent-core` as adjacent checkouts. The required Agent Core commit is recorded in the root `package.json`. Build Agent Core first, then run `npm ci` and `npm run verify:release` here. Coding-agent usage is documented once in [`coding-agent/README.md`](coding-agent/README.md).
+See [Coding Agent](coding-agent/README.md) and [Writing Agent](writing-agent/README.md) for product usage.

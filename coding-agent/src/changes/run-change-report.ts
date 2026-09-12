@@ -1,19 +1,8 @@
 import type { EventRepository } from '@agent-core/persistence';
 import type { AgentEvent } from '@agent-core/runtime';
-import {
-  applyPatchOutputSchema,
-  captureWorkspaceSnapshot,
-  type ApplyPatchOutput,
-  type RootedFileAuthority,
-  type WorkspaceSnapshot,
-  type WorkspaceSnapshotEntry
-} from '@agent-core/tools-local';
+import { applyPatchOutputSchema, type ApplyPatchOutput } from '@agent-core/tools-local';
 import { createHash } from 'node:crypto';
-import { PrivateStateDirectory } from '../state/private-state.js';
-import { loadPreChangeSnapshot, type PreChangeSnapshot } from './pre-change-snapshot-store.js';
-
-const MAX_REPORT_CHANGES = 200;
-const MAX_REPORT_RECEIPTS = 200;
+import path from 'node:path';
 
 export interface StructuredMutationReceipt {
   readonly eventId: string;
@@ -30,371 +19,137 @@ export interface StructuredMutationReceipt {
   readonly rootState: ApplyPatchOutput['rootState'];
 }
 
-interface DecodedMutationReceipt extends StructuredMutationReceipt {
-  readonly files: readonly MutationFileReceipt[];
-}
-
-interface MutationFileReceipt {
-  readonly path: string;
-  readonly operation: 'add' | 'update' | 'delete' | 'move';
-  readonly destinationPath?: string;
-  readonly hunkCount: number;
-  readonly additions: number;
-  readonly deletions: number;
-  readonly oldSha256?: string;
-  readonly newSha256?: string;
-  readonly oldBytes: number;
-  readonly newBytes: number;
-  readonly plannedChange: boolean;
-  readonly finalState: 'unchanged' | 'changed' | 'uncertain';
-  readonly matchModes?: readonly (
-    | 'exact'
-    | 'trim_trailing_whitespace'
-    | 'trim_surrounding_whitespace'
-    | 'normalize_common_unicode_punctuation'
-  )[];
-  readonly exact?: boolean;
-}
-
 export interface WorkspaceChange {
   readonly path: string;
-  readonly kind: 'added' | 'modified' | 'deleted' | 'replaced';
-  readonly attribution: 'structured_mutation' | 'external_or_concurrent';
-  readonly initial: 'existing' | 'absent';
-  readonly preChangeVersionControl: 'changed' | 'not_reported' | 'not_applicable' | 'unavailable';
-  readonly content: 'text' | 'binary' | 'large' | 'non_file' | 'unknown';
+  readonly absolutePath: string;
+  readonly kind: 'added' | 'modified' | 'deleted' | 'moved';
+  readonly destinationPath?: string;
+  readonly destinationAbsolutePath?: string;
   readonly beforeSha256?: string;
   readonly afterSha256?: string;
-  readonly beforeBytes?: number;
-  readonly afterBytes?: number;
+  readonly beforeBytes: number;
+  readonly afterBytes: number;
   readonly receiptSequences: readonly number[];
-  readonly conflicts: readonly string[];
+  readonly state: 'changed' | 'uncertain';
 }
 
 export interface RunChangeReport {
-  readonly schemaVersion: 1;
   readonly runId: string;
-  readonly preChangeDigest: string;
-  readonly finalDigest: string;
-  readonly coverage: 'complete' | 'partial';
-  readonly causes: readonly string[];
   readonly changes: readonly WorkspaceChange[];
-  readonly totalChanges: number;
-  readonly omittedChanges: number;
   readonly mutationReceipts: readonly StructuredMutationReceipt[];
-  readonly totalMutationReceipts: number;
-  readonly omittedMutationReceipts: number;
-  readonly facts: {
-    readonly changedPaths: readonly string[];
-    readonly structuredMutationPaths: readonly string[];
-    readonly externalOrConcurrentPaths: readonly string[];
-  };
 }
 
-/** Derives one bounded coding-domain report from the run ledger and exact workspace states. */
-export async function createRunChangeReport(input: {
-  readonly runId: string;
-  readonly workId: string;
-  readonly root: RootedFileAuthority;
-  readonly state: PrivateStateDirectory;
-  readonly events: EventRepository<AgentEvent>;
-}): Promise<RunChangeReport> {
-  const [preChange, final, mutations] = await Promise.all([
-    loadPreChangeSnapshot(input.state, input.workId),
-    captureWorkspaceSnapshot(input.root),
-    readMutationReceipts(input.events, input.runId)
-  ]);
-  return deriveRunChangeReport(input.runId, preChange, final, mutations.receipts, mutations.causes);
+interface MutationRecord {
+  readonly receipt: StructuredMutationReceipt;
+  readonly files: ApplyPatchOutput['files'];
 }
 
-export function deriveRunChangeReport(
+/** Reads committed structured workspace mutations directly from the authoritative run ledger. */
+export async function readRunChangeReport(
+  events: EventRepository<AgentEvent>,
   runId: string,
-  preChange: PreChangeSnapshot,
-  final: WorkspaceSnapshot,
-  receipts: readonly DecodedMutationReceipt[],
-  mutationCauses: readonly string[] = []
-): RunChangeReport {
-  const before = new Map(preChange.workspace.entries.map((entry) => [entry.path, entry]));
-  const after = new Map(final.entries.map((entry) => [entry.path, entry]));
-  const predicted = new Map<string, PredictedState>();
-  const receiptSequences = new Map<string, Set<number>>();
-  const conflicts = new Map<string, Set<string>>();
-  const touched = new Set<string>();
-  for (const receipt of receipts)
-    applyReceipt(receipt, before, predicted, receiptSequences, conflicts, touched);
-
-  for (const path of touched) {
-    const expected = predicted.get(path) ?? stateFromEntry(before.get(path));
-    if (!predictedMatches(expected, after.get(path)))
-      addConflict(conflicts, path, 'final_state_does_not_match_structured_mutation_receipts');
+  workspaceRoot: string
+): Promise<RunChangeReport> {
+  const mutations = await readMutations(events, runId);
+  const changes = new Map<string, WorkspaceChange>();
+  for (const mutation of mutations) {
+    for (const file of mutation.files) {
+      if (!file.plannedChange || file.finalState === 'unchanged') continue;
+      const key = file.operation === 'move' && file.destinationPath
+        ? `${file.path}\0${file.destinationPath}`
+        : file.path;
+      const previous = changes.get(key);
+      changes.set(
+        key,
+        Object.freeze({
+          path: file.path,
+          absolutePath: workspacePath(workspaceRoot, file.path),
+          kind:
+            file.operation === 'update'
+              ? 'modified'
+              : file.operation === 'move'
+                ? 'moved'
+                : file.operation === 'add'
+                  ? 'added'
+                  : 'deleted',
+          ...(file.destinationPath === undefined ? {} : { destinationPath: file.destinationPath }),
+          ...(file.destinationPath === undefined
+            ? {}
+            : { destinationAbsolutePath: workspacePath(workspaceRoot, file.destinationPath) }),
+          ...(previous?.beforeSha256 ?? file.oldSha256
+            ? { beforeSha256: previous?.beforeSha256 ?? file.oldSha256 }
+            : {}),
+          ...(file.newSha256 === undefined ? {} : { afterSha256: file.newSha256 }),
+          beforeBytes: previous?.beforeBytes ?? file.oldBytes,
+          afterBytes: file.newBytes,
+          receiptSequences: Object.freeze([
+            ...(previous?.receiptSequences ?? []),
+            mutation.receipt.sequence
+          ]),
+          state:
+            mutation.receipt.rootState === 'known' &&
+            (mutation.receipt.transactionOutcome === 'committed' ||
+              mutation.receipt.transactionOutcome === 'committed_with_residue') &&
+            file.finalState === 'changed'
+              ? 'changed'
+              : 'uncertain'
+        })
+      );
+    }
   }
-
-  const preChangeVersionControl = initialVersionControlPaths(preChange);
-  const changedPaths = [...new Set([...before.keys(), ...after.keys()])]
-    .filter((path) => changedEntry(before.get(path), after.get(path)))
-    .filter((path) => !directoryOnlyChange(before.get(path), after.get(path)))
-    .sort(compareCodeUnits);
-  const changes = changedPaths.map((path): WorkspaceChange => {
-    const beforeEntry = before.get(path);
-    const afterEntry = after.get(path);
-    const pathConflicts = Object.freeze([...(conflicts.get(path) ?? [])].sort(compareCodeUnits));
-    const attributed = touched.has(path) && pathConflicts.length === 0;
-    return Object.freeze({
-      path,
-      kind: changeKind(beforeEntry, afterEntry),
-      attribution: attributed ? 'structured_mutation' : 'external_or_concurrent',
-      initial: beforeEntry === undefined ? 'absent' : 'existing',
-      preChangeVersionControl:
-        preChangeVersionControl.kind === 'observed'
-          ? preChangeVersionControl.paths.has(path)
-            ? 'changed'
-            : 'not_reported'
-          : preChangeVersionControl.kind,
-      content: changeContent(beforeEntry, afterEntry),
-      ...(beforeEntry?.sha256 ? { beforeSha256: beforeEntry.sha256 } : {}),
-      ...(afterEntry?.sha256 ? { afterSha256: afterEntry.sha256 } : {}),
-      ...(beforeEntry?.bytes !== undefined ? { beforeBytes: beforeEntry.bytes } : {}),
-      ...(afterEntry?.bytes !== undefined ? { afterBytes: afterEntry.bytes } : {}),
-      receiptSequences: Object.freeze(
-        [...(receiptSequences.get(path) ?? [])].sort((left, right) => left - right)
-      ),
-      conflicts: pathConflicts
-    });
-  });
-  const retainedChanges = Object.freeze(changes.slice(0, MAX_REPORT_CHANGES));
-  const retainedReceipts = Object.freeze(receipts.slice(0, MAX_REPORT_RECEIPTS).map(publicReceipt));
-  const causes = new Set([
-    ...preChange.workspace.causes.map((cause) => `preChange:${cause}`),
-    ...final.causes.map((cause) => `final:${cause}`)
-  ]);
-  for (const cause of mutationCauses) causes.add(`mutation_receipts:${cause}`);
-  if (preChange.workspace.coverage === 'partial') causes.add('preChange:partial');
-  if (final.coverage === 'partial') causes.add('final:partial');
-  if (preChange.versionControl.kind === 'unavailable') causes.add('version_control:unavailable');
-  else if (preChange.versionControl.kind === 'git') {
-    if (preChange.versionControl.status.kind === 'unavailable') causes.add('version_control:unavailable');
-    else if (preChange.versionControl.status.coverage === 'partial') causes.add('version_control:partial');
-  }
-  if (changes.length > retainedChanges.length) causes.add('changes:retention_limit');
-  if (receipts.length > retainedReceipts.length) causes.add('mutation_receipts:retention_limit');
-  if (conflicts.size > 0) causes.add('mutation_receipts:conflict');
   return Object.freeze({
-    schemaVersion: 1,
     runId,
-    preChangeDigest: preChange.workspace.digest,
-    finalDigest: final.digest,
-    coverage: causes.size === 0 ? 'complete' : 'partial',
-    causes: Object.freeze([...causes].sort(compareCodeUnits)),
-    changes: retainedChanges,
-    totalChanges: changes.length,
-    omittedChanges: changes.length - retainedChanges.length,
-    mutationReceipts: retainedReceipts,
-    totalMutationReceipts: receipts.length,
-    omittedMutationReceipts: receipts.length - retainedReceipts.length,
-    facts: Object.freeze({
-      changedPaths: Object.freeze(retainedChanges.map((change) => change.path)),
-      structuredMutationPaths: Object.freeze(
-        retainedChanges
-          .filter((change) => change.attribution === 'structured_mutation')
-          .map((change) => change.path)
-      ),
-      externalOrConcurrentPaths: Object.freeze(
-        retainedChanges
-          .filter((change) => change.attribution === 'external_or_concurrent')
-          .map((change) => change.path)
+    changes: Object.freeze([...changes.values()].sort((left, right) => left.path.localeCompare(right.path))),
+    mutationReceipts: Object.freeze(mutations.map((mutation) => mutation.receipt))
+  });
+}
+
+function workspacePath(workspaceRoot: string, relativePath: string): string {
+  return path.join(workspaceRoot, ...relativePath.split('/'));
+}
+
+/** Retrieves the exact patch inputs identified by structured mutation receipts. */
+export async function readRecordedMutationPatches(
+  events: EventRepository<AgentEvent>,
+  runId: string,
+  receipts: readonly StructuredMutationReceipt[]
+): Promise<readonly { readonly receipt: StructuredMutationReceipt; readonly patch: string }[]> {
+  const expected = new Map(receipts.map((receipt) => [attemptKey(receipt), receipt]));
+  const starts = new Map<string, string>();
+  const patches: { readonly receipt: StructuredMutationReceipt; readonly patch: string }[] = [];
+  for await (const envelope of events.read(runId)) {
+    const event = envelope.event;
+    if (event.type !== 'tool.started' && event.type !== 'tool.ended') continue;
+    const key = attemptKey(event);
+    const receipt = expected.get(key);
+    if (!receipt) continue;
+    if (event.type === 'tool.started') {
+      const patch = patchDocument(event);
+      if (
+        event.fingerprint !== receipt.fingerprint ||
+        createHash('sha256').update(patch).digest('hex') !== receipt.patchSha256
       )
-    })
-  });
+        throw new Error('Recorded patch input does not match its mutation receipt.');
+      starts.set(key, patch);
+      continue;
+    }
+    const patch = starts.get(key);
+    if (!patch || envelope.eventId !== receipt.eventId || envelope.sequence !== receipt.sequence)
+      throw new Error('Mutation receipt does not identify its recorded patch.');
+    patches.push({ receipt, patch });
+    expected.delete(key);
+    starts.delete(key);
+  }
+  if (expected.size > 0) throw new Error('A mutation receipt is missing from the run ledger.');
+  return Object.freeze(patches);
 }
 
-export function decodeRunChangeReport(value: unknown, expectedRunId?: string): RunChangeReport {
-  if (
-    !record(value) ||
-    Object.keys(value).some(
-      (key) =>
-        ![
-          'schemaVersion',
-          'runId',
-          'preChangeDigest',
-          'finalDigest',
-          'coverage',
-          'causes',
-          'changes',
-          'totalChanges',
-          'omittedChanges',
-          'mutationReceipts',
-          'totalMutationReceipts',
-          'omittedMutationReceipts',
-          'facts'
-        ].includes(key)
-    ) ||
-    value.schemaVersion !== 1 ||
-    typeof value.runId !== 'string' ||
-    (expectedRunId !== undefined && value.runId !== expectedRunId) ||
-    !sha256(value.preChangeDigest) ||
-    !sha256(value.finalDigest) ||
-    (value.coverage !== 'complete' && value.coverage !== 'partial') ||
-    !stringList(value.causes) ||
-    !Array.isArray(value.changes) ||
-    value.changes.length > MAX_REPORT_CHANGES ||
-    !nonNegativeInteger(value.totalChanges) ||
-    !nonNegativeInteger(value.omittedChanges) ||
-    value.totalChanges !== value.changes.length + value.omittedChanges ||
-    !Array.isArray(value.mutationReceipts) ||
-    value.mutationReceipts.length > MAX_REPORT_RECEIPTS ||
-    !nonNegativeInteger(value.totalMutationReceipts) ||
-    !nonNegativeInteger(value.omittedMutationReceipts) ||
-    value.totalMutationReceipts !== value.mutationReceipts.length + value.omittedMutationReceipts ||
-    !record(value.facts)
-  )
-    throw new Error('Persisted run change report is invalid.');
-  const changes = Object.freeze(value.changes.map(decodeWorkspaceChange));
-  const mutationReceipts = Object.freeze(value.mutationReceipts.map(decodeMutationReceipt));
-  const facts = decodeFacts(value.facts);
-  return Object.freeze({
-    schemaVersion: 1,
-    runId: value.runId,
-    preChangeDigest: value.preChangeDigest,
-    finalDigest: value.finalDigest,
-    coverage: value.coverage,
-    causes: Object.freeze([...value.causes]),
-    changes,
-    totalChanges: value.totalChanges,
-    omittedChanges: value.omittedChanges,
-    mutationReceipts,
-    totalMutationReceipts: value.totalMutationReceipts,
-    omittedMutationReceipts: value.omittedMutationReceipts,
-    facts
-  });
-}
-
-function decodeWorkspaceChange(value: unknown): WorkspaceChange {
-  if (
-    !record(value) ||
-    Object.keys(value).some(
-      (key) =>
-        ![
-          'path',
-          'kind',
-          'attribution',
-          'initial',
-          'preChangeVersionControl',
-          'content',
-          'beforeSha256',
-          'afterSha256',
-          'beforeBytes',
-          'afterBytes',
-          'receiptSequences',
-          'conflicts'
-        ].includes(key)
-    ) ||
-    typeof value.path !== 'string' ||
-    !changeKindValue(value.kind) ||
-    (value.attribution !== 'structured_mutation' && value.attribution !== 'external_or_concurrent') ||
-    (value.initial !== 'existing' && value.initial !== 'absent') ||
-    (value.preChangeVersionControl !== 'changed' &&
-      value.preChangeVersionControl !== 'not_reported' &&
-      value.preChangeVersionControl !== 'not_applicable' &&
-      value.preChangeVersionControl !== 'unavailable') ||
-    !changeContentValue(value.content) ||
-    (value.beforeSha256 !== undefined && !sha256(value.beforeSha256)) ||
-    (value.afterSha256 !== undefined && !sha256(value.afterSha256)) ||
-    (value.beforeBytes !== undefined && !nonNegativeInteger(value.beforeBytes)) ||
-    (value.afterBytes !== undefined && !nonNegativeInteger(value.afterBytes)) ||
-    !integerList(value.receiptSequences) ||
-    !stringList(value.conflicts)
-  )
-    throw new Error('Persisted workspace change is invalid.');
-  return Object.freeze({
-    path: value.path,
-    kind: value.kind,
-    attribution: value.attribution,
-    initial: value.initial,
-    preChangeVersionControl: value.preChangeVersionControl,
-    content: value.content,
-    ...(typeof value.beforeSha256 === 'string' ? { beforeSha256: value.beforeSha256 } : {}),
-    ...(typeof value.afterSha256 === 'string' ? { afterSha256: value.afterSha256 } : {}),
-    ...(typeof value.beforeBytes === 'number' ? { beforeBytes: value.beforeBytes } : {}),
-    ...(typeof value.afterBytes === 'number' ? { afterBytes: value.afterBytes } : {}),
-    receiptSequences: Object.freeze([...value.receiptSequences]),
-    conflicts: Object.freeze([...value.conflicts])
-  });
-}
-
-function decodeMutationReceipt(value: unknown): StructuredMutationReceipt {
-  if (
-    !record(value) ||
-    Object.keys(value).some(
-      (key) =>
-        ![
-          'eventId',
-          'sequence',
-          'turnId',
-          'toolBatchId',
-          'callIndex',
-          'callId',
-          'toolAttempt',
-          'fingerprint',
-          'patchSha256',
-          'applicationStatus',
-          'transactionOutcome',
-          'rootState'
-        ].includes(key)
-    ) ||
-    typeof value.eventId !== 'string' ||
-    !nonNegativeInteger(value.sequence) ||
-    typeof value.turnId !== 'string' ||
-    typeof value.toolBatchId !== 'string' ||
-    !nonNegativeInteger(value.callIndex) ||
-    (value.callId !== undefined && typeof value.callId !== 'string') ||
-    !nonNegativeInteger(value.toolAttempt) ||
-    typeof value.fingerprint !== 'string' ||
-    !sha256(value.patchSha256) ||
-    !applicationStatus(value.applicationStatus) ||
-    (value.transactionOutcome !== undefined && !transactionOutcome(value.transactionOutcome)) ||
-    (value.rootState !== 'known' && value.rootState !== 'uncertain')
-  )
-    throw new Error('Persisted structured mutation receipt is invalid.');
-  return Object.freeze({
-    eventId: value.eventId,
-    sequence: value.sequence,
-    turnId: value.turnId,
-    toolBatchId: value.toolBatchId,
-    callIndex: value.callIndex,
-    ...(typeof value.callId === 'string' ? { callId: value.callId } : {}),
-    toolAttempt: value.toolAttempt,
-    fingerprint: value.fingerprint,
-    patchSha256: value.patchSha256,
-    applicationStatus: value.applicationStatus,
-    ...(transactionOutcome(value.transactionOutcome) ? { transactionOutcome: value.transactionOutcome } : {}),
-    rootState: value.rootState
-  });
-}
-
-function decodeFacts(value: Record<string, unknown>): RunChangeReport['facts'] {
-  if (
-    Object.keys(value).some(
-      (key) => !['changedPaths', 'structuredMutationPaths', 'externalOrConcurrentPaths'].includes(key)
-    ) ||
-    !stringList(value.changedPaths) ||
-    !stringList(value.structuredMutationPaths) ||
-    !stringList(value.externalOrConcurrentPaths)
-  )
-    throw new Error('Persisted run change facts are invalid.');
-  return Object.freeze({
-    changedPaths: Object.freeze([...value.changedPaths]),
-    structuredMutationPaths: Object.freeze([...value.structuredMutationPaths]),
-    externalOrConcurrentPaths: Object.freeze([...value.externalOrConcurrentPaths])
-  });
-}
-
-async function readMutationReceipts(
+async function readMutations(
   events: EventRepository<AgentEvent>,
   runId: string
-): Promise<{ readonly receipts: readonly DecodedMutationReceipt[]; readonly causes: readonly string[] }> {
+): Promise<readonly MutationRecord[]> {
   const starts = new Map<string, Extract<AgentEvent, { type: 'tool.started' }>>();
-  const receipts: DecodedMutationReceipt[] = [];
-  const causes = new Set<string>();
+  const mutations: MutationRecord[] = [];
   for await (const envelope of events.read(runId)) {
     const event = envelope.event;
     if (event.type === 'tool.started' && event.toolName === 'apply_patch') {
@@ -409,18 +164,12 @@ async function readMutationReceipts(
       continue;
     const parsed = applyPatchOutputSchema.safeParse(event.observation.output);
     if (!parsed.success)
-      throw new Error(
-        `Run ${runId} contains an invalid persisted apply_patch observation at sequence ${String(envelope.sequence)}.`
-      );
+      throw new Error(`Run ${runId} contains an invalid apply_patch observation.`);
     const started = starts.get(attemptKey(event));
-    if (!started)
-      throw new Error(
-        `Run ${runId} is missing the apply_patch start for sequence ${String(envelope.sequence)}.`
-      );
-    starts.delete(attemptKey(event));
+    if (!started) throw new Error(`Run ${runId} is missing an apply_patch start record.`);
     const patch = patchDocument(started);
-    receipts.push(
-      Object.freeze({
+    mutations.push({
+      receipt: Object.freeze({
         eventId: envelope.eventId,
         sequence: envelope.sequence,
         turnId: event.turnId,
@@ -431,200 +180,31 @@ async function readMutationReceipts(
         fingerprint: started.fingerprint,
         patchSha256: createHash('sha256').update(patch).digest('hex'),
         applicationStatus: parsed.data.applicationStatus,
-        ...(parsed.data.transactionOutcome ? { transactionOutcome: parsed.data.transactionOutcome } : {}),
-        rootState: parsed.data.rootState,
-        files: Object.freeze(
-          parsed.data.files.map(
-            (file): MutationFileReceipt =>
-              Object.freeze({
-                path: file.path,
-                operation: file.operation,
-                ...(file.destinationPath === undefined ? {} : { destinationPath: file.destinationPath }),
-                hunkCount: file.hunkCount,
-                additions: file.additions,
-                deletions: file.deletions,
-                ...(file.oldSha256 === undefined ? {} : { oldSha256: file.oldSha256 }),
-                ...(file.newSha256 === undefined ? {} : { newSha256: file.newSha256 }),
-                oldBytes: file.oldBytes,
-                newBytes: file.newBytes,
-                plannedChange: file.plannedChange,
-                finalState: file.finalState,
-                ...(file.matchModes === undefined ? {} : { matchModes: Object.freeze([...file.matchModes]) }),
-                ...(file.exact === undefined ? {} : { exact: file.exact })
-              })
-          )
-        )
-      })
-    );
-    if (parsed.data.transactionOutcome === 'committed_with_residue') causes.add('journal_residue');
-    if (parsed.data.rootState === 'uncertain' || parsed.data.transactionOutcome === 'rollback_failed')
-      causes.add('uncertain_workspace_state');
+        ...(parsed.data.transactionOutcome
+          ? { transactionOutcome: parsed.data.transactionOutcome }
+          : {}),
+        rootState: parsed.data.rootState
+      }),
+      files: parsed.data.files.map((file) => ({
+        path: file.path,
+        operation: file.operation,
+        ...(file.destinationPath === undefined ? {} : { destinationPath: file.destinationPath }),
+        hunkCount: file.hunkCount,
+        additions: file.additions,
+        deletions: file.deletions,
+        ...(file.oldSha256 === undefined ? {} : { oldSha256: file.oldSha256 }),
+        ...(file.newSha256 === undefined ? {} : { newSha256: file.newSha256 }),
+        oldBytes: file.oldBytes,
+        newBytes: file.newBytes,
+        plannedChange: file.plannedChange,
+        finalState: file.finalState,
+        ...(file.matchModes === undefined ? {} : { matchModes: file.matchModes }),
+        ...(file.exact === undefined ? {} : { exact: file.exact })
+      }))
+    });
+    starts.delete(attemptKey(event));
   }
-  if (starts.size > 0) causes.add('unsettled_structured_mutation');
-  return Object.freeze({
-    receipts: Object.freeze(receipts),
-    causes: Object.freeze([...causes].sort(compareCodeUnits))
-  });
-}
-
-interface PredictedState {
-  readonly kind: 'absent' | 'file';
-  readonly sha256?: string;
-  readonly bytes?: number;
-  readonly mode?: number;
-}
-
-function applyReceipt(
-  receipt: DecodedMutationReceipt,
-  preChange: ReadonlyMap<string, WorkspaceSnapshotEntry>,
-  predicted: Map<string, PredictedState>,
-  sequences: Map<string, Set<number>>,
-  conflicts: Map<string, Set<string>>,
-  touched: Set<string>
-): void {
-  if (
-    receipt.rootState !== 'known' ||
-    (receipt.transactionOutcome !== 'committed' && receipt.transactionOutcome !== 'committed_with_residue')
-  ) {
-    for (const file of receipt.files)
-      for (const path of operationPaths(file))
-        addConflict(conflicts, path, 'mutation_outcome_not_known_committed');
-    return;
-  }
-  for (const file of receipt.files) {
-    if (file.finalState !== 'changed') continue;
-    const paths = operationPaths(file);
-    for (const path of paths) {
-      touched.add(path);
-      let values = sequences.get(path);
-      if (!values) {
-        values = new Set();
-        sequences.set(path, values);
-      }
-      values.add(receipt.sequence);
-    }
-    const source = predicted.get(file.path) ?? stateFromEntry(preChange.get(file.path));
-    if (file.operation === 'add') {
-      if (source.kind !== 'absent') addConflict(conflicts, file.path, 'add_source_was_not_absent');
-      predicted.set(file.path, predictedFile(file, undefined));
-      continue;
-    }
-    if (source.kind !== 'file' || source.sha256 !== file.oldSha256)
-      addConflict(conflicts, file.path, 'before_hash_does_not_match_receipt_chain');
-    if (file.operation === 'delete') {
-      predicted.set(file.path, Object.freeze({ kind: 'absent' }));
-      continue;
-    }
-    if (file.operation === 'move') {
-      const destination = file.destinationPath;
-      if (!destination) {
-        addConflict(conflicts, file.path, 'move_destination_missing');
-        continue;
-      }
-      const destinationState = predicted.get(destination) ?? stateFromEntry(preChange.get(destination));
-      if (destinationState.kind !== 'absent')
-        addConflict(conflicts, destination, 'move_destination_was_not_absent');
-      predicted.set(file.path, Object.freeze({ kind: 'absent' }));
-      predicted.set(destination, predictedFile(file, source.mode));
-      continue;
-    }
-    predicted.set(file.path, predictedFile(file, source.mode));
-  }
-}
-
-function predictedFile(file: MutationFileReceipt, mode: number | undefined): PredictedState {
-  return Object.freeze({
-    kind: 'file',
-    ...(file.newSha256 ? { sha256: file.newSha256 } : {}),
-    bytes: file.newBytes,
-    ...(mode === undefined ? {} : { mode })
-  });
-}
-
-function predictedMatches(expected: PredictedState, actual: WorkspaceSnapshotEntry | undefined): boolean {
-  if (expected.kind === 'absent') return actual === undefined;
-  return (
-    actual?.kind === 'file' &&
-    expected.sha256 !== undefined &&
-    actual.sha256 === expected.sha256 &&
-    actual.bytes === expected.bytes &&
-    (expected.mode === undefined || actual.mode === expected.mode)
-  );
-}
-
-function stateFromEntry(entry: WorkspaceSnapshotEntry | undefined): PredictedState {
-  if (!entry) return Object.freeze({ kind: 'absent' });
-  if (entry.kind !== 'file') return Object.freeze({ kind: 'file' });
-  return Object.freeze({
-    kind: 'file',
-    ...(entry.sha256 ? { sha256: entry.sha256 } : {}),
-    ...(entry.bytes === undefined ? {} : { bytes: entry.bytes }),
-    ...(entry.mode === undefined ? {} : { mode: entry.mode })
-  });
-}
-
-function initialVersionControlPaths(
-  preChange: PreChangeSnapshot
-):
-  | { readonly kind: 'observed'; readonly paths: ReadonlySet<string> }
-  | { readonly kind: 'not_applicable' }
-  | { readonly kind: 'unavailable' } {
-  if (preChange.versionControl.kind === 'none') return Object.freeze({ kind: 'not_applicable' });
-  if (preChange.versionControl.kind !== 'git' || preChange.versionControl.status.kind !== 'observed')
-    return Object.freeze({ kind: 'unavailable' });
-  return Object.freeze({
-    kind: 'observed',
-    paths: new Set(preChange.versionControl.status.entries.map((entry) => entry.path))
-  });
-}
-
-function changedEntry(
-  before: WorkspaceSnapshotEntry | undefined,
-  after: WorkspaceSnapshotEntry | undefined
-): boolean {
-  return JSON.stringify(before) !== JSON.stringify(after);
-}
-
-function directoryOnlyChange(
-  before: WorkspaceSnapshotEntry | undefined,
-  after: WorkspaceSnapshotEntry | undefined
-): boolean {
-  return (
-    (before === undefined || before.kind === 'directory') &&
-    (after === undefined || after.kind === 'directory')
-  );
-}
-
-function changeKind(
-  before: WorkspaceSnapshotEntry | undefined,
-  after: WorkspaceSnapshotEntry | undefined
-): WorkspaceChange['kind'] {
-  if (!before) return 'added';
-  if (!after) return 'deleted';
-  return before.kind === after.kind ? 'modified' : 'replaced';
-}
-
-function changeContent(
-  before: WorkspaceSnapshotEntry | undefined,
-  after: WorkspaceSnapshotEntry | undefined
-): WorkspaceChange['content'] {
-  const entry = after ?? before;
-  if (entry?.kind !== 'file') return 'non_file';
-  if (entry.content) return entry.content;
-  return entry.bytes !== undefined ? 'large' : 'unknown';
-}
-
-function operationPaths(file: MutationFileReceipt): readonly string[] {
-  return file.operation === 'move' && file.destinationPath ? [file.path, file.destinationPath] : [file.path];
-}
-
-function addConflict(conflicts: Map<string, Set<string>>, path: string, cause: string): void {
-  let values = conflicts.get(path);
-  if (!values) {
-    values = new Set();
-    conflicts.set(path, values);
-  }
-  values.add(cause);
+  return Object.freeze(mutations);
 }
 
 function attemptKey(
@@ -641,105 +221,4 @@ function patchDocument(event: Extract<AgentEvent, { type: 'tool.started' }>): st
   const patch = event.input.input.value.patch;
   if (typeof patch !== 'string') throw new Error('Persisted apply_patch input has no patch document.');
   return patch;
-}
-
-function publicReceipt(receipt: DecodedMutationReceipt): StructuredMutationReceipt {
-  return Object.freeze({
-    eventId: receipt.eventId,
-    sequence: receipt.sequence,
-    turnId: receipt.turnId,
-    toolBatchId: receipt.toolBatchId,
-    callIndex: receipt.callIndex,
-    ...(receipt.callId ? { callId: receipt.callId } : {}),
-    toolAttempt: receipt.toolAttempt,
-    fingerprint: receipt.fingerprint,
-    patchSha256: receipt.patchSha256,
-    applicationStatus: receipt.applicationStatus,
-    ...(receipt.transactionOutcome ? { transactionOutcome: receipt.transactionOutcome } : {}),
-    rootState: receipt.rootState
-  });
-}
-
-function compareCodeUnits(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
-function record(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-function sha256(value: unknown): value is string {
-  return typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value);
-}
-function nonNegativeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-}
-function stringList(value: unknown): value is readonly string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string');
-}
-function integerList(value: unknown): value is readonly number[] {
-  return Array.isArray(value) && value.every(nonNegativeInteger);
-}
-function changeKindValue(value: unknown): value is WorkspaceChange['kind'] {
-  return value === 'added' || value === 'modified' || value === 'deleted' || value === 'replaced';
-}
-function changeContentValue(value: unknown): value is WorkspaceChange['content'] {
-  return (
-    value === 'text' || value === 'binary' || value === 'large' || value === 'non_file' || value === 'unknown'
-  );
-}
-function applicationStatus(value: unknown): value is ApplyPatchOutput['applicationStatus'] {
-  return (
-    value === 'dry_run' ||
-    value === 'no_change' ||
-    value === 'applied' ||
-    value === 'not_applied' ||
-    value === 'uncertain'
-  );
-}
-function transactionOutcome(value: unknown): value is NonNullable<ApplyPatchOutput['transactionOutcome']> {
-  return (
-    value === 'committed' ||
-    value === 'committed_with_residue' ||
-    value === 'rolled_back' ||
-    value === 'rollback_failed'
-  );
-}
-
-/** Retrieve the exact patch inputs bound to the report's committed mutation receipts. */
-export async function readRecordedMutationPatches(
-  events: EventRepository<AgentEvent>,
-  runId: string,
-  receipts: readonly StructuredMutationReceipt[]
-): Promise<readonly { readonly receipt: StructuredMutationReceipt; readonly patch: string }[]> {
-  const expected = new Map(receipts.map((receipt) => [attemptKey(receipt), receipt]));
-  const starts = new Map<string, string>();
-  const patches: { readonly receipt: StructuredMutationReceipt; readonly patch: string }[] = [];
-  for await (const envelope of events.read(runId)) {
-    const event = envelope.event;
-    if (event.type !== 'tool.started' && event.type !== 'tool.ended') continue;
-    const key = attemptKey(event);
-    const receipt = expected.get(key);
-    if (receipt === undefined) continue;
-    if (event.type === 'tool.started') {
-      const patch = patchDocument(event);
-      if (
-        event.fingerprint !== receipt.fingerprint ||
-        createHash('sha256').update(patch).digest('hex') !== receipt.patchSha256
-      )
-        throw new Error('Recorded patch input does not match its change receipt.');
-      starts.set(key, patch);
-    } else {
-      const patch = starts.get(key);
-      if (
-        patch === undefined ||
-        envelope.eventId !== receipt.eventId ||
-        envelope.sequence !== receipt.sequence
-      )
-        throw new Error('Change receipt does not identify its recorded mutation.');
-      patches.push({ receipt, patch });
-      expected.delete(key);
-      starts.delete(key);
-    }
-  }
-  if (expected.size > 0) throw new Error('A reported mutation receipt is missing from recorded execution.');
-  return patches;
 }

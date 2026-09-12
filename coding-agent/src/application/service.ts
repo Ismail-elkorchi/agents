@@ -2,7 +2,14 @@ import { FileCredentialStore } from '@agent-core/auth';
 import { type ModelReasoningRequest } from '@agent-core/model';
 import { JsonlEventRepository } from '@agent-core/persistence/node';
 import { loginOpenAICodexDeviceCode } from '@agent-core/provider-openai-codex';
-import { agentEventCodec, sourceRef, type AgentEvent } from '@agent-core/runtime';
+import {
+  agentEventCodec,
+  sourceRef,
+  type AgentEvent,
+  type AgentRunResult,
+  type AgentSession,
+  type SessionSubmissionInput
+} from '@agent-core/runtime';
 import { JsonlSessionRepository } from '@agent-core/runtime/node';
 import {
   ApplicationEvents,
@@ -11,12 +18,11 @@ import {
   type SessionNoteRead
 } from '@agents/application';
 import { randomUUID } from 'node:crypto';
-import { readRecordedMutationPatches } from '../changes/run-change-report.js';
-import type { CodingSession } from '../coding-session.js';
+import { readRecordedMutationPatches, readRunChangeReport } from '../changes/run-change-report.js';
 import { type CodingAgentProviderId } from '../configuration.js';
-import type { CodingRunResult } from '../outcome.js';
 import { resolveCodingAuthority, type CodingPermissionMode } from '../security/permission-mode.js';
 import { createTrustDecision } from '../security/workspace-trust.js';
+import { readConfiguredCheckResults } from '../verification/configured-check-tool.js';
 import { closeCodingSession } from '../session.js';
 import { ModelSelectionStore } from '../state/model-selection-store.js';
 import {
@@ -81,8 +87,11 @@ export class CodingApplication {
       : { ...this.applicationState, session: this.runtime.agent.state() };
   }
 
-  subscribe(listener: (event: CodingApplicationEvent) => void | Promise<void>): () => void {
-    return this.events.subscribe(listener);
+  subscribe(
+    listener: (event: CodingApplicationEvent) => void | Promise<void>,
+    onFailure: (error: Error) => void
+  ): () => void {
+    return this.events.subscribe(listener, onFailure);
   }
 
   start(): Promise<void> {
@@ -93,9 +102,15 @@ export class CodingApplication {
     });
   }
 
-  submit(task: string, options?: Parameters<CodingSession['submit']>[1]): Promise<CodingSubmissionResult> {
+  submit(
+    input: SessionSubmissionInput,
+    options: {
+      readonly delivery?: 'default' | 'steer' | 'follow_up';
+      readonly expectedRunId?: string;
+    } = {}
+  ): Promise<CodingSubmissionResult> {
     return this.serial(async () => {
-      if (!task.trim()) throw new Error('A submission requires non-empty text.');
+      if (!input.task.trim()) throw new Error('A submission requires non-empty text.');
       if (this.runtime === undefined) await this.refreshAndActivate();
       if (this.runtime === undefined)
         return {
@@ -103,15 +118,19 @@ export class CodingApplication {
           reason: 'setup_required',
           requirements: this.applicationState.requirements
         };
-      return this.runtime.agent.submit({ task }, options);
+      const { relationship, ...runInput } = input;
+      return this.runtime.agent.submit(runInput, {
+        ...options,
+        ...(relationship === undefined ? {} : { relationship })
+      });
     });
   }
 
-  resolveApproval(input: Parameters<CodingSession['resolveApproval']>[0]) {
+  resolveApproval(input: Parameters<AgentSession['resolveApproval']>[0]) {
     return this.requireRuntime().agent.resolveApproval(input);
   }
 
-  async updateQueuedSubmission(...args: Parameters<CodingSession['updateQueuedSubmission']>): Promise<void> {
+  async updateQueuedSubmission(...args: Parameters<AgentSession['updateQueuedSubmission']>): Promise<void> {
     await this.requireRuntime().agent.updateQueuedSubmission(...args);
     await this.publishState('ready', []);
   }
@@ -156,7 +175,9 @@ export class CodingApplication {
     const failures: unknown[] = [];
     if (runtime !== undefined) {
       try {
-        await runtime.agent.close();
+        if (runtime.agent.state().phase === 'running')
+          await runtime.agent.abort('Coding application closed.');
+        await runtime.agent.waitForIdle();
       } catch (error) {
         failures.push(error);
       }
@@ -241,16 +262,15 @@ export class CodingApplication {
     this.runtime = runtime;
     this.selectedSessionId = runtime.session.id;
     delete this.options.branch;
-    this.runtimeUnsubscribe = runtime.agent.subscribe((event) => this.onSessionEvent(runtime, event));
+    this.runtimeUnsubscribe = runtime.agent.subscribe(
+      (event) => this.onSessionEvent(runtime, event),
+      (error) => {
+        this.events.fail(error);
+      }
+    );
     await runtime.agent.restore();
     await this.emit({ type: 'session.restored', view: await readCodingSessionView(runtime) });
-    if (runtime.agent.state().queuedInputs > 0)
-      void runtime.agent.waitForIdle().catch((error: unknown) =>
-        this.emit({
-          type: 'delivery.failed',
-          error: error instanceof Error ? error : new Error(String(error))
-        })
-      );
+    if (runtime.agent.state().queuedInputs > 0) void runtime.agent.waitForIdle().catch(() => undefined);
   }
 
   private async deactivateRuntime(): Promise<void> {
@@ -265,14 +285,15 @@ export class CodingApplication {
 
   private async onSessionEvent(
     runtime: CodingAgentRuntimeComposition,
-    event: import('../coding-session.js').CodingSessionEvent
+    event: import('@agent-core/runtime').AgentSessionEvent
   ): Promise<void> {
     if (this.runtime !== runtime) return;
     await this.emit(event);
-    if (event.type === 'run.completed' && event.result.state === 'ended') {
-      const handoff = await runtime.handoffs.read(event.runId);
-      if (handoff) await this.emit({ type: 'handoff.ready', handoff });
-    }
+    if (event.type === 'run.completed')
+      await this.emit({
+        type: 'verification.updated',
+        verification: await readConfiguredCheckResults(runtime.events, event.runId, runtime.configuration)
+      });
     if (event.type !== 'run.progress') await this.publishState('ready', []);
   }
 
@@ -381,15 +402,15 @@ export class CodingApplication {
     });
   }
 
-  steer(task: string, expectedRunId?: string): Promise<CodingSubmissionResult> {
-    return this.submit(task, {
+  steer(input: SessionSubmissionInput, expectedRunId?: string): Promise<CodingSubmissionResult> {
+    return this.submit(input, {
       delivery: 'steer',
       ...(expectedRunId === undefined ? {} : { expectedRunId })
     });
   }
 
-  follow(task: string): Promise<CodingSubmissionResult> {
-    return this.submit(task, { delivery: 'follow_up' });
+  follow(input: SessionSubmissionInput): Promise<CodingSubmissionResult> {
+    return this.submit(input, { delivery: 'follow_up' });
   }
 
   listNotes(cursor?: string) {
@@ -432,9 +453,6 @@ export class CodingApplication {
   waitForIdle(): Promise<void> {
     return this.requireRuntime().agent.waitForIdle();
   }
-  readHandoff(runId: string) {
-    return this.requireRuntime().handoffs.read(runId);
-  }
   persistenceLocations(runId: string) {
     const runtime = this.requireRuntime();
     return { ledger: runtime.events.location(runId), session: runtime.sessions.location(runtime.session.id) };
@@ -468,19 +486,23 @@ export class CodingApplication {
     const runtime = this.requireRuntime();
     const decision = this.workspace.security.decide('workspace_read');
     if (decision.kind !== 'allowed') throw new Error(decision.reason);
-    const handoff = await runtime.handoffs.read(runId);
-    const change = handoff?.changeReport.changes.find((change) => change.path === path);
-    if (handoff === undefined || change === undefined)
-      throw new Error('The requested change is not recorded in this run report.');
-    const receipts = handoff.changeReport.mutationReceipts.filter((receipt) =>
+    const report = await readRunChangeReport(runtime.events, runId, runtime.workspaceRoot);
+    const change = report.changes.find((change) => change.path === path);
+    if (change === undefined) throw new Error('The requested change is not recorded in this run.');
+    const receipts = report.mutationReceipts.filter((receipt) =>
       change.receiptSequences.includes(receipt.sequence)
     );
     const patches = await readRecordedMutationPatches(runtime.events, runId, receipts);
-    return { change, patches, outcome: handoff.outcome };
+    return { change, patches };
   }
 
   readSession() {
     return readCodingSessionView(this.requireRuntime());
+  }
+
+  readVerification(runId: string) {
+    const runtime = this.requireRuntime();
+    return readConfiguredCheckResults(runtime.events, runId, runtime.configuration);
   }
 
   readHistory(request?: Parameters<JsonlSessionRepository['readBranchPage']>[1]) {
@@ -521,13 +543,8 @@ export class CodingApplication {
     return agent.abort(reason, expectedRunId ?? agent.state().activeRunId);
   }
 
-  async resumeSuspension(expectedRunId?: string): Promise<CodingRunResult> {
+  async resumeSuspension(expectedRunId?: string): Promise<AgentRunResult> {
     const agent = this.requireRuntime().agent;
-    const pending = agent.state().pendingSettlement;
-    if (pending) {
-      if (expectedRunId !== undefined && pending.runId !== expectedRunId) throw new Error('The selected run has changed.');
-      return agent.reconcileWork(pending.runId);
-    }
     await agent.restore();
     const suspension = agent.inspectSuspension();
     if (suspension === undefined) throw new Error('The selected session is not suspended.');

@@ -51,6 +51,7 @@ export type SandboxCommandRecovery =
   | Readonly<{ readonly status: 'unknown' | 'expired' }>;
 
 export interface SandboxCommandExecutionOptions {
+  readonly descriptor?: CommandExecutionDescriptor;
   readonly repository: SandboxExecutionRepository;
   readonly rootedFileAuthority: RootedFileAuthority;
   readonly state: PrivateStateDirectory;
@@ -109,12 +110,14 @@ export class SandboxCommandExecution implements CommandExecution {
   #closed = false;
 
   private constructor(private readonly options: SandboxCommandExecutionOptions) {
-    this.descriptor = Object.freeze({
-      implementationId: 'coding-agent.sandbox-command-execution@1',
-      recoveryIdentity: `${options.repository.identity}:${createHash('sha256').update(options.rootedFileAuthority.identity.canonicalPath).digest('hex')}`,
-      capabilities: Object.freeze(['sandbox-process', 'caller-process-recovery', 'staged-authorization']),
-      supportsPty: false
-    });
+    this.descriptor =
+      options.descriptor ??
+      Object.freeze({
+        implementationId: 'coding-agent.sandbox-command-execution@1',
+        recoveryIdentity: `${options.repository.identity}:${createHash('sha256').update(options.rootedFileAuthority.identity.canonicalPath).digest('hex')}`,
+        capabilities: Object.freeze(['sandbox-process', 'caller-process-recovery', 'staged-authorization']),
+        supportsPty: false
+      });
     adoptCommandExecution(this);
   }
 
@@ -778,10 +781,11 @@ function statusFromTermination(
 
 function validateWorkspaceResource(run: SandboxDetachedRunOptions, canonicalRoot: string): void {
   const filesystem = run.policy.filesystem;
-  if (
-    filesystem.kind !== 'isolated' ||
-    filesystem.resources.filter((resource) => resource.source.path === canonicalRoot).length !== 1
-  )
+  const matches =
+    filesystem.kind === 'isolated'
+      ? filesystem.resources.filter((resource) => resource.source.path === canonicalRoot)
+      : filesystem.resources.filter((resource) => resource.path.path === canonicalRoot);
+  if (matches.length !== 1)
     throw new Error(
       'Sandbox command plan must contain exactly one resource for the adopted physical workspace root.'
     );
@@ -869,6 +873,10 @@ function sandboxCommandAuthorization(
 ): JsonObject {
   return parseJsonObject({
     authority: descriptor.implementationId,
+    confinement:
+      authorization.summary.filesystem.kind === 'isolated'
+        ? 'isolated workspace'
+        : 'workspace confined',
     recoveryIdentity: descriptor.recoveryIdentity,
     executionId: authorization.executionId,
     requestDigest: authorization.requestDigest,

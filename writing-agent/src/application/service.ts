@@ -169,8 +169,11 @@ export class WritingApplication {
     };
   }
 
-  subscribe(listener: (event: WritingApplicationEvent) => void | Promise<void>): () => void {
-    return this.events.subscribe(listener);
+  subscribe(
+    listener: (event: WritingApplicationEvent) => void | Promise<void>,
+    onFailure: (error: Error) => void
+  ): () => void {
+    return this.events.subscribe(listener, onFailure);
   }
 
   start(): Promise<void> {

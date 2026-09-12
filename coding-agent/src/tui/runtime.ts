@@ -4,7 +4,7 @@ import type { TuiExit } from '@ismail-elkorchi/terminal-ui/tui';
 import { runTui } from '@ismail-elkorchi/terminal-ui/tui';
 import type { CodingApplicationEvent } from '../application/contracts.js';
 import type { CodingApplication } from '../application/service.js';
-import type { CodingRunResult } from '../outcome.js';
+import type { AgentRunResult } from '@agent-core/runtime';
 import { createCodingAgentTuiApp } from './app.js';
 import { executeCodingCommand } from './application-commands.js';
 import { createCodingTuiEventSource } from './event-source.js';
@@ -19,7 +19,7 @@ export interface CodingAgentTuiAppRunOptions {
 
 export interface CodingAgentTuiAppRunResult {
   readonly exit: TuiExit<CodingAgentTuiState>;
-  readonly result?: CodingRunResult;
+  readonly result?: AgentRunResult;
 }
 
 export async function runCodingAgentTuiApp(
@@ -30,7 +30,7 @@ export async function runCodingAgentTuiApp(
   const ownsHost = options.host === undefined;
   const events = createCodingTuiEventSource();
   const initialTask = options.initialTask ?? '';
-  let result: CodingRunResult | undefined;
+  let result: AgentRunResult | undefined;
   let unsubscribe: (() => void) | undefined;
   let outcome!: Readonly<
     | { readonly kind: 'returned'; readonly value: CodingAgentTuiAppRunResult }
@@ -76,24 +76,29 @@ export async function runCodingAgentTuiApp(
       }
     });
     const exit = runTui(app, { host });
-    unsubscribe = controller.subscribe(async (event) => {
-      if (event.type === 'delivery.gap') {
-        await events.enqueue({
-          type: 'interactive.notice',
-          message: 'Display delivery skipped updates; refreshing recorded state.',
-          tone: 'warning'
-        });
-        await events.enqueue({ type: 'session.hydrated', hydration: await controller.readSession() });
-        return;
+    unsubscribe = controller.subscribe(
+      async (event) => {
+        if (event.type === 'delivery.gap') {
+          await events.enqueue({
+            type: 'interactive.notice',
+            message: 'Display delivery skipped updates; refreshing recorded state.',
+            tone: 'warning'
+          });
+          await events.enqueue({ type: 'session.hydrated', hydration: await controller.readSession() });
+          return;
+        }
+        result = await presentControllerEvent(event, events, result);
+        if (event.type === 'input.queued' || event.type === 'input.revised' || event.type === 'input.cancelled')
+          await events.enqueue({
+            type: 'submissions.changed',
+            pending: await controller.readPendingSubmissions(),
+            ...(event.type === 'input.cancelled' ? { cancelledRunId: event.runId } : {})
+          });
+      },
+      (error) => {
+        events.fail(error);
       }
-      result = await presentControllerEvent(event, events, result);
-      if (event.type === 'input.queued' || event.type === 'input.revised' || event.type === 'input.cancelled')
-        await events.enqueue({
-          type: 'submissions.changed',
-          pending: await controller.readPendingSubmissions(),
-          ...(event.type === 'input.cancelled' ? { cancelledRunId: event.runId } : {})
-        });
-    });
+    );
     try {
       await controller.start();
     } catch (error) {
@@ -151,8 +156,8 @@ export async function runCodingAgentTuiApp(
 async function presentControllerEvent(
   event: CodingApplicationEvent,
   events: ReturnType<typeof createCodingTuiEventSource>,
-  currentResult: CodingRunResult | undefined
-): Promise<CodingRunResult | undefined> {
+  currentResult: AgentRunResult | undefined
+): Promise<AgentRunResult | undefined> {
   let message: CodingAgentTuiMessage;
   switch (event.type) {
     case 'delivery.gap':
@@ -161,9 +166,6 @@ async function presentControllerEvent(
     case 'input.revised':
     case 'input.cancelled':
       return currentResult;
-    case 'delivery.failed':
-      message = { type: 'interactive.notice', message: event.error.message, tone: 'warning' };
-      break;
     case 'application.state.changed':
       message = { type: 'application.state.changed', state: event.state };
       break;
@@ -176,8 +178,8 @@ async function presentControllerEvent(
     case 'session.restored':
       message = { type: 'session.hydrated', hydration: event.view };
       break;
-    case 'handoff.ready':
-      message = { type: 'handoff.ready', handoff: event.handoff };
+    case 'verification.updated':
+      message = { type: 'verification.updated', verification: event.verification };
       break;
     case 'run.progress':
       message = { type: 'progress', event: event.event };

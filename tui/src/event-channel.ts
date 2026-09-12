@@ -23,6 +23,7 @@ export class TuiEventChannel<Message extends ComponentMessage> implements TuiEve
   private running = false;
   private cancelled = false;
   private failed = false;
+  private failure: unknown;
 
   enqueue(message: Message): Promise<void> {
     if (!this.accepting) return Promise.reject(new Error('TUI event channel is closed.'));
@@ -33,12 +34,21 @@ export class TuiEventChannel<Message extends ComponentMessage> implements TuiEve
         key === undefined ? reliableSourceMessage(message) : replaceableSourceMessage(key, message)
       );
     });
-    this.admission = admission;
-    void admission.catch((cause: unknown) => {
-      this.failed = true;
-      this.completion.reject(cause);
-    });
+    this.admission = admission.then(
+      () => undefined,
+      (cause: unknown) => {
+        this.fail(cause);
+      }
+    );
     return admission;
+  }
+
+  fail(cause: unknown): void {
+    if (!this.accepting) return;
+    this.accepting = false;
+    this.failed = true;
+    this.failure = cause;
+    this.completion.reject(cause);
   }
 
   async run(context: TuiSubscriptionContext, sink: TuiSourceSink<Message>): Promise<void> {
@@ -72,6 +82,7 @@ export class TuiEventChannel<Message extends ComponentMessage> implements TuiEve
       await this.admission.catch(() => undefined);
       return;
     }
+    if (this.failed) throw this.failure;
     if (!this.accepting) return this.admission;
     this.accepting = false;
     if (!this.running) this.attached.reject(new Error('TUI event channel closed before attachment.'));

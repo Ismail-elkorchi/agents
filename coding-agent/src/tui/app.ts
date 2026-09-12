@@ -61,8 +61,8 @@ import {
 import type { CodingAgentTuiActivityEntry, CodingAgentTuiConversationEntry } from './conversation-model.js';
 import { appendNotice, appendUser, toggleActivity, upsertConversationEntry } from './conversation.js';
 import {
-  applyCodingHandoff,
   applyFailure,
+  applyConfiguredChecks,
   applyProgress,
   applyResult,
   applySessionState
@@ -397,8 +397,18 @@ function updateCodingAgentTui(
     }
     case 'history.load':
       return loadHistory(state, message.direction, options.historyReader);
-    case 'history.loaded':
-      return updated(receiveHistory(state, message.requestId, message.pages), context);
+    case 'history.loaded': {
+      const refreshTail =
+        state.conversation.loading?.id === message.requestId &&
+        state.conversation.loading.refreshTail === true;
+      const received = receiveHistory(state, message.requestId, message.pages);
+      if (!refreshTail) return updated(received, context);
+      const refresh = loadHistory(received, 'tail', options.historyReader);
+      return {
+        ...updated(refresh.state, context),
+        ...(refresh.effects === undefined ? {} : { effects: refresh.effects })
+      };
+    }
     case 'history.failed':
       return updated(failHistory(state, message.requestId, message.message), context);
     case 'failure':
@@ -418,8 +428,8 @@ function updateCodingAgentTui(
         }),
         context
       );
-    case 'handoff.ready':
-      return updated(livePresentation(state, applyCodingHandoff(state, message.handoff)), context);
+    case 'verification.updated':
+      return updated(applyConfiguredChecks(state, message.verification), context);
     case 'application.state.changed':
       return updated(applyInteractiveState(state, message.state), context);
     case 'interactive.notice':
@@ -778,12 +788,26 @@ function submit(
 ): TuiUpdateResult<CodingAgentTuiState, CodingAgentTuiMessage> {
   if (state.run.kind === 'waiting_for_approval' || state.run.kind === 'waiting_for_recovery') return { state };
   const submission = submitComposer(state, delivery);
+  const next = followCurrentConversation(submission.state);
   return submission.request === undefined
-    ? { state: submission.state }
+    ? { state: next }
     : {
-        state: reconcileConversationLayout(submission.state, context),
+        state: reconcileConversationLayout(next, context),
         effects: [commandEffect(submission.request, handler)]
       };
+}
+
+function followCurrentConversation(state: CodingAgentTuiState): CodingAgentTuiState {
+  const conversation = { ...state.conversation };
+  delete conversation.anchor;
+  return {
+    ...state,
+    conversation: {
+      ...conversation,
+      unread: false,
+      scroll: { ...conversation.scroll, followTail: true }
+    }
+  };
 }
 
 function executeCommand(
@@ -1676,7 +1700,7 @@ function fileIndex(paths: readonly string[]): SearchPickerIndex {
 function livePresentation(previous: CodingAgentTuiState, next: CodingAgentTuiState): CodingAgentTuiState {
   return previous.conversation.scroll.followTail || previous.conversation.pages.length === 0
     ? next
-    : { ...next, conversation: { ...previous.conversation, unread: true } };
+    : { ...next, conversation: { ...next.conversation, unread: true } };
 }
 
 function copyInput(state: CodingAgentTuiState) {

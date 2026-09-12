@@ -19,15 +19,12 @@ export interface CodingAgentCheckConfiguration {
   readonly command: string;
   readonly coverage: 'targeted' | 'full';
   readonly timeoutMs?: number;
-  readonly maxOutputBytes?: number;
-  readonly verifierInputs?: readonly string[];
 }
 export type CodingAgentProviderId = 'ollama' | 'openrouter' | 'openai' | 'openai-codex';
 export interface CodingAgentLimitConfiguration {
   readonly maxConcurrentToolCalls?: number;
   readonly modelTurns?: number;
   readonly totalToolCalls?: number;
-  readonly repeatedIdenticalToolCalls?: number;
   readonly elapsedMs?: number;
   readonly promptTokens?: number;
   readonly completionTokens?: number;
@@ -178,11 +175,7 @@ function snapshotCheck(check: CodingAgentCheckConfiguration): CodingAgentCheckCo
     id: check.id,
     command: check.command,
     coverage: check.coverage,
-    ...(check.timeoutMs === undefined ? {} : { timeoutMs: check.timeoutMs }),
-    ...(check.maxOutputBytes === undefined ? {} : { maxOutputBytes: check.maxOutputBytes }),
-    ...(check.verifierInputs === undefined
-      ? {}
-      : { verifierInputs: Object.freeze([...check.verifierInputs]) })
+    ...(check.timeoutMs === undefined ? {} : { timeoutMs: check.timeoutMs })
   });
 }
 
@@ -206,21 +199,14 @@ function checkArray(value: unknown): value is readonly CodingAgentCheckConfigura
       (item) =>
         isRecord(item) &&
         Object.keys(item).every((key) =>
-          ['id', 'command', 'coverage', 'timeoutMs', 'maxOutputBytes', 'verifierInputs'].includes(key)
+          ['id', 'command', 'coverage', 'timeoutMs'].includes(key)
         ) &&
         typeof item.id === 'string' &&
         item.id.length > 0 &&
         typeof item.command === 'string' &&
         item.command.length > 0 &&
         (item.coverage === 'targeted' || item.coverage === 'full') &&
-        optionalPositive(item.timeoutMs) &&
-        optionalPositive(item.maxOutputBytes) &&
-        (item.verifierInputs === undefined ||
-          (Array.isArray(item.verifierInputs) &&
-            item.verifierInputs.every(
-              (value) =>
-                typeof value === 'string' && !path.isAbsolute(value) && !value.split('/').includes('..')
-            )))
+        optionalPositive(item.timeoutMs)
     )
   );
 }
@@ -233,7 +219,6 @@ function validLimits(value: unknown): value is CodingAgentLimitConfiguration {
     'maxConcurrentToolCalls',
     'modelTurns',
     'totalToolCalls',
-    'repeatedIdenticalToolCalls',
     'elapsedMs',
     'promptTokens',
     'completionTokens',

@@ -5,7 +5,7 @@ import type { TuiEffect, TuiUpdateResult } from '@ismail-elkorchi/terminal-ui/tu
 import type { CodingHistoryPage } from '../application/contracts.js';
 import { applyBranchEntry } from './branch-presentation.js';
 import { appendNotice } from './conversation.js';
-import { applyCodingHandoff } from './event-reducer.js';
+import { applyConfiguredChecks } from './event-reducer.js';
 import type { CodingAgentTuiMessage } from './messages.js';
 import type { CodingAgentTuiState } from './state.js';
 
@@ -17,7 +17,18 @@ export function loadHistory(
   direction: 'older' | 'newer' | 'tail',
   read: CodingHistoryReader | undefined
 ): Update {
-  if (state.conversation.loading !== undefined) return { state };
+  if (state.conversation.loading !== undefined)
+    return direction === 'tail'
+      ? {
+          state: {
+            ...state,
+            conversation: {
+              ...state.conversation,
+              loading: { ...state.conversation.loading, refreshTail: true }
+            }
+          }
+        }
+      : { state };
   if (read === undefined) return { state: appendNotice(state, 'No history reader is attached.') };
   const pages = state.conversation.pages;
   const cursor = direction === 'older' ? pages[0]?.history.older : pages.at(-1)?.history.newer;
@@ -56,7 +67,8 @@ export function presentHistoryPages(
   let presented: CodingAgentTuiState = { ...state, conversation: { ...state.conversation, items: [] } };
   for (const page of pages) {
     for (const entry of page.history.entries) presented = applyBranchEntry(presented, entry);
-    for (const handoff of page.handoffs) presented = applyCodingHandoff(presented, handoff);
+    for (const verification of page.verification)
+      presented = applyConfiguredChecks(presented, verification);
   }
   const previous = new Map(state.conversation.items.map((entry) => [entry.id, entry]));
   const recorded = presented.conversation.items.map((entry) => {
@@ -83,7 +95,11 @@ export function presentHistoryPages(
     .slice(-8);
   return {
     ...state,
-    debug: { ...state.debug, handoffs: pages.flatMap((page) => page.handoffs) },
+    debug: {
+      ...state.debug,
+      changes: pages.flatMap((page) => page.changes),
+      verification: pages.flatMap((page) => page.verification)
+    },
     conversation: {
       ...state.conversation,
       pages,
@@ -102,6 +118,7 @@ export function receiveHistory(
   const { loading, ...conversation } = state.conversation;
   if (loading?.id !== requestId || received[0]?.history.boundary.sessionId !== state.debug.sessionId)
     return state;
+  if (loading.refreshTail) return { ...state, conversation };
   const direction = loading.direction;
   const pages =
     direction === 'tail' || direction === 'restore'

@@ -1,4 +1,3 @@
-import { testOutcome } from './helpers/results.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
@@ -200,22 +199,16 @@ test('hydration retains concurrent work and selects the exact per-call approval 
   await recovering.dispose();
 });
 
-test('completed hydration surfaces terminal checks and persisted workspace changes', async () => {
+test('completed hydration restores conversation and persisted workspace changes', async () => {
   const runtime = createTuiRuntime({
     app: createCodingAgentTuiApp('', { initialHydration: await completedHydration() }),
     host: createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 18 } })
   });
   await runtime.start();
-  assert.equal(runtime.state().run.kind, 'ended');
-  assert.equal(runtime.state().run.terminal.runId, 'run-1');
-  assert.equal(
-    runtime.state().conversation.items.find((entry) => entry.id === 'check:run-1:tests').status,
-    'success'
-  );
-  const changes = runtime.state().conversation.items.find((entry) => entry.id === 'handoff:run-1');
-  assert.equal(changes.status, 'success');
-  assert.match(changes.summary, /1 changed path.*no remaining uncertainty/u);
-  assert.match(changes.details, /Remaining uncertainty\nnone/u);
+  assert.equal(runtime.state().run.kind, 'idle');
+  assert.equal(runtime.state().conversation.items[0].text, 'Completed answer.');
+  assert.equal(runtime.state().debug.changes[0].changes[0].path, 'src/app.ts');
+  assert.equal(runtime.state().debug.changes[0].changes[0].absolutePath, '/project/src/app.ts');
   assert.equal(runtime.state().debug.branchPoints[0].entryId, 'assistant-1');
   await runtime.dispose();
 });
@@ -505,34 +498,19 @@ async function completedHydration() {
     budget: budget()
   });
   const changeReport = {
-    schemaVersion: 1,
     runId: 'run-1',
-    preChangeDigest: '1'.repeat(64),
-    finalDigest: '2'.repeat(64),
-    coverage: 'complete',
-    causes: [],
     changes: [
       {
         path: 'src/app.ts',
+        absolutePath: '/project/src/app.ts',
         kind: 'modified',
-        attribution: 'structured_mutation',
-        initial: 'existing',
-        preChangeVersionControl: 'not_reported',
-        content: 'text',
+        beforeBytes: 10,
+        afterBytes: 12,
         receiptSequences: [4],
-        conflicts: []
+        state: 'changed'
       }
     ],
-    totalChanges: 1,
-    omittedChanges: 0,
-    mutationReceipts: [],
-    totalMutationReceipts: 0,
-    omittedMutationReceipts: 0,
-    facts: {
-      changedPaths: ['src/app.ts'],
-      structuredMutationPaths: ['src/app.ts'],
-      externalOrConcurrentPaths: []
-    }
+    mutationReceipts: []
   };
   return {
     session: {
@@ -566,39 +544,8 @@ async function completedHydration() {
     ],
     pendingSubmissions: [],
     runs: [],
-    handoffs: [
-      {
-        schemaVersion: 1,
-        changeReport,
-        changeArtifact: {
-          artifactId: `${'3'.repeat(64)}.json`,
-          sha256: '3'.repeat(64),
-          size: 100,
-          mediaType: 'application/json; charset=utf-8',
-          visibility: 'public'
-        },
-        outcome: testOutcome(terminal, {
-          acceptance: 'accepted',
-          publication: 'applied',
-          revision: changeReport.finalDigest,
-          verification: {
-            status: 'passed',
-            checks: [
-              {
-                id: 'tests',
-                implementationId: 'tests@1',
-                requirement: 'required',
-                verdict: 'passed',
-                summary: 'Tests passed',
-                durationMs: 10
-              }
-            ]
-          }
-        }),
-        terminal,
-        deliveryDiagnostics: []
-      }
-    ]
+    changes: [changeReport],
+    verification: []
   };
 }
 
@@ -629,7 +576,8 @@ function baseHydration(sessionOverrides, runOverrides) {
       }
     ],
     runs: [run],
-    handoffs: []
+    changes: [],
+    verification: []
   };
 }
 
@@ -710,7 +658,6 @@ function budget() {
   return {
     modelTurns: 1,
     totalToolCalls: 1,
-    repeatedIdenticalToolCalls: 1,
     elapsedMs: 1,
     promptTokens: 0,
     completionTokens: 0,

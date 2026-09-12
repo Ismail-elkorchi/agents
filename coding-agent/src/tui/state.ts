@@ -27,7 +27,8 @@ import type {
   CodingRuntimeDetails,
   CodingSetupRequirement
 } from '../application/contracts.js';
-import type { CodingHandoff } from '../changes/coding-handoff.js';
+import type { RunChangeReport } from '../changes/run-change-report.js';
+import type { CodingRunVerification } from '../verification/configured-check-tool.js';
 import type { CodingAgentTuiConversationEntry } from './conversation-model.js';
 import type { InteractiveCommandName } from './interactive-commands.js';
 import type { CodingPanel } from './panels.js';
@@ -53,7 +54,8 @@ export interface CodingAgentTuiDebugState {
   readonly branchPoints: readonly SessionBranchPoint[];
   readonly pendingSubmissions: readonly SessionPendingSubmission[];
   readonly runs: readonly AgentRunInspection[];
-  readonly handoffs: readonly CodingHandoff[];
+  readonly changes: readonly RunChangeReport[];
+  readonly verification: readonly CodingRunVerification[];
 }
 
 export type CodingAgentTuiRunState =
@@ -104,7 +106,11 @@ export interface CodingAgentTuiConversationState {
   readonly items: readonly CodingAgentTuiConversationEntry[];
   readonly pages: readonly CodingHistoryPage[];
   readonly unread: boolean;
-  readonly loading?: { readonly id: string; readonly direction: 'older' | 'newer' | 'tail' | 'restore' };
+  readonly loading?: {
+    readonly id: string;
+    readonly direction: 'older' | 'newer' | 'tail' | 'restore';
+    readonly refreshTail?: boolean;
+  };
   readonly anchor?: MeasuredWindowAnchor;
   readonly scroll: ScrollState;
   readonly expandedIds: readonly string[];
@@ -180,7 +186,8 @@ export function createInitialCodingAgentTuiState(
       branchPoints: [],
       pendingSubmissions: [],
       runs: [],
-      handoffs: []
+      changes: [],
+      verification: []
     },
     nextLocalId: 1
   };

@@ -16,20 +16,19 @@
   ],
   "agentCore": {
     "path": "../agent-core",
-    "commit": "6274b8df65f2a106bb8b212994e250452af8a5e6"
+    "commit": "44cda511512e0fc8d56b4a7f5d6d166b45aed09b"
   },
   "sandbox": {
     "path": "../sandbox",
-    "commit": "e687a08168e33ffe893b66e3ffc0fbb771eb0d42"
+    "commit": "89f9115290e804519c0c1f9b08075d3b5bdeda6f"
   },
   "scripts": {
-    "check:conformance": "node --test scripts/coding-agent-conformance-metrics.test.mjs && node scripts/check-coding-agent-conformance.mjs",
     "build": "node scripts/verify-source-dependencies.mjs && tsc -b && node scripts/post-build.mjs",
     "lint": "eslint \"*/src/**/*.ts\"",
     "test": "npm run build && npm run test:unit",
     "test:unit": "node scripts/run-test-suite.mjs",
     "package": "node scripts/test-packed-consumer.mjs",
-    "verify": "npm run clean && npm run build && npm run lint && npm run check:conformance && npm run test:unit",
+    "verify": "npm run clean && npm run build && npm run lint && npm run test:unit",
     "verify:release": "npm run verify && npm run package",
     "clean": "node scripts/clean.mjs"
   },

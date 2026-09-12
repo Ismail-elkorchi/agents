@@ -20,24 +20,27 @@ export async function runWritingAgentTuiApp(
           : undefined,
     failureMessage: (message) => ({ type: 'notice', message })
   });
-  const unsubscribe = application.subscribe(async (event) => {
-    switch (event.type) {
-      case 'application.state.changed':
-        return events.enqueue({ type: 'application', state: application.state() });
-      case 'operation.progress':
-        return events.enqueue({ type: 'progress', event: event.event });
-      case 'operation.completed':
-        return events.enqueue({ type: 'result', result: event.result });
-      case 'operation.failed':
-      case 'delivery.failed':
-        return events.enqueue({ type: 'notice', message: event.error.message });
-      case 'delivery.gap':
-      case 'project.changed':
-        return events.enqueue({ type: 'refresh' });
-      case 'operation.accepted':
-        return events.enqueue({ type: 'refresh' });
+  const unsubscribe = application.subscribe(
+    async (event) => {
+      switch (event.type) {
+        case 'application.state.changed':
+          return events.enqueue({ type: 'application', state: application.state() });
+        case 'operation.progress':
+          return events.enqueue({ type: 'progress', event: event.event });
+        case 'operation.completed':
+          return events.enqueue({ type: 'result', result: event.result });
+        case 'operation.failed':
+          return events.enqueue({ type: 'notice', message: event.error.message });
+        case 'delivery.gap':
+        case 'project.changed':
+        case 'operation.accepted':
+          return events.enqueue({ type: 'refresh' });
+      }
+    },
+    (error) => {
+      events.fail(error);
     }
-  });
+  );
   let outcome:
     | { readonly kind: 'returned'; readonly value: Awaited<ReturnType<typeof runTui>> }
     | { readonly kind: 'failed'; readonly cause: unknown };

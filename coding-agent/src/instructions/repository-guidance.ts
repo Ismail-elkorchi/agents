@@ -4,7 +4,6 @@ import { rootedFileIdentitiesEqual, type RootedFileAuthority } from '@agent-core
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import type { WorkspaceSecurityBoundary } from '../security/workspace-security-boundary.js';
-import { PrivateStateDirectory } from '../state/private-state.js';
 import type { OpenCodingWorkspace } from '../workspace.js';
 import { DEFAULT_CODING_CONTRACT } from './coding-contract.js';
 
@@ -98,128 +97,39 @@ export async function loadInitialRepositoryGuidanceFromRoot(
   return guidanceSet(documents, omissions);
 }
 
-interface PersistedRepositoryGuidance {
-  readonly version: 1;
-  readonly runId: string;
-  readonly initialPaths: readonly string[];
-  readonly deliveredPaths: readonly string[];
-  readonly documents: readonly RepositoryGuidanceDocument[];
-  readonly omissions: readonly RepositoryGuidanceOmission[];
-}
-
 export class RepositoryGuidanceSession {
   readonly #root: RootedFileAuthority;
   readonly #security: WorkspaceSecurityBoundary;
-  readonly #state: PrivateStateDirectory;
-  readonly #runId: string;
-  readonly #initialPaths: ReadonlySet<string>;
   readonly #documents = new Map<string, RepositoryGuidanceDocument>();
   readonly #omissions = new Map<string, RepositoryGuidanceOmission>();
   readonly #deliveredPaths = new Set<string>();
+  readonly #loadedPaths = new Set<string>();
   #serial: Promise<void> = Promise.resolve();
-  #persistedText: string | undefined;
 
   private constructor(input: {
     readonly root: RootedFileAuthority;
     readonly security: WorkspaceSecurityBoundary;
-    readonly state: PrivateStateDirectory;
-    readonly runId: string;
-    readonly persisted: PersistedRepositoryGuidance;
+    readonly initial: RepositoryGuidanceSet;
   }) {
     this.#root = input.root;
     this.#security = input.security;
-    this.#state = input.state;
-    this.#runId = input.runId;
-    this.#initialPaths = new Set(input.persisted.initialPaths);
-    for (const document of input.persisted.documents) this.#documents.set(document.source.path, document);
-    for (const omission of input.persisted.omissions) this.#omissions.set(omission.path, omission);
-    for (const delivered of input.persisted.deliveredPaths) this.#deliveredPaths.add(delivered);
+    for (const document of input.initial.documents) {
+      this.#documents.set(document.source.path, document);
+      this.#loadedPaths.add(document.source.path);
+      this.#deliveredPaths.add(document.source.path);
+    }
+    for (const omission of input.initial.omissions) {
+      this.#omissions.set(omission.path, omission);
+      this.#loadedPaths.add(omission.path);
+    }
   }
 
-  static async open(input: {
+  static open(input: {
     readonly root: RootedFileAuthority;
     readonly security: WorkspaceSecurityBoundary;
-    readonly state: PrivateStateDirectory;
-    readonly runId: string;
-    readonly initial?: RepositoryGuidanceSet;
-    readonly resuming: boolean;
-  }): Promise<RepositoryGuidanceSession> {
-    const encoded = await input.state.read(guidanceStatePath(input.runId));
-    if (input.resuming && encoded === undefined)
-      throw new Error(`Run ${input.runId} has no persisted repository guidance state.`);
-    const initial = input.initial;
-    if (encoded === undefined && initial === undefined)
-      throw new Error(`Run ${input.runId} has no initial repository guidance.`);
-    const persisted =
-      encoded === undefined
-        ? initialState(input.runId, requireInitialGuidance(initial, input.runId))
-        : decodePersistedGuidance(JSON.parse(encoded), input.runId);
-    const session = new RepositoryGuidanceSession({ ...input, persisted });
-    if (encoded === undefined) await session.#persist();
-    else session.#persistedText = JSON.stringify(persisted);
-    return session;
-  }
-
-  initialInstructions(): readonly AgentInstruction[] {
-    return Object.freeze([DEFAULT_CODING_CONTRACT]);
-  }
-
-  async contextItems(): Promise<readonly PromptContextItemInput[]> {
-    await this.#exclusive(async () => {
-      await this.#refreshDocuments();
-      await this.#activateTarget('.');
-      for (const candidatePath of this.#documents.keys()) this.#deliveredPaths.add(candidatePath);
-      await this.#persist();
-    });
-    return Object.freeze(
-      [...this.#documents.values()]
-        .sort((left, right) => comparePathByScope(left.source.path, right.source.path))
-        .map(guidanceContext)
-    );
-  }
-
-  /** Re-read active guidance before every request and effect authorization boundary. */
-  async #refreshDocuments(): Promise<void> {
-    const paths = new Set([...this.#initialPaths, ...this.#documents.keys(), ...this.#omissions.keys()]);
-    for (const candidatePath of paths) {
-      const previous = this.#documents.get(candidatePath);
-      try {
-        const status = await this.#root.inspectPath(candidatePath);
-        if (status.kind === 'absent') {
-          this.#documents.delete(candidatePath);
-          this.#deliveredPaths.delete(candidatePath);
-          this.#omissions.delete(candidatePath);
-          continue;
-        }
-        if (status.kind !== 'file')
-          throw new Error('Active repository guidance is no longer a regular file.');
-        const loaded = await readInstruction(this.#root, this.#security, candidatePath);
-        const retained =
-          [...this.#documents.values()].reduce((sum, item) => sum + item.source.retainedBytes, 0) -
-          (previous?.source.retainedBytes ?? 0);
-        if (retained + loaded.source.retainedBytes > MAX_TOTAL_GUIDANCE_BYTES)
-          throw new Error('Active repository guidance exceeds its complete delivery budget.');
-        const source =
-          previous === undefined
-            ? completeSource(loaded.source, 'discovered')
-            : Object.freeze({ ...previous.source, ...loaded.source });
-        this.#documents.set(candidatePath, Object.freeze({ source, content: loaded.content }));
-        this.#omissions.delete(candidatePath);
-        if (previous?.source.sha256 !== source.sha256) this.#deliveredPaths.delete(candidatePath);
-      } catch (error) {
-        this.#documents.delete(candidatePath);
-        this.#deliveredPaths.delete(candidatePath);
-        this.#omissions.set(
-          candidatePath,
-          Object.freeze({
-            path: candidatePath,
-            reason: error instanceof OversizedGuidanceError ? 'oversized' : 'unreadable',
-            detail: errorMessage(error)
-          })
-        );
-      }
-    }
-    await this.#persist();
+    readonly initial: RepositoryGuidanceSet;
+  }): RepositoryGuidanceSession {
+    return new RepositoryGuidanceSession(input);
   }
 
   async authorize(request: ToolAuthorizationRequest): Promise<ToolAuthorizationDecision | undefined> {
@@ -227,8 +137,7 @@ export class RepositoryGuidanceSession {
     if (targets.length === 0) return undefined;
     let unavailable: RepositoryGuidanceOmission[] = [];
     await this.#exclusive(async () => {
-      await this.#refreshDocuments();
-      for (const target of targets) await this.#activateTarget(target);
+      for (const target of targets) await this.#loadTarget(target);
       unavailable = this.#applicableOmissions(targets);
     });
     if (!mutatesOrExecutes(request)) return undefined;
@@ -251,13 +160,13 @@ export class RepositoryGuidanceSession {
     if (!mutatesOrExecutes(request)) return undefined;
     const targets = repositoryTargets(this.#root, request);
     await this.#exclusive(async () => {
-      await this.#refreshDocuments();
-      for (const target of targets) await this.#activateTarget(target);
+      for (const target of targets) await this.#loadTarget(target);
     });
     const pending = this.#applicableDocuments(targets).filter(
       (document) => !this.#deliveredPaths.has(document.source.path)
     );
     if (pending.length === 0) return undefined;
+    for (const document of pending) this.#deliveredPaths.add(document.source.path);
     return Object.freeze({
       summary:
         'Applicable repository guidance requires consideration before this action. The proposed effect has not started. Choose the next action using this guidance.',
@@ -265,10 +174,10 @@ export class RepositoryGuidanceSession {
     });
   }
 
-  async #activateTarget(target: string): Promise<void> {
-    let changed = false;
+  async #loadTarget(target: string): Promise<void> {
     for (const candidatePath of await guidancePaths(this.#root, target)) {
-      if (this.#documents.has(candidatePath) || this.#omissions.has(candidatePath)) continue;
+      if (this.#loadedPaths.has(candidatePath)) continue;
+      this.#loadedPaths.add(candidatePath);
       const status = await this.#root.inspectPath(candidatePath);
       if (status.kind === 'absent') continue;
       if (status.kind !== 'file') {
@@ -276,12 +185,10 @@ export class RepositoryGuidanceSession {
           candidatePath,
           Object.freeze({ path: candidatePath, reason: 'not_regular_file' })
         );
-        changed = true;
         continue;
       }
       if (this.#documents.size >= MAX_GUIDANCE_DOCUMENTS) {
         this.#omissions.set(candidatePath, Object.freeze({ path: candidatePath, reason: 'file_limit' }));
-        changed = true;
         continue;
       }
       try {
@@ -309,9 +216,7 @@ export class RepositoryGuidanceSession {
           })
         );
       }
-      changed = true;
     }
-    if (changed) await this.#persist();
   }
 
   #applicableDocuments(targets: readonly string[]): RepositoryGuidanceDocument[] {
@@ -332,34 +237,6 @@ export class RepositoryGuidanceSession {
     this.#serial = next.catch(() => undefined);
     return next;
   }
-
-  async #persist(): Promise<void> {
-    const persisted: PersistedRepositoryGuidance = Object.freeze({
-      version: 1,
-      runId: this.#runId,
-      initialPaths: Object.freeze([...this.#initialPaths].sort(compareCodeUnits)),
-      deliveredPaths: Object.freeze([...this.#deliveredPaths].sort(compareCodeUnits)),
-      documents: Object.freeze(
-        [...this.#documents.values()].sort((left, right) =>
-          comparePathByScope(left.source.path, right.source.path)
-        )
-      ),
-      omissions: Object.freeze(
-        [...this.#omissions.values()].sort((left, right) => compareCodeUnits(left.path, right.path))
-      )
-    });
-    const text = JSON.stringify(persisted);
-    if (text === this.#persistedText) return;
-    await this.#state.write(guidanceStatePath(this.#runId), text);
-    this.#persistedText = text;
-  }
-}
-
-export async function deleteRepositoryGuidanceState(
-  state: PrivateStateDirectory,
-  runId: string
-): Promise<void> {
-  await state.delete(guidanceStatePath(runId));
 }
 
 function repositoryTargets(
@@ -498,106 +375,6 @@ function guidanceContent(document: RepositoryGuidanceDocument): string {
   ].join('\n\n');
 }
 
-function initialState(runId: string, initial: RepositoryGuidanceSet): PersistedRepositoryGuidance {
-  const initialPaths = Object.freeze(initial.documents.map((document) => document.source.path));
-  return Object.freeze({
-    version: 1,
-    runId,
-    initialPaths,
-    deliveredPaths: initialPaths,
-    documents: initial.documents,
-    omissions: initial.omissions
-  });
-}
-
-function requireInitialGuidance(
-  initial: RepositoryGuidanceSet | undefined,
-  runId: string
-): RepositoryGuidanceSet {
-  if (initial === undefined) throw new Error(`Run ${runId} has no initial repository guidance.`);
-  return initial;
-}
-
-function decodePersistedGuidance(value: unknown, expectedRunId: string): PersistedRepositoryGuidance {
-  if (
-    !record(value) ||
-    value.version !== 1 ||
-    value.runId !== expectedRunId ||
-    !stringList(value.initialPaths) ||
-    !stringList(value.deliveredPaths) ||
-    !Array.isArray(value.documents) ||
-    !Array.isArray(value.omissions)
-  ) {
-    throw new Error(`Persisted repository guidance is invalid for run ${expectedRunId}.`);
-  }
-  const documents = value.documents.map(decodeDocument);
-  const omissions = value.omissions.map(decodeOmission);
-  const paths = new Set(documents.map((document) => document.source.path));
-  if (value.deliveredPaths.some((item) => !paths.has(item))) {
-    throw new Error(
-      `Persisted repository guidance references an unknown document for run ${expectedRunId}.`
-    );
-  }
-  return Object.freeze({
-    version: 1,
-    runId: expectedRunId,
-    initialPaths: Object.freeze([...value.initialPaths]),
-    deliveredPaths: Object.freeze([...value.deliveredPaths]),
-    documents: Object.freeze(documents),
-    omissions: Object.freeze(omissions)
-  });
-}
-
-function decodeDocument(value: unknown): RepositoryGuidanceDocument {
-  if (!record(value) || !record(value.source) || typeof value.content !== 'string')
-    throw new Error('Persisted repository guidance document is invalid.');
-  const source = value.source;
-  if (
-    typeof source.path !== 'string' ||
-    typeof source.scope !== 'string' ||
-    typeof source.sourceUri !== 'string' ||
-    typeof source.sha256 !== 'string' ||
-    !/^[a-f0-9]{64}$/u.test(source.sha256) ||
-    (source.origin !== 'discovered' && source.origin !== 'configured') ||
-    typeof source.precedence !== 'number' ||
-    !Number.isSafeInteger(source.precedence) ||
-    typeof source.retainedBytes !== 'number' ||
-    !Number.isSafeInteger(source.retainedBytes) ||
-    source.retainedBytes < 0 ||
-    !stringList(source.hazards)
-  )
-    throw new Error('Persisted repository guidance source is invalid.');
-  return Object.freeze({
-    content: value.content,
-    source: Object.freeze({
-      path: source.path,
-      scope: source.scope,
-      sourceUri: source.sourceUri,
-      sha256: source.sha256,
-      origin: source.origin,
-      precedence: source.precedence,
-      retainedBytes: source.retainedBytes,
-      hazards: Object.freeze([...source.hazards])
-    })
-  });
-}
-
-function decodeOmission(value: unknown): RepositoryGuidanceOmission {
-  if (
-    !record(value) ||
-    typeof value.path !== 'string' ||
-    !['not_regular_file', 'oversized', 'unreadable', 'total_byte_limit', 'file_limit'].includes(
-      String(value.reason)
-    ) ||
-    (value.detail !== undefined && typeof value.detail !== 'string')
-  )
-    throw new Error('Persisted repository guidance omission is invalid.');
-  return Object.freeze({
-    path: value.path,
-    reason: value.reason as RepositoryGuidanceOmission['reason'],
-    ...(typeof value.detail === 'string' ? { detail: value.detail } : {})
-  });
-}
 
 class OversizedGuidanceError extends Error {
   constructor(candidatePath: string) {
@@ -606,9 +383,6 @@ class OversizedGuidanceError extends Error {
   }
 }
 
-function guidanceStatePath(runId: string): string {
-  return `run-repository-guidance/${createHash('sha256').update(runId).digest('hex')}.json`;
-}
 function scopeContains(scope: string, target: string): boolean {
   return scope === '.' || target === scope || target.startsWith(`${scope}/`);
 }
@@ -629,9 +403,6 @@ function workspaceUri(workspacePath: string): string {
 }
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-function stringList(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string');
 }
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

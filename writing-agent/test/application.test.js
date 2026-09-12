@@ -32,7 +32,7 @@ test('writing acceptance, selected passage review, rejection, application, undo,
     await rm(f.parent, { recursive: true, force: true });
   });
   const events = [];
-  app.subscribe((event) => events.push(event));
+  app.subscribe((event) => events.push(event), (error) => assert.fail(error));
   await app.start();
   const document = await app.readDocument(f.resource.resourceId);
   const selection = {

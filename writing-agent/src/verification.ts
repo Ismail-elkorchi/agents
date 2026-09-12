@@ -2,6 +2,7 @@ export const WRITING_DETERMINISTIC_VERIFICATION_IMPLEMENTATION_ID =
   'writing-agent.deterministic-verification@1';
 
 import { hashJson } from '@agent-core/persistence';
+import { measureMarkdownWords } from '@agents/verification';
 import * as z from 'zod';
 import { contentId, nowTimestamp, textSha256 } from './canonical.js';
 import {
@@ -1189,7 +1190,7 @@ function provenanceIntegrity(
 function lengthValue(content: string, unit: 'words' | 'characters' | 'lines'): number {
   if (unit === 'characters') return Array.from(content).length;
   if (unit === 'lines') return content.length === 0 ? 0 : content.split(/\r\n|\r|\n/u).length;
-  return content.trim().length === 0 ? 0 : content.trim().split(/\s+/u).length;
+  return measureMarkdownWords(content).words;
 }
 
 function constraintText(

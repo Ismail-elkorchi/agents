@@ -5,13 +5,10 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const linuxRootCapabilityTests = new Set(
   [
-    'coding-agent/test/git-orientation.test.js',
     'coding-agent/test/project.test.js',
-    'coding-agent/test/repository-orientation.test.js',
     'coding-agent/test/resilience.test.js',
     'coding-agent/test/sandbox-command-execution.test.js',
     'coding-agent/test/tool-composition.test.js',
-    'coding-agent/test/verification.test.js',
     'writing-agent/test/application.test.js',
     'writing-agent/test/rpc.test.js',
     'writing-agent/test/tui.test.js',

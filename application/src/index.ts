@@ -1,14 +1,16 @@
 export { progressReplacementKey } from './progress.js';
-export type ApplicationDeliveryEvent =
-  | { readonly type: 'delivery.gap' }
-  | { readonly type: 'delivery.failed'; readonly error: Error };
+export interface ApplicationDeliveryEvent {
+  readonly type: 'delivery.gap';
+}
 
 type Listener<Event> = (event: Event | ApplicationDeliveryEvent) => void | Promise<void>;
 interface Subscription<Event> {
   readonly listener: Listener<Event>;
+  readonly onFailure: (error: Error) => void;
   readonly queue: (Event | ApplicationDeliveryEvent)[];
   active: boolean;
   delivering: boolean;
+  gapped: boolean;
 }
 
 /** Delivery is bounded and independent of application execution and settlement. */
@@ -20,8 +22,15 @@ export class ApplicationEvents<Event> {
       undefined
   ) {}
 
-  subscribe(listener: Listener<Event>): () => void {
-    const subscription: Subscription<Event> = { listener, queue: [], active: true, delivering: false };
+  subscribe(listener: Listener<Event>, onFailure: (error: Error) => void): () => void {
+    const subscription: Subscription<Event> = {
+      listener,
+      onFailure,
+      queue: [],
+      active: true,
+      delivering: false,
+      gapped: false
+    };
     this.subscriptions.add(subscription);
     return () => {
       this.detach(subscription);
@@ -30,6 +39,7 @@ export class ApplicationEvents<Event> {
 
   publish(event: Event | ApplicationDeliveryEvent): void {
     for (const subscription of this.subscriptions) {
+      if (subscription.gapped) continue;
       const key = this.replacementKey(event);
       if (key !== undefined) {
         let replaced = false;
@@ -49,14 +59,23 @@ export class ApplicationEvents<Event> {
       if (subscription.queue.length === 64) {
         subscription.queue.length = 0;
         subscription.queue.push({ type: 'delivery.gap' });
+        subscription.gapped = true;
+      } else {
+        subscription.queue.push(event);
       }
-      subscription.queue.push(event);
       if (!subscription.delivering) void this.deliver(subscription);
     }
   }
 
   close(): void {
     for (const subscription of this.subscriptions) this.detach(subscription);
+  }
+
+  fail(error: Error): void {
+    for (const subscription of [...this.subscriptions]) {
+      this.detach(subscription);
+      subscription.onFailure(error);
+    }
   }
 
   private detach(subscription: Subscription<Event>): void {
@@ -70,18 +89,23 @@ export class ApplicationEvents<Event> {
     try {
       while (subscription.active && subscription.queue.length > 0) {
         const event = subscription.queue.shift();
-        if (event !== undefined) await subscription.listener(event);
+        if (event !== undefined) {
+          if (isDeliveryGap(event)) subscription.gapped = false;
+          await subscription.listener(event);
+        }
       }
     } catch (cause) {
+      const error = cause instanceof Error ? cause : new Error(String(cause));
       this.detach(subscription);
-      this.publish({
-        type: 'delivery.failed',
-        error: cause instanceof Error ? cause : new Error(String(cause))
-      });
+      subscription.onFailure(error);
     } finally {
       subscription.delivering = false;
     }
   }
+}
+
+function isDeliveryGap(value: unknown): value is ApplicationDeliveryEvent {
+  return typeof value === 'object' && value !== null && 'type' in value && value.type === 'delivery.gap';
 }
 
 export {

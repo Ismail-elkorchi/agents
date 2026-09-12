@@ -141,8 +141,6 @@ function approvalSuspension() {
     budget: {
       modelTurns: 1,
       totalToolCalls: 1,
-      repeatedIdenticalToolCalls: 1,
-      revisionAttempts: 0,
       elapsedMs: 1,
       promptTokens: 0,
       completionTokens: 0,

@@ -14,8 +14,7 @@ import type { CodingApplication } from '../application/service.js';
 
 const empty = z.strictObject({});
 const id = z.string().min(1);
-const task = z.strictObject({ task: z.string().min(1) });
-const input = z.unknown().transform((value) => ownSessionSubmissionInput(value));
+const submissionInput = z.unknown().transform((value) => ownSessionSubmissionInput(value));
 
 export function codingRpcMethods(application: CodingApplication, shutdown: () => void) {
   return {
@@ -51,19 +50,20 @@ export function codingRpcMethods(application: CodingApplication, shutdown: () =>
     'history.entry': rpcMethod(z.strictObject({ boundary, entryId: id }), ({ boundary, entryId }) =>
       application.readHistoryEntry(boundary, entryId)
     ),
-    'input.submit': rpcMethod(task, async ({ task }) => acceptance(await application.submit(task))),
-    'input.follow': rpcMethod(task, async ({ task }) => acceptance(await application.follow(task))),
-    'input.steer': rpcMethod(task.extend({ expectedRunId: id }), async ({ task, expectedRunId }) =>
-      acceptance(await application.steer(task, expectedRunId))
+    'input.submit': rpcMethod(submissionInput, async (input) => acceptance(await application.submit(input))),
+    'input.follow': rpcMethod(submissionInput, async (input) => acceptance(await application.follow(input))),
+    'input.steer': rpcMethod(
+      z.strictObject({ input: submissionInput, expectedRunId: id }),
+      async ({ input, expectedRunId }) => acceptance(await application.steer(input, expectedRunId))
     ),
     'queue.read': rpcMethod(empty, () => application.readPendingSubmissions()),
     'queue.replace': rpcMethod(
-      z.strictObject({ submissionId: id, expectedInput: input, input }),
+      z.strictObject({ submissionId: id, expectedInput: submissionInput, input: submissionInput }),
       ({ submissionId, ...change }) =>
         application.updateQueuedSubmission(submissionId, { kind: 'replace', ...change })
     ),
     'queue.cancel': rpcMethod(
-      z.strictObject({ submissionId: id, expectedInput: input }),
+      z.strictObject({ submissionId: id, expectedInput: submissionInput }),
       ({ submissionId, expectedInput }) =>
         application.updateQueuedSubmission(submissionId, { kind: 'cancel', expectedInput })
     ),
@@ -108,11 +108,16 @@ export async function runCodingRpc(
     }),
     onClose: () => application.close()
   });
-  const unsubscribe = application.subscribe((event) =>
-    connection.notify(
-      event.type,
-      'error' in event ? { ...event, error: { name: event.error.name, message: event.error.message } } : event
-    )
+  const unsubscribe = application.subscribe(
+    (event) =>
+      connection.notify(
+        event.type,
+        'error' in event ? { ...event, error: { name: event.error.name, message: event.error.message } } : event
+      ),
+    (error) => {
+      streams.diagnostic(`Application event delivery failed: ${error.message}`);
+      connection.stop();
+    }
   );
   try {
     await application.start();

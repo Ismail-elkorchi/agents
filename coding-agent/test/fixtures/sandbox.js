@@ -1,13 +1,38 @@
 import { createSandbox } from '@ismail-elkorchi/sandbox';
 import {
-  filesystemResource,
+  discoverCodingCommandEnvironment,
   isolatedPath,
   isolatedPolicy,
-  systemRuntimeResources,
+  isolatedResource,
+  runtimeAccess,
+  runtimePurposes,
   WORKSPACE_ACCESS
 } from '../../dist/execution/sandbox-policy.js';
 
-export { filesystemResource, isolatedPath, isolatedPolicy, WORKSPACE_ACCESS };
+export { isolatedPath };
+
+const environment = await discoverCodingCommandEnvironment();
+
+function runtimeResources() {
+  return environment.runtimeRoots.map((root, index) =>
+    isolatedResource(
+      `runtime-${String(index)}`,
+      root.sourcePath,
+      root.targetPath,
+      runtimeAccess(root),
+      runtimePurposes(root)
+    )
+  );
+}
+
+function policy(resources = runtimeResources()) {
+  return isolatedPolicy({
+    resources,
+    home: '/home/sandbox-test',
+    temporary: '/tmp/sandbox-test',
+    graceMs: 1_000
+  });
+}
 
 export const sandboxAvailable =
   process.platform === 'linux' &&
@@ -16,11 +41,13 @@ export const sandboxAvailable =
     try {
       const support = await sandbox.probe({
         isolation: { kind: 'process' },
-        policy: isolatedPolicy(await systemRuntimeResources(), 1_000),
+        policy: policy(),
         requirements: {}
       });
       return support.implementations.some(
-        (implementation) => implementation.eligibility.state === 'eligible'
+        (implementation) =>
+          implementation.filesystem.includes('isolated') &&
+          implementation.eligibility.state === 'eligible'
       );
     } finally {
       await sandbox.dispose();
@@ -30,22 +57,19 @@ export const sandboxAvailable =
 export async function commandRun(workspace, command, timeoutMs = 1_000) {
   return {
     isolation: { kind: 'process' },
-    policy: isolatedPolicy(
-      [
-        ...(await systemRuntimeResources()),
-        filesystemResource('workspace', workspace, '/workspace', WORKSPACE_ACCESS)
-      ],
-      1_000
-    ),
+    policy: policy([
+      ...runtimeResources(),
+      isolatedResource('workspace', workspace, workspace, WORKSPACE_ACCESS, ['data'])
+    ]),
     requirements: {},
     resources: {
       wallTime: { enforcement: 'hard', scope: 'process', value: timeoutMs },
       output: { enforcement: 'hard', scope: 'process', value: 1024 * 1024 }
     },
     process: {
-      executable: isolatedPath('/bin/sh'),
-      args: ['-c', command],
-      cwd: isolatedPath('/workspace'),
+      executable: isolatedPath(environment.shellPath),
+      args: environment.commandArguments(command),
+      cwd: isolatedPath(workspace),
       stdin: 'pipe',
       stdout: 'pipe',
       stderr: 'pipe'
@@ -71,7 +95,7 @@ export const enforcement = {
 };
 
 export function authorizationSummary(executable = '/bin/sh', args = ['-c', 'printf sandboxed']) {
-  const policy = isolatedPolicy([], 1_000);
+  const sandboxPolicy = policy([]);
   return {
     isolation: { kind: 'process' },
     implementation,
@@ -80,16 +104,17 @@ export function authorizationSummary(executable = '/bin/sh', args = ['-c', 'prin
       resourceManifestDigest: '4'.repeat(64),
       resources: [],
       masks: [],
-      privateHomePath: isolatedPath('/home/sandbox'),
-      temporaryPath: isolatedPath('/tmp')
+      privateHomePath: isolatedPath('/home/sandbox-test'),
+      temporaryPath: isolatedPath('/tmp/sandbox-test')
     },
     network: { mode: 'none', topology: 'private-namespace' },
-    process: policy.process,
-    ipc: policy.ipc,
+    process: sandboxPolicy.process,
+    ipc: sandboxPolicy.ipc,
     resources: Object.fromEntries(
-      Object.entries({ wallTime: 1000, output: 1024, openFiles: 256, singleFileSize: 1024 * 1024 }).map(
-        ([key, value]) => [key, { enforcement: 'hard', scope: 'process', value }]
-      )
+      Object.entries({ wallTime: 1000, output: 1024 }).map(([key, value]) => [
+        key,
+        { enforcement: 'hard', scope: 'process', value }
+      ])
     ),
     execution: {
       executable: isolatedPath(executable),

@@ -48,7 +48,21 @@ test(
     const sessionId = state.session.sessionId;
     await assert.rejects(client.request('input.submit', { task: 4 }), (error) => error.code === -32602);
     const accepted = await client.request('input.submit', {
-      task: 'Inspect whether edits are needed.\u2028Keep exact input.'
+      task: 'Inspect whether edits are needed.\u2028Keep exact input.',
+      instructions: ['Answer this side question directly.'],
+      contextItems: [
+        {
+          sourceUri: 'test://rpc/context',
+          sourceKind: 'user',
+          integrity: 'verified',
+          representation: 'full',
+          mediaType: 'text/plain',
+          title: 'RPC request context',
+          content: 'The caller supplied this context.',
+          purpose: 'Verify submission metadata transport.'
+        }
+      ],
+      relationship: { kind: 'side_question' }
     });
     assert.equal(accepted.kind, 'started');
     assert.equal('completion' in accepted, false);
@@ -60,6 +74,10 @@ test(
         (entry) => entry.type === 'assistant' && entry.content === 'The workspace needs no edits.'
       )
     );
+    const input = view.history.entries.find((entry) => entry.type === 'input');
+    assert.deepEqual(input.originalInput.instructions, ['Answer this side question directly.']);
+    assert.equal(input.originalInput.contextItems[0].sourceUri, 'test://rpc/context');
+    assert.equal(input.originalInput.relationship.kind, 'side_question');
     const found = await client.request('history.search', { query: 'exact input' });
     assert.equal(found.matches.length, 1);
     await client.request('application.shutdown');
@@ -121,7 +139,7 @@ test(
 );
 
 test(
-  'approval survives connection loss, rejects a stale fingerprint, and exposes the exact working-copy patch',
+  'approval survives connection loss, rejects a stale fingerprint, and exposes the exact workspace patch',
   { skip: process.platform !== 'linux' },
   async (t) => {
     const original = 'export const enabled = false;\n';
@@ -185,8 +203,7 @@ test(
     assert.equal(change.patches.length, 1);
     assert.equal(change.patches[0].patch, patch);
     assert.equal(change.patches[0].receipt.applicationStatus, 'applied');
-    assert.equal(result.outcome.publication, 'not_applied');
-    assert.equal(await readFile(path.join(f.root, 'feature.js'), 'utf8'), original);
+    assert.equal(await readFile(path.join(f.root, 'feature.js'), 'utf8'), 'export const enabled = true;\n');
     assert.equal((await restored.close()).code, 0);
   }
 );

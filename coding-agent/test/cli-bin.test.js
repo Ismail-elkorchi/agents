@@ -45,10 +45,10 @@ test('permission mode and trust matrix never grants network or host escape', () 
       assert.equal(authority.enabledTools.includes('apply_patch'), mode !== 'review');
       assert.equal(authority.enabledTools.includes('exec_command'), mode === 'develop');
       assert.equal(authority.verificationCommands, mode === 'review' ? 'disabled' : 'sandboxed');
-      assert.equal(authority.permissions.commandExecution, mode === 'develop' ? 'sandboxed' : 'denied');
+      assert.equal(authority.permissions.commandExecution, mode === 'review' ? 'denied' : 'sandboxed');
       assert.equal(
         authority.requiredApprovals.includes('command'),
-        trust === 'restricted' && mode === 'develop'
+        trust === 'restricted' && mode !== 'review'
       );
     }
   }
@@ -74,7 +74,7 @@ test('CLI rejects retired presentation flags', async () => {
   }
 });
 
-test('CLI exit codes distinguish execution, completeness and application acceptance', () => {
+test('CLI exit codes distinguish execution and model-output completeness', () => {
   assert.equal(resultExitCode(result()), 0);
   assert.equal(
     resultExitCode(
@@ -85,16 +85,6 @@ test('CLI exit codes distinguish execution, completeness and application accepta
       })
     ),
     2
-  );
-  assert.equal(
-    resultExitCode(result({}, { acceptance: 'rejected', verification: { status: 'failed', checks: [] } })),
-    3
-  );
-  assert.equal(
-    resultExitCode(
-      result({}, { acceptance: 'inconclusive', verification: { status: 'inconclusive', checks: [] } })
-    ),
-    4
   );
   assert.equal(resultExitCode(failed()), 1);
   assert.equal(resultExitCode(aborted()), 130);
@@ -224,8 +214,8 @@ test(
   }
 );
 
-function result(overrides = {}, outcome = {}) {
-  return testResult(decodeAgentTerminalSnapshot({ ...base(), ...overrides }), outcome);
+function result(overrides = {}) {
+  return testResult(decodeAgentTerminalSnapshot({ ...base(), ...overrides }));
 }
 function failed() {
   const { modelTerminationReason: _reason, ...input } = base();
@@ -268,7 +258,6 @@ function base() {
     budget: {
       modelTurns: 1,
       totalToolCalls: 0,
-      repeatedIdenticalToolCalls: 0,
       elapsedMs: 1,
       promptTokens: 0,
       completionTokens: 0,

@@ -9,7 +9,7 @@ export async function executeCodingCommand(
   application: CodingApplication,
   line: string
 ): Promise<InteractiveCommandResult> {
-  if (!line.startsWith('/')) return submissionPresentation(await application.submit(line), line);
+  if (!line.startsWith('/')) return submissionPresentation(await application.submit({ task: line }), line);
   const { command, value } = parseInteractiveCommandLine(line);
   switch (command) {
     case '/exit':
@@ -44,9 +44,9 @@ export async function executeCodingCommand(
       return loginPresentation(await application.login(value ? parseProviderId(value) : undefined));
     }
     case '/steer':
-      return submissionPresentation(await application.steer(value), value);
+      return submissionPresentation(await application.steer({ task: value }), value);
     case '/follow':
-      return submissionPresentation(await application.follow(value), value);
+      return submissionPresentation(await application.follow({ task: value }), value);
     case '/abort':
       if (!(await application.abort(value || undefined))) throw new Error('No active run to abort.');
       return { message: 'Abort requested.' };

@@ -60,6 +60,8 @@ export function resolveCodingAuthority(input: {
       : mode === 'edit'
         ? ['read', 'write', 'destructive']
         : ['read', 'write', 'destructive', 'execute'];
+  if (input.hasVerificationChecks && mode !== 'review' && !allowedRisks.includes('execute'))
+    allowedRisks.push('execute');
   const configuredApprovals = input.project?.permissions.requireApprovalFor ?? [];
   const requiredApprovals = new Set<CodingApprovalKind>(configuredApprovals);
   if (input.trust === 'restricted') {
@@ -67,7 +69,8 @@ export function resolveCodingAuthority(input: {
       requiredApprovals.add('write');
       requiredApprovals.add('delete');
     }
-    if (mode === 'develop') requiredApprovals.add('command');
+    if (mode === 'develop' || (input.hasVerificationChecks && mode !== 'review'))
+      requiredApprovals.add('command');
   }
   const verificationCommands = input.hasVerificationChecks && mode !== 'review' ? 'sandboxed' : 'disabled';
   const commandAvailable = enabledTools.some(
@@ -84,10 +87,13 @@ export function resolveCodingAuthority(input: {
       trust: input.trust,
       workspaceRead: 'root_bound',
       workspaceWrite: mode === 'review' ? 'denied' : 'structured',
-      commandExecution: commandAvailable ? 'sandboxed' : 'denied',
+      commandExecution: commandAvailable || verificationCommands === 'sandboxed' ? 'sandboxed' : 'denied',
       network: 'denied',
       hostEscape: 'denied',
-      tools: enabledTools
+      tools: Object.freeze([
+        ...enabledTools,
+        ...(verificationCommands === 'sandboxed' ? ['run_check'] : [])
+      ])
     })
   });
 }

@@ -1,10 +1,13 @@
-import type { AgentProgressEvent, AgentRunPhase, AgentSessionState } from '@agent-core/runtime';
+import type {
+  AgentEndedRunResult,
+  AgentProgressEvent,
+  AgentRunPhase,
+  AgentSessionState
+} from '@agent-core/runtime';
 import { providerFailureText } from '@agents/tui';
 import { type CheckResult } from '@agents/verification';
-import type { CodingHandoff } from '../changes/coding-handoff.js';
-import type { CodingEndedRunResult } from '../outcome.js';
-import { codingHandoffUncertainties } from '../presentation/run-summary.js';
 import type { CodingAgentTuiActivityEntry } from './conversation-model.js';
+import type { CodingRunVerification } from '../verification/configured-check-tool.js';
 import {
   appendNotice,
   upsertActivity,
@@ -275,71 +278,39 @@ export function applySessionState(
   };
 }
 
-export function applyCodingHandoff(state: CodingAgentTuiState, handoff: CodingHandoff): CodingAgentTuiState {
-  state = handoff.outcome.verification.checks.reduce(
-    (current, check) => applyCheckResult(current, check, handoff.terminal.runId),
-    state
-  );
-  const report = handoff.changeReport;
-  const uncertainties = codingHandoffUncertainties(handoff);
-  const structured = report.changes.filter((change) => change.attribution === 'structured_mutation').length;
-  const external = report.changes.filter((change) => change.attribution === 'external_or_concurrent').length;
-  const changeSummary =
-    report.totalChanges === 0
-      ? 'No workspace changes'
-      : `${String(report.totalChanges)} changed path${report.totalChanges === 1 ? '' : 's'} · ${String(structured)} structured · ${String(external)} external/concurrent`;
-  const summary = `${changeSummary} · ${handoff.outcome.publication.replaceAll('_', ' ')} · ${uncertainties.length === 0 ? 'no remaining uncertainty' : `${String(uncertainties.length)} remaining uncertaint${uncertainties.length === 1 ? 'y' : 'ies'}`}`;
-  const details = [
-    `Reviewed revision ${report.finalDigest}`,
-    `Publication ${handoff.outcome.publication}`,
-    `Change artifact ${handoff.changeArtifact.artifactId}`,
-    '',
-    ...report.changes.map(
-      (change) =>
-        `${change.kind} ${change.path} · ${change.attribution}${change.conflicts.length === 0 ? '' : ` · ${change.conflicts.join(', ')}`}`
-    ),
-    ...(report.omittedChanges === 0 ? [] : [`${String(report.omittedChanges)} additional changes omitted`]),
-    '',
-    `Remaining uncertainty\n${uncertainties.length === 0 ? 'none' : uncertainties.join('\n')}`
-  ].join('\n');
-  const handoffs = state.debug.handoffs.some(
-    (candidate) => candidate.terminal.runId === handoff.terminal.runId
+export function applyConfiguredChecks(
+  state: CodingAgentTuiState,
+  verification: CodingRunVerification
+): CodingAgentTuiState {
+  const reports: readonly CodingRunVerification[] = state.debug.verification.some(
+    (item) => item.runId === verification.runId
   )
-    ? state.debug.handoffs.map((candidate) =>
-        candidate.terminal.runId === handoff.terminal.runId ? handoff : candidate
+    ? state.debug.verification.map((item) =>
+        item.runId === verification.runId ? verification : item
       )
-    : [...state.debug.handoffs, handoff];
-  return upsertActivity(
-    {
-      ...state,
-      debug: { ...state.debug, handoffs }
-    },
-    {
-      id: `handoff:${handoff.terminal.runId}`,
-      kind: 'activity',
-      activity: 'change',
-      label: 'Coding handoff',
-      status: report.coverage === 'partial' || uncertainties.length > 0 ? 'warning' : 'success',
-      summary,
-      ...(details.length === 0 ? {} : { details })
-    }
+    : [...state.debug.verification, verification];
+  return verification.checks.reduce<CodingAgentTuiState>(
+    (current, check) =>
+      upsertActivity(current, {
+        id: `check:${verification.runId}:${check.id}`,
+        kind: 'activity',
+        activity: 'check',
+        label: `Check ${check.id}`,
+        status:
+          check.status === 'passed'
+            ? 'success'
+            : check.status === 'failed' && check.requirement === 'required'
+              ? 'failed'
+              : 'warning',
+        summary: `${check.requirement} · ${check.status} · ${check.coverage}`,
+        ...(check.output ? { details: check.output } : {})
+      }),
+    { ...state, debug: { ...state.debug, verification: reports } }
   );
 }
 
-export function applyResult(state: CodingAgentTuiState, result: CodingEndedRunResult): CodingAgentTuiState {
-  const checked = result.outcome.verification.checks.reduce(
-    (current, check) => applyCheckResult(current, check, result.terminal.runId),
-    state
-  );
-  const ended = applyTerminal(checked, result.terminal, result.deliveryDiagnostics);
-  if (result.outcome.acceptance === 'rejected') return appendNotice(ended, 'Verification failed', 'error');
-  if (result.outcome.acceptance === 'inconclusive')
-    return appendNotice(
-      ended,
-      result.outcome.reason ?? 'Acceptance requires reconciliation or further work.',
-      'warning'
-    );
-  return ended;
+export function applyResult(state: CodingAgentTuiState, result: AgentEndedRunResult): CodingAgentTuiState {
+  return applyTerminal(state, result.terminal, result.deliveryDiagnostics);
 }
 
 export function applyFailure(state: CodingAgentTuiState, message: string): CodingAgentTuiState {
@@ -348,8 +319,8 @@ export function applyFailure(state: CodingAgentTuiState, message: string): Codin
 
 function applyTerminal(
   state: CodingAgentTuiState,
-  terminal: CodingEndedRunResult['terminal'],
-  deliveryDiagnostics: CodingEndedRunResult['deliveryDiagnostics']
+  terminal: AgentEndedRunResult['terminal'],
+  deliveryDiagnostics: AgentEndedRunResult['deliveryDiagnostics']
 ): CodingAgentTuiState {
   const presentation = terminalPresentation(terminal);
   let next = state;
@@ -376,13 +347,6 @@ function applyTerminal(
     }
   }
   return next;
-}
-
-export function applyHydratedTerminal(
-  state: CodingAgentTuiState,
-  terminal: CodingEndedRunResult['terminal']
-): CodingAgentTuiState {
-  return applyTerminal(state, terminal, []);
 }
 
 function hasVisibleMessage(state: CodingAgentTuiState, message: string): boolean {

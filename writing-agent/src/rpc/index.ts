@@ -143,11 +143,16 @@ export async function runWritingRpc(
     }),
     onClose: () => application.close()
   });
-  const unsubscribe = application.subscribe((event) =>
-    connection.notify(
-      event.type,
-      'error' in event ? { ...event, error: { name: event.error.name, message: event.error.message } } : event
-    )
+  const unsubscribe = application.subscribe(
+    (event) =>
+      connection.notify(
+        event.type,
+        'error' in event ? { ...event, error: { name: event.error.name, message: event.error.message } } : event
+      ),
+    (error) => {
+      streams.diagnostic(`Application event delivery failed: ${error.message}`);
+      connection.stop();
+    }
   );
   try {
     await application.start();

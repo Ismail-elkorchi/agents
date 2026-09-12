@@ -26,22 +26,7 @@ test('TUI preserves terminal truth and does not duplicate the final answer', asy
   });
   await events.enqueue({
     type: 'result',
-    result: testResult(terminal, {
-      acceptance: 'rejected',
-      verification: {
-        status: 'failed',
-        checks: [
-          {
-            id: 'tests',
-            implementationId: 'tests@1',
-            requirement: 'required',
-            verdict: 'failed',
-            summary: 'Tests failed',
-            durationMs: 4
-          }
-        ]
-      }
-    })
+    result: testResult(terminal)
   });
   await waitFor(() => host.frames().length > 2);
   host.input('/exit\r');
@@ -56,46 +41,6 @@ test('TUI preserves terminal truth and does not duplicate the final answer', asy
       .length,
     1
   );
-  assert.ok(
-    exit.state.conversation.items.some(
-      (item) => item.kind === 'notice' && item.text === 'Verification failed'
-    )
-  );
-});
-
-test('advisory check failures remain visible without becoming required failures', async () => {
-  const { host, events, running } = runPresentationApp();
-  await waitFor(() => host.frames().length > 0);
-  await events.enqueue({
-    type: 'progress',
-    event: { type: 'turn.started', runId: 'run', turnIndex: 1, turnId: 'turn-1', requestAttempt: 1 }
-  });
-  await events.enqueue({
-    type: 'result',
-    result: testResult(decodeAgentTerminalSnapshot(base()), {
-      verification: {
-        status: 'not_required',
-        checks: [
-          {
-            id: 'style',
-            implementationId: 'tests@1',
-            requirement: 'advisory',
-            verdict: 'failed',
-            summary: 'Style issue',
-            durationMs: 3
-          }
-        ]
-      }
-    })
-  });
-  await waitFor(() => host.frames().length > 1);
-  host.input('/exit\r');
-  const exit = await running;
-  await events.close();
-
-  const check = exit.state.conversation.items.find((item) => item.id === 'check:run:style');
-  assert.equal(check.status, 'warning');
-  assert.equal(check.summary, 'Style issue');
 });
 
 function runPresentationApp() {
@@ -125,7 +70,6 @@ function base() {
     budget: {
       modelTurns: 1,
       totalToolCalls: 0,
-      repeatedIdenticalToolCalls: 0,
       elapsedMs: 1,
       promptTokens: 0,
       completionTokens: 0,

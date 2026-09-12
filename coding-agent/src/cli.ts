@@ -3,7 +3,7 @@ import { FileCredentialStore } from '@agent-core/auth';
 
 import { loginOpenAICodexDeviceCode, type OpenAICodexTransport } from '@agent-core/provider-openai-codex';
 
-import { type AgentProgressEvent } from '@agent-core/runtime';
+import { type AgentProgressEvent, type AgentRunResult } from '@agent-core/runtime';
 
 import { type ToolCall, type ToolObservation, type ToolProgress } from '@agent-core/tools';
 
@@ -14,12 +14,6 @@ import path from 'node:path';
 import type { Writable } from 'node:stream';
 
 import { fileURLToPath } from 'node:url';
-
-import type { CodingHandoff } from './changes/coding-handoff.js';
-
-import { codingHandoffUncertainties } from './presentation/run-summary.js';
-
-import type { CodingRunResult } from './outcome.js';
 
 import { parseCodingPermissionMode } from './security/permission-mode.js';
 
@@ -34,6 +28,7 @@ import {
 } from './application/runtime.js';
 import { CodingApplication } from './application/service.js';
 import { openCodingWorkspace } from './workspace.js';
+import type { CodingRunVerification } from './verification/configured-check-tool.js';
 
 type CliAuthProviderId = 'openai' | 'openai-codex';
 
@@ -92,13 +87,18 @@ export async function main(argv: string[]): Promise<void> {
   if (exec) {
     const application = new CodingApplication(parsed.options, workspace);
     const progress = new CodingAgentProgressRenderer({ showReasoning: parsed.options.showReasoning });
-    let completed: CodingRunResult | undefined;
+    let completed: AgentRunResult | undefined;
     let failure: Error | undefined;
-    const unsubscribe = application.subscribe((event) => {
-      if (event.type === 'run.progress') progress.handle(event.event);
-      else if (event.type === 'run.completed') completed = event.result;
-      else if (event.type === 'run.failed') failure = event.error;
-    });
+    const unsubscribe = application.subscribe(
+      (event) => {
+        if (event.type === 'run.progress') progress.handle(event.event);
+        else if (event.type === 'run.completed') completed = event.result;
+        else if (event.type === 'run.failed') failure = event.error;
+      },
+      (error) => {
+        failure = error;
+      }
+    );
     try {
       await application.start();
       const state = application.state();
@@ -106,10 +106,10 @@ export async function main(argv: string[]): Promise<void> {
         throw new Error(
           `Coding application requires setup: ${state.requirements.join(', ')}. Workspace is ${state.runtimeDetails.workspaceTrust ?? 'untrusted'}.`
         );
-      let result: CodingRunResult;
+      let result: AgentRunResult;
       if (resumeOnly) {
         const view = await application.readSession();
-        if (view.session.phase === 'suspended' || view.session.pendingSettlement !== undefined)
+        if (view.session.phase === 'suspended')
           result = await application.resumeSuspension();
         else {
           await application.waitForIdle();
@@ -121,7 +121,7 @@ export async function main(argv: string[]): Promise<void> {
           result = completed;
         }
       } else {
-        const accepted = await application.submit(task);
+        const accepted = await application.submit({ task });
         if (accepted.kind === 'rejected') throw new Error(`Task was rejected: ${accepted.reason}.`);
         result = await accepted.completion;
       }
@@ -129,7 +129,7 @@ export async function main(argv: string[]): Promise<void> {
         result,
         progress,
         process.stdout,
-        result.state === 'ended' ? await application.readHandoff(result.terminal.runId) : undefined
+        await application.readVerification(runIdOf(result))
       );
       printPersistenceLocations(application, result);
       process.exitCode = resultExitCode(result);
@@ -286,9 +286,15 @@ async function runApprovalCommand(args: string[]): Promise<void> {
   }
   const application = new CodingApplication(parsed.options, workspace);
   const progress = new CodingAgentProgressRenderer({ showReasoning: parsed.options.showReasoning });
-  const unsubscribe = application.subscribe((event) => {
-    if (event.type === 'run.progress') progress.handle(event.event);
-  });
+  let deliveryFailure: Error | undefined;
+  const unsubscribe = application.subscribe(
+    (event) => {
+      if (event.type === 'run.progress') progress.handle(event.event);
+    },
+    (error) => {
+      deliveryFailure = error;
+    }
+  );
   try {
     await application.restoreRun(runId);
     const result = await application.resolveApproval({
@@ -297,11 +303,12 @@ async function runApprovalCommand(args: string[]): Promise<void> {
       fingerprint,
       decision: decisionValue
     });
+    if (deliveryFailure !== undefined) throw deliveryFailure;
     printResult(
       result,
       progress,
       process.stdout,
-      result.state === 'ended' ? await application.readHandoff(result.terminal.runId) : undefined
+      await application.readVerification(runIdOf(result))
     );
     printPersistenceLocations(application, result);
     process.exitCode = resultExitCode(result);
@@ -454,10 +461,10 @@ function writeLine(output: Writable, text: string): void {
 }
 
 function printResult(
-  result: CodingRunResult,
+  result: AgentRunResult,
   progress?: CodingAgentProgressRenderer,
   output: Writable = process.stdout,
-  handoff?: CodingHandoff
+  verification?: CodingRunVerification
 ): void {
   if (result.state === 'suspended') {
     if (result.reason !== 'approval_required') {
@@ -497,47 +504,17 @@ function printResult(
   writeLine(output, `Model output: ${title(terminal.modelOutput.status)}`);
   if (terminal.modelTerminationReason)
     writeLine(output, `Model termination: ${title(terminal.modelTerminationReason.replaceAll('_', ' '))}`);
-  writeLine(output, `Verification: ${title(result.outcome.verification.status.replaceAll('_', ' '))}`);
-  writeLine(output, `Acceptance: ${title(result.outcome.acceptance.replaceAll('_', ' '))}`);
-  if (result.outcome.reason) writeLine(output, result.outcome.reason);
   if ('errorMessage' in terminal) writeLine(output, `Reason: ${terminal.errorMessage}`);
-  if (result.outcome.verification.checks.length > 0) {
+  for (const check of verification?.checks ?? [])
     writeLine(
       output,
-      `Checks:\n${result.outcome.verification.checks.map((check) => `- ${check.id}: ${check.requirement}/${check.verdict} - ${check.summary}`).join('\n')}`
+      `Check ${check.id}: ${check.requirement}/${check.status} (${check.coverage})`
     );
-  }
-  const advisoryFailures = result.outcome.verification.checks.filter(
-    (check) => check.requirement === 'advisory' && check.verdict !== 'passed'
-  ).length;
-  if (advisoryFailures > 0)
-    writeLine(output, `Advisory checks: ${String(advisoryFailures)} failed or unknown`);
-  if (handoff) {
-    const changeReport = handoff.changeReport;
-    const uncertainties = codingHandoffUncertainties(handoff);
-    writeLine(output, `Reviewed revision: ${changeReport.finalDigest}`);
-    writeLine(output, `Publication: ${title(handoff.outcome.publication.replaceAll('_', ' '))}`);
-    writeLine(output, `Change artifact: ${handoff.changeArtifact.artifactId}`);
-    writeLine(output, `Workspace changes: ${String(changeReport.totalChanges)} (${changeReport.coverage})`);
-    for (const change of changeReport.changes) {
-      const origin = change.attribution === 'structured_mutation' ? 'agent' : 'external/concurrent';
-      const preChange = change.preChangeVersionControl === 'changed' ? ', changed before run' : '';
-      writeLine(output, `- ${change.kind} ${change.path} [${origin}${preChange}]`);
-    }
-    if (changeReport.omittedChanges > 0)
-      writeLine(output, `- ${String(changeReport.omittedChanges)} additional changes omitted`);
-    writeLine(
-      output,
-      uncertainties.length === 0
-        ? 'Remaining uncertainty: none'
-        : `Remaining uncertainty:\n${uncertainties.map((uncertainty) => `- ${uncertainty}`).join('\n')}`
-    );
-  }
   for (const diagnostic of result.deliveryDiagnostics)
     writeLine(output, `Delivery diagnostic (${diagnostic.eventType}): ${diagnostic.message}`);
 }
 
-export function resultExitCode(result: CodingRunResult): number {
+export function resultExitCode(result: AgentRunResult): number {
   if (result.state === 'suspended') return 7;
   if (result.terminal.executionStatus === 'aborted') return 130;
   if (result.terminal.executionStatus === 'failed') return 1;
@@ -546,13 +523,6 @@ export function resultExitCode(result: CodingRunResult): number {
     result.terminal.modelOutput.status === 'indeterminate'
   )
     return 2;
-  if (result.outcome.acceptance === 'rejected' || result.outcome.verification.status === 'failed') return 3;
-  if (
-    result.outcome.acceptance === 'inconclusive' ||
-    result.outcome.stage === 'awaiting_reconciliation' ||
-    result.outcome.verification.status === 'inconclusive'
-  )
-    return 4;
   return 0;
 }
 
@@ -560,13 +530,13 @@ function title(value: string): string {
   return value.length === 0 ? value : `${value[0]?.toUpperCase() ?? ''}${value.slice(1)}`;
 }
 
-function printPersistenceLocations(application: CodingApplication, result: CodingRunResult): void {
+function printPersistenceLocations(application: CodingApplication, result: AgentRunResult): void {
   const locations = application.persistenceLocations(runIdOf(result));
   console.error(`\nLedger: ${locations.ledger}`);
   console.error(`Session: ${locations.session}`);
 }
 
-function runIdOf(result: CodingRunResult): string {
+function runIdOf(result: AgentRunResult): string {
   return result.state === 'suspended' ? result.runId : result.terminal.runId;
 }
 

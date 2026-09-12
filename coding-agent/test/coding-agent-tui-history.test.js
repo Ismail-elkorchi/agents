@@ -39,7 +39,8 @@ test(
     assert(Buffer.byteLength(JSON.stringify(entries)) > 2 * 1024 * 1024);
     const read = async (request) => ({
       history: await repository.readBranchPage(session, { ...request, limit: 8, maxBytes: 64 * 1024 }),
-      handoffs: []
+      changes: [],
+      verification: []
     });
     const latest = await read();
     const runtime = await open(t, {
@@ -103,10 +104,87 @@ test(
         accumulated: 'New'
       }
     });
-    assert.deepEqual(runtime.state().conversation.items, historical);
+    assert.equal(runtime.state().conversation.items.length, historical.length + 1);
+    assert(runtime.state().conversation.items.some((entry) => entry.id === 'assistant:live'));
     assert.equal(runtime.state().conversation.unread, true);
   }
 );
+
+test('a stale tail read cannot erase a reply completed while the read was pending', async (t) => {
+  const repository = new InMemorySessionRepository();
+  const session = await repository.create({
+    binding: { schemaId: 'test/stale-history', schemaVersion: 1, subject: {} }
+  });
+  const stale = {
+    history: await repository.readBranchPage(session),
+    changes: [],
+    verification: []
+  };
+  let release;
+  const blocked = new Promise((resolve) => {
+    release = resolve;
+  });
+  let reads = 0;
+  const read = async () => {
+    reads += 1;
+    if (reads === 1) {
+      await blocked;
+      return stale;
+    }
+    return { history: await repository.readBranchPage(session), changes: [], verification: [] };
+  };
+  const runtime = await open(t, {
+    historyReader: read,
+    initialHydration: {
+      ...stale,
+      session: {
+        sessionId: session.id,
+        phase: 'idle',
+        queuedInputs: 0,
+        configuration: { provider: 'test', model: 'test' }
+      },
+      branchPoints: [],
+      pendingSubmissions: [],
+      runs: []
+    }
+  });
+
+  await runtime.dispatch({ type: 'history.load', direction: 'tail' });
+  await runtime.dispatch({
+    type: 'progress',
+    event: {
+      type: 'assistant.ended',
+      turnIndex: 1,
+      turnId: 'completed-during-read',
+      requestAttempt: 1,
+      content: 'Reply survives stale history',
+      modelOutput: {
+        status: 'complete',
+        message: 'Reply survives stale history',
+        source: 'content',
+        turnIndex: 1
+      }
+    }
+  });
+  await repository.appendAssistant(session, {
+    runId: 'run-completed-during-read',
+    identity: { turnIndex: 1, turnId: 'completed-during-read', requestAttempt: 1 },
+    content: 'Reply survives stale history'
+  });
+  await runtime.dispatch({ type: 'history.load', direction: 'tail' });
+  release();
+  await waitForState(
+    runtime,
+    t.signal,
+    () => reads === 2 && runtime.state().conversation.loading === undefined
+  );
+  const replies = runtime
+    .state()
+    .conversation.items.filter((entry) => entry.id === 'assistant:completed-during-read');
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].kind, 'assistant');
+  assert.equal(replies[0].text, 'Reply survives stale history');
+});
 
 test(
   'queued edits bind the observed input and preserve the instruction draft on rejection',
@@ -169,7 +247,8 @@ test(
     let selected = first;
     const read = async (request) => ({
       history: await repository.readBranchPage(selected, { ...request, limit: 4 }),
-      handoffs: []
+      changes: [],
+      verification: []
     });
     const view = async () => ({
       ...(await read()),

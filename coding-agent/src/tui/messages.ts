@@ -1,5 +1,6 @@
 import type {
   AgentApprovalSuspension,
+  AgentEndedRunResult,
   AgentProgressEvent,
   AgentRunSuspension,
   ContextWindowRecord,
@@ -18,9 +19,8 @@ import type {
   CodingHistoryPage,
   CodingSessionView
 } from '../application/contracts.js';
-import type { CodingHandoff } from '../changes/coding-handoff.js';
-import type { CodingEndedRunResult } from '../outcome.js';
 import type { CodingAgentTuiCommandExecution, CodingAgentTuiCommandRequest } from './command-surface.js';
+import type { CodingRunVerification } from '../verification/configured-check-tool.js';
 import type { PanelItem, PanelKind } from './panels.js';
 import type { FileCompletionRequest } from './state.js';
 
@@ -48,11 +48,11 @@ export type CodingAgentTuiMessage =
   | { readonly type: 'panel.branch'; readonly entryId: string }
   | { readonly type: 'panel.done' | 'panel.operation-failed'; readonly message: string }
   | { readonly type: 'progress'; readonly event: AgentProgressEvent }
-  | { readonly type: 'result'; readonly result: CodingEndedRunResult }
+  | { readonly type: 'result'; readonly result: AgentEndedRunResult }
   | { readonly type: 'failure'; readonly message: string }
   | { readonly type: 'delivery.failed'; readonly message: string }
   | { readonly type: 'context.transitioned'; readonly window: ContextWindowRecord }
-  | { readonly type: 'handoff.ready'; readonly handoff: CodingHandoff }
+  | { readonly type: 'verification.updated'; readonly verification: CodingRunVerification }
   | { readonly type: 'application.state.changed'; readonly state: CodingApplicationState }
   | {
       readonly type: 'interactive.notice';
