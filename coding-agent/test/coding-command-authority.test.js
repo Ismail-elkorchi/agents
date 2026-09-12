@@ -9,6 +9,7 @@ import { PrivateStateDirectory } from '../dist/state/private-state.js';
 
 test(
   'production command authority selects a native sandbox and confines the observed command environment',
+  { skip: process.platform !== 'linux' },
   async () => {
     const parent = await mkdtemp(path.join(tmpdir(), 'coding-agent-toolchain-'));
     const workspace = path.join(parent, 'workspace');
