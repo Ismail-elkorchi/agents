@@ -167,7 +167,7 @@ export async function scriptedOllama(script) {
         }
         const value = responses.shift();
         if (!value) throw new Error('The scripted provider received an unexpected chat request.');
-        sendNdjson(response, value);
+        sendNdjson(response, typeof value === 'function' ? await value(chatRequests.at(-1)) : value);
         return;
       }
       response.writeHead(404).end();

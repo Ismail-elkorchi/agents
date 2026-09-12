@@ -247,7 +247,7 @@ test('suggest mode creates one durable proposal and cannot mutate user-owned tex
       ),
       true
     );
-    const producerPrompt = provider.requests[0].messages.find((message) => message.role === 'user').content;
+    const producerPrompt = provider.requests[0].messages.findLast((message) => message.role === 'user').content;
     assert.match(producerPrompt, /complete authoritative producer contract/u);
     assert.match(producerPrompt, /"contract":"writing-agent\.operation-contract@2"/u);
     assert.match(producerPrompt, /"operationHash":"[a-f0-9]{64}"/u);

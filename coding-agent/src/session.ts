@@ -49,6 +49,7 @@ import {
 } from './security/permission-mode.js';
 import { codingWorkspaceSessionBinding, type OpenCodingWorkspace } from './workspace.js';
 import { createConfiguredCheckTool } from './verification/configured-check-tool.js';
+import { createMarkdownWordCountTool } from './verification/markdown-word-count-tool.js';
 
 export interface CodingSessionOptions {
   readonly workspace: OpenCodingWorkspace;
@@ -266,12 +267,13 @@ export async function createCodingSession(
         security: openedWorkspace.security,
         initial: initialGuidance
       });
+      const wordCountTool = createMarkdownWordCountTool(root);
       const host = createLocalToolHost({
         rootedFileAuthority: root,
         artifactRepository: artifacts,
         ...(commandExecution ? { commandExecution } : {}),
         ...(patchEnabled ? { patchJournal: TextPatchJournal.adopt(patchJournalDirectory) } : {}),
-        enabledTools: authority.enabledTools,
+        enabledTools: authority.enabledTools.filter((name) => name !== wordCountTool.name),
         async deliverRecoveredTerminalReport(report) {
           const runId = report.result.owner.runId;
           await events.append(
@@ -313,7 +315,12 @@ export async function createCodingSession(
               })
             ]
           : [];
-      activeTools = Object.freeze([...host.tools, ...checkTools, ...memoryTools]);
+      activeTools = Object.freeze([
+        ...host.tools,
+        ...(authority.enabledTools.includes(wordCountTool.name) ? [wordCountTool] : []),
+        ...checkTools,
+        ...memoryTools
+      ]);
       const release = async () => {
         activeRuntime = undefined;
         activeRunId = undefined;

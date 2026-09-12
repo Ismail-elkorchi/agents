@@ -64,6 +64,8 @@ Coding Agent loads the root `AGENTS.md` and configured instruction files when a 
 
 Project configuration may name required and advisory commands. Coding Agent exposes them through `run_check`; it does not infer commands or coverage from package manifests. Each result records the process outcome, retained output, output completeness, and passed, failed, or inconclusive status. A check not invoked remains `not_run` in the run's verification view.
 
+Explicit requirements also apply to documents and other deliverables, and remain relevant through follow-up revisions unless the user changes them. `count_markdown_words` measures a complete saved Markdown file without shell access or configured checks. It returns the count, the content SHA-256, and the shared Markspan counting convention: headings, prose, code, and image alternative text count; Markdown syntax, link destinations, HTML markup, definitions, and front matter do not. Measurements apply to the measured revision and must be repeated after relevant edits. The tool is available in all permission modes and can be selected through `tools.enabled`.
+
 ```json
 {
   "version": 1,

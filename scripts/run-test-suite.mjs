@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { availableParallelism } from 'node:os';
 import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const linuxRootCapabilityTests = new Set(
@@ -32,7 +33,9 @@ const files =
     ? discovered
     : discovered.filter((file) => !linuxRootCapabilityTests.has(file));
 if (files.length === 0) throw new Error('No agent tests were discovered.');
-const child = spawn(process.execPath, ['--test', ...files], { cwd: root, stdio: 'inherit' });
+// Integration tests launch their own processes; reserve capacity for those children.
+const concurrency = Math.min(4, Math.max(1, availableParallelism() - 1));
+const child = spawn(process.execPath, ['--test', `--test-concurrency=${concurrency}`, ...files], { cwd: root, stdio: 'inherit' });
 const code = await new Promise((resolve, reject) => {
   child.once('error', reject);
   child.once('exit', (value, signal) =>

@@ -33,7 +33,8 @@ const READ_TOOLS = Object.freeze([
   'read_files',
   'search_text',
   'view_image',
-  'read_artifact'
+  'read_artifact',
+  'count_markdown_words'
 ]);
 const EDIT_TOOLS = Object.freeze([...READ_TOOLS, 'apply_patch']);
 const DEVELOP_TOOLS = Object.freeze([...EDIT_TOOLS, 'exec_command', 'write_stdin', 'stop_process']);

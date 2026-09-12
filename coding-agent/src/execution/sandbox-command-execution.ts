@@ -1,6 +1,6 @@
 import { parseJsonObject, type JsonObject } from '@agent-core/json';
 import {
-  ResourceLeaseCoordinator,
+  type ResourceLeaseCoordinator,
   adoptCommandExecution,
   createCommandExecutionReservation,
   type CommandExecution,
@@ -15,7 +15,7 @@ import {
   type CommandReconciliationResult,
   type StartCommandExecutionOptions
 } from '@agent-core/tools';
-import type { RootedFileAuthority } from '@agent-core/tools-local';
+import { processScope, type RootedFileAuthority } from '@agent-core/tools-local';
 import type {
   SandboxDetachedRunOptions,
   SandboxExecutionObservation,
@@ -51,6 +51,7 @@ export type SandboxCommandRecovery =
   | Readonly<{ readonly status: 'unknown' | 'expired' }>;
 
 export interface SandboxCommandExecutionOptions {
+  readonly resourceLeases: ResourceLeaseCoordinator;
   readonly descriptor?: CommandExecutionDescriptor;
   readonly repository: SandboxExecutionRepository;
   readonly rootedFileAuthority: RootedFileAuthority;
@@ -102,14 +103,16 @@ class SandboxCommandPlan {
 /** Coding Agent's fail-closed adapter from Agent Core command behavior to Sandbox execution. */
 export class SandboxCommandExecution implements CommandExecution {
   readonly descriptor: CommandExecutionDescriptor;
-  readonly resourceLeases = new ResourceLeaseCoordinator();
+  readonly resourceLeases: ResourceLeaseCoordinator;
   readonly #recovered = new Map<string, CommandExecutionReport>();
   readonly #unresolved = new Map<string, { rootPath: string; diagnostic: string }>();
   readonly #abortListeners = new Map<string, { signal: AbortSignal; listener: () => void }>();
+  readonly #observers = new Map<string, { controller: AbortController; completion: Promise<void> }>();
   readonly #plans = new WeakMap<CommandExecutionReservation, SandboxCommandPlan>();
   #closed = false;
 
   private constructor(private readonly options: SandboxCommandExecutionOptions) {
+    this.resourceLeases = options.resourceLeases;
     this.descriptor =
       options.descriptor ??
       Object.freeze({
@@ -237,7 +240,8 @@ export class SandboxCommandExecution implements CommandExecution {
     }
     const result = this.#result(observation, request.owner, request.outputTokenBudget, 0);
     if (result.status === 'running' && options.lease)
-      options.lease.transferToResource(processId, `workspace/processes/${processId}`);
+      options.lease.transferToResource(processId, processScope(processId));
+    if (result.status === 'running') this.#observeProcess(processId, observation.output.availableCursorEnd);
     await this.#emitOutput(options.onProgress, observation);
     this.#releaseIfTerminal(result);
     return result;
@@ -278,7 +282,16 @@ export class SandboxCommandExecution implements CommandExecution {
   async terminate(processId: string, requester?: CommandExecutionOwner): Promise<CommandExecutionResult> {
     const owner = await this.#owner(processId);
     assertRequester(owner, requester, processId);
-    await this.options.repository.terminate(processId);
+    try {
+      await this.options.repository.terminate(processId);
+    } catch (error) {
+      // The process can settle between its last observation and the control request.
+      const observation = await this.options.repository.inspect(processId);
+      if (observation.kind !== 'settled' && observation.kind !== 'rejected') throw error;
+      const result = this.#result(observation, owner, 4_000, 0);
+      this.#releaseIfTerminal(result);
+      return result;
+    }
     const observation = await this.#waitForTerminalObservation(processId, 15_000);
     const result = this.#result(observation, owner, 4_000, 0);
     this.#releaseIfTerminal(result);
@@ -297,8 +310,7 @@ export class SandboxCommandExecution implements CommandExecution {
           observation.kind !== 'preparing')
       )
         continue;
-      await this.options.repository.terminate(observation.executionId);
-      await this.#waitForTerminalObservation(observation.executionId, 15_000);
+      await this.terminate(observation.executionId, owner);
     }
     await this.reconcile();
     for (const [processId, unresolved] of this.#unresolved) {
@@ -355,10 +367,9 @@ export class SandboxCommandExecution implements CommandExecution {
     ) {
       return Object.freeze({ status: 'running' });
     }
-    return Object.freeze({
-      status: 'settled',
-      result: this.#result(observation, owner, outputTokenBudget, 0)
-    });
+    const result = this.#result(observation, owner, outputTokenBudget, 0);
+    this.#releaseIfTerminal(result);
+    return Object.freeze({ status: 'settled', result });
   }
 
   async reconcile(): Promise<CommandReconciliationResult> {
@@ -370,6 +381,7 @@ export class SandboxCommandExecution implements CommandExecution {
       assertRequestBinding(stored, observation);
       const owner = stored.owner;
       const result = this.#result(observation, owner, 4_000, 0);
+      this.#releaseIfTerminal(result);
       this.#recovered.set(observation.executionId, Object.freeze({ result }));
     }
     for (const observation of inventory.unresolved) {
@@ -406,6 +418,7 @@ export class SandboxCommandExecution implements CommandExecution {
     for (const binding of this.#abortListeners.values())
       binding.signal.removeEventListener('abort', binding.listener);
     this.#abortListeners.clear();
+    await Promise.all([...this.#observers.values()].map((observer) => observer.completion));
     await this.options.repository.close();
   }
 
@@ -538,6 +551,32 @@ export class SandboxCommandExecution implements CommandExecution {
     this.#abortListeners.set(processId, { signal, listener });
   }
 
+  #observeProcess(processId: string, afterCursor: number): void {
+    const controller = new AbortController();
+    const observe = async () => {
+      for (;;) {
+        const observation = await this.options.repository.inspect(processId, {
+          afterCursor, maxBytes: 1, waitMs: 1_000
+        });
+        if (this.#closed || controller.signal.aborted) return;
+        if (observation.kind === 'settled' || observation.kind === 'rejected') {
+          this.#releaseProcess(processId);
+          return;
+        }
+        if (observation.kind !== 'running') throw new Error(unresolvedDiagnostic(observation));
+        afterCursor = observation.output.availableCursorEnd;
+      }
+    };
+    const completion = observe().catch((error: unknown) => {
+      if (this.#closed || controller.signal.aborted) return;
+      this.#unresolved.set(processId, {
+        rootPath: this.options.rootedFileAuthority.identity.canonicalPath,
+        diagnostic: error instanceof Error ? error.message : String(error)
+      });
+    }).finally(() => this.#observers.delete(processId));
+    this.#observers.set(processId, { controller, completion });
+  }
+
   async #waitForProcessObservation(
     processId: string,
     waitMs: number
@@ -591,10 +630,16 @@ export class SandboxCommandExecution implements CommandExecution {
 
   #releaseIfTerminal(result: CommandExecutionResult): void {
     if (result.status === 'running') return;
-    this.resourceLeases.releaseResource(result.processId);
-    const binding = this.#abortListeners.get(result.processId);
+    this.#releaseProcess(result.processId);
+  }
+
+  #releaseProcess(processId: string): void {
+    this.resourceLeases.releaseResource(processId);
+    this.#observers.get(processId)?.controller.abort();
+    this.#unresolved.delete(processId);
+    const binding = this.#abortListeners.get(processId);
     if (binding) binding.signal.removeEventListener('abort', binding.listener);
-    this.#abortListeners.delete(result.processId);
+    this.#abortListeners.delete(processId);
   }
 
   async #bindOwner(owner: StoredOwner): Promise<void> {

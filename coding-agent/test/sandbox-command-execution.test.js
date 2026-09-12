@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { isCommandExecution } from '@agent-core/tools';
+import { isCommandExecution, ResourceLeaseCoordinator } from '@agent-core/tools';
 import { RootedFileAuthority } from '@agent-core/tools-local';
 import { SandboxCommandExecution } from '../dist/execution/sandbox-command-execution.js';
 import { PrivateStateDirectory } from '../dist/state/private-state.js';
@@ -27,6 +27,7 @@ test('sandbox command adapter authorizes the exact command and preserves cursor 
   try {
     const authorizations = [];
     const execution = await SandboxCommandExecution.create({
+      resourceLeases: new ResourceLeaseCoordinator(),
       repository: fixture.repository,
       rootedFileAuthority: fixture.root,
       state: fixture.state,
@@ -64,6 +65,7 @@ test('sandbox activation readiness is independent of the target wall-time limit'
   const fixture = await createFixture({ activationDelayMs: 1_100 });
   try {
     const execution = await SandboxCommandExecution.create({
+      resourceLeases: new ResourceLeaseCoordinator(),
       repository: fixture.repository,
       rootedFileAuthority: fixture.root,
       state: fixture.state,
@@ -81,10 +83,68 @@ test('sandbox activation readiness is independent of the target wall-time limit'
   }
 });
 
+test('settlement releases the workspace lease without a model poll', { timeout: 5_000 }, async (t) => {
+  const fixture = await createFixture();
+  const execution = await SandboxCommandExecution.create({
+    resourceLeases: new ResourceLeaseCoordinator(),
+    repository: fixture.repository, rootedFileAuthority: fixture.root, state: fixture.state,
+    maxRetainedOutputBytes: 1024,
+    createRun: (value) => commandRun(fixture.workspace, value.command),
+    validateAuthorization: () => undefined
+  });
+  t.after(async () => {
+    await execution.close();
+    fixture.root.close();
+    await rm(fixture.parent, { recursive: true, force: true });
+  });
+  fixture.repository.activate = async (executionId) => {
+    const { requestDigest, output } = settled(executionId);
+    fixture.repository.observations.set(executionId, {
+      kind: 'running', executionId, requestDigest, output, processId: 'native'
+    });
+  };
+  const effects = { accesses: [{ scope: 'workspace', mode: 'write' }], lockScopes: ['workspace'] };
+  const lease = await execution.resourceLeases.acquire(effects, owner.ownerId);
+  const result = await startCommand(execution, { ...request(), yieldMs: 0 }, { lease });
+  assert.equal(result.status, 'running');
+  assert(lease.transferred);
+  assert(execution.resourceLeases.wouldWait(effects));
+  const waiting = execution.resourceLeases.acquire(effects, 'next-tool', t.signal);
+  fixture.repository.observations.set(result.processId, settled(result.processId));
+  const nextLease = await waiting;
+  nextLease.release();
+  assert.equal(execution.resourceLeases.activeCount(), 0);
+});
+
+test('stop reconciles a process that already exited and preserves unknown control failures', async (t) => {
+  const fixture = await createFixture();
+  const execution = await SandboxCommandExecution.create({
+    resourceLeases: new ResourceLeaseCoordinator(),
+    repository: fixture.repository, rootedFileAuthority: fixture.root, state: fixture.state,
+    maxRetainedOutputBytes: 1024,
+    createRun: (value) => commandRun(fixture.workspace, value.command),
+    validateAuthorization: () => undefined
+  });
+  t.after(async () => {
+    await execution.close();
+    fixture.root.close();
+    await rm(fixture.parent, { recursive: true, force: true });
+  });
+  const started = await startCommand(execution, request());
+  fixture.repository.terminate = async () => { throw new Error('Control endpoint closed.'); };
+  const result = await execution.terminate(started.processId, owner);
+  assert.equal(result.status, 'exited');
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stdout.text, 'sandboxed');
+  fixture.repository.observations.set(started.processId, unknown(started.processId));
+  await assert.rejects(execution.terminate(started.processId, owner), /Control endpoint closed/);
+});
+
 test('sandbox command adapter cancels invalid authorization without activation', async () => {
   const fixture = await createFixture();
   try {
     const execution = await SandboxCommandExecution.create({
+      resourceLeases: new ResourceLeaseCoordinator(),
       repository: fixture.repository,
       rootedFileAuthority: fixture.root,
       state: fixture.state,
@@ -108,6 +168,7 @@ test('a released command plan can be recreated with a fresh time-bound authoriza
   const fixture = await createFixture();
   try {
     const execution = await SandboxCommandExecution.create({
+      resourceLeases: new ResourceLeaseCoordinator(),
       repository: fixture.repository,
       rootedFileAuthority: fixture.root,
       state: fixture.state,
@@ -136,6 +197,7 @@ test('sandbox command adapter blocks new effects until unknown recovery is ackno
   const fixture = await createFixture({ initialUnknown: true });
   try {
     const execution = await SandboxCommandExecution.create({
+      resourceLeases: new ResourceLeaseCoordinator(),
       repository: fixture.repository,
       rootedFileAuthority: fixture.root,
       state: fixture.state,
@@ -160,6 +222,7 @@ test('sandbox command adapter rejects plans that do not bind the adopted workspa
   const fixture = await createFixture();
   try {
     const execution = await SandboxCommandExecution.create({
+      resourceLeases: new ResourceLeaseCoordinator(),
       repository: fixture.repository,
       rootedFileAuthority: fixture.root,
       state: fixture.state,
@@ -183,6 +246,7 @@ test('sandbox command adapter rejects a receipt that conflicts with its durable 
   const fixture = await createFixture();
   try {
     const execution = await SandboxCommandExecution.create({
+      resourceLeases: new ResourceLeaseCoordinator(),
       repository: fixture.repository,
       rootedFileAuthority: fixture.root,
       state: fixture.state,
@@ -198,6 +262,7 @@ test('sandbox command adapter rejects a receipt that conflicts with its durable 
     );
     await assert.rejects(
       SandboxCommandExecution.create({
+        resourceLeases: new ResourceLeaseCoordinator(),
         repository: fixture.repository,
         rootedFileAuthority: fixture.root,
         state: fixture.state,
@@ -218,6 +283,7 @@ test('sandbox command adapter decodes progress across byte-chunk boundaries', as
   try {
     const progress = [];
     const execution = await SandboxCommandExecution.create({
+      resourceLeases: new ResourceLeaseCoordinator(),
       repository: fixture.repository,
       rootedFileAuthority: fixture.root,
       state: fixture.state,
@@ -242,6 +308,7 @@ test('sandbox command adapter preserves native runtime failure diagnostics', asy
   const fixture = await createFixture({ runtimeFailure: true });
   try {
     const execution = await SandboxCommandExecution.create({
+      resourceLeases: new ResourceLeaseCoordinator(),
       repository: fixture.repository,
       rootedFileAuthority: fixture.root,
       state: fixture.state,
@@ -277,6 +344,7 @@ test(
         maxRetainedOutputBytes: 1024 * 1024
       });
       const first = await SandboxCommandExecution.create({
+        resourceLeases: new ResourceLeaseCoordinator(),
         repository: firstRepository,
         rootedFileAuthority: root,
         state,
@@ -302,6 +370,7 @@ test(
         maxRetainedOutputBytes: 1024 * 1024
       });
       const second = await SandboxCommandExecution.create({
+        resourceLeases: new ResourceLeaseCoordinator(),
         repository: secondRepository,
         rootedFileAuthority: root,
         state,
@@ -416,7 +485,7 @@ class FakeSandboxExecutionRepository {
   async inspect(executionId, options = {}) {
     if (executionId === this.unknownId) return unknown(executionId);
     const initial = this.observations.get(executionId) ?? unknown(executionId);
-    if ((initial.kind === 'prepared' || initial.kind === 'preparing') && options.waitMs > 0) {
+    if (['prepared', 'preparing', 'running'].includes(initial.kind) && options.waitMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, options.waitMs));
     }
     return this.observations.get(executionId) ?? unknown(executionId);

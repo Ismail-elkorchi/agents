@@ -181,7 +181,7 @@ class LazySandboxCommandExecution implements CommandExecution {
 
   private open(): Promise<SandboxCommandExecution> {
     if (this.#closed) return Promise.reject(new Error('Command execution is closed.'));
-    this.#opening ??= openCodingCommandAuthority(this.input, this.descriptor).then((execution) => {
+    this.#opening ??= openCodingCommandAuthority(this.input, this.descriptor, this.resourceLeases).then((execution) => {
       this.#execution = execution;
       return execution;
     });
@@ -195,7 +195,8 @@ function emptyReconciliation(): CommandReconciliationResult {
 
 async function openCodingCommandAuthority(
   input: CodingCommandAuthorityInput,
-  descriptor: CommandExecutionDescriptor
+  descriptor: CommandExecutionDescriptor,
+  resourceLeases: ResourceLeaseCoordinator
 ): Promise<SandboxCommandExecution> {
   const environment = await discoverCodingCommandEnvironment();
   const profile = await selectSandboxProfile(
@@ -209,6 +210,7 @@ async function openCodingCommandAuthority(
   try {
     return await SandboxCommandExecution.create({
       descriptor,
+      resourceLeases,
       repository,
       rootedFileAuthority: input.rootedFileAuthority,
       state: input.state,
