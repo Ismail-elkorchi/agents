@@ -10,6 +10,6 @@ test('coding agent owns its CLI and TUI without legacy application packages', as
     Object.keys(manifest.dependencies).filter(
       (name) => name.startsWith('@agent-core/') && (name.endsWith('/cli') || name.endsWith('/tui'))
     ),
-    []
+    ['@agent-core/tui']
   );
 });

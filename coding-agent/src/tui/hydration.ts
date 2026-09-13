@@ -4,7 +4,7 @@ import type {
   AgentRunState,
   AgentRunSuspension
 } from '@agent-core/runtime';
-import { suspensionPresentation } from '@agents/tui';
+import { suspensionPresentation } from '@agent-core/tui';
 import type { CodingSessionView } from '../application/contracts.js';
 import { upsertConversationEntry } from './conversation.js';
 import { applySessionState } from './event-reducer.js';
@@ -55,14 +55,6 @@ export function hydrateCodingAgentTuiState(
           state.conversation.pages.at(-1)?.history.boundary.leafId !== hydration.history.boundary.leafId
       }
     };
-  for (const pending of hydration.pendingSubmissions) {
-    if (!historical && pending.state === 'queued')
-      next = upsertConversationEntry(next, {
-        id: `input:${pending.runId}`,
-        kind: 'user',
-        text: pending.input.task
-      });
-  }
   next = applySessionState(next, hydration.session);
   return restoreSessionRunState(next, hydration);
 }

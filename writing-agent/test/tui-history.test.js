@@ -1,4 +1,4 @@
-import { waitForState } from '../../tui/test/helpers/runtime.js';
+import { waitForState } from '../../test-helpers/tui-runtime.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { InMemorySessionRepository } from '@agent-core/runtime';
@@ -27,9 +27,18 @@ test(
     const state = { workspace: '/workspace', mode: 'edit', sessionId: session.id, status: 'ready' };
     const application = {
       state: () => state,
-      readSession: async () => ({ session: { sessionId: session.id, phase: 'idle' }, runs: [] }),
+      readSession: async () => ({
+        session: {
+          sessionId: session.id,
+          phase: 'idle',
+          configuration: { provider: 'fixture', model: 'fixture' },
+          queuedInputs: 0
+        },
+        runs: []
+      }),
       start: async () => {},
-      readHistory: (request) => repository.readBranchPage(session, { ...request, limit: 8, maxBytes: 64000 }),
+      readHistory: (request) =>
+        repository.readBranchPage(session, { ...request, limit: 8, maxBytes: 64000 }),
       searchHistory: (request) => repository.searchBranch(session, request)
     };
     const host = createMemoryTerminalHost({ terminalSize: { columns: 48, rows: 24 } });
@@ -75,6 +84,7 @@ test(
     await repository.appendInput(session, { runId: 'new-run', task: 'New accepted instruction' });
     await runtime.dispatch({
       type: 'progress',
+      runId: 'run-1',
       event: {
         type: 'assistant.delta',
         turnId: 'live',
@@ -88,7 +98,7 @@ test(
     await waitForState(runtime, t.signal, () => runtime.state().unread);
     assert.equal(runtime.state().history, history);
     assert.deepEqual(runtime.state().conversationAnchor, anchor);
-    assert.equal(textDocumentText(runtime.state().composer.document), 'An unsent instruction.');
+    assert.equal(textDocumentText(runtime.state().composer.input.document), 'An unsent instruction.');
   }
 );
 
@@ -108,7 +118,15 @@ test(
     let selected = first;
     const application = {
       state: () => ({ workspace: '/workspace', mode: 'edit', sessionId: selected.id, status: 'ready' }),
-      readSession: async () => ({ session: { sessionId: selected.id, phase: 'idle' }, runs: [] }),
+      readSession: async () => ({
+        session: {
+          sessionId: selected.id,
+          phase: 'idle',
+          configuration: { provider: 'fixture', model: 'fixture' },
+          queuedInputs: 0
+        },
+        runs: []
+      }),
       start: async () => {},
       readHistory: (request) => repository.readBranchPage(selected, { ...request, limit: 4 })
     };
@@ -127,8 +145,12 @@ test(
     const anchor = runtime.state().conversationAnchor;
     selected = second;
     await runtime.dispatch({ type: 'refresh' });
-    await waitForState(runtime, t.signal, () => runtime.state().history[0].boundary.sessionId === second.id);
-    assert.equal(textDocumentText(runtime.state().composer.document), '');
+    await waitForState(
+      runtime,
+      t.signal,
+      () => runtime.state().history[0].boundary.sessionId === second.id
+    );
+    assert.equal(textDocumentText(runtime.state().composer.input.document), '');
     await runtime.dispatch({
       type: 'composer.edit',
       transition: { kind: 'edit', operation: { kind: 'insert', text: 'Second draft' } }
@@ -142,7 +164,7 @@ test(
         runtime.state().history[0].boundary.sessionId === first.id &&
         runtime.state().historyRequestId === undefined
     );
-    assert.equal(textDocumentText(runtime.state().composer.document), 'First draft');
+    assert.equal(textDocumentText(runtime.state().composer.input.document), 'First draft');
     assert.deepEqual(runtime.state().conversationAnchor, anchor);
     assert.equal(runtime.state().followTail, false);
     assert.equal(runtime.state().view, 'conversation');

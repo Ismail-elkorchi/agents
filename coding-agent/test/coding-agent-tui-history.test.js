@@ -1,4 +1,4 @@
-import { waitForState } from '../../tui/test/helpers/runtime.js';
+import { waitForState } from '../../test-helpers/tui-runtime.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { InMemorySessionRepository } from '@agent-core/runtime';
@@ -95,6 +95,7 @@ test(
     const historical = runtime.state().conversation.items;
     await runtime.dispatch({
       type: 'progress',
+      runId: 'run-1',
       event: {
         type: 'assistant.delta',
         turnId: 'live',
@@ -152,6 +153,7 @@ test('a stale tail read cannot erase a reply completed while the read was pendin
   await runtime.dispatch({ type: 'history.load', direction: 'tail' });
   await runtime.dispatch({
     type: 'progress',
+    runId: 'run-1',
     event: {
       type: 'assistant.ended',
       turnIndex: 1,
@@ -208,24 +210,28 @@ test(
       }
     });
     await runtime.dispatch({ type: 'composer.restore', text: 'Unsent draft' });
-    await runtime.dispatch({ type: 'panel.open', panel: 'queue' });
-    await waitForState(runtime, t.signal, () => runtime.state().overlay.kind === 'panel');
-    await runtime.dispatch({ type: 'panel.accept', id: submission.submissionId });
-    await runtime.dispatch({
-      type: 'panel.text',
-      transition: { kind: 'edit', operation: { kind: 'insert', text: ' revised' } }
-    });
-    await runtime.dispatch({ type: 'panel.queue-save' });
+    await runtime.dispatch({ type: 'queue.open' });
     await waitForState(
       runtime,
       t.signal,
-      () => runtime.state().overlay.kind === 'queue_edit' && !runtime.state().overlay.saving
+      () => runtime.state().overlay.kind === 'queue' && runtime.state().overlay.state.stage === 'list'
+    );
+    await runtime.dispatch({ type: 'queue.select', submissionId: submission.submissionId });
+    await runtime.dispatch({
+      type: 'queue.edit',
+      transition: { kind: 'edit', operation: { kind: 'insert', text: ' revised' } }
+    });
+    await runtime.dispatch({ type: 'queue.save' });
+    await waitForState(
+      runtime,
+      t.signal,
+      () => runtime.state().overlay.kind === 'queue' && runtime.state().overlay.state.stage === 'editing'
     );
     assert.deepEqual(calls[0], [
       'queued',
-      { kind: 'replace', expectedInput: submission.input, input: { task: ' revisedOld instruction' } }
+      { kind: 'replace', expectedInput: submission.input, input: { task: 'Old instruction revised' } }
     ]);
-    assert.equal(textDocumentText(runtime.state().overlay.input.document), ' revisedOld instruction');
+    assert.equal(textDocumentText(runtime.state().overlay.state.input.document), 'Old instruction revised');
     assert.equal(textDocumentText(runtime.state().composer.input.document), 'Unsent draft');
   }
 );

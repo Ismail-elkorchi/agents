@@ -19,9 +19,19 @@ coding-agent --session SESSION_ID
 coding-agent exec --resume
 ```
 
-Interactive startup renders before setup is complete. Use `/provider`, `/model`, `/permissions`, `/trust`, and `/login` to satisfy the displayed requirements. Run `coding-agent --help` for the complete CLI option reference.
+Interactive startup shows the missing workspace-trust and model decisions as controls. Trust and execution permissions are separate choices. `/model` opens provider and model pickers, authentication, supported reasoning settings, and temperature. Selection is applied together and saved for future submissions; an active run retains its admitted configuration. Cancel keeps the previous selection and unsent draft.
 
-The TUI submits with Enter, inserts a newline with Shift+Enter or Ctrl+O, steers active work with Alt+Enter, and queues a follow-up with Ctrl+Enter. Ctrl+C interrupts active work. Ctrl+P opens commands; F1 opens help; F2 selects sessions; F5 inspects branches; F6 manages queued input; F7 inspects recorded workspace changes; F8 opens original Markdown; Alt+N opens model-authored notes. Ctrl+PageUp/PageDown loads history and Ctrl+End follows current output.
+Type `/` for command suggestions or press Ctrl+P for the searchable command menu. Enter sends; Shift+Enter or Alt+Enter inserts a newline. Ctrl+O toggles tool details; Ctrl+T toggles provider-exposed reasoning. Ctrl+F searches recorded history; F3/Shift+F3 move between search matches; Alt+PageUp/PageDown move between messages. Ctrl+PageUp/PageDown load history, and Ctrl+End returns to live output. F1 shows the actual current bindings, including saved overrides.
+
+Escape closes the top interaction. Ctrl+C copies an active selection, otherwise closes a popup before requesting interruption of active work. Ctrl+P and Alt+N toggle commands and notes. Ctrl+D exits from an empty composer; `/exit` also preserves an unsent draft. `/stop` requests interruption without erasing it.
+
+`/settings` and `/statusline` offer theme, reasoning visibility, tool disclosure, optional notifications, shortcut controls, and an ordered status-field selection with preview. Save applies presentation preferences without changing model inference or workspace authority. `/status` exposes full details and identifies unavailable accounting.
+
+`/attach` adds, inspects, or removes authorized file and passage context and supported native images. `@` completes workspace references. `/drafts` recalls earlier or recovered prompts without sending them. Drafts retain text, caret, selection, and attachments across session switches and controlled restart. `/editor` uses `VISUAL` or `EDITOR`, suspends terminal ownership, and preserves the draft on failure.
+
+`/sessions`, `/new`, `/name`, `/notes`, `/queue`, and `/branches` manage conversation navigation. Queue controls distinguish editing/canceling accepted pending input from composing a new request; steering is an explicit action. Branching history does not revert files. `/source` inspects messages, code, and tool results; `/export` writes the loaded history coverage locally. `/context` distinguishes available resources and the unsent draft from the latest admitted request. `/processes` inspects owned commands and offers input/termination through their existing capabilities. `/changes` shows recorded patches; `/recovery` handles pending approvals and uncertain outcomes.
+
+Clipboard fidelity and terminal-host limitations are documented in [terminal-ui consumer findings](../terminal-ui-consumer-findings.md). Unsupported exact copy is reported without altering source.
 
 ## Workspace authority
 
@@ -105,7 +115,7 @@ The package root exports `openCodingApplication`, `createCodingSession`, workspa
 coding-agent rpc --root /path/to/workspace --session latest
 ```
 
-The stdio adapter uses UTF-8 JSONL with JSON-RPC 2.0. `input.submit` accepts the Core session submission fields (`task`, `instructions`, `contextItems`, and `relationship`) and returns durable submission identities; notifications carry progress and terminal results. `session.read`, history, notes, approvals, and change methods read the same recorded state. On `delivery.gap`, refresh the authoritative session. EOF and `application.shutdown` close application resources.
+The stdio adapter uses UTF-8 JSONL with JSON-RPC 2.0. `input.submit` accepts the Core session submission fields (`task`, `instructions`, `contextItems`, `images`, and `relationship`) and returns durable submission identities; notifications carry progress and terminal results. `session.read`, history, notes, approvals, and change methods read the same recorded state. On `delivery.gap`, refresh the authoritative session. EOF and `application.shutdown` close application resources.
 
 ## Development
 

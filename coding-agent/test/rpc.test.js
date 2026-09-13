@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { rpcClient } from '../../rpc/test/helpers/client.js';
+import { rpcClient } from '../../test-helpers/rpc-client.js';
 import {
   createWorkspace,
   finalResponse,

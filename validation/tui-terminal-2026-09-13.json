@@ -1,0 +1,53 @@
+{
+  "date": "2026-09-13",
+  "terminalUi": "e9ec556d96814a8029936106e5a1a6ef70b5da3c",
+  "environment": {
+    "os": "Linux",
+    "terminal": "xterm 407",
+    "display": "isolated Xvfb 21.1.22",
+    "multiplexer": "tmux 3.6a"
+  },
+  "cases": [
+    {
+      "name": "writing edit and Ctrl+D",
+      "draft": "",
+      "errors": [],
+      "reason": "user",
+      "document": "# Document\n\nNew line.\n\nClosing.\n"
+    },
+    {
+      "name": "coding editor success/failure and explicit exit",
+      "draft": "Retain this draft\nEdited externally: café 世界\n",
+      "errors": [
+        {
+          "message": "Editor exited with 7; the draft is unchanged.",
+          "name": "Error"
+        }
+      ],
+      "reason": "requested",
+      "termiosRestored": true
+    },
+    {
+      "name": "writing SIGTERM",
+      "draft": "Preserve signal draft 文",
+      "errors": [],
+      "document": "# Document\n\nOld line.\n\nClosing.\n",
+      "termiosRestored": true
+    }
+  ],
+  "interactionObservations": [
+    "Ctrl+P, Escape, Ctrl+C, and repeated openers return application dialogs to their originating control.",
+    "Alt+N is delivered as ESC n under the Meta-as-Escape profile; default eight-bit Meta instead delivers the literal Unicode character î.",
+    "Writing edit, tool expansion, settings, and window resizing were exercised at 80/120 columns. Narrow 48-column and short-height interactions also have memory-host coverage."
+  ],
+  "blocked": {
+    "tmux": "Native host reports supported alternate screen, while session setup rejects it as unknown; a neutral Close-button application reproduces TU07."
+  },
+  "untested": [
+    "screen readers",
+    "Windows/macOS interactive terminals",
+    "SSH",
+    "IME/AltGr",
+    "OS suspend/resume (not exposed by the current host signal contract)"
+  ]
+}

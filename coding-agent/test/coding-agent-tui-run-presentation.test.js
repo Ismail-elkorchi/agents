@@ -15,6 +15,7 @@ test('TUI preserves terminal truth and does not duplicate the final answer', asy
   await waitFor(() => host.frames().length > 0);
   await events.enqueue({
     type: 'progress',
+    runId: 'run-1',
     event: {
       type: 'assistant.ended',
       turnIndex: 1,
@@ -46,7 +47,7 @@ test('TUI preserves terminal truth and does not duplicate the final answer', asy
 function runPresentationApp() {
   const host = createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 20 } });
   const events = createCodingTuiEventSource();
-  const app = createCodingAgentTuiApp('task', {
+  const app = createCodingAgentTuiApp('', {
     eventSource: events,
     commandHandler: { execute: () => ({ message: 'Exiting.', exit: true }) }
   });
@@ -78,7 +79,7 @@ function base() {
       reasoningTokens: 0,
       knownCosts: {},
       pricingStatus: 'unknown',
-      unknownPricedTokens: 0,
+      unknownPricedTokens: 0
     }
   };
 }

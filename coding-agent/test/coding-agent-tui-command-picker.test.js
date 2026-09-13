@@ -1,9 +1,11 @@
-import test from 'node:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import { createTuiRuntime } from '@ismail-elkorchi/terminal-ui/tui';
 import { createCodingAgentTuiApp, runCodingAgentTuiApp } from '@ismail-elkorchi/coding-agent/tui';
-import { plainOutput, waitFor } from './coding-agent-tui-test-helpers.js';
+import { latestFramePlain, waitFor } from './coding-agent-tui-test-helpers.js';
 
 test('Ctrl+P opens the concise command picker and executes a selected command', async () => {
   const host = createMemoryTerminalHost({ terminalSize: { columns: 90, rows: 16 } });
@@ -11,20 +13,19 @@ test('Ctrl+P opens the concise command picker and executes a selected command', 
 
   await waitFor(() => host.frames().length > 0);
   host.input('\x10');
-  await waitFor(() => /Commands/u.test(plainOutput(host)));
-  assert.match(plainOutput(host), /\/provider/u);
-  assert.doesNotMatch(plainOutput(host), /\/state\b/u);
+  await waitFor(() => /\/model/u.test(latestFramePlain(host)));
+  assert.match(latestFramePlain(host), /\/provider/u);
+  assert.doesNotMatch(latestFramePlain(host), /\/state\b/u);
   host.input('status\r');
-  await waitFor(() => /Idle · test\/test-model/u.test(plainOutput(host)));
+  await waitFor(() => /Application status/u.test(latestFramePlain(host)));
+  assert.match(latestFramePlain(host), /test-model/u);
+  host.input('\x03');
+  await waitFor(() => !/Application status/u.test(latestFramePlain(host)));
   host.input('/exit\r');
   const result = await run;
 
   assert.equal(result.exit.status, 'completed');
-  assert.ok(
-    result.exit.state.conversation.items.some(
-      (item) => item.kind === 'notice' && item.text.includes('test-model')
-    )
-  );
+  assert.equal(result.exit.state.composer.submitting, false);
 });
 
 test('Escape closes the command picker without cancelling the app', async () => {
@@ -39,8 +40,42 @@ test('Escape closes the command picker without cancelling the app', async () => 
   assert.equal(runtime.state().overlay.kind, 'commands');
   await runtime.handleInput(key('escape'));
   assert.equal(runtime.state().overlay.kind, 'none');
+  assert.ok(runtime.frame().focusPath.includes('composer'));
   assert.equal(runtime.exit(), undefined);
   await runtime.dispose();
+});
+
+test('raw command and empty-notes gestures close locally and restore the exact composer', async (t) => {
+  const host = createMemoryTerminalHost({ terminalSize: { columns: 80, rows: 24 } });
+  const runtime = createTuiRuntime({
+    host,
+    app: createCodingAgentTuiApp('Keep this draft 文', {
+      navigation: {
+        async listNotes() {
+          return { items: [], coverage: 'complete' };
+        }
+      }
+    })
+  });
+  t.after(() => runtime.dispose());
+  await runtime.start();
+  const draft = runtime.state().composer.input;
+  const raw = async (data) => {
+    const batch = await runtime.handleInputChunk({ data });
+    host.clock.advance(100);
+    await batch.pending;
+  };
+  for (const opening of ['\x10', '\x1bn']) {
+    for (const closing of [opening, '\x03', '\x1b']) {
+      await raw(opening);
+      assert.notEqual(runtime.state().overlay.kind, 'none');
+      await raw(closing);
+      assert.equal(runtime.state().overlay.kind, 'none');
+      assert.equal(runtime.state().composer.input, draft);
+      assert.ok(runtime.frame().focusPath.includes('composer'));
+      assert.equal(runtime.exit(), undefined);
+    }
+  }
 });
 
 test('commands with finite domain values open a second picker and submit the exact selection', async () => {
@@ -60,14 +95,14 @@ test('commands with finite domain values open a second picker and submit the exa
   });
   await runtime.start();
   await runtime.handleInput(key('p', { ctrl: true }));
-  await runtime.handleInput({ kind: 'text', text: '/provider', paste: false });
+  await runtime.handleInput({ kind: 'text', text: '/permissions', paste: false });
   await runtime.handleInput(key('enter'));
   assert.equal(runtime.state().overlay.kind, 'command_values');
-  assert.equal(runtime.state().overlay.command, '/provider');
-  await runtime.handleInput({ kind: 'text', text: 'openai-codex', paste: false });
+  assert.equal(runtime.state().overlay.command, '/permissions');
+  await runtime.handleInput({ kind: 'text', text: 'develop', paste: false });
   await runtime.handleInput(key('enter'));
   await waitFor(() => submitted.length === 1);
-  assert.deepEqual(submitted, ['/provider openai-codex']);
+  assert.deepEqual(submitted, ['/permissions develop']);
   await runtime.dispose();
 });
 
@@ -76,13 +111,15 @@ test('setup state remains usable and explains the required domain decisions', as
   const controller = setupController();
   const running = runCodingAgentTuiApp(controller, { host, initialTask: 'inspect the workspace' });
   await waitFor(
-    () => /inspect the workspace/u.test(plainOutput(host)) && /Setup required/u.test(plainOutput(host))
+    () =>
+      /inspect the workspace/u.test(latestFramePlain(host)) &&
+      /Setup required/u.test(latestFramePlain(host))
   );
-  assert.match(plainOutput(host), /workspace trust, provider, model/u);
-  assert.match(plainOutput(host), /inspect the workspace/u);
+  assert.match(latestFramePlain(host), /Set up/u);
+  assert.match(latestFramePlain(host), /inspect the workspace/u);
   assert.deepEqual(controller.tasks, []);
   host.input('\x10');
-  await waitFor(() => /Commands/u.test(plainOutput(host)));
+  await waitFor(() => /Commands/u.test(latestFramePlain(host)));
   host.input('exit\r');
   await running;
 });
@@ -92,7 +129,7 @@ test('the normal frame contains conversation, composer, and compact chrome only'
   const run = runCodingAgentTuiApp(fakeController(), { host });
 
   await waitFor(() => host.frames().length > 0);
-  const output = plainOutput(host);
+  const output = latestFramePlain(host);
   assert.match(output, /Coding Agent/u);
   assert.match(output, /Send a message/u);
   assert.doesNotMatch(output, /Run activity|Work log|Inspector|Session replay/u);
@@ -100,7 +137,7 @@ test('the normal frame contains conversation, composer, and compact chrome only'
   await run;
 });
 
-test('TUI permission labels expose trust, structured writes, sandboxing, and denied egress', async () => {
+test('permission details remain inspectable without crowding the default status line', async () => {
   const host = createMemoryTerminalHost({ terminalSize: { columns: 150, rows: 18 } });
   const run = runCodingAgentTuiApp(
     fakeController({
@@ -119,16 +156,19 @@ test('TUI permission labels expose trust, structured writes, sandboxing, and den
     { host }
   );
   await waitFor(() => host.frames().length > 0);
-  const output = plainOutput(host);
-  assert.match(
-    output,
-    /develop\/restricted · write structured · exec sandboxed · net\/escape denied · 3 tools/u
-  );
+  const output = latestFramePlain(host);
+  assert.match(output, /develop/u);
+  assert.doesNotMatch(output, /driver|net\/escape|3 tools/u);
+  host.input('/status\r');
+  await waitFor(() => /Application status/u.test(latestFramePlain(host)));
+  host.input('\x03');
+  await waitFor(() => !/Application status/u.test(latestFramePlain(host)));
   host.input('/exit\r');
   await run;
 });
 
 function fakeController(runtimeDetails = { providerId: 'test', modelId: 'test-model' }) {
+  const directory = mkdtempSync(path.join(tmpdir(), 'tui-controller-'));
   const session = {
     sessionId: 'test-session',
     phase: 'idle',
@@ -157,11 +197,17 @@ function fakeController(runtimeDetails = { providerId: 'test', modelId: 'test-mo
     async resolveApproval() {
       throw new Error('unexpected approval');
     },
-    async close() {}
+    presentationPath: () => path.join(directory, 'preferences.json'),
+    draftDirectory: () => path.join(directory, 'drafts'),
+    modelSelection: () => undefined,
+    async close() {
+      rmSync(directory, { recursive: true, force: true });
+    }
   };
 }
 
 function setupController() {
+  const directory = mkdtempSync(path.join(tmpdir(), 'tui-setup-'));
   const listeners = new Set();
   const state = {
     status: 'setup_required',
@@ -185,7 +231,12 @@ function setupController() {
     async resolveApproval() {
       throw new Error('unexpected approval');
     },
-    async close() {}
+    presentationPath: () => path.join(directory, 'preferences.json'),
+    draftDirectory: () => path.join(directory, 'drafts'),
+    modelSelection: () => undefined,
+    async close() {
+      rmSync(directory, { recursive: true, force: true });
+    }
   };
 }
 
@@ -198,3 +249,31 @@ function key(name, modifiers = {}) {
     modifiers: { ctrl: false, alt: false, shift: false, meta: false, ...modifiers }
   };
 }
+
+test('closing a pending context inspection keeps the composer and rejects its late result', async (t) => {
+  const result = Promise.withResolvers();
+  const host = createMemoryTerminalHost();
+  const runtime = createTuiRuntime({
+    host,
+    app: createCodingAgentTuiApp('Exact draft 文', {
+      inspectContext: () => result.promise
+    })
+  });
+  t.after(() => runtime.dispose());
+  await runtime.start();
+  const draft = runtime.state().composer.input;
+  await runtime.dispatch({ type: 'context.open' });
+  assert.equal(runtime.state().overlay.kind, 'context-loading');
+  const requestId = runtime.state().overlay.requestId;
+  await runtime.dispatch({ type: 'overlay.close' });
+  result.resolve({ sources: [] });
+  await runtime.dispatch({
+    type: 'context.loaded',
+    requestId,
+    sessionId: ':new',
+    content: 'Retired response'
+  });
+  assert.equal(runtime.state().overlay.kind, 'none');
+  assert.equal(runtime.state().composer.input, draft);
+  assert.ok(runtime.frame().focusPath.includes('composer'));
+});

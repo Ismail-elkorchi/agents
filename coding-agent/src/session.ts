@@ -36,7 +36,11 @@ import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { CodingAgentConfiguration } from './configuration.js';
-import { createCodingCommandAuthority } from './execution/coding-command-authority.js';
+import {
+  createCodingCommandAuthority,
+  type CodingCommandAuthority
+} from './execution/coding-command-authority.js';
+import { processControls } from './execution/process-controls.js';
 import {
   RepositoryGuidanceSession,
   loadInitialRepositoryGuidance
@@ -47,8 +51,8 @@ import {
   type CodingAuthority,
   type CodingPermissionMode
 } from './security/permission-mode.js';
-import { codingWorkspaceSessionBinding, type OpenCodingWorkspace } from './workspace.js';
 import { createConfiguredCheckTool } from './verification/configured-check-tool.js';
+import { codingWorkspaceSessionBinding, type OpenCodingWorkspace } from './workspace.js';
 
 export interface CodingSessionOptions {
   readonly workspace: OpenCodingWorkspace;
@@ -67,25 +71,9 @@ export interface CodingSessionOptions {
 }
 
 /** Application composition shared by the CLI, TUI, and RPC surfaces. */
-export interface CodingSessionComposition {
-  readonly agent: AgentSession;
-  readonly inference: InferenceService;
-  readonly history: HistoryReader;
-  readonly notes: JsonlNoteRepository;
-  readonly context: ContextService;
-  readonly runs: AgentRunCoordinator;
-  readonly events: JsonlEventRepository<AgentEvent>;
-  readonly sessions: JsonlSessionRepository;
-  readonly session: SessionDescriptor;
-  readonly workspaceRoot: string;
-  readonly permissions: CodingAuthority['permissions'];
-  readonly configuration?: CodingAgentConfiguration;
-  closeResources(): Promise<void>;
-}
+export type CodingSessionComposition = Awaited<ReturnType<typeof createCodingSession>>;
 
-export async function createCodingSession(
-  options: CodingSessionOptions
-): Promise<CodingSessionComposition> {
+export async function createCodingSession(options: CodingSessionOptions) {
   const openedWorkspace = options.workspace;
   const workspace = openedWorkspace.layout;
   const settings = options.settings;
@@ -99,7 +87,10 @@ export async function createCodingSession(
       ? await sessions.create({ binding, provider: options.provider.id, model: settings.model })
       : await sessions.open(options.descriptor.id, binding);
   const sessionBinding = { repository: sessions, descriptor: session };
-  const events = new JsonlEventRepository<AgentEvent>({ rootDir: workspace.runsDir, codec: agentEventCodec });
+  const events = new JsonlEventRepository<AgentEvent>({
+    rootDir: workspace.runsDir,
+    codec: agentEventCodec
+  });
   const projectPolicy = openedWorkspace.security.decide('project_execution_policy').kind === 'allowed';
   const configuration = projectPolicy ? options.configuration : undefined;
   const authority = resolveCodingAuthority({
@@ -140,6 +131,7 @@ export async function createCodingSession(
     configuration?.instructions.map((instruction) => instruction.path)
   );
   const openHosts = new Set<ReturnType<typeof createLocalToolHost>>();
+  const commandAuthorities = new Set<CodingCommandAuthority>();
   let activeRuntime: AgentRuntime | undefined;
   let activeTools: readonly CompiledToolDefinition[] = [];
   let activeRunId: string | undefined;
@@ -184,6 +176,7 @@ export async function createCodingSession(
             'context_admission_failed: start or resume a coding run before validating its tool catalog.'
           );
         return createRuntimeContextBootstrapValidator({
+          artifacts,
           provider,
           nativeTransform: { inference, ownerId: () => ownerId },
           model: agent.state().configuration.model,
@@ -247,8 +240,7 @@ export async function createCodingSession(
         runKey,
         'patch-transactions'
       );
-      if (patchEnabled)
-        await fs.mkdir(patchJournalDirectory, { recursive: true, mode: 0o700 });
+      if (patchEnabled) await fs.mkdir(patchJournalDirectory, { recursive: true, mode: 0o700 });
       const commandExecution =
         authority.permissions.commandExecution === 'sandboxed'
           ? createCodingCommandAuthority({
@@ -281,10 +273,12 @@ export async function createCodingSession(
         }
       });
       openHosts.add(host);
+      if (commandExecution !== undefined) commandAuthorities.add(commandExecution);
       try {
         await host.ready();
       } catch (error) {
         openHosts.delete(host);
+        if (commandExecution !== undefined) commandAuthorities.delete(commandExecution);
         await host.close().catch(() => undefined);
         throw error;
       }
@@ -309,17 +303,14 @@ export async function createCodingSession(
               })
             ]
           : [];
-      activeTools = Object.freeze([
-        ...host.tools,
-        ...checkTools,
-        ...memoryTools
-      ]);
+      activeTools = Object.freeze([...host.tools, ...checkTools, ...memoryTools]);
       const release = async () => {
         activeRuntime = undefined;
         activeRunId = undefined;
         activeTools = [];
         providerActive = false;
         openHosts.delete(host);
+        if (commandExecution !== undefined) commandAuthorities.delete(commandExecution);
         await host.close();
       };
       activeRuntime = new AgentRuntime({
@@ -386,9 +377,7 @@ export async function createCodingSession(
               }
             : {})
         },
-        ...(runtimeSettings.temperature === undefined
-          ? {}
-          : { temperature: runtimeSettings.temperature }),
+        ...(runtimeSettings.temperature === undefined ? {} : { temperature: runtimeSettings.temperature }),
         ...(runtimeSettings.reasoning === undefined ? {} : { reasoning: runtimeSettings.reasoning }),
         ...(runtimeSettings.responseFormat === undefined
           ? {}
@@ -411,15 +400,28 @@ export async function createCodingSession(
   const agent = new AgentSession(sessionOptions);
 
   return {
+    ...processControls(session.id, commandAuthorities),
     agent,
     inference,
     history,
+    artifacts,
     notes,
     context,
     runs,
     events,
     sessions,
     session,
+    async inspectContext() {
+      return {
+        ...(await context.inspect()),
+        available: {
+          instructions: initialGuidance.instructions,
+          resources: [workspaceContext(openedWorkspace, authority)],
+          toolNames: authority.enabledTools
+        },
+        activeToolCatalog: activeTools.map((tool) => ({ name: tool.name, description: tool.description }))
+      };
+    },
     workspaceRoot: openedWorkspace.fileRoot.identity.canonicalPath,
     permissions: authority.permissions,
     ...(configuration ? { configuration } : {}),
@@ -428,8 +430,7 @@ export async function createCodingSession(
       const failures = results
         .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
         .map((result) => result.reason as unknown);
-      if (failures.length > 0)
-        throw new AggregateError(failures, 'Coding Agent resource release failed.');
+      if (failures.length > 0) throw new AggregateError(failures, 'Coding Agent resource release failed.');
     }
   };
 }

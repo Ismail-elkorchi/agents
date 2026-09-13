@@ -2,10 +2,14 @@
 import { type ModelReasoningEffort } from '@agent-core/model';
 import { realpathSync } from 'node:fs';
 import path from 'node:path';
-import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { parseArgs } from 'node:util';
 import { openWritingApplication } from './application/service.js';
-import { createWritingProvider, createWritingReasoningRequest, parseWritingProviderId } from './provider.js';
+import {
+  createWritingProvider,
+  createWritingReasoningRequest,
+  parseWritingProviderId
+} from './provider.js';
 
 export async function main(argv: readonly string[]): Promise<void> {
   const { values, positionals } = parseArgs({
@@ -29,6 +33,18 @@ export async function main(argv: readonly string[]): Promise<void> {
   }
   const command = positionals[0] ?? (process.stdin.isTTY ? 'tui' : 'write');
   if (!['tui', 'rpc', 'write', 'review'].includes(command)) throw new Error(`Unknown command: ${command}`);
+  if (command === 'tui' && (!process.stdin.isTTY || !process.stdout.isTTY))
+    throw new Error(
+      'Interactive mode requires a terminal. Use writing-agent write or review with piped input.'
+    );
+  let instruction = positionals.slice(1).join(' ');
+  if (command === 'write' || command === 'review') {
+    if (!instruction && !process.stdin.isTTY) {
+      process.stdin.setEncoding('utf8');
+      for await (const chunk of process.stdin) instruction += String(chunk);
+    }
+    if (!instruction.trim()) throw new Error('Provide an instruction as an argument or on standard input.');
+  }
   const mode = command === 'review' ? 'review' : (values.mode ?? 'edit');
   if (mode !== 'edit' && mode !== 'review') throw new Error('Mode must be edit or review.');
   const provider = values.provider ?? process.env.WRITING_AGENT_PROVIDER;
@@ -70,13 +86,7 @@ export async function main(argv: readonly string[]): Promise<void> {
         }
       });
     } else {
-      let instruction = positionals.slice(1).join(' ');
-      if (!instruction && !process.stdin.isTTY) {
-        process.stdin.setEncoding('utf8');
-        for await (const chunk of process.stdin) instruction += String(chunk);
-      }
-      if (!instruction.trim()) throw new Error('Provide an instruction as an argument or on standard input.');
-      const submission = await application.submit(instruction);
+      const submission = await application.submit({ task: instruction });
       if (submission.kind === 'rejected') throw new Error(`Instruction rejected: ${submission.reason}`);
       const result = await submission.completion;
       process.stdout.write(

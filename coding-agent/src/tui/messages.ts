@@ -19,13 +19,45 @@ import type {
   CodingHistoryPage,
   CodingSessionView
 } from '../application/contracts.js';
-import type { CodingAgentTuiCommandExecution, CodingAgentTuiCommandRequest } from './command-surface.js';
 import type { CodingRunVerification } from '../verification/configured-check-tool.js';
+import type { CodingAgentTuiCommandExecution, CodingAgentTuiCommandRequest } from './command-surface.js';
 import type { PanelItem, PanelKind } from './panels.js';
-import type { FileCompletionRequest } from './state.js';
 
 export type CodingAgentTuiMessage =
-  | import('@agents/tui').NotesMessage
+  | {
+      readonly type: 'context.loaded';
+      readonly requestId: string;
+      readonly sessionId: string;
+      readonly content: string;
+    }
+  | { readonly type: 'context.failed'; readonly requestId: string; readonly message: string }
+  | { readonly type: 'context.open' }
+  | { readonly type: 'search.adjacent'; readonly direction: 'previous' | 'next' }
+  | { readonly type: 'conversation.message'; readonly direction: 'previous' | 'next' }
+  | import('./processes.js').ProcessMessage
+  | {
+      readonly type: 'history.inspect';
+      readonly reference: import('@agent-core/tui').ConversationReferenceEntry;
+    }
+  | import('@agent-core/tui').SessionNameMessage
+  | import('@agent-core/tui').ResourceCompletionMessage
+  | { readonly type: 'conversation.export' }
+  | import('@agent-core/tui').SourceInspectorMessage
+  | import('@agent-core/tui').DraftMessage
+  | import('@agent-core/tui').AttachmentMessage
+  | import('@agent-core/tui').PromptRecallMessage
+  | import('@agent-core/tui').QueueMessage
+  | { readonly type: 'queue.open' }
+  | { readonly type: 'terminal.focus'; readonly focused: boolean }
+  | import('@agent-core/tui').PreferencesMessage
+  | { readonly type: 'preferences.open' }
+  | import('@agent-core/tui').NotesMessage
+  | import('@agent-core/tui').ConfigurationMessage
+  | { readonly type: 'completion.move'; readonly delta: number }
+  | { readonly type: 'completion.accept'; readonly open: boolean; readonly name?: string }
+  | { readonly type: 'completion.close' }
+  | { readonly type: 'configuration.open' | 'recovery.open' | 'session.new' | 'setup.open' }
+  | { readonly type: 'tools.toggle' | 'reasoning.toggle' | 'application.exit' }
   | { readonly type: 'source.copy' }
   | {
       readonly type: 'submissions.changed';
@@ -44,10 +76,9 @@ export type CodingAgentTuiMessage =
   | { readonly type: 'panel.transition'; readonly transition: SearchPickerControlTransition }
   | { readonly type: 'panel.accept'; readonly id: string }
   | { readonly type: 'panel.text'; readonly transition: TextAreaTransition }
-  | { readonly type: 'panel.queue-save' | 'panel.queue-cancel' }
   | { readonly type: 'panel.branch'; readonly entryId: string }
   | { readonly type: 'panel.done' | 'panel.operation-failed'; readonly message: string }
-  | { readonly type: 'progress'; readonly event: AgentProgressEvent }
+  | { readonly type: 'progress'; readonly runId: string; readonly event: AgentProgressEvent }
   | { readonly type: 'result'; readonly result: AgentEndedRunResult }
   | { readonly type: 'failure'; readonly message: string }
   | { readonly type: 'delivery.failed'; readonly message: string }
@@ -72,16 +103,12 @@ export type CodingAgentTuiMessage =
   | { readonly type: 'composer.cancel-command' }
   | { readonly type: 'composer.complete' }
   | {
-      readonly type: 'files.loaded';
-      readonly request: FileCompletionRequest;
-      readonly paths: readonly string[];
+      readonly type: 'composer.external-edited';
+      readonly sessionId: string;
+      readonly draft: import('@agent-core/tui').ComposerDraft;
+      readonly text: string;
     }
-  | { readonly type: 'files.failed'; readonly requestId: string; readonly message: string }
-  | { readonly type: 'files.transition'; readonly transition: SearchPickerControlTransition }
-  | { readonly type: 'files.accept'; readonly event: SearchPickerAcceptEvent }
-  | { readonly type: 'composer.external-edited'; readonly original: string; readonly text: string }
   | { readonly type: 'work.interrupt' }
-  | { readonly type: 'conversation.copy'; readonly format: 'original' | 'displayed' | 'code' }
   | { readonly type: 'history.load'; readonly direction: 'older' | 'newer' | 'tail' }
   | {
       readonly type: 'history.loaded';
@@ -95,7 +122,11 @@ export type CodingAgentTuiMessage =
       readonly execution: CodingAgentTuiCommandExecution;
       readonly request: CodingAgentTuiCommandRequest;
     }
-  | { readonly type: 'command.failed'; readonly message: string }
+  | {
+      readonly type: 'command.failed';
+      readonly request: CodingAgentTuiCommandRequest;
+      readonly message: string;
+    }
   | { readonly type: 'conversation.scroll'; readonly transition: ScrollTransition }
   | { readonly type: 'conversation.scrolled'; readonly request: ScrollRequest }
   | { readonly type: 'activity.toggle'; readonly id: string }
@@ -107,7 +138,11 @@ export type CodingAgentTuiMessage =
   | { readonly type: 'command-values.transition'; readonly transition: SearchPickerControlTransition }
   | { readonly type: 'command-values.accept'; readonly event: SearchPickerAcceptEvent }
   | { readonly type: 'search.more' }
-  | { readonly type: 'search.loaded'; readonly requestId: string; readonly result: SessionBranchSearchResult }
+  | {
+      readonly type: 'search.loaded';
+      readonly requestId: string;
+      readonly result: SessionBranchSearchResult;
+    }
   | { readonly type: 'search.failed'; readonly requestId: string; readonly message: string }
   | { readonly type: 'search.jumped'; readonly page: CodingHistoryPage; readonly entryId: string }
   | { readonly type: 'search.transition'; readonly transition: SearchPickerControlTransition }

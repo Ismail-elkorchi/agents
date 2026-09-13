@@ -1,7 +1,7 @@
 import type { AgentRunSuspension } from '@agent-core/runtime';
-import { diagnosticMessage, suspensionPresentation } from '@agents/tui';
+import { diagnosticMessage, suspensionPresentation } from '@agent-core/tui';
 import { button, dialog, richText, type Element } from '@ismail-elkorchi/terminal-ui/components';
-import { column, row, viewport } from '@ismail-elkorchi/terminal-ui/layout';
+import { column, viewport } from '@ismail-elkorchi/terminal-ui/layout';
 import type { TuiContext, TuiEffect } from '@ismail-elkorchi/terminal-ui/tui';
 import type { CodingAgentTuiMessage } from './messages.js';
 import type { CodingAgentTuiRunState } from './state.js';
@@ -47,6 +47,7 @@ export function recoveryDialog(
   const { suspension } = run;
   const presentation = suspensionPresentation(suspension.reason);
   const actions: Element<CodingAgentTuiMessage>[] = [
+    button({ id: 'recovery-close', label: 'Close', onPress: () => ({ type: 'overlay.close' }) }),
     button({
       id: 'recovery-stop',
       label: 'Stop this run',
@@ -57,30 +58,35 @@ export function recoveryDialog(
     })
   ];
   if (suspension.reason !== 'user_decision')
-    actions.push(button({
-      id: 'recovery-resume',
-      label: suspension.reason === 'missing_implementation' ? 'Continue' : 'Check for a recorded result',
-      ...(run.operation === undefined
-        ? { onPress: (): CodingAgentTuiMessage => ({ type: 'recovery.act', action: 'resume' }) }
-        : { disabled: true })
-    }));
-  const message = run.operation === 'stop'
-    ? 'Stopping…'
-    : run.operation === 'resume'
-      ? 'Checking…'
-      : run.message ?? '';
+    actions.push(
+      button({
+        id: 'recovery-resume',
+        label: suspension.reason === 'missing_implementation' ? 'Continue' : 'Check for a recorded result',
+        ...(run.operation === undefined
+          ? { onPress: (): CodingAgentTuiMessage => ({ type: 'recovery.act', action: 'resume' }) }
+          : { disabled: true })
+      })
+    );
+  const message =
+    run.operation === 'stop' ? 'Stopping…' : run.operation === 'resume' ? 'Checking…' : (run.message ?? '');
   return dialog({
     id: 'recovery-dialog',
     title: presentation.title,
     modal: true,
-    focusPolicy: { initialFocus: { kind: 'element', elementId: 'recovery-stop' }, returnFocus: 'restore' },
+    dismissal: { dismissOnEscape: true, dismissOnOutsidePress: false },
+    onDismiss: () => ({ type: 'overlay.close' }),
+    focusPolicy: { initialFocus: { kind: 'element', elementId: 'recovery-close' }, returnFocus: 'restore' },
     slots: {
       content: viewport(
-        paragraph([
-          message,
-          suspension.decisionRequest?.reason ?? suspension.cleanupDiagnostic?.message,
-          presentation.explanation
-        ].filter(Boolean).join('\n\n')),
+        paragraph(
+          [
+            message,
+            suspension.decisionRequest?.reason ?? suspension.cleanupDiagnostic?.message,
+            presentation.explanation
+          ]
+            .filter(Boolean)
+            .join('\n\n')
+        ),
         {
           id: 'recovery-content',
           offset: { row: offsetRow },
@@ -91,7 +97,7 @@ export function recoveryDialog(
           })
         }
       ),
-      actions: context.terminalSize.columns < 60 ? column(actions) : row(actions, { gap: 2 })
+      actions: column(actions)
     },
     width: Math.max(5, Math.min(88, context.terminalSize.columns - 4)),
     height: Math.max(4, Math.min(16, context.terminalSize.rows - 4)),

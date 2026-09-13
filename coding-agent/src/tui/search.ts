@@ -1,6 +1,13 @@
 import type { SessionBranchSearchRequest, SessionBranchSearchResult } from '@agent-core/runtime';
-import { findBranchMatches } from '@agents/application';
-import { diagnosticMessage } from '@agents/tui';
+import { findBranchMatches } from '@agent-core/runtime';
+import {
+  adjacentHistoryMatch,
+  createSourceInspector,
+  diagnosticMessage,
+  oversizedHistoryEntry,
+  selectHistoryMatch,
+  updateSourceInspector
+} from '@agent-core/tui';
 import type { SearchPickerControlTransition } from '@ismail-elkorchi/terminal-ui/behavior';
 import {
   createSearchPickerIndex,
@@ -27,24 +34,43 @@ export type HistorySearcher = (request: SessionBranchSearchRequest) => Promise<S
 type Update = TuiUpdateResult<CodingAgentTuiState, CodingAgentTuiMessage>;
 
 export function historySearchIndex(search: HistorySearch) {
-  return createSearchPickerIndex(search.result?.matches ?? [], (match) => ({
-    id: match.entryId,
-    label: match.excerpt,
-    value: match.entryId
-  }));
+  const reference = search.result?.oversizedEntry;
+  return createSearchPickerIndex([
+    ...(search.result?.matches.map((match) => ({
+      id: match.entryId,
+      label: match.excerpt,
+      value: match.entryId
+    })) ?? []),
+    ...(reference === undefined
+      ? []
+      : [
+          {
+            id: reference.entryId,
+            label: `Not searched · ${String(reference.bytes)} bytes · inspect entry`,
+            value: reference.entryId
+          }
+        ])
+  ]);
 }
 
 export function openHistorySearch(state: CodingAgentTuiState): Update {
   const index = createSearchPickerIndex([], () => ({ id: '', label: '', value: '' }));
+  const previous =
+    state.historyMatch?.result.boundary.sessionId === state.debug.sessionId
+      ? state.historyMatch
+      : undefined;
   return {
     state: {
       ...state,
       overlay: {
         kind: 'search',
-        picker: createSearchPickerState({ query: { text: '', mode: 'contains', caseSensitive: true } }, index)
+        ...(previous === undefined ? {} : { result: previous.result }),
+        picker: createSearchPickerState(
+          { query: { text: previous?.query ?? '', mode: 'contains', caseSensitive: true } },
+          index
+        )
       }
-    },
-    focus: { kind: 'element', elementId: 'conversation-search' }
+    }
   };
 }
 
@@ -117,20 +143,48 @@ export function receiveSearch(
 export function jumpToSearchResult(
   state: CodingAgentTuiState,
   entryId: string,
-  read: CodingHistoryReader | undefined
+  read: CodingHistoryReader | undefined,
+  result = state.overlay.kind === 'search' ? state.overlay.result : undefined
 ): Update {
-  if (state.overlay.kind !== 'search' || state.overlay.result === undefined) return { state };
-  const { boundary, matches } = state.overlay.result;
-  if (!matches.some((match) => match.entryId === entryId)) return { state };
+  if (result === undefined) return { state };
+  const { boundary } = result;
+  const query =
+    state.overlay.kind === 'search'
+      ? searchPickerView(state.overlay.picker).input.text
+      : (state.historyMatch?.query ?? '');
+  if (result.oversizedEntry?.entryId === entryId) {
+    const reference = oversizedHistoryEntry({
+      ...result,
+      entries: [],
+      oversizedEntry: result.oversizedEntry
+    })[0];
+    if (reference === undefined) return { state };
+    return {
+      state: {
+        ...state,
+        historyMatch: { result, index: -1, query },
+        overlay: {
+          kind: 'inspector',
+          state: updateSourceInspector(createSourceInspector([reference]), {
+            type: 'inspector.pick',
+            id: reference.id
+          })
+        }
+      }
+    };
+  }
+  const historyMatch = selectHistoryMatch(result, entryId, query);
+  if (historyMatch === undefined) return { state };
   return {
-    state,
+    state: { ...state, historyMatch },
     effects: [
       {
         id: 'history-jump',
         concurrency: 'replace',
-        async run() {
+        async run({ signal }) {
           if (read === undefined) throw new Error('History retrieval is unavailable.');
           const page = await read({ cursor: { boundary, entryId }, direction: 'newer' });
+          signal.throwIfAborted();
           return { kind: 'message', message: { type: 'search.jumped', page, entryId } };
         },
         onError: ({ diagnostic }) => ({
@@ -140,6 +194,20 @@ export function jumpToSearchResult(
       }
     ]
   };
+}
+
+export function jumpToAdjacentMatch(
+  state: CodingAgentTuiState,
+  direction: 'previous' | 'next',
+  read: CodingHistoryReader | undefined
+): Update {
+  const position = state.historyMatch;
+  if (position === undefined || position.result.boundary.sessionId !== state.debug.sessionId)
+    return { state };
+  const entryId = adjacentHistoryMatch(position, direction);
+  return entryId === undefined
+    ? { state: appendNotice(state, 'End of this match batch. Open search to search another batch.') }
+    : jumpToSearchResult(state, entryId, read, position.result);
 }
 
 export function receiveSearchJump(

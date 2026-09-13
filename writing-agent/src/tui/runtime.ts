@@ -1,16 +1,25 @@
-import { progressReplacementKey } from '@agents/application';
-import { TuiEventChannel } from '@agents/tui';
-import { createTerminalHost, type TerminalHost } from '@ismail-elkorchi/terminal-ui/host';
+import { progressReplacementKey } from '@agent-core/runtime';
+import { preferencesTheme, ringTerminalBell, TuiEventChannel } from '@agent-core/tui';
+import {
+  exportConversation,
+  FileDraftStorage,
+  FileSessionNames,
+  readTuiPreferences,
+  runTerminalApplication,
+  writeTuiPreferences
+} from '@agent-core/tui/node';
+import type { TerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import { runTui } from '@ismail-elkorchi/terminal-ui/tui';
+import path from 'node:path';
 import type { WritingApplication } from '../application/service.js';
 import { createWritingAgentTuiApp } from './app.js';
+import { WRITING_SHORTCUTS } from './commands.js';
 import type { WritingTuiMessage } from './state.js';
 
 export async function runWritingAgentTuiApp(
   application: WritingApplication,
   options: { readonly host?: TerminalHost } = {}
 ) {
-  const host = options.host ?? createTerminalHost({ runtime: 'node' });
   const events = new TuiEventChannel<WritingTuiMessage>('writing-agent-events', {
     replacementKey: (message) =>
       message.type === 'progress'
@@ -26,7 +35,7 @@ export async function runWritingAgentTuiApp(
         case 'application.state.changed':
           return events.enqueue({ type: 'application', state: application.state() });
         case 'run.progress':
-          return events.enqueue({ type: 'progress', event: event.event });
+          return events.enqueue({ type: 'progress', runId: event.runId, event: event.event });
         case 'run.completed':
           return events.enqueue({ type: 'result', result: event.result });
         case 'run.failed':
@@ -44,34 +53,38 @@ export async function runWritingAgentTuiApp(
       events.fail(error);
     }
   );
-  let outcome:
-    | { readonly kind: 'returned'; readonly value: Awaited<ReturnType<typeof runTui>> }
-    | { readonly kind: 'failed'; readonly cause: unknown };
-  try {
-    outcome = {
-      kind: 'returned',
-      value: await runTui(createWritingAgentTuiApp(application, { events }), { host })
-    };
-  } catch (cause) {
-    outcome = { kind: 'failed', cause };
-  }
-  unsubscribe();
-  const results = await Promise.allSettled([
-    application.close(),
-    events.close(),
-    ...(options.host === undefined ? [host.dispose()] : [])
-  ]);
-  const failures: unknown[] = [];
-  for (const result of results)
-    if (result.status === 'rejected') {
-      const cause: unknown = result.reason;
-      failures.push(cause);
+  return runTerminalApplication({
+    ...(options.host === undefined ? {} : { host: options.host }),
+    cleanup: [unsubscribe, () => application.close(), () => events.close()],
+    async run(host) {
+      const preferences = await readTuiPreferences(application.presentationPath(), WRITING_SHORTCUTS);
+      return runTui(
+        createWritingAgentTuiApp(application, {
+          events,
+          notify: (signal) => ringTerminalBell(host, signal),
+          exportConversation: (pages, signal) =>
+            exportConversation(
+              path.join(path.dirname(application.presentationPath()), 'exports'),
+              pages,
+              signal
+            ),
+          sessionNames: new FileSessionNames(
+            path.join(path.dirname(application.presentationPath()), 'session-names')
+          ),
+          drafts: new FileDraftStorage(application.draftDirectory()),
+          presentation: {
+            preferences,
+            save: (value) => writeTuiPreferences(application.presentationPath(), value)
+          }
+        }),
+        {
+          host,
+          theme: (state) =>
+            preferencesTheme(
+              state.overlay.kind === 'preferences' ? state.overlay.preferences : state.preferences
+            )
+        }
+      );
     }
-  if (failures.length > 0)
-    throw new AggregateError(
-      [...(outcome.kind === 'failed' ? [outcome.cause] : []), ...failures],
-      'Writing terminal cleanup failed.'
-    );
-  if (outcome.kind === 'failed') throw outcome.cause;
-  return outcome.value;
+  });
 }

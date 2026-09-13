@@ -1,5 +1,5 @@
-import { diagnosticMessage, historyBookmark } from '@agents/tui';
-import { createScrollState, createTextAreaState } from '@ismail-elkorchi/terminal-ui/behavior';
+import { createDraft, diagnosticMessage, historyBookmark, sessionConversationId } from '@agent-core/tui';
+import { createScrollState } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { TuiUpdateResult } from '@ismail-elkorchi/terminal-ui/tui';
 import type { CodingSessionView } from '../application/contracts.js';
 import type { CodingHistoryReader } from './history.js';
@@ -22,12 +22,7 @@ export function restoreSessionView(
         state.conversation.pages.map((page) => page.history),
         state.conversation.anchor ?? state.presentation.anchor(state.conversation.scroll.offsetRow),
         state.conversation.scroll.followTail,
-        (entry) =>
-          entry.type === 'assistant'
-            ? `assistant:${entry.turnId}`
-            : entry.type === 'input'
-              ? `input:${entry.runId}`
-              : entry.id
+        sessionConversationId
       )
     }
   };
@@ -37,11 +32,12 @@ export function restoreSessionView(
       ...state,
       sessionViews: views,
       run: { kind: 'idle' },
+      progress: { label: 'Ready' },
       composer: saved?.composer ?? {
-        ...state.composer,
-        input: createTextAreaState({ value: '' }),
+        ...createDraft(),
+        submissionCount: state.composer.submissionCount,
         submitting: false,
-        historyIndex: null
+        history: { entries: [], index: null }
       },
       conversation: {
         items: [],

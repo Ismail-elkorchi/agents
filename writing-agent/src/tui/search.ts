@@ -1,5 +1,13 @@
-import { findBranchMatches } from '@agents/application';
-import { diagnosticMessage } from '@agents/tui';
+import { findBranchMatches } from '@agent-core/runtime';
+import {
+  adjacentHistoryMatch,
+  createSourceInspector,
+  diagnosticMessage,
+  oversizedHistoryEntry,
+  selectHistoryMatch,
+  sessionConversationId,
+  updateSourceInspector
+} from '@agent-core/tui';
 import { createTextAreaState, textAreaReducer } from '@ismail-elkorchi/terminal-ui/behavior';
 import { button, text, textArea, type Element } from '@ismail-elkorchi/terminal-ui/components';
 import { column } from '@ismail-elkorchi/terminal-ui/layout';
@@ -14,12 +22,36 @@ export function updateHistorySearch(
   message: Message,
   application: WritingApplication
 ): TuiUpdateResult<WritingTuiState, WritingTuiMessage> {
-  if (message.type === 'search.open')
-    return { state: { ...state, overlay: { kind: 'search', input: createTextAreaState({ value: '' }) } } };
+  if (message.type === 'search.open') {
+    const previous =
+      state.historyMatch?.result.boundary.sessionId === state.application.sessionId
+        ? state.historyMatch
+        : undefined;
+    return {
+      state: {
+        ...state,
+        overlay: {
+          kind: 'search',
+          input: createTextAreaState({ value: previous?.query ?? '' }),
+          ...(previous === undefined ? {} : { result: previous.result })
+        }
+      }
+    };
+  }
+  if (message.type === 'search.adjacent') {
+    const position = state.historyMatch;
+    if (position === undefined || position.result.boundary.sessionId !== state.application.sessionId)
+      return { state };
+    const entryId = adjacentHistoryMatch(position, message.direction);
+    return entryId === undefined
+      ? { state: { ...state, notice: 'End of this match batch. Open search for the next batch.' } }
+      : jumpToMatch(state, position.result, entryId, position.query, application);
+  }
   if (message.type === 'search.jumped') {
     if (message.page.boundary.sessionId !== state.history[0]?.boundary.sessionId) return { state };
     const entry = message.page.entries.find((entry) => entry.id === message.entryId);
-    const itemId = entry?.type === 'assistant' ? `assistant:${entry.turnId}` : message.entryId;
+    if (entry === undefined) return { state };
+    const itemId = sessionConversationId(entry);
     return {
       state: {
         ...state,
@@ -51,27 +83,9 @@ export function updateHistorySearch(
       : { state: { ...state, overlay: { kind: 'search', input: overlay.input, error: message.message } } };
   if (message.type === 'search.jump') {
     const result = overlay.result;
-    if (!result?.matches.some((match) => match.entryId === message.entryId)) return { state };
-    return {
-      state,
-      effects: [
-        {
-          id: 'writing-search-jump',
-          concurrency: 'replace',
-          async run() {
-            const page = await application.readHistory({
-              cursor: { boundary: result.boundary, entryId: message.entryId },
-              direction: 'newer'
-            });
-            return { kind: 'message', message: { type: 'search.jumped', page, entryId: message.entryId } };
-          },
-          onError: ({ diagnostic }) => ({
-            kind: 'message',
-            message: { type: 'notice', message: diagnosticMessage(diagnostic) }
-          })
-        }
-      ]
-    };
+    return result === undefined
+      ? { state }
+      : jumpToMatch(state, result, message.entryId, textDocumentText(overlay.input.document), application);
   }
   const query = textDocumentText(overlay.input.document);
   if (!query) return { state };
@@ -95,6 +109,58 @@ export function updateHistorySearch(
         onError: ({ diagnostic }) => ({
           kind: 'message',
           message: { type: 'search.failed', requestId, message: diagnosticMessage(diagnostic) }
+        })
+      }
+    ]
+  };
+}
+function jumpToMatch(
+  state: WritingTuiState,
+  result: import('@agent-core/runtime').SessionBranchSearchResult,
+  entryId: string,
+  query: string,
+  application: WritingApplication
+): TuiUpdateResult<WritingTuiState, WritingTuiMessage> {
+  if (result.oversizedEntry?.entryId === entryId) {
+    const reference = oversizedHistoryEntry({
+      ...result,
+      entries: [],
+      oversizedEntry: result.oversizedEntry
+    })[0];
+    if (reference === undefined) return { state };
+    return {
+      state: {
+        ...state,
+        historyMatch: { result, query, index: -1 },
+        overlay: {
+          kind: 'inspector',
+          state: updateSourceInspector(createSourceInspector([reference]), {
+            type: 'inspector.pick',
+            id: reference.id
+          })
+        }
+      }
+    };
+  }
+  const historyMatch = selectHistoryMatch(result, entryId, query);
+  if (historyMatch === undefined) return { state };
+  return {
+    state: { ...state, historyMatch },
+    effects: [
+      {
+        id: 'writing-search-jump',
+        concurrency: 'replace',
+        async run({ signal }) {
+          const page = await application.readHistory({
+            cursor: { boundary: result.boundary, entryId },
+            direction: 'newer'
+          });
+          signal.throwIfAborted();
+          return { kind: 'message', message: { type: 'search.jumped', page, entryId } };
+        },
+        onError: ({ diagnostic }) => ({
+          kind: 'message',
+          message: { type: 'notice', message: diagnosticMessage(diagnostic) }
         })
       }
     ]
@@ -125,9 +191,11 @@ export function historySearchView(state: WritingTuiState): Element<WritingTuiMes
           ? 'Searching…'
           : search.result === undefined
             ? 'Search includes unloaded history.'
-            : search.result.older === undefined
-              ? 'End of branch reached.'
-              : 'More history remains.')
+            : search.result.oversizedEntry !== undefined
+              ? `An entry of ${String(search.result.oversizedEntry.bytes)} bytes was not searched. Inspect it explicitly, then continue with the next batch.`
+              : search.result.older === undefined
+                ? 'End of branch reached.'
+                : 'More history remains.')
     }),
     ...(search.result?.matches.map((match) =>
       button<WritingTuiMessage>({
@@ -136,6 +204,15 @@ export function historySearchView(state: WritingTuiState): Element<WritingTuiMes
         onPress: () => ({ type: 'search.jump', entryId: match.entryId })
       })
     ) ?? []),
+    ...(search.result?.oversizedEntry === undefined
+      ? []
+      : [
+          button<WritingTuiMessage>({
+            id: 'writing-search-oversized',
+            label: 'Inspect unsearched entry',
+            onPress: () => ({ type: 'search.jump', entryId: search.result?.oversizedEntry?.entryId ?? '' })
+          })
+        ]),
     button({
       id: 'writing-search-more',
       label: 'Next match batch',

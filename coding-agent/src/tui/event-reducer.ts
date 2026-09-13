@@ -4,30 +4,27 @@ import type {
   AgentRunPhase,
   AgentSessionState
 } from '@agent-core/runtime';
-import { providerFailureText } from '@agents/tui';
-import type { CodingAgentTuiActivityEntry } from './conversation-model.js';
+import { presentProgress, projectProgress, providerFailureText } from '@agent-core/tui';
 import type { CodingRunVerification } from '../verification/configured-check-tool.js';
-import {
-  appendNotice,
-  upsertActivity,
-  upsertAssistant,
-  upsertConversationEntry,
-  upsertReasoning
-} from './conversation.js';
+import { appendNotice, upsertActivity, upsertConversationEntry } from './conversation.js';
 import { terminalPresentation } from './run-presentation.js';
 import type { CodingAgentTuiState } from './state.js';
-import {
-  completedToolActivity,
-  pendingToolActivity,
-  runningToolActivity,
-  toolActivityId,
-  updatedToolActivity
-} from './tool-presentation.js';
+import { toolLabel } from './tool-presentation.js';
 
 type ProgressEventType = AgentProgressEvent['type'];
 type ProgressEvent<K extends ProgressEventType> = Extract<AgentProgressEvent, { readonly type: K }>;
 
-export function applyProgress(state: CodingAgentTuiState, event: AgentProgressEvent): CodingAgentTuiState {
+export function applyProgress(
+  state: CodingAgentTuiState,
+  event: AgentProgressEvent,
+  runId: string
+): CodingAgentTuiState {
+  state = { ...state, progress: presentProgress(state.progress, event) };
+  state = projectProgress({ runId, event }, state.conversation.items, toolLabel).reduce(
+    (state, entry) =>
+      entry.kind === 'activity' ? upsertActivity(state, entry) : upsertConversationEntry(state, entry),
+    state
+  );
   switch (event.type) {
     case 'turn.started':
       return reduceTurnStarted(state, event);
@@ -47,27 +44,29 @@ export function applyProgress(state: CodingAgentTuiState, event: AgentProgressEv
     case 'run.phase.changed':
       return reducePhaseChanged(state, event);
     case 'assistant.started':
-      return withWorking(state, 'Thinking');
+      return withWorking(state, 'Preparing request');
+    case 'model.requested':
+      return withWorking(state, 'Requesting response');
     case 'assistant.delta':
-      return upsertAssistant(withWorking(state, 'Responding'), event.turnId, event.accumulated, 'streaming');
+      return withWorking(state, 'Responding');
     case 'assistant.reasoning':
-      return reduceReasoning(state, event);
+      return withWorking(state, 'Reasoning');
     case 'assistant.status':
       return withWorking(state, compact(event.message));
     case 'tool.call.received':
-      return reduceToolCall(state, event);
+      return withWorking(state, 'Preparing tool');
     case 'assistant.ended':
-      return upsertAssistant(withWorking(state, 'Working'), event.turnId, event.content, 'complete');
+      return withWorking(state, 'Working');
     case 'assistant.interrupted':
       return reduceAssistantInterrupted(state, event);
     case 'model.failed':
       return reduceModelFailed(state, event);
     case 'tool.started':
-      return reduceToolStarted(state, event);
+      return withWorking(state, 'Running tool');
     case 'tool.updated':
-      return reduceToolUpdated(state, event);
+      return withWorking(state, 'Running tool');
     case 'tool.ended':
-      return reduceToolEnded(state, event);
+      return withWorking(state, event.observation.ok ? 'Working' : 'Tool failed');
     case 'run.ended':
       return applyTerminal(state, event.terminal, event.deliveryDiagnostics);
   }
@@ -115,16 +114,19 @@ function reduceRunConfigured(
   event: ProgressEvent<'run.configured'>
 ): CodingAgentTuiState {
   const reasoning = event.configuration.runtime.reasoning;
+  const details = { ...state.runtimeDetails };
+  delete details.reasoning;
+  delete details.temperature;
   return {
     ...state,
     runtimeDetails: {
-      ...state.runtimeDetails,
+      ...details,
       providerId: event.configuration.provider.id,
       modelId: event.configuration.model.id,
       ...(event.configuration.runtime.temperature === undefined
         ? {}
         : { temperature: event.configuration.runtime.temperature }),
-      ...(reasoning?.strategy === 'effort' ? { reasoningEffort: reasoning.effort } : {})
+      ...(reasoning === undefined ? {} : { reasoning })
     },
     debug: { ...state.debug, configuration: event.configuration }
   };
@@ -141,32 +143,11 @@ function reducePhaseChanged(
   };
 }
 
-function reduceReasoning(
-  state: CodingAgentTuiState,
-  event: ProgressEvent<'assistant.reasoning'>
-): CodingAgentTuiState {
-  if (!state.showReasoning || event.channel !== 'summary') return withWorking(state, 'Thinking');
-  return upsertReasoning(withWorking(state, 'Thinking'), event.turnId, event.accumulated);
-}
-
-function reduceToolCall(
-  state: CodingAgentTuiState,
-  event: ProgressEvent<'tool.call.received'>
-): CodingAgentTuiState {
-  return upsertActivity(
-    withWorking(state, 'Planning tool'),
-    pendingToolActivity(toolActivityId({ ...event, runId: currentRunId(state) }), event.toolCall)
-  );
-}
-
 function reduceAssistantInterrupted(
   state: CodingAgentTuiState,
   event: ProgressEvent<'assistant.interrupted'>
 ): CodingAgentTuiState {
-  let next = upsertAssistant(withWorking(state, 'Recovering'), event.turnId, event.content, 'interrupted');
-  if (event.reasoningSummary !== undefined && state.showReasoning) {
-    next = upsertReasoning(next, event.turnId, event.reasoningSummary);
-  }
+  let next = withWorking(state, 'Recovering');
   if (event.diagnostic !== undefined) {
     next = appendNotice(next, providerFailureText(event.diagnostic), 'error');
   }
@@ -177,50 +158,10 @@ function reduceModelFailed(
   state: CodingAgentTuiState,
   event: ProgressEvent<'model.failed'>
 ): CodingAgentTuiState {
-  return appendNotice(withWorking(state, 'Provider failed'), providerFailureText(event.diagnostic), 'error');
-}
-
-function reduceToolStarted(
-  state: CodingAgentTuiState,
-  event: ProgressEvent<'tool.started'>
-): CodingAgentTuiState {
-  return upsertActivity(
-    withWorking(state, 'Running tool'),
-    runningToolActivity(toolActivityId({ ...event, runId: currentRunId(state) }), event.input, event.effects)
-  );
-}
-
-function reduceToolUpdated(
-  state: CodingAgentTuiState,
-  event: ProgressEvent<'tool.updated'>
-): CodingAgentTuiState {
-  const id = toolActivityId({ ...event, runId: currentRunId(state) });
-  const label = progressLabel(event.progress);
-  return upsertActivity(
-    withWorking(state, 'Running tool'),
-    updatedToolActivity(activity(state, id), id, event.toolName, label)
-  );
-}
-
-function progressLabel(progress: import('@agent-core/tools').ToolProgress): string {
-  switch (progress.type) {
-    case 'status':
-      return progress.message ?? progress.stage;
-    case 'output':
-      return `${progress.stream}: ${progress.text}`;
-    case 'metric':
-      return `${progress.name}: ${String(progress.value)}${progress.unit ? ` ${progress.unit}` : ''}`;
-  }
-}
-
-function reduceToolEnded(
-  state: CodingAgentTuiState,
-  event: ProgressEvent<'tool.ended'>
-): CodingAgentTuiState {
-  const id = toolActivityId({ ...event, runId: currentRunId(state) });
-  return upsertActivity(
-    withWorking(state, event.observation.ok ? 'Working' : 'Tool failed'),
-    completedToolActivity(activity(state, id), id, event.toolName, event.observation)
+  return appendNotice(
+    withWorking(state, 'Provider failed'),
+    providerFailureText(event.diagnostic),
+    'error'
   );
 }
 
@@ -229,16 +170,19 @@ export function applySessionState(
   session: AgentSessionState
 ): CodingAgentTuiState {
   const reasoning = session.configuration.reasoning;
+  const details = { ...state.runtimeDetails };
+  delete details.reasoning;
+  delete details.temperature;
   return {
     ...state,
     runtimeDetails: {
-      ...state.runtimeDetails,
+      ...details,
       providerId: session.configuration.provider,
       modelId: session.configuration.model,
       ...(session.configuration.temperature === undefined
         ? {}
         : { temperature: session.configuration.temperature }),
-      ...(reasoning?.strategy === 'effort' ? { reasoningEffort: reasoning.effort } : {})
+      ...(reasoning === undefined ? {} : { reasoning })
     },
     debug: { ...state.debug, session }
   };
@@ -251,9 +195,7 @@ export function applyConfiguredChecks(
   const reports: readonly CodingRunVerification[] = state.debug.verification.some(
     (item) => item.runId === verification.runId
   )
-    ? state.debug.verification.map((item) =>
-        item.runId === verification.runId ? verification : item
-      )
+    ? state.debug.verification.map((item) => (item.runId === verification.runId ? verification : item))
     : [...state.debug.verification, verification];
   return verification.checks.reduce<CodingAgentTuiState>(
     (current, check) =>
@@ -269,7 +211,7 @@ export function applyConfiguredChecks(
               ? 'failed'
               : 'warning',
         summary: `${check.requirement} · ${check.status} · ${check.coverage}`,
-        ...(check.output ? { details: check.output } : {})
+        ...(check.output ? { details: [{ id: 'check-output', content: check.output }] } : {})
       }),
     { ...state, debug: { ...state.debug, verification: reports } }
   );
@@ -305,11 +247,21 @@ function applyTerminal(
     next =
       terminal.modelOutput.status === 'absent'
         ? appendNotice(next, presentation.message, presentation.status === 'error' ? 'error' : 'warning')
-        : upsertAssistant(next, `terminal:${terminal.finalizationId}`, presentation.message, 'complete');
+        : upsertConversationEntry(next, {
+            id: `assistant:terminal:${terminal.finalizationId}`,
+            turnId: `terminal:${terminal.finalizationId}`,
+            kind: 'assistant',
+            text: presentation.message,
+            status: 'complete'
+          });
   }
   if (presentation.status === 'warning' || presentation.status === 'error') {
     if (!hasVisibleMessage(next, presentation.headline)) {
-      next = appendNotice(next, presentation.headline, presentation.status === 'error' ? 'error' : 'warning');
+      next = appendNotice(
+        next,
+        presentation.headline,
+        presentation.status === 'error' ? 'error' : 'warning'
+      );
     }
   }
   return next;
@@ -322,21 +274,9 @@ function hasVisibleMessage(state: CodingAgentTuiState, message: string): boolean
   );
 }
 
-function activity(state: CodingAgentTuiState, id: string): CodingAgentTuiActivityEntry | undefined {
-  return state.conversation.items.find(
-    (item): item is CodingAgentTuiActivityEntry => item.id === id && item.kind === 'activity'
-  );
-}
-
 function withWorking(state: CodingAgentTuiState, label: string): CodingAgentTuiState {
   const phase = state.run.kind === 'working' ? state.run.phase : state.debug.phase;
   return { ...state, run: { kind: 'working', label, ...(phase === undefined ? {} : { phase }) } };
-}
-
-function currentRunId(state: CodingAgentTuiState): string {
-  if (state.debug.runId === undefined)
-    throw new Error('Run progress arrived before its durable run identity.');
-  return state.debug.runId;
 }
 
 function phaseLabel(phase: AgentRunPhase): string {

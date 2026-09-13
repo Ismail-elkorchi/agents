@@ -44,10 +44,25 @@ export class ScriptedWritingProvider {
 }
 
 export function toolCall(name, args) {
-  return { content: '', terminationReason: 'tool_calls', toolCalls: [{ name, id: crypto.randomUUID(), type: 'function', input: { kind: 'json', value: args } }] };
+  return {
+    content: '',
+    terminationReason: 'tool_calls',
+    toolCalls: [{ name, id: crypto.randomUUID(), type: 'function', input: { kind: 'json', value: args } }]
+  };
 }
 export function patchResponse(patch) {
-  return { content: '', terminationReason: 'tool_calls', toolCalls: [{ id: crypto.randomUUID(), type: 'custom', name: 'apply_patch', input: { kind: 'text', value: patch } }] };
+  return {
+    content: '',
+    terminationReason: 'tool_calls',
+    toolCalls: [
+      {
+        id: crypto.randomUUID(),
+        type: 'custom',
+        name: 'apply_patch',
+        input: { kind: 'text', value: patch }
+      }
+    ]
+  };
 }
 export async function fixture(content = 'Old line.\n', options = {}) {
   const parent = await mkdtemp(path.join(tmpdir(), 'writing-agent-test-'));
@@ -56,15 +71,26 @@ export async function fixture(content = 'Old line.\n', options = {}) {
   await mkdir(root);
   await writeFile(path.join(root, 'document.txt'), content);
   const provider = new ScriptedWritingProvider(options.responses);
-  const application = await openWritingApplication({ rootDirectory: root, stateRoot, mode: options.mode,
-    configuration: { provider, model: 'writing-test' } });
-  return { parent, root, stateRoot, provider, application, async close() {
-    await application.close();
-    await rm(parent, { recursive: true, force: true });
-  } };
+  const application = await openWritingApplication({
+    rootDirectory: root,
+    stateRoot,
+    mode: options.mode,
+    configuration: { provider, model: 'writing-test' }
+  });
+  return {
+    parent,
+    root,
+    stateRoot,
+    provider,
+    application,
+    async close() {
+      await application.close();
+      await rm(parent, { recursive: true, force: true });
+    }
+  };
 }
 export async function submit(application, instruction) {
-  const result = await application.submit(instruction);
+  const result = await application.submit({ task: instruction });
   if (result.kind === 'rejected') throw new Error(result.reason);
   return result.completion;
 }

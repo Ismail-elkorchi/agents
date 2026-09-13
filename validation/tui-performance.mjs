@@ -6,10 +6,11 @@ import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import { createTuiRuntime } from '@ismail-elkorchi/terminal-ui/tui';
 import { createCodingAgentTuiApp } from '@ismail-elkorchi/coding-agent/tui';
 import { createWritingAgentTuiApp } from '@ismail-elkorchi/writing-agent/tui';
-import { waitForState } from '../tui/test/helpers/runtime.js';
+import { waitForState } from '../test-helpers/tui-runtime.js';
 
 const p95 = (values) => [...values].sort((a, b) => a - b)[Math.floor(values.length * 0.95)];
 const measurements = [];
+const historyEntries = 3_000;
 const hostSample = () => ({ cpuSpeedsMHz: cpus().map((cpu) => cpu.speed), loadAverage: loadavg() });
 const hostBefore = hostSample();
 const directory = await mkdtemp(path.join(tmpdir(), 'agents-history-measure-'));
@@ -18,7 +19,7 @@ try {
   const descriptor = await repository.create({
     binding: { schemaId: 'validation/history', schemaVersion: 1, subject: {} }
   });
-  for (let i = 0; i < 700; i++)
+  for (let i = 0; i < historyEntries; i++)
     await repository.appendInput(descriptor, {
       runId: `run-${i}`,
       task: `Instruction ${i}\n${'文 '.repeat(1500)}`
@@ -41,19 +42,50 @@ try {
   const afterReads = coldReader.historyReadMetrics(descriptor.id);
   const sourceReads = { coldPageMs, warmPageP95Ms: p95(pageTimes), beforeReads, afterReads };
   for (const agent of ['coding', 'writing'])
-    for (const columns of [48, 120]) {
+    for (const columns of [48, 80, 120]) {
       global.gc?.();
       const heapBefore = process.memoryUsage().heapUsed;
       const host = createMemoryTerminalHost({ terminalSize: { columns, rows: 32 } });
       const service = {
         state: () => ({ workspace: '/workspace', mode: 'edit', sessionId: descriptor.id, status: 'ready' }),
         start: async () => {},
-        readSession: async () => ({ session: { sessionId: descriptor.id, phase: 'idle' }, runs: [] }),
+        readSession: async () => ({
+          session: {
+            sessionId: descriptor.id,
+            phase: 'idle',
+            configuration: { provider: 'fixture', model: 'fixture' },
+            queuedInputs: 0
+          },
+          runs: []
+        }),
         readHistory: (request) => coldReader.readBranchPage(descriptor, request)
       };
       const runtime = createTuiRuntime({
         host,
-        app: agent === 'coding' ? createCodingAgentTuiApp('') : createWritingAgentTuiApp(service)
+        app:
+          agent === 'coding'
+            ? createCodingAgentTuiApp('', {
+                historyReader: async (request) => ({
+                  history: await coldReader.readBranchPage(descriptor, request),
+                  changes: [],
+                  verification: []
+                }),
+                initialHydration: {
+                  history: latest,
+                  changes: [],
+                  verification: [],
+                  branchPoints: [],
+                  pendingSubmissions: [],
+                  runs: [],
+                  session: {
+                    sessionId: descriptor.id,
+                    phase: 'idle',
+                    queuedInputs: 0,
+                    configuration: { provider: 'fixture', model: 'fixture' }
+                  }
+                }
+              })
+            : createWritingAgentTuiApp(service)
       });
       await runtime.start();
       if (agent === 'writing') {
@@ -61,14 +93,19 @@ try {
         await waitForState(runtime, AbortSignal.timeout(30_000), () => runtime.state().history.length > 0);
       }
       const appendTimes = [];
+      const inputTimes = [];
+      const pickerTimes = [];
+      const navigationTimes = [];
+      const resizeTimes = [];
       for (let index = 0; index < 80; index++) {
         const content = `## Response ${index}\n\nA paragraph with **emphasis**, Unicode café 世界, and a [reference](https://example.com).\n\n\`\`\`ts\nconst value = ${index};\n\`\`\``;
         const start = performance.now();
         await runtime.dispatch({
           type: 'progress',
+          runId: 'streaming-run',
           event: {
             type: 'assistant.delta',
-            turnId: agent === 'coding' ? `turn-${index}` : 'turn',
+            turnId: `turn-${Math.floor(index / 10)}`,
             turnIndex: index + 1,
             requestAttempt: 1,
             delta: content,
@@ -76,18 +113,38 @@ try {
           }
         });
         appendTimes.push(performance.now() - start);
-      }
-      const inputTimes = [];
-      for (let i = 0; i < 60; i++) {
-        const start = performance.now();
+        const typing = performance.now();
         await runtime.dispatch({
           type: 'composer.edit',
           transition: {
             kind: 'edit',
-            operation: { kind: 'insert', text: i === 0 ? 'A multiline\nprompt with Unicode 👋' : 'a' }
+            operation: { kind: 'insert', text: index === 0 ? 'A multiline\nprompt with Unicode 👋' : 'a' }
           }
         });
-        inputTimes.push(performance.now() - start);
+        inputTimes.push(performance.now() - typing);
+        if (index % 10 === 0) {
+          const opening = performance.now();
+          await runtime.dispatch(
+            agent === 'coding' ? { type: 'overlay.open', overlay: 'commands' } : { type: 'commands.open' }
+          );
+          if (agent === 'writing')
+            await waitForState(
+              runtime,
+              AbortSignal.timeout(30_000),
+              () => runtime.state().overlay.kind === 'picker'
+            );
+          pickerTimes.push(performance.now() - opening);
+          await runtime.dispatch({ type: 'overlay.close' });
+          const navigating = performance.now();
+          await runtime.dispatch({ type: 'conversation.message', direction: 'previous' });
+          navigationTimes.push(performance.now() - navigating);
+          if (index % 20 === 0) {
+            const resizing = performance.now();
+            await runtime.resize({ columns: columns === 48 ? 80 : 48, rows: 18 });
+            await runtime.resize({ columns, rows: 32 });
+            resizeTimes.push(performance.now() - resizing);
+          }
+        }
       }
       global.gc?.();
       const heapWithRecordedFrames = process.memoryUsage().heapUsed;
@@ -97,6 +154,11 @@ try {
         rows: 32,
         inputP95Ms: p95(inputTimes),
         appendP95Ms: p95(appendTimes),
+        pickerP95Ms: p95(pickerTimes),
+        navigationP95Ms: p95(navigationTimes),
+        resizeRoundTripP95Ms: p95(resizeTimes),
+        retainedHistoryPages:
+          agent === 'coding' ? runtime.state().conversation.pages.length : runtime.state().history.length,
         heapBefore,
         heapWithRecordedFrames,
         retainedFrames: host.frames().length,
@@ -124,10 +186,13 @@ try {
         scope:
           'Memory-host latency includes update, layout and rendering. Heap includes the host recording all frames; it is not a live terminal steady-state heap estimate. Cold index creation and bounded warm body reads measured from JSONL.',
         workload: {
-          historyEntries: 700,
-          historySourceTextBytes: 700 * Buffer.byteLength('文 '.repeat(1500)),
+          historyEntries,
+          historySourceTextBytes: historyEntries * Buffer.byteLength('文 '.repeat(1500)),
           appendUpdates: 80,
-          inputUpdates: 60
+          inputUpdates: 80,
+          pickerInteractions: 8,
+          messageNavigation: 8,
+          resizeRoundTrips: 4
         },
         budgets,
         sourceReads,

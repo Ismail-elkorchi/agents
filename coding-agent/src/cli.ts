@@ -27,8 +27,8 @@ import {
   type SessionSelection
 } from './application/runtime.js';
 import { CodingApplication } from './application/service.js';
-import { openCodingWorkspace } from './workspace.js';
 import type { CodingRunVerification } from './verification/configured-check-tool.js';
+import { openCodingWorkspace } from './workspace.js';
 
 type CliAuthProviderId = 'openai' | 'openai-codex';
 
@@ -58,7 +58,8 @@ export async function main(argv: string[]): Promise<void> {
   }
   const parsed = parseOptions(exec || rpc ? argv.slice(1) : argv);
   let task = parsed.positionals.join(' ');
-  if (exec && (task === '-' || (task.length === 0 && !process.stdin.isTTY))) task = await readStandardInput();
+  if (exec && (task === '-' || (task.length === 0 && !process.stdin.isTTY)))
+    task = await readStandardInput();
   const resumeOnly = exec && task.length === 0 && parsed.options.sessionSelection.kind !== 'new';
   if (exec && task.length === 0 && !resumeOnly)
     throw new Error(
@@ -109,8 +110,7 @@ export async function main(argv: string[]): Promise<void> {
       let result: AgentRunResult;
       if (resumeOnly) {
         const view = await application.readSession();
-        if (view.session.phase === 'suspended')
-          result = await application.resumeSuspension();
+        if (view.session.phase === 'suspended') result = await application.resumeSuspension();
         else {
           await application.waitForIdle();
           if (failure !== undefined) throw failure;
@@ -125,12 +125,7 @@ export async function main(argv: string[]): Promise<void> {
         if (accepted.kind === 'rejected') throw new Error(`Task was rejected: ${accepted.reason}.`);
         result = await accepted.completion;
       }
-      printResult(
-        result,
-        progress,
-        process.stdout,
-        await application.readVerification(runIdOf(result))
-      );
+      printResult(result, progress, process.stdout, await application.readVerification(runIdOf(result)));
       printPersistenceLocations(application, result);
       process.exitCode = resultExitCode(result);
     } finally {
@@ -143,7 +138,6 @@ export async function main(argv: string[]): Promise<void> {
   const controller = new CodingApplication(parsed.options, workspace);
   const { runCodingAgentTuiApp } = await import('./tui/index.js');
   await runCodingAgentTuiApp(controller, {
-    showReasoning: parsed.options.showReasoning,
     ...(task.length > 0 ? { initialTask: task } : {})
   });
 }
@@ -304,12 +298,7 @@ async function runApprovalCommand(args: string[]): Promise<void> {
       decision: decisionValue
     });
     if (deliveryFailure !== undefined) throw deliveryFailure;
-    printResult(
-      result,
-      progress,
-      process.stdout,
-      await application.readVerification(runIdOf(result))
-    );
+    printResult(result, progress, process.stdout, await application.readVerification(runIdOf(result)));
     printPersistenceLocations(application, result);
     process.exitCode = resultExitCode(result);
   } finally {
@@ -506,10 +495,7 @@ function printResult(
     writeLine(output, `Model termination: ${title(terminal.modelTerminationReason.replaceAll('_', ' '))}`);
   if ('errorMessage' in terminal) writeLine(output, `Reason: ${terminal.errorMessage}`);
   for (const check of verification?.checks ?? [])
-    writeLine(
-      output,
-      `Check ${check.id}: ${check.requirement}/${check.status} (${check.coverage})`
-    );
+    writeLine(output, `Check ${check.id}: ${check.requirement}/${check.status} (${check.coverage})`);
   for (const diagnostic of result.deliveryDiagnostics)
     writeLine(output, `Delivery diagnostic (${diagnostic.eventType}): ${diagnostic.message}`);
 }

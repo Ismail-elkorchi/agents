@@ -7,7 +7,7 @@ Runnable applications composed from [Agent Core](https://github.com/Ismail-elkor
 
 Agent Core owns provider-neutral inference, conversation history, model-managed context and notes, durable effects, resource accounting, recovery, and session branches. Each application owns its domain tools, permission choices, verification meaning, and presentation.
 
-The applications share delivery, session navigation, RPC framing, and terminal presentation. Shared packages contain no coding or writing workflow policy.
+Shared delivery and session navigation belong to Agent Core runtime services. Optional `@agent-core/rpc` and `@agent-core/tui` provide the common protocol and terminal components; applications supply authorized capabilities and domain actions. Headless application imports do not initialize either adapter.
 
 Development uses adjacent `agents`, `agent-core`, and `sandbox` checkouts. Exact upstream commits are recorded in the root `package.json`. Build the upstream repositories, then run:
 

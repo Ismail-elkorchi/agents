@@ -27,9 +27,9 @@ import {
 } from '@agent-core/runtime/node';
 import type { CompiledToolDefinition } from '@agent-core/tools';
 import { RootedFileAuthority, TextPatchJournal, createLocalToolHost } from '@agent-core/tools-local';
-import { mkdir, readFile, open } from 'node:fs/promises';
-import * as z from 'zod';
+import { mkdir, open, readFile } from 'node:fs/promises';
 import path from 'node:path';
+import * as z from 'zod';
 import type { WritingWorkspace } from './workspace.js';
 
 export type WritingMode = 'edit' | 'review';
@@ -120,6 +120,7 @@ export function createWritingSession(
         if (!activeRuntime || providerActive)
           throw new Error('Context admission requires a settled provider boundary.');
         return createRuntimeContextBootstrapValidator({
+          artifacts,
           provider,
           model: agent.state().configuration.model,
           nativeTransform: { inference, ownerId: () => ownerId },
@@ -165,13 +166,16 @@ export function createWritingSession(
       model: configuration.model,
       ...(configuration.reasoning === undefined ? {} : { reasoning: configuration.reasoning }),
       ...(configuration.temperature === undefined ? {} : { temperature: configuration.temperature }),
-      ...(configuration.responseFormat === undefined ? {} : { responseFormat: configuration.responseFormat })
+      ...(configuration.responseFormat === undefined
+        ? {}
+        : { responseFormat: configuration.responseFormat })
     },
     async createRuntime(settings, onProgress, run) {
       const { mode } = z
         .strictObject({ mode: z.enum(['edit', 'review']) })
         .parse(JSON.parse(await readFile(permissionPath(workspace, run.runId), 'utf8')));
-      if (settings.provider !== provider.id) throw new Error(`Provider ${settings.provider} is unavailable.`);
+      if (settings.provider !== provider.id)
+        throw new Error(`Provider ${settings.provider} is unavailable.`);
       const root = RootedFileAuthority.adopt(workspace.directory, {
         additionalDeniedEntries: ['.git', '.writing-agent']
       });
@@ -197,19 +201,7 @@ export function createWritingSession(
       try {
         await host.ready();
         activeTools = [...host.tools, ...memoryTools];
-        activeContext = [
-          {
-            id: 'writing-agent/workspace',
-            title: 'Selected workspace',
-            sourceKind: 'external',
-            sourceUri: `file://${workspace.directory}`,
-            integrity: 'verified',
-            representation: 'full',
-            mediaType: 'text/plain',
-            content: `Workspace: ${workspace.directory}\nFile permission mode: ${mode}`,
-            purpose: 'Selected workspace and file authority.'
-          }
-        ];
+        activeContext = workspaceContext(workspace, mode);
         activeRuntime = new AgentRuntime({
           provider,
           inferenceService: inference,
@@ -273,12 +265,29 @@ export function createWritingSession(
     }
   });
   return {
+    provider,
     agent,
     history,
+    artifacts,
     notes,
     events,
     sessions,
     context,
+    async inspectContext(mode: WritingMode) {
+      return {
+        ...(await context.inspect()),
+        available: {
+          instructions,
+          resources: workspaceContext(workspace, mode),
+          toolNames: [
+            ...readTools,
+            ...(mode === 'edit' ? ['apply_patch'] : []),
+            ...memoryTools.map((tool) => tool.name)
+          ]
+        },
+        activeToolCatalog: activeTools.map((tool) => ({ name: tool.name, description: tool.description }))
+      };
+    },
     async close() {
       const failures: unknown[] = [];
       try {
@@ -318,4 +327,23 @@ export async function recordWritingPermission(
   } finally {
     await directory.close();
   }
+}
+
+function workspaceContext(
+  workspace: WritingWorkspace,
+  mode: WritingMode
+): readonly PromptContextItemInput[] {
+  return [
+    {
+      id: 'writing-agent/workspace',
+      title: 'Selected workspace',
+      sourceKind: 'external',
+      sourceUri: `file://${workspace.directory}`,
+      integrity: 'verified',
+      representation: 'full',
+      mediaType: 'text/plain',
+      content: `Workspace: ${workspace.directory}\nFile permission mode: ${mode}`,
+      purpose: 'Selected workspace and file authority.'
+    }
+  ];
 }

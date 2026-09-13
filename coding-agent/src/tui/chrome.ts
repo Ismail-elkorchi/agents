@@ -1,26 +1,25 @@
+import { progressStatusFields, reasoningLabel, statusline, type StatusField } from '@agent-core/tui';
 import type { Element, InlineContent, StatusBarStatus } from '@ismail-elkorchi/terminal-ui/components';
 import { richText, statusBar } from '@ismail-elkorchi/terminal-ui/components';
 import type { CodingAgentTuiMessage } from './messages.js';
 import { terminalPresentation } from './run-presentation.js';
 import type { CodingAgentTuiState } from './state.js';
 
-export function statusChrome(state: CodingAgentTuiState): Element {
+export function statusChrome(state: CodingAgentTuiState, columns: number): Element {
   const presentation = runPresentation(state);
-  const center = [modelSelectionLabel(state), permissionLabel(state)]
-    .filter((value): value is string => value !== undefined)
-    .join(' · ');
-  const runText = [
-    presentation.text,
-    queueLabel(state),
-    driverLabel(state),
-    state.conversation.loading === undefined ? undefined : 'Loading history',
-    state.conversation.unread ? 'New output · Ctrl+End' : undefined
-  ]
-    .filter((value): value is string => value !== undefined)
-    .join(' · ');
+  const preferences =
+    columns < 80
+      ? { ...state.preferences, statusline: state.preferences.statusline.filter((id) => id !== 'status') }
+      : state.preferences;
+  const center = statusline(preferences, codingStatusFields(state));
+  const runText = state.conversation.unread
+    ? 'New output · Ctrl+End'
+    : columns < 80
+      ? presentation.text
+      : '';
   return statusBar({
     id: 'status',
-    leading: [{ id: 'app', kind: 'text', text: 'Coding Agent' }],
+    leading: [{ id: 'app', kind: 'text', text: columns < 80 ? 'Coding' : 'Coding Agent' }],
     center: center.length === 0 ? [] : [{ id: 'model-and-authority', kind: 'text', text: center }],
     trailing: [{ id: 'run', kind: 'status', text: runText, status: presentation.status }]
   });
@@ -38,29 +37,25 @@ function queueLabel(state: CodingAgentTuiState): string | undefined {
   return queued === 0 ? undefined : `${String(queued)} queued`;
 }
 
-function driverLabel(state: CodingAgentTuiState): string | undefined {
-  const activeRunId = state.debug.session?.activeRunId ?? state.debug.runId;
-  const operation =
-    activeRunId === undefined
-      ? state.debug.runs.find((candidate) => candidate.state.phase.kind !== 'terminal')
-      : state.debug.runs.find((candidate) => candidate.state.runId === activeRunId);
-  if (operation === undefined) return undefined;
-  const control = operation.state.control;
-  if (control.status === 'detached') return 'driver detached';
-  if (control.status === 'abort_requested') return 'abort requested';
-  return `driver g${String(operation.state.driverGeneration)}`;
-}
-
-function permissionLabel(state: CodingAgentTuiState): string | undefined {
-  const permissions = state.runtimeDetails.permissions;
-  if (!permissions) return undefined;
-  const write = permissions.workspaceWrite === 'structured' ? 'write structured' : 'write denied';
-  const command = permissions.commandExecution === 'sandboxed' ? 'exec sandboxed' : 'exec denied';
-  return `${permissions.mode}/${permissions.trust} · ${write} · ${command} · net/escape denied · ${String(permissions.tools.length)} tools`;
+export function codingStatusFields(state: CodingAgentTuiState): readonly StatusField[] {
+  const field = (id: string, label: string, value: string | undefined): StatusField => ({
+    id,
+    label,
+    ...(value === undefined ? {} : { value })
+  });
+  return [
+    ...progressStatusFields(state.progress),
+    field('session', 'Session', state.debug.sessionId),
+    field('model', 'Model', modelSelectionLabel(state)),
+    field('reasoning', 'Reasoning configuration', reasoningLabel(state.runtimeDetails.reasoning)),
+    field('mode', 'Permissions', state.runtimeDetails.permissions?.mode),
+    field('trust', 'Workspace trust', state.runtimeDetails.workspaceTrust),
+    field('status', 'Run status', runPresentation(state).text),
+    field('queue', 'Queued inputs', queueLabel(state))
+  ];
 }
 
 export function hintBar(
-  state: CodingAgentTuiState,
   columns: number,
   bindings: readonly { readonly label: string; readonly keys: string }[]
 ): Element<CodingAgentTuiMessage> {
@@ -69,15 +64,11 @@ export function hintBar(
     return entry === undefined ? '' : `${entry.keys} ${action}`;
   };
   const text =
-    state.run.kind === 'waiting_for_approval'
-      ? 'Tab move · Enter choose · Esc deny'
-      : state.run.kind === 'waiting_for_recovery'
-        ? 'Tab move · Enter choose · Ctrl+C stop run'
-        : columns < 50
-        ? show('commands', 'commands')
-        : [show('composer submit', 'send'), show('commands', 'commands'), show('help', 'help')]
-            .filter(Boolean)
-            .join(' · ');
+    columns < 50
+      ? show('commands', 'commands')
+      : [show('composer submit', 'send'), show('commands', 'commands'), show('help', 'help')]
+          .filter(Boolean)
+          .join(' · ');
   return richText({ id: 'hints', segments: muted(text), wrap: false });
 }
 

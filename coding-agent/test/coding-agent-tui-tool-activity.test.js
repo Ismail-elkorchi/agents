@@ -1,4 +1,4 @@
-import assert from 'node:assert/strict';
+import { activityDetails } from '@agent-core/tui';import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import { runTui } from '@ismail-elkorchi/terminal-ui/tui';
@@ -17,24 +17,33 @@ test('tool activity collapses success, expands failure, and keeps bounded observ
 
   await events.enqueue({
     type: 'progress',
+    runId: 'run-1',
     event: { type: 'turn.started', runId: 'run', turnIndex: 1, turnId: 'turn-1', requestAttempt: 1 }
   });
-  await events.enqueue({ type: 'progress', event: toolStarted('call-ok', 'echo ok') });
-  await events.enqueue({ type: 'progress', event: toolEnded('call-ok', true, 'Command completed.') });
-  await events.enqueue({ type: 'progress', event: toolStarted('call-failed', 'false') });
-  await events.enqueue({ type: 'progress', event: toolEnded('call-failed', false, 'Command failed.') });
+  await events.enqueue({ type: 'progress', runId: 'run-1', event: toolStarted('call-ok', 'echo ok') });
+  await events.enqueue({
+    type: 'progress',
+    runId: 'run-1',
+    event: toolEnded('call-ok', true, 'Command completed.')
+  });
+  await events.enqueue({ type: 'progress', runId: 'run-1', event: toolStarted('call-failed', 'false') });
+  await events.enqueue({
+    type: 'progress',
+    runId: 'run-1',
+    event: toolEnded('call-failed', false, 'Command failed.')
+  });
   await waitFor(() => host.frames().length > 1);
   host.input('/exit\r');
   const exit = await running;
   await events.close();
 
-  const success = exit.state.conversation.items.find((item) => item.id === 'tool:run:call-ok');
-  const failure = exit.state.conversation.items.find((item) => item.id === 'tool:run:call-failed');
+  const success = exit.state.conversation.items.find((item) => item.id === 'tool:run-1:turn-1:batch-1:0');
+  const failure = exit.state.conversation.items.find((item) => item.id === 'tool:run-1:turn-1:batch-1:1');
   assert.equal(success.status, 'success');
   assert.equal(failure.status, 'failed');
   assert.ok(!exit.state.conversation.expandedIds.includes(success.id));
   assert.ok(exit.state.conversation.expandedIds.includes(failure.id));
-  assert.match(failure.details, /workspace:\/\/command/u);
+  assert.match(activityDetails(failure), /workspace:\/\/command/u);
 });
 
 function identity(callId) {

@@ -15,7 +15,8 @@ export function rpcClient(args) {
     child.once('exit', (code, signal) => {
       for (const item of pending.values())
         item.reject(new Error(`RPC exited (${code ?? signal}): ${stderr}`));
-      for (const waiter of waiters) waiter.reject(new Error(`RPC exited before ${waiter.method}: ${stderr}`));
+      for (const waiter of waiters)
+        waiter.reject(new Error(`RPC exited before ${waiter.method}: ${stderr}`));
       resolve({ code, signal, stderr });
     });
   });

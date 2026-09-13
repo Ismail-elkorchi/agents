@@ -14,9 +14,11 @@ export async function offlineCodex(t, output = 'Hello from the provider.') {
     else process.env.AGENT_CORE_HOME = prior;
     await rm(root, { recursive: true, force: true });
   });
-  const token = `test.${Buffer.from(JSON.stringify({
-    'https://api.openai.com/auth': { chatgpt_account_id: 'offline-test' }
-  })).toString('base64url')}.test`;
+  const token = `test.${Buffer.from(
+    JSON.stringify({
+      'https://api.openai.com/auth': { chatgpt_account_id: 'offline-test' }
+    })
+  ).toString('base64url')}.test`;
   await new FileCredentialStore().write('openai-codex', { token, expiresAt: Date.now() + 3_600_000 });
   const requests = [];
   t.mock.method(globalThis, 'fetch', async (url, init) => {
@@ -25,9 +27,19 @@ export async function offlineCodex(t, output = 'Hello from the provider.') {
     requests.push(body);
     assert.equal('max_output_tokens' in body, false);
     const content = typeof output === 'function' ? output(body) : output;
-    return new Response(`data: ${JSON.stringify({ type: 'response.completed', response: {
-      id: `response-${requests.length}`, model: body.model, status: 'completed', output_text: content, output: []
-    } })}\n\n`, { headers: { 'Content-Type': 'text/event-stream' } });
+    return new Response(
+      `data: ${JSON.stringify({
+        type: 'response.completed',
+        response: {
+          id: `response-${requests.length}`,
+          model: body.model,
+          status: 'completed',
+          output_text: content,
+          output: []
+        }
+      })}\n\n`,
+      { headers: { 'Content-Type': 'text/event-stream' } }
+    );
   });
   return { requests, endpoint: 'https://offline-codex.invalid/codex/responses' };
 }

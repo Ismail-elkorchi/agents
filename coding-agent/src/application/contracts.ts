@@ -3,19 +3,20 @@ import type {
   AgentSessionEvent,
   AgentSessionState,
   AgentSessionSubmissionResult,
+  ApplicationDeliveryEvent,
   SessionBranchPage,
   SessionBranchPoint,
   SessionPendingSubmission
 } from '@agent-core/runtime';
-import type { ApplicationDeliveryEvent } from '@agents/application';
 import type { RunChangeReport } from '../changes/run-change-report.js';
 import type { CodingRunVerification } from '../verification/configured-check-tool.js';
 
 export interface CodingRuntimeDetails {
+  readonly workspacePath?: string;
   readonly providerId?: string;
   readonly modelId?: string;
   readonly temperature?: number;
-  readonly reasoningEffort?: string;
+  readonly reasoning?: import('@agent-core/model').ModelReasoningRequest;
   readonly sessionLocation?: string;
   readonly workspaceTrust?: 'untrusted' | 'restricted' | 'trusted';
   readonly permissions?: {
@@ -57,19 +58,9 @@ export type CodingSubmissionResult =
       readonly reason: 'setup_required';
       readonly requirements: readonly CodingSetupRequirement[];
     };
-export type CodingLoginResult =
-  | { readonly kind: 'not_required'; readonly provider: 'ollama' }
-  | { readonly kind: 'api_key'; readonly provider: 'openai' | 'openrouter'; readonly available: boolean }
-  | { readonly kind: 'authenticated'; readonly provider: 'openai-codex' };
 export type CodingApplicationEvent =
   | AgentSessionEvent
   | ApplicationDeliveryEvent
   | { readonly type: 'application.state.changed'; readonly state: CodingApplicationState }
-  | {
-      readonly type: 'authentication.required';
-      readonly verificationUri: string;
-      readonly userCode: string;
-      readonly expiresInSeconds: number;
-    }
   | { readonly type: 'session.restored'; readonly view: CodingSessionView }
   | { readonly type: 'verification.updated'; readonly verification: CodingRunVerification };

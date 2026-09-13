@@ -1,0 +1,305 @@
+{
+  "environment": {
+    "runtime": "v24.14.0",
+    "platform": "linux",
+    "release": "7.0.0-31-generic",
+    "cpu": "Intel(R) Core(TM) i7-4770HQ CPU @ 2.20GHz",
+    "hostBefore": {
+      "cpuSpeedsMHz": [
+        800,
+        3193,
+        3215,
+        3192,
+        3289,
+        3193,
+        3289,
+        3193
+      ],
+      "loadAverage": [
+        0.56,
+        0.91,
+        0.94
+      ]
+    },
+    "hostAfter": {
+      "cpuSpeedsMHz": [
+        3273,
+        3192,
+        3256,
+        3245,
+        3000,
+        1300,
+        3382,
+        3000
+      ],
+      "loadAverage": [
+        1.05,
+        0.98,
+        0.96
+      ]
+    },
+    "cpuProfiling": false
+  },
+  "scope": "Memory-host latency includes update, layout and rendering. Heap includes the host recording all frames; it is not a live terminal steady-state heap estimate. Cold index creation and bounded warm body reads measured from JSONL.",
+  "workload": {
+    "historyEntries": 3000,
+    "historySourceTextBytes": 18000000,
+    "appendUpdates": 80,
+    "inputUpdates": 80,
+    "pickerInteractions": 8,
+    "messageNavigation": 8,
+    "resizeRoundTrips": 4
+  },
+  "budgets": {
+    "inputP95Ms": 50,
+    "appendP95Ms": 50,
+    "historyPageP95Ms": 100
+  },
+  "sourceReads": {
+    "coldPageMs": 640.6936260000002,
+    "warmPageP95Ms": 17.249235000000226,
+    "beforeReads": {
+      "indexedRecords": 3000,
+      "scannedBytes": 18643050,
+      "bodyBytesRead": 261030,
+      "bodyRecordsRead": 42
+    },
+    "afterReads": {
+      "indexedRecords": 3000,
+      "scannedBytes": 18643050,
+      "bodyBytesRead": 10702230,
+      "bodyRecordsRead": 1722
+    }
+  },
+  "measurements": [
+    {
+      "agent": "coding",
+      "columns": 48,
+      "rows": 32,
+      "inputP95Ms": 30.77887499999997,
+      "appendP95Ms": 33.2898439999999,
+      "pickerP95Ms": 75.22866500000055,
+      "navigationP95Ms": 33.861589000000095,
+      "resizeRoundTripP95Ms": 339.31847000000016,
+      "retainedHistoryPages": 1,
+      "heapBefore": 45715680,
+      "heapWithRecordedFrames": 108507920,
+      "retainedFrames": 193,
+      "metrics": {
+        "decodedInputEvents": 0,
+        "wheelPackets": 0,
+        "dispatchedMessages": 192,
+        "frameCommits": 193,
+        "diagnostics": {
+          "retained": 0,
+          "omitted": 0
+        },
+        "effects": {
+          "active": 0,
+          "queued": 0,
+          "rejected": 0
+        },
+        "sources": {
+          "reliableAdmissions": 0,
+          "replaceableAdmissions": 0,
+          "replacements": 0,
+          "dispatchedMessages": 0,
+          "dispatchedBatches": 0,
+          "maximumBuffered": 0,
+          "cadenceFlushes": 0
+        }
+      }
+    },
+    {
+      "agent": "coding",
+      "columns": 80,
+      "rows": 32,
+      "inputP95Ms": 34.11238400000002,
+      "appendP95Ms": 34.17570900000101,
+      "pickerP95Ms": 67.24925000000076,
+      "navigationP95Ms": 39.1312399999988,
+      "resizeRoundTripP95Ms": 379.23392700000113,
+      "retainedHistoryPages": 1,
+      "heapBefore": 108109072,
+      "heapWithRecordedFrames": 142390368,
+      "retainedFrames": 193,
+      "metrics": {
+        "decodedInputEvents": 0,
+        "wheelPackets": 0,
+        "dispatchedMessages": 192,
+        "frameCommits": 193,
+        "diagnostics": {
+          "retained": 0,
+          "omitted": 0
+        },
+        "effects": {
+          "active": 0,
+          "queued": 0,
+          "rejected": 0
+        },
+        "sources": {
+          "reliableAdmissions": 0,
+          "replaceableAdmissions": 0,
+          "replacements": 0,
+          "dispatchedMessages": 0,
+          "dispatchedBatches": 0,
+          "maximumBuffered": 0,
+          "cadenceFlushes": 0
+        }
+      }
+    },
+    {
+      "agent": "coding",
+      "columns": 120,
+      "rows": 32,
+      "inputP95Ms": 40.14783199999874,
+      "appendP95Ms": 40.11300599999959,
+      "pickerP95Ms": 78.0749390000019,
+      "navigationP95Ms": 40.56766200000129,
+      "resizeRoundTripP95Ms": 326.81178700000237,
+      "retainedHistoryPages": 1,
+      "heapBefore": 142024784,
+      "heapWithRecordedFrames": 169868208,
+      "retainedFrames": 193,
+      "metrics": {
+        "decodedInputEvents": 0,
+        "wheelPackets": 0,
+        "dispatchedMessages": 192,
+        "frameCommits": 193,
+        "diagnostics": {
+          "retained": 0,
+          "omitted": 0
+        },
+        "effects": {
+          "active": 0,
+          "queued": 0,
+          "rejected": 0
+        },
+        "sources": {
+          "reliableAdmissions": 0,
+          "replaceableAdmissions": 0,
+          "replacements": 0,
+          "dispatchedMessages": 0,
+          "dispatchedBatches": 0,
+          "maximumBuffered": 0,
+          "cadenceFlushes": 0
+        }
+      }
+    },
+    {
+      "agent": "writing",
+      "columns": 48,
+      "rows": 32,
+      "inputP95Ms": 32.079744999995455,
+      "appendP95Ms": 33.338095999999496,
+      "pickerP95Ms": 60.6015559999978,
+      "navigationP95Ms": 32.900792000000365,
+      "resizeRoundTripP95Ms": 315.2389060000023,
+      "retainedHistoryPages": 1,
+      "heapBefore": 169505128,
+      "heapWithRecordedFrames": 113720768,
+      "retainedFrames": 195,
+      "metrics": {
+        "decodedInputEvents": 0,
+        "wheelPackets": 0,
+        "dispatchedMessages": 194,
+        "frameCommits": 195,
+        "diagnostics": {
+          "retained": 0,
+          "omitted": 0
+        },
+        "effects": {
+          "active": 4,
+          "queued": 1,
+          "rejected": 0
+        },
+        "sources": {
+          "reliableAdmissions": 0,
+          "replaceableAdmissions": 0,
+          "replacements": 0,
+          "dispatchedMessages": 0,
+          "dispatchedBatches": 0,
+          "maximumBuffered": 0,
+          "cadenceFlushes": 0
+        }
+      }
+    },
+    {
+      "agent": "writing",
+      "columns": 80,
+      "rows": 32,
+      "inputP95Ms": 39.19354100000055,
+      "appendP95Ms": 38.4043989999991,
+      "pickerP95Ms": 90.42295800000284,
+      "navigationP95Ms": 36.700778999998874,
+      "resizeRoundTripP95Ms": 321.8208630000008,
+      "retainedHistoryPages": 1,
+      "heapBefore": 109015936,
+      "heapWithRecordedFrames": 145847032,
+      "retainedFrames": 195,
+      "metrics": {
+        "decodedInputEvents": 0,
+        "wheelPackets": 0,
+        "dispatchedMessages": 194,
+        "frameCommits": 195,
+        "diagnostics": {
+          "retained": 0,
+          "omitted": 0
+        },
+        "effects": {
+          "active": 4,
+          "queued": 1,
+          "rejected": 0
+        },
+        "sources": {
+          "reliableAdmissions": 0,
+          "replaceableAdmissions": 0,
+          "replacements": 0,
+          "dispatchedMessages": 0,
+          "dispatchedBatches": 0,
+          "maximumBuffered": 0,
+          "cadenceFlushes": 0
+        }
+      }
+    },
+    {
+      "agent": "writing",
+      "columns": 120,
+      "rows": 32,
+      "inputP95Ms": 46.170140999995056,
+      "appendP95Ms": 45.90189999999711,
+      "pickerP95Ms": 81.27406299999711,
+      "navigationP95Ms": 42.14437900000485,
+      "resizeRoundTripP95Ms": 352.75065500000346,
+      "retainedHistoryPages": 1,
+      "heapBefore": 139714904,
+      "heapWithRecordedFrames": 174518152,
+      "retainedFrames": 195,
+      "metrics": {
+        "decodedInputEvents": 0,
+        "wheelPackets": 0,
+        "dispatchedMessages": 194,
+        "frameCommits": 195,
+        "diagnostics": {
+          "retained": 0,
+          "omitted": 0
+        },
+        "effects": {
+          "active": 4,
+          "queued": 1,
+          "rejected": 0
+        },
+        "sources": {
+          "reliableAdmissions": 0,
+          "replaceableAdmissions": 0,
+          "replacements": 0,
+          "dispatchedMessages": 0,
+          "dispatchedBatches": 0,
+          "maximumBuffered": 0,
+          "cadenceFlushes": 0
+        }
+      }
+    }
+  ],
+  "passed": true
+}

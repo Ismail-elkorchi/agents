@@ -1,5 +1,5 @@
-import { suspensionPresentation } from '@agents/tui';
-import { button, text, richText, type Element } from '@ismail-elkorchi/terminal-ui/components';
+import { suspensionPresentation } from '@agent-core/tui';
+import { button, richText, text, type Element } from '@ismail-elkorchi/terminal-ui/components';
 import { column } from '@ismail-elkorchi/terminal-ui/layout';
 import type { WritingTuiMessage, WritingTuiState } from './state.js';
 
@@ -15,14 +15,13 @@ export function recoveryView(state: WritingTuiState): Element<WritingTuiMessage>
     })
   ];
   if (suspension !== undefined) {
-    if (state.notice) children.push(richText({ segments: [{ kind: 'text', text: state.notice }], wrap: true }));
+    if (state.notice)
+      children.push(richText({ segments: [{ kind: 'text', text: state.notice }], wrap: true }));
     if (suspension.actions.includes('resume') || suspension.actions.includes('reconcile'))
       children.push(
         button({
           id: 'writing-recovery-resume',
-          label: suspension.actions.includes('reconcile')
-            ? 'Check for a recorded result'
-            : 'Continue',
+          label: suspension.actions.includes('reconcile') ? 'Check for a recorded result' : 'Continue',
           onPress: () => ({ type: 'recovery.resume' })
         })
       );

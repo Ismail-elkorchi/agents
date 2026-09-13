@@ -4,22 +4,40 @@ import type {
   SessionBranchEntry,
   SessionBranchPage
 } from '@agent-core/runtime';
-import type { NotesState } from '@agents/tui';
-import { MarkdownDocument, RetainedListPresentation } from '@agents/tui';
+import type { ComposerDraft, ConversationEntry, NotesState } from '@agent-core/tui';
+import {
+  createDraft,
+  defaultTuiPreferences,
+  MarkdownDocument,
+  RetainedListPresentation
+} from '@agent-core/tui';
 import type {
   SearchPickerControlTransition,
   TextAreaState,
   TextAreaTransition,
   UnscrolledSearchPickerState
 } from '@ismail-elkorchi/terminal-ui/behavior';
-import { createTextAreaState } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { MeasuredWindowAnchor } from '@ismail-elkorchi/terminal-ui/collection';
 import type { ScrollRequest } from '@ismail-elkorchi/terminal-ui/interaction';
-import type { WritingApplication, WritingApplicationState, WritingDocument } from '../application/service.js';
-import type { WritingHistoryMessage } from './history.js';
+import type {
+  WritingApplication,
+  WritingApplicationState,
+  WritingDocument
+} from '../application/service.js';
 
 export type WritingView = 'document' | 'conversation';
 export type WritingTuiOverlay =
+  | { readonly kind: 'session-name'; readonly state: import('@agent-core/tui').SessionNameState }
+  | { readonly kind: 'inspector'; readonly state: import('@agent-core/tui').SourceInspector }
+  | { readonly kind: 'attachments'; readonly state: import('@agent-core/tui').AttachmentState }
+  | { readonly kind: 'recall'; readonly state: import('@agent-core/tui').PromptRecallState }
+  | { readonly kind: 'queue'; readonly state: import('@agent-core/tui').QueueState }
+  | {
+      readonly kind: 'preferences';
+      readonly capture?: string;
+      readonly error?: string;
+      readonly preferences: import('@agent-core/tui').TuiPreferences;
+    }
   | { readonly kind: 'none' }
   | { readonly kind: 'notes'; readonly state: NotesState }
   | { readonly kind: 'loading'; readonly requestId: string }
@@ -34,30 +52,32 @@ export type WritingTuiOverlay =
     }
   | {
       readonly kind: 'picker';
-      readonly subject: 'resources' | 'outline' | 'sessions' | 'drafts';
+      readonly subject: 'resources' | 'outline' | 'sessions' | 'commands';
       readonly entries: readonly {
         readonly id: string;
         readonly label: string;
       }[];
       readonly picker: UnscrolledSearchPickerState;
     }
-  | {
-      readonly kind: 'form';
-      readonly subject: 'configure';
-      readonly fields: readonly {
-        readonly name: string;
-        readonly input: TextAreaState;
-      }[];
-    };
+  | { readonly kind: 'configuration'; readonly state: import('@agent-core/tui').ConfigurationState };
 
 export interface WritingTuiState {
+  readonly historyMatch?: import('@agent-core/tui').HistoryMatchPosition;
+  readonly draftRestoreSession?: string;
+  readonly progress: import('@agent-core/tui').ProgressPresentation;
+  readonly attention: import('@agent-core/tui').AttentionState;
+  readonly resourceCompletion?: import('@agent-core/tui').ResourceCompletion | undefined;
+  readonly completion?: import('@agent-core/tui').CommandCompletion | undefined;
+  readonly preferences: import('@agent-core/tui').TuiPreferences;
+  readonly liveConversation: readonly ConversationEntry[];
+  readonly expandedTools: readonly string[];
   readonly sessionViews: Readonly<
     Record<
       string,
       {
-        readonly composer: TextAreaState;
+        readonly composer: ComposerDraft;
         readonly view: WritingView;
-        readonly bookmark: import('@agents/tui').HistoryBookmark;
+        readonly bookmark: import('@agent-core/tui').HistoryBookmark;
       }
     >
   >;
@@ -69,7 +89,8 @@ export interface WritingTuiState {
     readonly source: boolean;
     readonly offsetRow: number;
   };
-  readonly composer: TextAreaState;
+  readonly composer: ComposerDraft;
+
   readonly submitting: boolean;
   readonly directory: string;
   readonly view: WritingView;
@@ -77,26 +98,39 @@ export interface WritingTuiState {
   readonly history: readonly SessionBranchPage[];
   readonly historyRequestId?: string;
   readonly conversationOffset: number;
-  readonly presentation: RetainedListPresentation<WritingHistoryMessage>;
-  readonly historyEntryCache: WeakMap<SessionBranchEntry, WritingHistoryMessage>;
+  readonly presentation: RetainedListPresentation<ConversationEntry>;
+  readonly historyEntryCache: WeakMap<
+    SessionBranchEntry,
+    {
+      readonly activity?: import('@agent-core/tui').ConversationActivityEntry;
+      readonly entries: readonly ConversationEntry[];
+    }
+  >;
   readonly followTail: boolean;
   readonly unread: boolean;
   readonly conversationAnchor?: MeasuredWindowAnchor;
   readonly offsets: Readonly<Record<string, number>>;
-  readonly savedDrafts: readonly string[];
+  readonly promptHistory: import('@agent-core/tui').PromptHistory;
   readonly source?: { readonly title: string; readonly input: TextAreaState };
   readonly sessionView?: Awaited<ReturnType<WritingApplication['readSession']>>;
-  readonly live?: { readonly turnId: string; readonly content: string };
   readonly result?: AgentRunResult;
   readonly failure?: string;
   readonly notice: string;
 }
 
-export function initialWritingState(application: WritingApplicationState): WritingTuiState {
+export function initialWritingState(
+  application: WritingApplicationState,
+  preferences = defaultTuiPreferences
+): WritingTuiState {
   return {
     application,
     sessionViews: {},
-    composer: createTextAreaState({ value: '' }),
+    attention: { focused: true },
+    progress: { label: 'Idle' },
+    preferences,
+    liveConversation: [],
+    expandedTools: [],
+    composer: createDraft(),
     submitting: false,
     directory: '.',
     view: 'conversation',
@@ -108,13 +142,45 @@ export function initialWritingState(application: WritingApplicationState): Writi
     followTail: true,
     unread: false,
     offsets: {},
-    savedDrafts: [],
+    promptHistory: { entries: [], index: null },
     notice: ''
   };
 }
 
 export type WritingTuiMessage =
-  | import('@agents/tui').NotesMessage
+  | { readonly type: 'submission.failed'; readonly sessionId: string; readonly message: string }
+  | {
+      readonly type: 'context.loaded';
+      readonly requestId: string;
+      readonly sessionId: string;
+      readonly content: string;
+    }
+  | { readonly type: 'context.failed'; readonly requestId: string; readonly message: string }
+  | { readonly type: 'search.adjacent'; readonly direction: 'previous' | 'next' }
+  | { readonly type: 'conversation.message'; readonly direction: 'previous' | 'next' }
+  | { readonly type: 'terminal.resized' }
+  | {
+      readonly type: 'history.inspect';
+      readonly reference: import('@agent-core/tui').ConversationReferenceEntry;
+    }
+  | import('@agent-core/tui').SessionNameMessage
+  | import('@agent-core/tui').ResourceCompletionMessage
+  | { readonly type: 'conversation.export' }
+  | import('@agent-core/tui').SourceInspectorMessage
+  | import('@agent-core/tui').DraftMessage
+  | import('@agent-core/tui').AttachmentMessage
+  | import('@agent-core/tui').PromptRecallMessage
+  | import('@agent-core/tui').QueueMessage
+  | { readonly type: 'queue.open' | 'context.open' | 'status.open' }
+  | { readonly type: 'prompt.navigate'; readonly direction: 'older' | 'newer' }
+  | { readonly type: 'terminal.focus'; readonly focused: boolean }
+  | import('@agent-core/tui').PreferencesMessage
+  | { readonly type: 'preferences.open' }
+  | import('@agent-core/tui').NotesMessage
+  | { readonly type: 'commands.open' | 'tools.toggle' | 'reasoning.toggle' | 'completion.close' }
+  | { readonly type: 'completion.move'; readonly delta: number }
+  | { readonly type: 'completion.accept'; readonly open: boolean; readonly name?: string }
+  | { readonly type: 'tool.toggle'; readonly id: string }
   | { readonly type: 'source.copy'; readonly text: string }
   | { readonly type: 'search.open' }
   | { readonly type: 'search.edit'; readonly transition: TextAreaTransition }
@@ -161,10 +227,10 @@ export type WritingTuiMessage =
       readonly fingerprint: string;
       readonly decision: 'allow' | 'deny';
     }
-  | { readonly type: 'form.completed' }
   | { readonly type: 'refresh' }
   | {
       readonly type: 'loaded';
+      readonly recordedRunId?: string;
       readonly session?: Awaited<ReturnType<WritingApplication['readSession']>>;
       readonly document?:
         | { readonly kind: 'available'; readonly value: WritingDocument }
@@ -174,18 +240,29 @@ export type WritingTuiMessage =
     }
   | { readonly type: 'notice'; readonly message: string }
   | { readonly type: 'application'; readonly state: WritingApplicationState }
-  | { readonly type: 'progress'; readonly event: AgentProgressEvent }
+  | { readonly type: 'progress'; readonly runId: string; readonly event: AgentProgressEvent }
   | { readonly type: 'result'; readonly result: AgentRunResult }
   | {
       readonly type: 'composer.edit' | 'document.edit';
       readonly transition: TextAreaTransition;
     }
-  | { readonly type: 'submit' }
+  | { readonly type: 'submit'; readonly delivery?: 'follow_up' | 'steer' }
   | {
       readonly type: 'submitted';
-      readonly original: string;
-      readonly accepted: boolean;
-      readonly message: string;
+      readonly sessionId: string;
+      readonly draft: import('@agent-core/tui').ComposerDraft;
+      readonly receipt:
+        | Omit<
+            Exclude<
+              import('../application/service.js').WritingSubmissionResult,
+              { readonly kind: 'rejected' }
+            >,
+            'completion'
+          >
+        | Extract<
+            import('../application/service.js').WritingSubmissionResult,
+            { readonly kind: 'rejected' }
+          >;
     }
   | { readonly type: 'view'; readonly view: WritingView }
   | {
@@ -198,7 +275,8 @@ export type WritingTuiMessage =
     }
   | {
       readonly type: 'external-edited';
-      readonly original: string;
+      readonly sessionId: string;
+      readonly draft: import('@agent-core/tui').ComposerDraft;
       readonly text: string;
     }
   | {
@@ -207,12 +285,12 @@ export type WritingTuiMessage =
     }
   | {
       readonly type: 'picker.open';
-      readonly subject: Extract<WritingTuiOverlay, { kind: 'picker' }>['subject'];
+      readonly subject: Exclude<Extract<WritingTuiOverlay, { kind: 'picker' }>['subject'], 'commands'>;
     }
   | {
       readonly type: 'picker.loaded';
       readonly requestId: string;
-      readonly subject: Extract<WritingTuiOverlay, { kind: 'picker' }>['subject'];
+      readonly subject: Exclude<Extract<WritingTuiOverlay, { kind: 'picker' }>['subject'], 'commands'>;
       readonly entries: readonly {
         readonly id: string;
         readonly label: string;
@@ -224,13 +302,8 @@ export type WritingTuiMessage =
     }
   | { readonly type: 'picker.accept'; readonly id: string }
   | { readonly type: 'document.loaded'; readonly document: WritingDocument }
-  | { readonly type: 'form.open'; readonly subject: 'configure' }
-  | {
-      readonly type: 'form.edit';
-      readonly index: number;
-      readonly transition: TextAreaTransition;
-    }
-  | { readonly type: 'form.submit' }
+  | import('@agent-core/tui').ConfigurationMessage
+  | { readonly type: 'configuration.open' }
   | {
       readonly type: 'history.failed';
       readonly requestId: string;

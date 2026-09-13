@@ -7,15 +7,12 @@
     "node": ">=24.8.0"
   },
   "workspaces": [
-    "application",
-    "rpc",
-    "tui",
     "coding-agent",
     "writing-agent"
   ],
   "agentCore": {
     "path": "../agent-core",
-    "commit": "3fc4b2cbf288e4c226d23f2ed8ac2a83d23fb1ab"
+    "commit": "95b332ff6764aa2bcd4d8f3295920daf713f520d"
   },
   "sandbox": {
     "path": "../sandbox",
@@ -33,20 +30,22 @@
   },
   "devDependencies": {
     "@agent-core/auth": "file:../agent-core/packages/auth",
-    "@agent-core/persistence": "file:../agent-core/packages/persistence",
     "@agent-core/effects": "file:../agent-core/packages/effects",
     "@agent-core/json": "file:../agent-core/packages/json",
     "@agent-core/model": "file:../agent-core/packages/model",
+    "@agent-core/persistence": "file:../agent-core/packages/persistence",
     "@agent-core/provider-ollama": "file:../agent-core/packages/providers/ollama",
     "@agent-core/provider-openai": "file:../agent-core/packages/providers/openai",
     "@agent-core/provider-openai-codex": "file:../agent-core/packages/providers/openai-codex",
     "@agent-core/provider-openai-responses": "file:../agent-core/packages/providers/openai-responses",
     "@agent-core/provider-openrouter": "file:../agent-core/packages/providers/openrouter",
+    "@agent-core/rpc": "file:../agent-core/packages/rpc",
     "@agent-core/runtime": "file:../agent-core/packages/runtime",
     "@agent-core/tools": "file:../agent-core/packages/tools",
     "@agent-core/tools-local": "file:../agent-core/packages/tools-local",
-    "@ismail-elkorchi/sandbox": "file:../sandbox/packages/sandbox",
+    "@agent-core/tui": "file:../agent-core/packages/tui",
     "@eslint/js": "^10.0.1",
+    "@ismail-elkorchi/sandbox": "file:../sandbox/packages/sandbox",
     "@types/node": "^24.13.2",
     "@types/ws": "^8.18.1",
     "eslint": "^10.5.0",

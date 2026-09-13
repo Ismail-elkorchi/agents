@@ -43,13 +43,10 @@
       "path": "../../agent-core/packages/tools-local"
     },
     {
-      "path": "../tui"
+      "path": "../../agent-core/packages/rpc"
     },
     {
-      "path": "../application"
-    },
-    {
-      "path": "../rpc"
+      "path": "../../agent-core/packages/tui"
     }
   ]
 }

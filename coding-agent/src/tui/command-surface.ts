@@ -1,3 +1,17 @@
+import type { SessionSubmissionInput } from '@agent-core/runtime';
+import {
+  commandName,
+  createDraft,
+  draftSubmission,
+  insertAcceptedInput,
+  mergeConversationEntries,
+  navigatePromptHistory,
+  rememberPrompt,
+  sameDraft,
+  type ComposerDraft,
+  type ConversationEntry,
+  type ConversationUserEntry
+} from '@agent-core/tui';
 import type { SearchPickerIndex, TextAreaTransition } from '@ismail-elkorchi/terminal-ui/behavior';
 import {
   createScrollState,
@@ -7,12 +21,10 @@ import {
 } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { SearchEntry } from '@ismail-elkorchi/terminal-ui/components';
 import { textCaretAt, textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
-import { appendNotice, upsertConversationEntry } from './conversation.js';
+import { appendNotice } from './conversation.js';
 import type { InteractiveCommandResult } from './interactive-commands.js';
 import { INTERACTIVE_COMMANDS } from './interactive-commands.js';
-import type { CodingAgentTuiState } from './state.js';
-
-const COMPOSER_HISTORY_LIMIT = 100;
+import type { CodingAgentTuiComposerState, CodingAgentTuiState } from './state.js';
 
 export type CodingAgentTuiCommandExecution = InteractiveCommandResult & {
   readonly exit?: boolean;
@@ -20,15 +32,26 @@ export type CodingAgentTuiCommandExecution = InteractiveCommandResult & {
 };
 
 export interface CodingAgentTuiCommandHandler {
+  submit(
+    input: SessionSubmissionInput,
+    delivery?: 'steer' | 'follow_up'
+  ): CodingAgentTuiCommandExecution | Promise<CodingAgentTuiCommandExecution>;
   execute(line: string): CodingAgentTuiCommandExecution | Promise<CodingAgentTuiCommandExecution>;
 }
 
-export interface CodingAgentTuiCommandRequest {
+export type CodingAgentTuiCommandRequest = {
   readonly id: string;
-  readonly value: string;
+  readonly sessionId: string;
   readonly recordResult: boolean;
-  readonly draft?: string;
-}
+  readonly draft?: ComposerDraft;
+} & (
+  | { readonly kind: 'command'; readonly value: string }
+  | {
+      readonly kind: 'submission';
+      readonly input: SessionSubmissionInput;
+      readonly delivery?: 'steer' | 'follow_up';
+    }
+);
 
 export interface CodingAgentTuiCommandSubmitResult {
   readonly state: CodingAgentTuiState;
@@ -56,8 +79,9 @@ export function editComposer(
     composer: {
       ...state.composer,
       input,
-      historyIndex: preserveHistoryPosition ? state.composer.historyIndex : null,
-      historyDraft: preserveHistoryPosition ? state.composer.historyDraft : ''
+      history: preserveHistoryPosition
+        ? state.composer.history
+        : { entries: state.composer.history.entries, index: null }
     }
   };
 }
@@ -68,8 +92,7 @@ export function setComposerText(state: CodingAgentTuiState, value: string): Codi
     composer: {
       ...state.composer,
       input: composerInput(value),
-      historyIndex: null,
-      historyDraft: ''
+      history: { entries: state.composer.history.entries, index: null }
     }
   };
 }
@@ -78,44 +101,10 @@ export function navigateComposerHistory(
   state: CodingAgentTuiState,
   direction: 'previous' | 'next'
 ): CodingAgentTuiState {
-  const history = state.composer.history;
-  if (history.length === 0) return state;
-  const currentIndex = state.composer.historyIndex;
-  if (direction === 'previous') {
-    const historyIndex = currentIndex === null ? history.length - 1 : Math.max(0, currentIndex - 1);
-    const value = history[historyIndex];
-    if (value === undefined) return state;
-    return {
-      ...state,
-      composer: {
-        ...state.composer,
-        input: composerInput(value),
-        historyIndex,
-        historyDraft:
-          currentIndex === null
-            ? textDocumentText(state.composer.input.document)
-            : state.composer.historyDraft
-      }
-    };
-  }
-  if (currentIndex === null) return state;
-  if (currentIndex < history.length - 1) {
-    const historyIndex = currentIndex + 1;
-    const value = history[historyIndex];
-    if (value === undefined) return state;
-    return {
-      ...state,
-      composer: { ...state.composer, input: composerInput(value), historyIndex }
-    };
-  }
+  const result = navigatePromptHistory(state.composer.history, state.composer, direction);
   return {
     ...state,
-    composer: {
-      ...state.composer,
-      input: composerInput(state.composer.historyDraft),
-      historyIndex: null,
-      historyDraft: ''
-    }
+    composer: { ...composerWithDraft(state.composer, result.draft), history: result.history }
   };
 }
 
@@ -125,7 +114,7 @@ export function submitComposer(
 ): CodingAgentTuiCommandSubmitResult {
   const value = textDocumentText(state.composer.input.document);
   if (value.trim().length === 0 || state.composer.submitting) return { state };
-  const slashCommand = value.startsWith('/');
+  const slashCommand = commandName(value, INTERACTIVE_COMMANDS) !== undefined;
   const next: CodingAgentTuiState = {
     ...state,
     composer: {
@@ -138,9 +127,16 @@ export function submitComposer(
     state: next,
     request: {
       id: `command:${String(next.composer.submissionCount)}`,
-      value: delivery === undefined ? value : `${delivery === 'steer' ? '/steer' : '/follow'} ${value}`,
-      draft: textDocumentText(state.composer.input.document),
-      recordResult: slashCommand || delivery !== undefined
+      sessionId: state.debug.sessionId ?? ':new',
+      draft: state.composer,
+      recordResult: slashCommand || delivery !== undefined,
+      ...(slashCommand && delivery === undefined
+        ? { kind: 'command', value }
+        : {
+            kind: 'submission',
+            input: draftSubmission(state.composer),
+            ...(delivery === undefined ? {} : { delivery })
+          })
     }
   };
 }
@@ -158,35 +154,103 @@ export function applyCommandExecution(
   execution: CodingAgentTuiCommandExecution,
   request: CodingAgentTuiCommandRequest
 ): { readonly state: CodingAgentTuiState; readonly exit?: boolean } {
+  if (request.sessionId !== (state.debug.sessionId ?? ':new')) {
+    const saved = state.sessionViews[request.sessionId];
+    return saved === undefined || request.draft === undefined || !sameDraft(saved.composer, request.draft)
+      ? { state }
+      : {
+          state: {
+            ...state,
+            sessionViews: {
+              ...state.sessionViews,
+              [request.sessionId]: {
+                ...saved,
+                composer: composerWithDraft({ ...saved.composer, submitting: false }, createDraft())
+              }
+            }
+          }
+        };
+  }
   let next: CodingAgentTuiState = { ...state, composer: { ...state.composer, submitting: false } };
   if (request.draft !== undefined) {
-    if (textDocumentText(next.composer.input.document) === request.draft) {
+    if (sameDraft(next.composer, request.draft)) {
       const { commandReturnDraft, ...composer } = next.composer;
-      next = setComposerText({ ...next, composer }, commandReturnDraft ?? '');
+      next = { ...next, composer: composerWithDraft(composer, commandReturnDraft ?? createDraft()) };
     }
     next = {
       ...next,
       composer: {
         ...next.composer,
-        history: [...next.composer.history, request.value].slice(-COMPOSER_HISTORY_LIMIT)
+        history:
+          request.kind === 'submission'
+            ? rememberPrompt(next.composer.history, request.draft)
+            : next.composer.history
       }
     };
   }
-  if (execution.submission !== undefined) {
+  if (execution.submission !== undefined && execution.submission.acceptance.kind !== 'queued') {
     const { acceptance, text } = execution.submission;
-    next = upsertConversationEntry(next, {
-      id: acceptance.kind === 'steered' ? `steering:${acceptance.submissionId}` : `input:${acceptance.runId}`,
-      kind: 'user',
-      text
-    });
+    const insert =
+      acceptance.kind === 'steered'
+        ? (entries: readonly ConversationEntry[], input: ConversationUserEntry) =>
+            mergeConversationEntries(entries, [input])
+        : insertAcceptedInput;
+    next = {
+      ...next,
+      conversation: {
+        ...next.conversation,
+        items: insert(next.conversation.items, {
+          id:
+            acceptance.kind === 'steered'
+              ? `steering:${acceptance.submissionId}`
+              : `input:${acceptance.runId}`,
+          kind: 'user',
+          runId: acceptance.runId,
+          ...(request.kind === 'submission' && request.input.images !== undefined
+            ? { images: request.input.images }
+            : {}),
+          text
+        })
+      }
+    };
   }
-  if (execution.view !== 'debug' && request.recordResult) {
+  if (execution.action === undefined && request.recordResult && execution.message.length > 0) {
     const tone = execution.tone === 'error' ? 'error' : execution.tone === 'muted' ? 'info' : 'success';
     next = appendNotice(next, execution.message, tone);
   }
   return { state: next, ...(execution.exit === undefined ? {} : { exit: execution.exit }) };
 }
 
-export function applyCommandFailure(state: CodingAgentTuiState, message: string): CodingAgentTuiState {
+export function applyCommandFailure(
+  state: CodingAgentTuiState,
+  message: string,
+  request: CodingAgentTuiCommandRequest
+): CodingAgentTuiState {
+  if (request.sessionId !== (state.debug.sessionId ?? ':new')) {
+    const saved = state.sessionViews[request.sessionId];
+    const next =
+      saved === undefined
+        ? state
+        : {
+            ...state,
+            sessionViews: {
+              ...state.sessionViews,
+              [request.sessionId]: { ...saved, composer: { ...saved.composer, submitting: false } }
+            }
+          };
+    return appendNotice(next, `Session ${request.sessionId}: ${message}`, 'error');
+  }
   return appendNotice({ ...state, composer: { ...state.composer, submitting: false } }, message, 'error');
+}
+
+export function composerWithDraft(
+  current: CodingAgentTuiComposerState,
+  draft: ComposerDraft
+): CodingAgentTuiComposerState {
+  return {
+    ...draft,
+    history: current.history,
+    submitting: current.submitting,
+    submissionCount: current.submissionCount
+  };
 }

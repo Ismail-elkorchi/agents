@@ -1,7 +1,6 @@
 import { hashJson } from '@agent-core/persistence';
 import type { SessionBindingInput } from '@agent-core/runtime';
-import { RootedFileAuthority, rootedFileIdentitiesEqual } from '@agent-core/tools-local';
-import { createHash } from 'node:crypto';
+import { readRootedText, RootedFileAuthority } from '@agent-core/tools-local';
 import path from 'node:path';
 import { defaultWritingAgentStateRoot, WritingStateRoot } from './private-state.js';
 
@@ -18,7 +17,10 @@ export interface WritingWorkspace {
   readonly binding: SessionBindingInput;
 }
 
-export async function openWritingWorkspace(directory: string, stateRoot?: string): Promise<WritingWorkspace> {
+export async function openWritingWorkspace(
+  directory: string,
+  stateRoot?: string
+): Promise<WritingWorkspace> {
   const root = RootedFileAuthority.adopt(directory, {
     additionalDeniedEntries: ['.git', '.writing-agent']
   });
@@ -53,21 +55,5 @@ export async function readWritingDocument(
   root: RootedFileAuthority,
   requestedPath: string
 ): Promise<WritingDocument> {
-  const file = await root.openFile(requestedPath);
-  try {
-    const bytes = await file.readAll(64 * 1024 * 1024);
-    const content = new TextDecoder('utf-8', {
-      fatal: true,
-      ignoreBOM: true
-    }).decode(bytes);
-    if (!rootedFileIdentitiesEqual(file.identity, await file.identityNow()))
-      throw new Error(`Document changed while it was being read: ${file.path}`);
-    return {
-      path: file.path,
-      content,
-      sha256: createHash('sha256').update(bytes).digest('hex')
-    };
-  } finally {
-    await file.close();
-  }
+  return readRootedText(root, requestedPath, 64 * 1024 * 1024);
 }

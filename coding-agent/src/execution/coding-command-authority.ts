@@ -1,6 +1,6 @@
 import {
-  ResourceLeaseCoordinator,
   adoptCommandExecution,
+  ResourceLeaseCoordinator,
   type CommandExecution,
   type CommandExecutionDescriptor,
   type CommandExecutionOwner,
@@ -8,6 +8,7 @@ import {
   type CommandExecutionReport,
   type CommandExecutionReservation,
   type CommandExecutionResult,
+  type CommandExecutionStatus,
   type CommandReconciliationResult,
   type StartCommandExecutionOptions
 } from '@agent-core/tools';
@@ -25,6 +26,7 @@ import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { PrivateStateDirectory } from '../state/private-state.js';
+import { SandboxCommandExecution, type SandboxCommandAuthorization } from './sandbox-command-execution.js';
 import {
   discoverCodingCommandEnvironment,
   hostPath,
@@ -39,10 +41,6 @@ import {
   WORKSPACE_ACCESS,
   type CodingCommandEnvironment
 } from './sandbox-policy.js';
-import {
-  SandboxCommandExecution,
-  type SandboxCommandAuthorization
-} from './sandbox-command-execution.js';
 
 export const CODING_COMMAND_ENVIRONMENT_POLICY_ID = 'coding-agent.observed-command-environment@1';
 
@@ -51,11 +49,21 @@ const TERMINATION_GRACE_MS = 1_000;
 
 export class CodingCommandUnavailableError extends Error {}
 
+export interface CodingProcess {
+  readonly processId: string;
+  readonly owner: CommandExecutionOwner;
+  readonly status: CommandExecutionStatus | 'preparing' | 'prepared' | 'expired' | 'unknown';
+}
+
+export interface CodingCommandAuthority extends CommandExecution {
+  listProcesses(): Promise<readonly CodingProcess[]>;
+}
+
 export function createCodingCommandAuthority(input: {
   readonly repositoryDirectory: string;
   readonly rootedFileAuthority: RootedFileAuthority;
   readonly state: PrivateStateDirectory;
-}): CommandExecution {
+}): CodingCommandAuthority {
   return new LazySandboxCommandExecution(input);
 }
 
@@ -70,7 +78,7 @@ interface CodingSandboxProfile {
   readonly environment: Readonly<Record<string, string>>;
 }
 
-class LazySandboxCommandExecution implements CommandExecution {
+class LazySandboxCommandExecution implements CodingCommandAuthority {
   readonly descriptor: CommandExecutionDescriptor;
   readonly resourceLeases = new ResourceLeaseCoordinator();
   #execution: SandboxCommandExecution | undefined;
@@ -85,11 +93,7 @@ class LazySandboxCommandExecution implements CommandExecution {
         .update('\0')
         .update(input.rootedFileAuthority.identity.canonicalPath)
         .digest('hex')}`,
-      capabilities: Object.freeze([
-        'sandbox-process',
-        'caller-process-recovery',
-        'staged-authorization'
-      ]),
+      capabilities: Object.freeze(['sandbox-process', 'caller-process-recovery', 'staged-authorization']),
       supportsPty: false
     });
     adoptCommandExecution(this);
@@ -97,6 +101,10 @@ class LazySandboxCommandExecution implements CommandExecution {
 
   async plan(request: CommandExecutionPlanRequest): Promise<CommandExecutionReservation> {
     return (await this.open()).plan(request);
+  }
+
+  async listProcesses(): Promise<readonly CodingProcess[]> {
+    return (await this.openExisting())?.listProcesses() ?? [];
   }
 
   async start(
@@ -124,10 +132,7 @@ class LazySandboxCommandExecution implements CommandExecution {
     await (await this.open()).closeInput(processId, requester);
   }
 
-  async terminate(
-    processId: string,
-    requester?: CommandExecutionOwner
-  ): Promise<CommandExecutionResult> {
+  async terminate(processId: string, requester?: CommandExecutionOwner): Promise<CommandExecutionResult> {
     return (await this.open()).terminate(processId, requester);
   }
 
@@ -181,10 +186,12 @@ class LazySandboxCommandExecution implements CommandExecution {
 
   private open(): Promise<SandboxCommandExecution> {
     if (this.#closed) return Promise.reject(new Error('Command execution is closed.'));
-    this.#opening ??= openCodingCommandAuthority(this.input, this.descriptor, this.resourceLeases).then((execution) => {
-      this.#execution = execution;
-      return execution;
-    });
+    this.#opening ??= openCodingCommandAuthority(this.input, this.descriptor, this.resourceLeases).then(
+      (execution) => {
+        this.#execution = execution;
+        return execution;
+      }
+    );
     return this.#opening;
   }
 }
@@ -199,10 +206,7 @@ async function openCodingCommandAuthority(
   resourceLeases: ResourceLeaseCoordinator
 ): Promise<SandboxCommandExecution> {
   const environment = await discoverCodingCommandEnvironment();
-  const profile = await selectSandboxProfile(
-    input.rootedFileAuthority.identity.canonicalPath,
-    environment
-  );
+  const profile = await selectSandboxProfile(input.rootedFileAuthority.identity.canonicalPath, environment);
   const repository = await openSandboxExecutionRepository({
     directory: input.repositoryDirectory,
     maxRetainedOutputBytes: MAX_RETAINED_OUTPUT_BYTES
@@ -237,9 +241,7 @@ async function selectSandboxProfile(
   environment: CodingCommandEnvironment
 ): Promise<CodingSandboxProfile> {
   const candidates = [
-    ...(process.platform === 'linux'
-      ? [isolatedProfile(workspaceRoot, environment)]
-      : []),
+    ...(process.platform === 'linux' ? [isolatedProfile(workspaceRoot, environment)] : []),
     hostProfile(workspaceRoot, environment)
   ];
   const unavailable: string[] = [];
@@ -306,18 +308,10 @@ function isolatedProfile(
   });
 }
 
-function hostProfile(
-  workspaceRoot: string,
-  environment: CodingCommandEnvironment
-): CodingSandboxProfile {
+function hostProfile(workspaceRoot: string, environment: CodingCommandEnvironment): CodingSandboxProfile {
   const resources = [
     ...hostRuntimeRoots(environment.runtimeRoots).map((root, index) =>
-      hostResource(
-        `runtime-${String(index)}`,
-        root.sourcePath,
-        runtimeAccess(root),
-        runtimePurposes(root)
-      )
+      hostResource(`runtime-${String(index)}`, root.sourcePath, runtimeAccess(root), runtimePurposes(root))
     ),
     hostResource('workspace', workspaceRoot, WORKSPACE_ACCESS, ['data'], 'reject-if-link')
   ];

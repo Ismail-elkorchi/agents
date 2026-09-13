@@ -76,7 +76,7 @@ try {
       "const writingRpc = await import('@ismail-elkorchi/writing-agent/rpc');",
       "if (!coding.openCodingApplication || !tui.createCodingAgentTuiApp || !codingRpc.runCodingRpc) throw new Error('Coding application exports are incomplete');",
       "if (!writing.openWritingApplication || !writingTui.createWritingAgentTuiApp || !writingRpc.runWritingRpc) throw new Error('Writing application exports are incomplete');",
-      "for (const name of ['application', 'rpc', 'tui']) await import('@agents/' + name);"
+      "for (const name of ['rpc', 'tui']) { await import('@agent-core/' + name); await import('@agent-core/' + name + '/node'); }"
     ].join('\n')
   );
   await exec(process.execPath, ['index.mjs'], { cwd: consumer });

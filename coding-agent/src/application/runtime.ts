@@ -1,4 +1,8 @@
-import { type ModelProvider, type ModelReasoningEffort, type ModelReasoningRequest } from '@agent-core/model';
+import {
+  type ModelProvider,
+  type ModelReasoningEffort,
+  type ModelReasoningRequest
+} from '@agent-core/model';
 import { OllamaProvider } from '@agent-core/provider-ollama';
 import { OpenAIProvider } from '@agent-core/provider-openai';
 import { OpenAICodexProvider, type OpenAICodexTransport } from '@agent-core/provider-openai-codex';
@@ -13,9 +17,9 @@ import {
   type CodingAgentProviderId
 } from '../configuration.js';
 import { type CodingPermissionMode } from '../security/permission-mode.js';
-import { readConfiguredCheckResults } from '../verification/configured-check-tool.js';
 import { createCodingSession, type CodingSessionComposition } from '../session.js';
 import { type CodingAgentModelSelection } from '../state/model-selection-store.js';
+import { readConfiguredCheckResults } from '../verification/configured-check-tool.js';
 import { codingWorkspaceSessionBinding, type OpenCodingWorkspace } from '../workspace.js';
 import type { CodingRuntimeDetails } from './contracts.js';
 import { parseReasoningEffort } from './input.js';
@@ -75,10 +79,12 @@ export interface PersistedModelSettings {
   readonly provider?: string;
   readonly model?: string;
   readonly temperature?: number;
-  readonly reasoningEffort?: string;
+  readonly reasoning?: ModelReasoningRequest;
+  readonly endpoint?: string;
 }
 
 export interface CodingAgentRuntimeComposition extends CodingSessionComposition {
+  readonly provider: ModelProvider;
   readonly details: CodingRuntimeDetails;
 }
 
@@ -122,19 +128,23 @@ export function resolveRuntimeSettingsSelection(
   const normalizedModel = model?.trim();
   const persistedSettingsMatch = persistedMatches && persisted?.model === normalizedModel;
   const configurationSettingsMatch = projectMatches && projectConfiguration.model === normalizedModel;
-  const persistedReasoning =
-    persistedSettingsMatch && persisted?.reasoningEffort
-      ? reasoningFromEffort(
-          parseReasoningEffort(persisted.reasoningEffort, 'persisted session reasoning effort')
-        )
-      : undefined;
-  const providerEndpoint = options.providerEndpoint ?? process.env.CODING_AGENT_PROVIDER_ENDPOINT;
-  const temperature = options.temperature ?? (persistedSettingsMatch ? persisted?.temperature : undefined);
+  const selected = persistedSettingsMatch
+    ? persisted
+    : configurationSettingsMatch
+      ? projectConfiguration
+      : storedMatches && stored.model === normalizedModel
+        ? stored
+        : undefined;
+  const providerEndpoint =
+    options.providerEndpoint ??
+    (selected && 'endpoint' in selected ? selected.endpoint : undefined) ??
+    (selected === undefined ? process.env.CODING_AGENT_PROVIDER_ENDPOINT : undefined);
+  const temperature =
+    options.temperature ?? (selected && 'temperature' in selected ? selected.temperature : undefined);
   const reasoning =
     options.reasoning ??
-    persistedReasoning ??
-    (configurationSettingsMatch ? projectConfiguration.reasoning : undefined) ??
-    (process.env.CODING_AGENT_REASONING_EFFORT
+    selected?.reasoning ??
+    (selected === undefined && process.env.CODING_AGENT_REASONING_EFFORT
       ? reasoningFromEffort(
           parseReasoningEffort(process.env.CODING_AGENT_REASONING_EFFORT, 'CODING_AGENT_REASONING_EFFORT')
         )
@@ -186,9 +196,7 @@ export async function readCodingHistoryPage(
   const history = await runtime.sessions.readBranchPage(runtime.session, request);
   const runIds = [...new Set(history.entries.flatMap((entry) => ('runId' in entry ? [entry.runId] : [])))];
   const [changes, verification] = await Promise.all([
-    Promise.all(
-      runIds.map((runId) => readRunChangeReport(runtime.events, runId, runtime.workspaceRoot))
-    ),
+    Promise.all(runIds.map((runId) => readRunChangeReport(runtime.events, runId, runtime.workspaceRoot))),
     Promise.all(
       runIds.map((runId) => readConfiguredCheckResults(runtime.events, runId, runtime.configuration))
     )
@@ -199,17 +207,18 @@ export async function readCodingHistoryPage(
 export async function createRuntime(
   options: CodingApplicationOptions,
   openedWorkspace: OpenCodingWorkspace,
-  persistedSessionId?: string
+  settings: ResolvedSessionSettings,
+  persistedSessionId?: string,
+  selectedProvider?: ModelProvider
 ): Promise<CodingAgentRuntimeComposition> {
   const workspace = openedWorkspace.layout;
   const sessions = new JsonlSessionRepository({ rootDir: workspace.sessionsDir });
   const binding = codingWorkspaceSessionBinding(workspace.identity);
   let session = await selectSession(options, sessions, binding, persistedSessionId);
-  const persistedSettings = session ? await persistedModelSettings(sessions, session) : undefined;
-  const projectExecutionPolicy =
-    openedWorkspace.security.decide('project_execution_policy').kind === 'allowed';
-  const settings = resolveRuntimeSettings(options, persistedSettings, projectExecutionPolicy);
-  const providerRuntime = createProviderRuntime(settings);
+  const providerRuntime =
+    selectedProvider === undefined
+      ? createProviderRuntime(settings)
+      : { provider: selectedProvider, providerId: settings.provider, model: settings.model };
   session ??= await sessions.create({
     binding,
     provider: providerRuntime.providerId,
@@ -228,16 +237,19 @@ export async function createRuntime(
     permissionMode: options.permissionMode,
     ...(options.maxOutputTokens === undefined ? {} : { maxOutputTokens: options.maxOutputTokens }),
     ...(options.configuration === undefined ? {} : { configuration: options.configuration }),
-    ...(options.configurationSource === undefined ? {} : { configurationSource: options.configurationSource })
+    ...(options.configurationSource === undefined
+      ? {}
+      : { configurationSource: options.configurationSource })
   });
   if (options.branch) await composition.agent.branchFrom(options.branch, 'cli branch');
   return {
     ...composition,
+    provider: providerRuntime.provider,
     details: {
       providerId: providerRuntime.providerId,
       modelId: providerRuntime.model,
       ...(settings.temperature === undefined ? {} : { temperature: settings.temperature }),
-      ...(settings.reasoning?.strategy === 'effort' ? { reasoningEffort: settings.reasoning.effort } : {}),
+      ...(settings.reasoning === undefined ? {} : { reasoning: settings.reasoning }),
       sessionLocation: sessions.location(session.id),
       permissions: composition.permissions
     }
@@ -259,7 +271,7 @@ export function createProviderRuntime(options: ResolvedSessionSettings): ModelPr
         providerId: 'ollama',
         model,
         provider: new OllamaProvider({
-          model,
+          ...(model ? { model } : {}),
           ...(options.providerEndpoint ? { host: options.providerEndpoint } : {})
         })
       };
@@ -268,7 +280,7 @@ export function createProviderRuntime(options: ResolvedSessionSettings): ModelPr
         providerId: 'openrouter',
         model,
         provider: new OpenRouterProvider({
-          model,
+          ...(model ? { model } : {}),
           ...(options.providerEndpoint ? { baseUrl: options.providerEndpoint } : {})
         })
       };
@@ -277,7 +289,7 @@ export function createProviderRuntime(options: ResolvedSessionSettings): ModelPr
         providerId: 'openai',
         model,
         provider: new OpenAIProvider({
-          model,
+          ...(model ? { model } : {}),
           ...(options.providerEndpoint ? { baseUrl: options.providerEndpoint } : {})
         })
       };
@@ -286,7 +298,7 @@ export function createProviderRuntime(options: ResolvedSessionSettings): ModelPr
         providerId: 'openai-codex',
         model,
         provider: new OpenAICodexProvider({
-          model,
+          ...(model ? { model } : {}),
           ...(options.providerEndpoint ? { baseUrl: options.providerEndpoint } : {}),
           ...(options.codexTransport ? { transport: options.codexTransport } : {})
         })
@@ -333,32 +345,6 @@ export async function selectSession(
   }
   if (!session && options.branch) throw new Error('--branch requires an existing session.');
   return session;
-}
-
-export function resolveRuntimeSettings(
-  options: CodingApplicationOptions,
-  persisted: PersistedModelSettings | undefined,
-  projectExecutionPolicy: boolean
-): ResolvedSessionSettings {
-  const candidate = resolveRuntimeSettingsSelection(options, persisted, projectExecutionPolicy);
-  const provider = candidate.provider;
-  if (provider === undefined)
-    throw new Error(
-      'No model provider is configured. Use --provider, resume a configured session, set CODING_AGENT_PROVIDER, or trust a project configuration.'
-    );
-  const model = candidate.model;
-  if (model === undefined)
-    throw new Error(
-      'No model is configured. Use --model, resume a configured session, set CODING_AGENT_MODEL, or trust a project configuration.'
-    );
-  return Object.freeze({
-    provider,
-    model,
-    ...(candidate.providerEndpoint === undefined ? {} : { providerEndpoint: candidate.providerEndpoint }),
-    ...(candidate.codexTransport === undefined ? {} : { codexTransport: candidate.codexTransport }),
-    ...(candidate.temperature === undefined ? {} : { temperature: candidate.temperature }),
-    ...(candidate.reasoning === undefined ? {} : { reasoning: candidate.reasoning })
-  });
 }
 
 export function reasoningFromEffort(effort: ModelReasoningEffort): ModelReasoningRequest {

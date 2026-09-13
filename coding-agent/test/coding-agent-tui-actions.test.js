@@ -4,7 +4,7 @@ import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import { renderFramePlain } from '@ismail-elkorchi/terminal-ui/renderer';
 import { textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
 import { createTuiRuntime, runTui } from '@ismail-elkorchi/terminal-ui/tui';
-import { createCodingAgentTuiApp, parseInteractiveCommandLine } from '@ismail-elkorchi/coding-agent/tui';
+import { createCodingAgentTuiApp } from '@ismail-elkorchi/coding-agent/tui';
 import { waitFor } from './coding-agent-tui-test-helpers.js';
 
 const key = (name, modifiers = {}) => ({
@@ -31,7 +31,7 @@ async function open(t, options) {
 test('rejected input remains editable and never becomes an accepted conversation entry', async (t) => {
   const { runtime } = await open(t, {
     commandHandler: {
-      execute() {
+      submit() {
         throw new Error('Setup incomplete');
       }
     }
@@ -51,13 +51,12 @@ test('direct steering preserves multiline content and records the durable accept
   const calls = [];
   const { runtime } = await open(t, {
     commandHandler: {
-      execute(line) {
-        calls.push(line);
-        const parsed = parseInteractiveCommandLine(line);
+      submit(input, delivery) {
+        calls.push({ input, delivery });
         return {
           message: 'Steering accepted.',
           submission: {
-            text: parsed.value,
+            text: input.task,
             acceptance: {
               kind: 'steered',
               submissionId: 'accepted',
@@ -74,9 +73,12 @@ test('direct steering preserves multiline content and records the durable accept
     text: 'Use this instead:\n  const value = 2;',
     bracketed: true
   });
-  await runtime.handleInput(key('enter', { alt: true }));
+  await runtime.handleInput(key('s', { alt: true }));
   await waitFor(() => !runtime.state().composer.submitting);
-  assert.equal(calls[0], '/steer Use this instead:\n  const value = 2;');
+  assert.deepEqual(calls[0], {
+    input: { task: 'Use this instead:\n  const value = 2;' },
+    delivery: 'steer'
+  });
   assert.equal(draft(runtime), '');
   assert.equal(
     runtime.state().conversation.items.filter((entry) => entry.id === 'steering:accepted').length,
@@ -117,21 +119,33 @@ test('external editing restores ownership and returns its draft to the composer'
 test('workspace completion inserts an authorized path without replacing surrounding text', async (t) => {
   const calls = [];
   const { runtime } = await open(t, {
-    listFiles: async (...args) => {
-      calls.push(args);
-      return [{ path: 'src/main.ts', kind: 'file' }];
+    resources: {
+      async search(query) {
+        calls.push(query);
+        return [{ id: 'src/main.ts', label: 'src/main.ts', insertion: '@src/main.ts ' }];
+      }
     }
   });
   await runtime.handleInput({ kind: 'text', text: 'Inspect @src/ma', paste: false });
   await runtime.handleInput(key('space', { ctrl: true }));
-  await waitFor(() => runtime.state().overlay.kind === 'files');
+  await waitFor(() => runtime.state().resourceCompletion?.phase === 'ready');
   await runtime.handleInput(key('enter'));
-  assert.deepEqual(calls, [['src', 'ma']]);
+  assert.deepEqual(calls, ['src/ma']);
   assert.equal(draft(runtime), 'Inspect @src/main.ts ');
 });
 
 test('palette commands and interrupted setup commands preserve the instruction draft', async (t) => {
   const { runtime } = await open(t, {
+    configuration: {
+      current: () => undefined,
+      providers: [{ id: 'neutral', label: 'Neutral' }],
+      connect: async () => {
+        throw new Error('unused');
+      },
+      save: async () => {
+        throw new Error('unused');
+      }
+    },
     commandHandler: {
       execute() {
         return { message: 'Idle' };
@@ -145,7 +159,8 @@ test('palette commands and interrupted setup commands preserve the instruction d
   assert.equal(draft(runtime), 'My instruction');
   await runtime.handleInput(key('p', { ctrl: true }));
   await runtime.dispatch({ type: 'commands.accept', event: { id: '/model' } });
-  assert.equal(draft(runtime), '/model ');
+  assert.equal(runtime.state().overlay.kind, 'configuration');
+  assert.equal(draft(runtime), 'My instruction');
   await runtime.handleInput(key('escape'));
   assert.equal(draft(runtime), 'My instruction');
 });

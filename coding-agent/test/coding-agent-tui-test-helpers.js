@@ -9,10 +9,6 @@ export async function waitFor(condition) {
   throw new Error('Timed out waiting for test condition.');
 }
 
-export function plainOutput(host) {
-  return host.output().replace(/\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/gu, '');
-}
-
 export function latestFramePlain(host) {
   const frame = host.frames().at(-1);
   if (frame === undefined) return '';
@@ -20,5 +16,8 @@ export function latestFramePlain(host) {
 }
 
 export function frameHistoryPlain(host) {
-  return host.frames().map((frame) => renderFramePlain(frame)).join('\n');
+  return host
+    .frames()
+    .map((frame) => renderFramePlain(frame))
+    .join('\n');
 }

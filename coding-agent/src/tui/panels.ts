@@ -1,5 +1,4 @@
-import type { SessionPendingSubmission } from '@agent-core/runtime';
-import { diagnosticMessage } from '@agents/tui';
+import { diagnosticMessage, panel as dismissiblePanel } from '@agent-core/tui';
 import type { TextAreaState, TextAreaTransition } from '@ismail-elkorchi/terminal-ui/behavior';
 import {
   createSearchPickerIndex,
@@ -10,9 +9,8 @@ import {
   textAreaReducer
 } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { Element } from '@ismail-elkorchi/terminal-ui/components';
-import { button, dialog, searchPicker, text, textArea } from '@ismail-elkorchi/terminal-ui/components';
-import { column, row } from '@ismail-elkorchi/terminal-ui/layout';
-import { textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
+import { button, searchPicker, text, textArea } from '@ismail-elkorchi/terminal-ui/components';
+import { column } from '@ismail-elkorchi/terminal-ui/layout';
 import type { TuiUpdateResult } from '@ismail-elkorchi/terminal-ui/tui';
 import type { CodingApplication } from '../application/service.js';
 import type { WorkspaceChange } from '../changes/run-change-report.js';
@@ -25,17 +23,17 @@ export type CodingNavigationOperations = Pick<
   | 'listNotes'
   | 'readNote'
   | 'listSessions'
+  | 'newSession'
   | 'selectSession'
   | 'branchFrom'
   | 'readPendingSubmissions'
   | 'updateQueuedSubmission'
   | 'readChange'
 >;
-export type PanelKind = 'sessions' | 'branches' | 'queue' | 'changes' | 'source';
+export type PanelKind = 'sessions' | 'branches' | 'changes';
 export type PanelItem = { readonly id: string; readonly label: string } & (
   | { readonly kind: 'session'; readonly sessionId: string }
   | { readonly kind: 'branch'; readonly entryId: string }
-  | { readonly kind: 'queued'; readonly submission: SessionPendingSubmission }
   | { readonly kind: 'change'; readonly change: WorkspaceChange; readonly runId: string }
 );
 export type CodingPanel =
@@ -52,22 +50,13 @@ export type CodingPanel =
       readonly input: TextAreaState;
       readonly notice?: string;
     }
-  | {
-      readonly kind: 'queue_edit';
-      readonly submission: SessionPendingSubmission;
-      readonly input: TextAreaState;
-      readonly saving: boolean;
-      readonly error?: string;
-    }
   | { readonly kind: 'branch_review'; readonly entryId: string };
 type Update = TuiUpdateResult<CodingAgentTuiState, CodingAgentTuiMessage>;
 
 const panelTitles: Record<PanelKind, string> = {
   sessions: 'Sessions',
   branches: 'Branch from history',
-  queue: 'Accepted queued input',
-  changes: 'Workspace changes',
-  source: 'Original Markdown'
+  changes: 'Workspace changes'
 };
 const index = (items: readonly PanelItem[]) =>
   createSearchPickerIndex(items, (item) => ({ id: item.id, label: item.label, value: item }));
@@ -75,14 +64,9 @@ const index = (items: readonly PanelItem[]) =>
 export function openPanel(
   state: CodingAgentTuiState,
   panel: PanelKind,
-  operations: CodingNavigationOperations | undefined
+  operations: CodingNavigationOperations | undefined,
+  names?: import('@agent-core/tui').SessionNames
 ): Update {
-  if (panel === 'source') {
-    const latest = [...state.conversation.items].reverse().find((entry) => entry.kind === 'assistant');
-    return latest === undefined
-      ? { state: appendNotice(state, 'No assistant source is loaded.') }
-      : sourcePanel(state, 'Original Markdown · select and copy', latest.text);
-  }
   const id = `panel:${String(state.nextLocalId)}`;
   return {
     state: { ...state, nextLocalId: state.nextLocalId + 1, overlay: { kind: 'panel_loading', id, panel } },
@@ -111,22 +95,16 @@ export function openPanel(
             );
           else {
             if (operations === undefined) throw new Error('Session operations are unavailable.');
-            items =
-              panel === 'sessions'
-                ? (await operations.listSessions()).map((session) => ({
-                    kind: 'session',
-                    id: session.id,
-                    sessionId: session.id,
-                    label: `${session.updatedAt} · ${session.model ?? 'No model'} · ${session.id}`
-                  }))
-                : (await operations.readPendingSubmissions())
-                    .filter((submission) => submission.state === 'queued')
-                    .map((submission) => ({
-                      kind: 'queued',
-                      id: submission.submissionId,
-                      submission,
-                      label: submission.input.task
-                    }));
+            items = await Promise.all(
+              (await operations.listSessions()).map(
+                async (session): Promise<PanelItem> => ({
+                  kind: 'session',
+                  id: session.id,
+                  sessionId: session.id,
+                  label: `${session.id === state.debug.sessionId ? '✓ ' : ''}${(await names?.read(session.id)) ?? session.preview ?? session.id} · ${session.updatedAt}`
+                })
+              )
+            );
           }
           return { kind: 'message', message: { type: 'panel.loaded', requestId: id, panel, items } };
         },
@@ -146,7 +124,8 @@ export function updatePanel(
 ): Update {
   switch (message.type) {
     case 'panel.loaded':
-      if (state.overlay.kind !== 'panel_loading' || state.overlay.id !== message.requestId) return { state };
+      if (state.overlay.kind !== 'panel_loading' || state.overlay.id !== message.requestId)
+        return { state };
       return {
         state: {
           ...state,
@@ -186,57 +165,33 @@ export function updatePanel(
     case 'panel.source-loaded':
       return sourcePanel(state, message.title, message.content);
     case 'panel.text': {
-      if (state.overlay.kind !== 'source' && state.overlay.kind !== 'queue_edit') return { state };
+      if (state.overlay.kind !== 'source') return { state };
       return {
         state: {
           ...state,
-          overlay: { ...state.overlay, input: textAreaReducer(state.overlay.input, message.transition).state }
+          overlay: {
+            ...state.overlay,
+            input: textAreaReducer(state.overlay.input, message.transition).state
+          }
         }
       };
-    }
-    case 'panel.queue-save':
-    case 'panel.queue-cancel': {
-      if (state.overlay.kind !== 'queue_edit' || state.overlay.saving) return { state };
-      const { submission, input } = state.overlay;
-      const task = textDocumentText(input.document);
-      if (message.type === 'panel.queue-save' && !task.trim())
-        return { state: appendNotice(state, 'Queued input cannot be empty.', 'error') };
-      return operation(
-        { ...state, overlay: { ...state.overlay, saving: true } },
-        operations,
-        (service) =>
-          service.updateQueuedSubmission(
-            submission.submissionId,
-            message.type === 'panel.queue-cancel'
-              ? { kind: 'cancel', expectedInput: submission.input }
-              : { kind: 'replace', expectedInput: submission.input, input: { ...submission.input, task } }
-          ),
-        message.type === 'panel.queue-cancel' ? 'Queued input cancelled.' : 'Queued input updated.'
-      );
     }
     case 'panel.branch':
       return state.overlay.kind !== 'branch_review'
         ? { state }
-        : operation(state, operations, (service) => service.branchFrom(message.entryId), 'Branch selected.');
+        : operation(
+            state,
+            operations,
+            (service) => service.branchFrom(message.entryId),
+            'Branch selected.'
+          );
     case 'panel.done':
       return {
         state: appendNotice({ ...state, overlay: { kind: 'none' } }, message.message),
         focus: { kind: 'element', elementId: 'composer' }
       };
     case 'panel.operation-failed':
-      return {
-        state: appendNotice(
-          {
-            ...state,
-            overlay:
-              state.overlay.kind === 'queue_edit'
-                ? { ...state.overlay, saving: false, error: message.message }
-                : state.overlay
-          },
-          message.message,
-          'error'
-        )
-      };
+      return { state: appendNotice(state, message.message, 'error') };
   }
 }
 
@@ -249,8 +204,7 @@ function sourcePanel(state: CodingAgentTuiState, title: string, value: string): 
         title,
         input: createTextAreaState({ value, caret: { position: { offset: 0, affinity: 'downstream' } } })
       }
-    },
-    focus: { kind: 'element', elementId: 'source-text' }
+    }
   };
 }
 
@@ -280,7 +234,11 @@ function operation(
   };
 }
 
-export function panelView(panel: CodingPanel, width: number, height: number): Element<CodingAgentTuiMessage> {
+export function panelView(
+  panel: CodingPanel,
+  width: number,
+  height: number
+): Element<CodingAgentTuiMessage> {
   const content = (): Element<CodingAgentTuiMessage> => {
     switch (panel.kind) {
       case 'panel_loading':
@@ -320,37 +278,6 @@ export function panelView(panel: CodingPanel, width: number, height: number): El
             ]
           }
         );
-      case 'queue_edit':
-        return column(
-          [
-            text({ content: panel.error ?? `Queued run ${panel.submission.runId}` }),
-            textArea<CodingAgentTuiMessage>({
-              id: 'queue-editor',
-              meta: { accessibleName: 'Queued input' },
-              state: panel.input,
-              wrap: true,
-              onTransition: (transition: TextAreaTransition): CodingAgentTuiMessage => ({
-                type: 'panel.text',
-                transition
-              })
-            }),
-            row([
-              button({ id: 'queue-save', label: 'Save', onPress: () => ({ type: 'panel.queue-save' }) }),
-              button({
-                id: 'queue-cancel',
-                label: 'Cancel queued input',
-                onPress: () => ({ type: 'panel.queue-cancel' })
-              })
-            ])
-          ],
-          {
-            sizes: [
-              { kind: 'fixed', cells: 2 },
-              { kind: 'fill', weight: 1 },
-              { kind: 'fixed', cells: 1 }
-            ]
-          }
-        );
       case 'branch_review':
         return column([
           text({
@@ -364,37 +291,27 @@ export function panelView(panel: CodingPanel, width: number, height: number): El
         ]);
     }
   };
-  return dialog({
+  return dismissiblePanel({
     id: 'navigation-dialog',
     title:
       panel.kind === 'source'
         ? panel.title
-        : panel.kind === 'queue_edit'
-          ? 'Queued input · Tab actions · Esc close'
-          : panel.kind === 'branch_review'
-            ? 'Branch continuation'
-            : panelTitles[panel.panel],
-    modal: true,
+        : panel.kind === 'branch_review'
+          ? 'Branch conversation'
+          : panelTitles[panel.panel],
     width,
     height,
-    focusPolicy: {
-      initialFocus: {
-        kind: 'element',
-        elementId:
-          panel.kind === 'source'
-            ? 'source-text'
-            : panel.kind === 'queue_edit'
-              ? 'queue-editor'
+    ...(panel.kind === 'panel_loading'
+      ? {}
+      : {
+          focusId:
+            panel.kind === 'source'
+              ? 'source-text'
               : panel.kind === 'branch_review'
                 ? 'branch-continue'
-                : panel.kind === 'panel_loading'
-                  ? 'panel-loading-text'
-                  : 'navigation-picker'
-      },
-      returnFocus: 'restore'
-    },
-    dismissal: { dismissOnEscape: true, dismissOnOutsidePress: false },
-    onDismiss: () => ({ type: 'overlay.close' }),
+                : 'navigation-picker'
+        }),
+    onClose: () => ({ type: 'overlay.close' }),
     slots: { content: content() }
   });
 }
@@ -421,19 +338,6 @@ function acceptPanelItem(
       return {
         state: { ...state, overlay: { kind: 'branch_review', entryId: item.entryId } },
         focus: { kind: 'element', elementId: 'branch-continue' }
-      };
-    case 'queued':
-      return {
-        state: {
-          ...state,
-          overlay: {
-            kind: 'queue_edit',
-            submission: item.submission,
-            input: createTextAreaState({ value: item.submission.input.task }),
-            saving: false
-          }
-        },
-        focus: { kind: 'element', elementId: 'queue-editor' }
       };
     case 'change':
       return {

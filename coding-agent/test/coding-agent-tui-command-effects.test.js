@@ -5,7 +5,7 @@ import { runTui } from '@ismail-elkorchi/terminal-ui/tui';
 import { createCodingTuiEventSource, createCodingAgentTuiApp } from '@ismail-elkorchi/coding-agent/tui';
 import { waitFor } from './coding-agent-tui-test-helpers.js';
 
-test('delayed command effects preserve progress received while the effect is running', async () => {
+test('delayed admission preserves progress received while the effect is running', async (t) => {
   const host = createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 18 } });
   const events = createCodingTuiEventSource();
   let resolveCommand;
@@ -15,18 +15,22 @@ test('delayed command effects preserve progress received while the effect is run
   const app = createCodingAgentTuiApp('', {
     eventSource: events,
     commandHandler: {
-      execute(line) {
-        if (line === '/exit') return { message: 'Exiting.', exit: true };
+      submit() {
         return commandResult;
+      },
+      execute() {
+        return { message: 'Exiting.', exit: true };
       }
     }
   });
   const running = runTui(app, { host });
+  t.after(() => host.endInput());
 
   await waitFor(() => host.frames().length > 0);
-  host.input('/delayed\r');
+  host.input('Delayed input\r');
   await events.enqueue({
     type: 'progress',
+    runId: 'run-1',
     event: {
       type: 'assistant.ended',
       turnIndex: 1,
@@ -53,9 +57,5 @@ test('delayed command effects preserve progress received while the effect is run
       (item) => item.kind === 'assistant' && item.text === 'Progress received during command.'
     )
   );
-  assert.ok(
-    exit.state.conversation.items.some(
-      (item) => item.kind === 'notice' && item.text === 'Delayed command completed.'
-    )
-  );
+  assert.equal(exit.state.composer.history.entries.length, 1);
 });

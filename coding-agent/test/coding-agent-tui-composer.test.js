@@ -5,14 +5,14 @@ import { textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
 import { createTuiRuntime } from '@ismail-elkorchi/terminal-ui/tui';
 import { createCodingAgentTuiApp } from '@ismail-elkorchi/coding-agent/tui';
 
-test('composer sends with Enter and inserts newlines with Shift+Enter and Ctrl+O', async () => {
+test('composer sends with Enter and inserts newlines with Shift+Enter and Alt+Enter', async () => {
   const submitted = [];
   const host = createMemoryTerminalHost({ terminalSize: { columns: 80, rows: 16 } });
   const runtime = createTuiRuntime({
     app: createCodingAgentTuiApp('', {
       commandHandler: {
-        execute(line) {
-          submitted.push(line);
+        submit(input) {
+          submitted.push(input.task);
           return { message: 'Run started.' };
         }
       }
@@ -25,7 +25,7 @@ test('composer sends with Enter and inserts newlines with Shift+Enter and Ctrl+O
   await runtime.handleInput({ kind: 'text', text: 'first', paste: false });
   await runtime.handleInput(key('enter', { shift: true }));
   await runtime.handleInput({ kind: 'text', text: 'second', paste: false });
-  await runtime.handleInput(key('o', { ctrl: true }));
+  await runtime.handleInput(key('enter', { alt: true }));
   await runtime.handleInput({ kind: 'text', text: 'third', paste: false });
   assert.equal(textDocumentText(runtime.state().composer.input.document), 'first\nsecond\nthird');
 
@@ -54,7 +54,7 @@ async function waitFor(condition) {
   }
 }
 
-test('approval dialogs focus Deny and Escape also denies', async () => {
+test('incoming approvals preserve input focus and closing their view does not decide', async () => {
   const decisions = [];
   const host = createMemoryTerminalHost({ terminalSize: { columns: 90, rows: 20 } });
   const suspension = approvalSuspension();
@@ -70,13 +70,19 @@ test('approval dialogs focus Deny and Escape also denies', async () => {
   });
   await runtime.start();
   await runtime.dispatch({ type: 'approval.required', suspension });
+  assert.equal(runtime.state().overlay.kind, 'none');
+  await runtime.handleInput({ kind: 'text', text: 'Still typing', paste: false });
   await runtime.handleInput(key('enter'));
-  await waitFor(() => decisions.length === 1);
-  assert.equal(decisions[0], 'deny');
-
+  assert.equal(runtime.state().overlay.kind, 'decision');
+  assert.deepEqual(decisions, []);
   await runtime.handleInput(key('escape'));
-  await waitFor(() => decisions.length === 2);
-  assert.equal(decisions[1], 'deny');
+  assert.equal(runtime.state().overlay.kind, 'none');
+  assert.deepEqual(decisions, []);
+  assert.equal(textDocumentText(runtime.state().composer.input.document), 'Still typing');
+  await runtime.dispatch({ type: 'recovery.open' });
+  await runtime.dispatch({ type: 'approval.decide', decision: 'deny' });
+  await waitFor(() => decisions.length === 1);
+  assert.deepEqual(decisions, ['deny']);
   await runtime.dispose();
 });
 
@@ -149,67 +155,127 @@ function approvalSuspension() {
       reasoningTokens: 0,
       knownCosts: {},
       pricingStatus: 'unknown',
-      unknownPricedTokens: 0,
+      unknownPricedTokens: 0
     }
   };
 }
 
-for (const columns of [48, 100]) test(`interrupted runs expose recovery actions at ${columns} columns and preserve drafts`, async (t) => {
-  const { renderFramePlain } = await import('@ismail-elkorchi/terminal-ui/renderer');
-  const actions = [];
-  const submitted = [];
+for (const columns of [48, 100])
+  test(`interrupted runs expose recovery actions at ${columns} columns and preserve drafts`, async (t) => {
+    const { renderFramePlain } = await import('@ismail-elkorchi/terminal-ui/renderer');
+    const actions = [];
+    const submitted = [];
+    const runtime = createTuiRuntime({
+      host: createMemoryTerminalHost({ terminalSize: { columns, rows: 26 } }),
+      app: createCodingAgentTuiApp('', {
+        recoveryHandler: async (suspension, action) => {
+          actions.push([suspension.runId, action]);
+          return 'No recorded result is available yet.';
+        },
+        commandHandler: {
+          submit(input) {
+            submitted.push(input.task);
+            return { message: 'Sent' };
+          }
+        }
+      }),
+      initialFocus: { kind: 'element', elementId: 'composer' }
+    });
+    t.after(() => runtime.dispose());
+    await runtime.start();
+    await runtime.handleInput({ kind: 'text', text: 'Keep my next instruction', paste: false });
+    await runtime.dispatch({
+      type: 'progress',
+      runId: 'run-1',
+      event: { type: 'assistant.started', turnId: 'first', turnIndex: 1, requestAttempt: 1 }
+    });
+    assert.equal(
+      runtime.state().conversation.items.some((item) => item.kind === 'assistant'),
+      false
+    );
+    assert.doesNotMatch(renderFramePlain(runtime.frame()), /Assistant/);
+    await runtime.dispatch({
+      type: 'progress',
+      runId: 'run-1',
+      event: {
+        type: 'model.failed',
+        turnId: 'first',
+        turnIndex: 1,
+        requestAttempt: 1,
+        diagnostic: {
+          provider: 'fixture',
+          code: 'provider_unavailable',
+          retryable: true,
+          causeSummary: { message: 'Connection closed' }
+        }
+      }
+    });
+    await runtime.dispatch({
+      type: 'run.suspended',
+      suspension: {
+        ...approvalSuspension(),
+        reason: 'provider_outcome_unknown',
+        effectId: 'request'
+      }
+    });
+    assert.equal(runtime.state().overlay.kind, 'none');
+    await runtime.dispatch({ type: 'recovery.open' });
+    const frame = renderFramePlain(runtime.frame());
+    assert.match(frame, /Response interrupted/);
+    assert.match(frame, /Connection closed/);
+    assert.match(frame, /Stop this run/);
+    assert.match(frame, /Check for a recorded result/);
+    assert.match(frame, /Close/);
+    await runtime.dispatch({ type: 'composer.submit' });
+    assert.deepEqual(submitted, []);
+    assert.equal(textDocumentText(runtime.state().composer.input.document), 'Keep my next instruction');
+    await runtime.dispatch({ type: 'recovery.act', action: 'resume' });
+    await waitFor(() => actions.length === 1 && runtime.state().run.operation === undefined);
+    assert.deepEqual(actions, [['run', 'resume']]);
+    assert.match(renderFramePlain(runtime.frame()), /No recorded result/);
+    await runtime.handleInput(key('c', { ctrl: true }));
+    assert.equal(runtime.state().overlay.kind, 'none');
+    assert.equal(actions.length, 1);
+    await runtime.dispatch({ type: 'work.interrupt' });
+    await waitFor(() => actions.length === 2);
+    assert.deepEqual(actions[1], ['run', 'stop']);
+    assert.equal(textDocumentText(runtime.state().composer.input.document), 'Keep my next instruction');
+  });
+
+test('tool-only and failed turns never create empty assistant messages; interrupted text stays visible', async (t) => {
   const runtime = createTuiRuntime({
-    host: createMemoryTerminalHost({ terminalSize: { columns, rows: 26 } }),
-    app: createCodingAgentTuiApp('', {
-      recoveryHandler: async (suspension, action) => { actions.push([suspension.runId, action]); return 'No recorded result is available yet.'; },
-      commandHandler: { execute(value) { submitted.push(value); return { message: 'Sent' }; } }
-    }),
-    initialFocus: { kind: 'element', elementId: 'composer' }
+    host: createMemoryTerminalHost({ terminalSize: { columns: 90, rows: 24 } }),
+    app: createCodingAgentTuiApp('')
   });
   t.after(() => runtime.dispose());
   await runtime.start();
-  await runtime.handleInput({ kind: 'text', text: 'Keep my next instruction', paste: false });
-  await runtime.dispatch({ type: 'progress', event: { type: 'assistant.started', turnId: 'first', turnIndex: 1, requestAttempt: 1 } });
-  assert.equal(runtime.state().conversation.items.some(item => item.kind === 'assistant'), false);
-  assert.doesNotMatch(renderFramePlain(runtime.frame()), /Assistant/);
-  await runtime.dispatch({ type: 'progress', event: { type: 'model.failed', turnId: 'first', turnIndex: 1, requestAttempt: 1,
-    diagnostic: { provider: 'fixture', code: 'provider_unavailable', retryable: true, causeSummary: { message: 'Connection closed' } }
-  } });
-  await runtime.dispatch({ type: 'run.suspended', suspension: {
-    ...approvalSuspension(), reason: 'provider_outcome_unknown', effectId: 'request'
-  } });
-  const frame = renderFramePlain(runtime.frame());
-  assert.match(frame, /Response interrupted/);
-  assert.match(frame, /Connection closed/);
-  assert.match(frame, /Stop this run/);
-  assert.match(frame, /Check for a recorded result/);
-  assert.doesNotMatch(frame, /Enter send/);
-  await runtime.dispatch({ type: 'composer.submit' });
-  assert.deepEqual(submitted, []);
-  assert.equal(textDocumentText(runtime.state().composer.input.document), 'Keep my next instruction');
-  await runtime.handleInput(key('tab'));
-  await runtime.handleInput(key('enter'));
-  await waitFor(() => actions.length === 1 && runtime.state().run.operation === undefined);
-  assert.deepEqual(actions, [['run', 'resume']]);
-  assert.match(renderFramePlain(runtime.frame()), /No recorded result/);
-  await runtime.handleInput(key('c', { ctrl: true }));
-  await waitFor(() => actions.length === 2);
-  assert.deepEqual(actions[1], ['run', 'stop']);
-  assert.equal(textDocumentText(runtime.state().composer.input.document), 'Keep my next instruction');
-});
-
-test('tool-only and failed turns never create empty assistant messages; interrupted text stays visible', async (t) => {
-  const runtime = createTuiRuntime({ host: createMemoryTerminalHost({ terminalSize: { columns: 90, rows: 24 } }), app: createCodingAgentTuiApp('') });
-  t.after(() => runtime.dispose());
-  await runtime.start();
   const identity = { turnId: 'first', turnIndex: 1, requestAttempt: 1 };
-  await runtime.dispatch({ type: 'progress', event: { type: 'assistant.ended', ...identity, content: '', modelOutput: { status: 'absent' } } });
-  assert.equal(runtime.state().conversation.items.some(item => item.kind === 'assistant'), false);
-  await runtime.dispatch({ type: 'progress', event: { type: 'assistant.delta', ...identity, accumulated: 'Partial answer', delta: 'Partial answer' } });
-  await runtime.dispatch({ type: 'progress', event: { type: 'assistant.interrupted', ...identity, content: 'Partial answer', finalResponseReceived: false,
-    modelOutput: { status: 'partial', message: 'Partial answer', source: 'stream_recovery', turnIndex: 1 }
-  } });
-  const assistant = runtime.state().conversation.items.find(item => item.kind === 'assistant');
+  await runtime.dispatch({
+    type: 'progress',
+    runId: 'run-1',
+    event: { type: 'assistant.ended', ...identity, content: '', modelOutput: { status: 'absent' } }
+  });
+  assert.equal(
+    runtime.state().conversation.items.some((item) => item.kind === 'assistant'),
+    false
+  );
+  await runtime.dispatch({
+    type: 'progress',
+    runId: 'run-1',
+    event: { type: 'assistant.delta', ...identity, accumulated: 'Partial answer', delta: 'Partial answer' }
+  });
+  await runtime.dispatch({
+    type: 'progress',
+    runId: 'run-1',
+    event: {
+      type: 'assistant.interrupted',
+      ...identity,
+      content: 'Partial answer',
+      finalResponseReceived: false,
+      modelOutput: { status: 'partial', message: 'Partial answer', source: 'stream_recovery', turnIndex: 1 }
+    }
+  });
+  const assistant = runtime.state().conversation.items.find((item) => item.kind === 'assistant');
   assert.equal(assistant.text, 'Partial answer');
   assert.equal(assistant.status, 'interrupted');
 });

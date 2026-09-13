@@ -1,4 +1,6 @@
-import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import { textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
@@ -26,6 +28,7 @@ test('durable restore precedes live append and stable identities prevent duplica
 
   await events.enqueue({
     type: 'progress',
+    runId: 'run-1',
     event: {
       type: 'turn.started',
       runId: 'run-1',
@@ -37,6 +40,7 @@ test('durable restore precedes live append and stable identities prevent duplica
   });
   await events.enqueue({
     type: 'progress',
+    runId: 'run-1',
     event: {
       type: 'assistant.delta',
       turnIndex: 1,
@@ -48,6 +52,7 @@ test('durable restore precedes live append and stable identities prevent duplica
   });
   await events.enqueue({
     type: 'progress',
+    runId: 'run-1',
     event: {
       type: 'assistant.ended',
       turnIndex: 1,
@@ -87,7 +92,9 @@ test('hydration restores exact approval and unknown-effect recovery boundaries',
   await approvalRuntime.start();
   assert.equal(approvalRuntime.state().run.kind, 'waiting_for_approval');
   assert.equal(approvalRuntime.state().run.suspension.pendingApprovals[0].approvalId, 'approval-1');
-  assert.ok(approvalRuntime.frame().focusPath.includes('approval-deny'));
+  assert.ok(approvalRuntime.frame().focusPath.includes('composer'));
+  await approvalRuntime.dispatch({ type: 'recovery.open' });
+  assert.equal(approvalRuntime.state().overlay.kind, 'decision');
   await approvalRuntime.dispose();
 
   const recoveryRuntime = createTuiRuntime({
@@ -102,7 +109,9 @@ test('hydration restores exact approval and unknown-effect recovery boundaries',
       .state()
       .conversation.items.some((entry) => entry.kind === 'notice' && entry.text.includes('recorded result'))
   );
-  assert.ok(recoveryRuntime.frame().focusPath.includes('recovery-stop'));
+  assert.ok(recoveryRuntime.frame().focusPath.includes('composer'));
+  await recoveryRuntime.dispatch({ type: 'recovery.open' });
+  assert.equal(recoveryRuntime.state().overlay.kind, 'decision');
   await recoveryRuntime.dispose();
 });
 
@@ -123,7 +132,9 @@ test('recovered queued runs surface queue and driver control', async () => {
   await runtime.start();
   assert.equal(runtime.state().run.kind, 'working');
   assert.equal(runtime.state().run.label, 'Recovered run queued');
-  assert.match(host.output(), /1 queued · driver detached/u);
+  assert.match(host.output(), /1 queued/u);
+  assert.doesNotMatch(host.output(), /driver detached/u);
+  assert.equal(runtime.state().debug.runs[0].state.control.status, 'detached');
   await runtime.dispose();
 });
 
@@ -226,6 +237,7 @@ test('long stream pressure retains every reliable boundary and the latest stream
   await waitFor(() => host.frames().length > 0);
   await events.enqueue({
     type: 'progress',
+    runId: 'run-1',
     event: {
       type: 'turn.started',
       runId: 'pressure-run',
@@ -239,6 +251,7 @@ test('long stream pressure retains every reliable boundary and the latest stream
     admissions.push(
       events.enqueue({
         type: 'progress',
+        runId: 'run-1',
         event: {
           type: 'assistant.delta',
           turnIndex: 1,
@@ -253,6 +266,7 @@ test('long stream pressure retains every reliable boundary and the latest stream
   await Promise.all(admissions);
   await events.enqueue({
     type: 'progress',
+    runId: 'run-1',
     event: {
       type: 'assistant.ended',
       turnIndex: 1,
@@ -276,8 +290,8 @@ test('composer history restores the draft and tiny resizes preserve focus', asyn
   const runtime = createTuiRuntime({
     app: createCodingAgentTuiApp('', {
       commandHandler: {
-        execute(line) {
-          submitted.push(line);
+        submit(input) {
+          submitted.push(input.task);
           return { message: 'done' };
         }
       }
@@ -359,7 +373,9 @@ test('normal shutdown drains admitted messages without source diagnostics', asyn
   assert.equal(exit.diagnostics.filter((item) => item.diagnostic.code === 'TUI_SOURCE_FAILED').length, 0);
 });
 
-test('application exit unsubscribes delivery before cancelling an active session', async () => {
+test('application exit unsubscribes delivery before cancelling an active session', async (t) => {
+  const storage = await mkdtemp(path.join(tmpdir(), 'tui-exit-'));
+  t.after(() => rm(storage, { recursive: true, force: true }));
   const host = createMemoryTerminalHost({ terminalSize: { columns: 70, rows: 12 } });
   let subscribed = false;
   let aborted;
@@ -371,6 +387,8 @@ test('application exit unsubscribes delivery before cancelling an active session
     configuration: { provider: 'test-provider', model: 'test-model' }
   };
   const controller = {
+    presentationPath: () => path.join(storage, 'preferences.json'),
+    draftDirectory: () => path.join(storage, 'drafts'),
     state: () => ({
       status: 'ready',
       requirements: [],
@@ -666,7 +684,7 @@ function budget() {
     reasoningTokens: 0,
     knownCosts: {},
     pricingStatus: 'unknown',
-    unknownPricedTokens: 0,
+    unknownPricedTokens: 0
   };
 }
 
@@ -726,6 +744,7 @@ test('restored and live context transitions share the exact window identity', as
     await runtime.dispatch({ type: 'context.transitioned', window });
     await runtime.dispatch({
       type: 'progress',
+      runId: 'run-1',
       event: {
         type: 'context.transitioned',
         window,

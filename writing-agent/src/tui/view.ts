@@ -1,18 +1,37 @@
-import { notesView } from '@agents/tui';
+import {
+  attachmentsView,
+  commandSuggestions,
+  composerControls,
+  configurationView,
+  conversationFrame,
+  notesView,
+  preferencesView,
+  progressStatusFields,
+  promptRecallView,
+  queueView,
+  reasoningLabel,
+  resourceCompletionRows,
+  resourceSuggestions,
+  sessionNameView,
+  sourceInspectorView,
+  statusline,
+  type ConfigurationOperations,
+  type StatusField
+} from '@agent-core/tui';
 import type { TextAreaTransition } from '@ismail-elkorchi/terminal-ui/behavior';
 import { searchPickerView } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { Element } from '@ismail-elkorchi/terminal-ui/components';
 import {
   button,
   dialog,
-  divider,
   richText,
   searchPicker,
   text,
   textArea
 } from '@ismail-elkorchi/terminal-ui/components';
-import { column, grid, overlay, row, viewport } from '@ismail-elkorchi/terminal-ui/layout';
+import { column, overlay, row, viewport } from '@ismail-elkorchi/terminal-ui/layout';
 import type { TuiContext } from '@ismail-elkorchi/terminal-ui/tui';
+import { WRITING_COMMANDS, WRITING_SHORTCUTS } from './commands.js';
 import { historyViewport } from './history.js';
 import { pickerIndex } from './picker.js';
 import { recoveryView } from './recovery.js';
@@ -24,81 +43,122 @@ const plain = (content: string): View => text({ content });
 const action = (id: string, label: string, message: WritingTuiMessage): View =>
   button({ id, label, onPress: () => message });
 
-export function writingView(state: WritingTuiState, context: TuiContext, composerHeight: number): View {
+export function writingView(
+  state: WritingTuiState,
+  context: TuiContext,
+  composerHeight: number,
+  configuration?: ConfigurationOperations
+): View {
   const { columns, rows } = context.terminalSize;
-  const title = `${state.document?.value.path ?? 'Writing Agent'} · ${state.application.model ?? 'Select a model'} · ${state.application.mode} · ${state.application.status}`;
-  const main = grid(
-    [
-      text({ id: 'writing-status', content: title }),
-      row(
-        (['conversation', 'document'] as const).map((view) =>
-          action(`view-${view}`, view === state.view ? `[${view}]` : view, {
-            type: 'view',
-            view
+  composerHeight += (rows >= 8 ? 1 : 0) + resourceCompletionRows(state.resourceCompletion);
+  composerHeight += state.completion === undefined ? 0 : Math.min(5, state.completion.names.length) + 1;
+  const fields = writingStatusFields(state);
+  const preferences =
+    columns < 80
+      ? {
+          ...state.preferences,
+          statusline: ['status', ...state.preferences.statusline.filter((id) => id !== 'status')]
+        }
+      : state.preferences;
+  const title = `Writing · ${statusline(preferences, fields)}`;
+  const main = conversationFrame({
+    id: 'writing-workspace',
+    terminalRows: rows,
+    composerRows: composerHeight,
+    slots: {
+      status: text({ id: 'writing-status', content: title }),
+      conversation:
+        columns >= 100 && state.document !== undefined && state.view !== 'document'
+          ? row(
+              [
+                documentView(state, Math.floor(columns * 0.6)),
+                sectionView(state, columns - Math.floor(columns * 0.6), rows - composerHeight - 3, context)
+              ],
+              { sizes: [{ kind: 'percent', value: 60 }, { kind: 'fill' }] }
+            )
+          : sectionView(state, columns, rows - composerHeight - 3, context),
+      composer: column(
+        [
+          ...(rows < 8
+            ? []
+            : [
+                composerControls({
+                  attachments: state.composer.attachments,
+                  queued: state.sessionView?.session.queuedInputs ?? 0,
+                  delivery: state.application.status === 'running' ? 'follow_up' : 'input',
+                  onAttachments: (): WritingTuiMessage => ({ type: 'attachments.open' }),
+                  onQueue: (): WritingTuiMessage => ({ type: 'queue.open' })
+                })
+              ]),
+          ...(state.resourceCompletion === undefined
+            ? []
+            : [resourceSuggestions(state.resourceCompletion)]),
+          ...(state.completion === undefined
+            ? []
+            : [
+                commandSuggestions(
+                  state.completion,
+                  WRITING_COMMANDS,
+                  (name): WritingTuiMessage => ({ type: 'completion.accept', open: true, name })
+                )
+              ]),
+          textArea<WritingTuiMessage>({
+            id: 'writing-composer',
+            meta: { accessibleName: 'Writing instruction' },
+            state: state.composer.input,
+            placeholder:
+              state.application.mode === 'review'
+                ? 'Ask for a review or discuss the text'
+                : 'Describe what you want to write or change',
+            wrap: true,
+            scrollbar: { axis: 'vertical', visible: 'auto' },
+            onTransition: (transition: TextAreaTransition): WritingTuiMessage => ({
+              type: 'composer.edit',
+              transition
+            })
           })
-        )
+        ],
+        {
+          sizes: [
+            ...(rows < 8 ? [] : [{ kind: 'fixed' as const, cells: 1 }]),
+            ...(state.resourceCompletion === undefined
+              ? []
+              : [{ kind: 'fixed' as const, cells: resourceCompletionRows(state.resourceCompletion) }]),
+            ...(state.completion === undefined
+              ? []
+              : [{ kind: 'fixed' as const, cells: Math.min(5, state.completion.names.length) + 1 }]),
+            { kind: 'fill' }
+          ]
+        }
       ),
-      columns >= 100 && state.view !== 'document'
-        ? row(
-            [
-              documentView(state, Math.floor(columns * 0.6)),
-              sectionView(state, columns - Math.floor(columns * 0.6), rows - composerHeight - 7, context)
-            ],
-            { sizes: [{ kind: 'percent', value: 60 }, { kind: 'fill' }] }
-          )
-        : sectionView(state, columns, rows - composerHeight - 7, context),
-      text({
-        id: 'writing-notice',
-        content: state.notice || 'F1 Help · F2 Files · F7 Edit/review · F10 Model · F11 Sessions'
-      }),
-      divider({ id: 'writing-divider' }),
-      textArea<WritingTuiMessage>({
-        id: 'writing-composer',
-        meta: { accessibleName: 'Writing instruction' },
-        state: state.composer,
-        placeholder:
-          state.application.mode === 'review'
-            ? 'Ask for a review or discuss the text'
-            : 'Describe what you want to write or change',
-        wrap: true,
-        scrollbar: { axis: 'vertical', visible: 'auto' },
-        onTransition: (transition: TextAreaTransition): WritingTuiMessage => ({
-          type: 'composer.edit',
-          transition
-        })
-      }),
-      row([
-        action('writing-send', state.submitting ? 'Accepting…' : 'Send', {
-          type: 'submit'
-        }),
-        action('writing-files', 'Files', {
-          type: 'picker.open',
-          subject: 'resources'
-        }),
-        action('writing-mode', state.application.mode === 'edit' ? 'Switch to review' : 'Enable editing', {
-          type: 'mode.toggle'
-        }),
+      footer: [
+        ...(state.sessionView?.session.suspension === undefined
+          ? []
+          : [action('writing-pending-decision', 'Review pending decision', { type: 'recovery.open' })]),
+        action('writing-commands', 'Commands', { type: 'commands.open' }),
+        ...(state.application.status === 'running'
+          ? [action('writing-stop', 'Stop', { type: 'interrupt' })]
+          : []),
+        action(
+          'writing-send',
+          state.submitting
+            ? 'Accepting…'
+            : state.application.status === 'running'
+              ? 'Queue follow-up'
+              : 'Send',
+          {
+            type: 'submit'
+          }
+        ),
         action('writing-exit', 'Exit', { type: 'exit' })
-      ])
-    ],
-    {
-      id: 'writing-workspace',
-      rows: [
-        { kind: 'fixed', cells: 1 },
-        { kind: 'fixed', cells: 1 },
-        { kind: 'fill' },
-        { kind: 'fixed', cells: 2 },
-        { kind: 'fixed', cells: 1 },
-        { kind: 'fixed', cells: composerHeight },
-        { kind: 'fixed', cells: 1 }
-      ],
-      columns: [{ kind: 'fill' }]
+      ]
     }
-  );
+  });
   const modal = modalView(
     state,
     Math.max(12, Math.min(84, columns - 4)),
-    Math.max(6, Math.min(24, rows - 4))
+    Math.max(6, Math.min(24, rows - 4)),
+    configuration
   );
   return overlay(modal === undefined ? [main] : [main, modal]);
 }
@@ -165,7 +225,12 @@ function documentView(state: WritingTuiState, width: number): View {
   );
 }
 
-function conversationView(state: WritingTuiState, width: number, height: number, context: TuiContext): View {
+function conversationView(
+  state: WritingTuiState,
+  width: number,
+  height: number,
+  context: TuiContext
+): View {
   return column(
     [
       historyViewport(state, width, Math.max(1, height - 1), context),
@@ -188,13 +253,41 @@ function conversationView(state: WritingTuiState, width: number, height: number,
   );
 }
 
-function modalView(state: WritingTuiState, width: number, height: number): View | undefined {
+function modalView(
+  state: WritingTuiState,
+  width: number,
+  height: number,
+  configuration?: ConfigurationOperations
+): View | undefined {
   const modal = state.overlay;
   const close = action('writing-modal-close', 'Close', {
     type: 'overlay.close'
   });
   let content: View, focusId: string, title: string;
   switch (modal.kind) {
+    case 'session-name':
+      return sessionNameView(modal.state, width, height);
+    case 'inspector':
+      return sourceInspectorView(modal.state, width, height);
+    case 'attachments':
+      return attachmentsView(modal.state, state.composer.attachments, width, height);
+    case 'recall':
+      return promptRecallView(modal.state, width, height);
+    case 'queue':
+      return queueView(modal.state, width, height);
+    case 'preferences':
+      return preferencesView(
+        modal.preferences,
+        writingStatusFields(state),
+        width,
+        height,
+        state.offsets.preferences,
+        {
+          actions: WRITING_SHORTCUTS,
+          ...(modal.capture === undefined ? {} : { capturing: modal.capture }),
+          ...(modal.error === undefined ? {} : { error: modal.error })
+        }
+      );
     case 'loading':
       title = 'Loading';
       focusId = 'writing-modal-close';
@@ -251,26 +344,10 @@ function modalView(state: WritingTuiState, width: number, height: number): View 
         onAccept: (event) => ({ type: 'picker.accept', id: event.id })
       });
       break;
-    case 'form':
-      title = 'Model configuration';
-      focusId = 'writing-field-0';
-      content = column([
-        ...modal.fields.flatMap((field, index) => [
-          plain(field.name),
-          textArea<WritingTuiMessage>({
-            id: `writing-field-${String(index)}`,
-            meta: { accessibleName: field.name },
-            state: field.input,
-            onTransition: (transition: TextAreaTransition): WritingTuiMessage => ({
-              type: 'form.edit',
-              index,
-              transition
-            })
-          })
-        ]),
-        action('writing-form-submit', 'Save', { type: 'form.submit' })
-      ]);
-      break;
+    case 'configuration':
+      return configuration === undefined
+        ? undefined
+        : configurationView(modal.state, configuration, width, height);
   }
   return dialog({
     id: 'writing-modal',
@@ -301,4 +378,36 @@ function scrollable(state: WritingTuiState, id: string, content: View): View {
     scrollbar: { axis: 'vertical', visible: 'auto' },
     onScroll: (request) => ({ type: 'section.scroll', id, request })
   });
+}
+
+function writingStatusFields(state: WritingTuiState): readonly StatusField[] {
+  const field = (id: string, label: string, value: string | undefined): StatusField => ({
+    id,
+    label,
+    ...(value === undefined ? {} : { value })
+  });
+  const queued = state.sessionView?.session.queuedInputs;
+  return [
+    ...progressStatusFields(state.progress),
+    field('session', 'Session', state.application.sessionId),
+    field(
+      'reasoning',
+      'Reasoning configuration',
+      reasoningLabel(state.sessionView?.session.configuration.reasoning)
+    ),
+    field('model', 'Model', state.application.model),
+    field('provider', 'Provider', state.application.provider),
+    field('mode', 'Edit or review', state.application.mode),
+    field(
+      'status',
+      'Run status',
+      state.application.status === 'running' ? state.progress.label : state.application.status
+    ),
+    field(
+      'queue',
+      'Queued inputs',
+      queued === undefined || queued === 0 ? undefined : `${String(queued)} queued`
+    ),
+    field('document', 'Document', state.document?.value.path)
+  ];
 }

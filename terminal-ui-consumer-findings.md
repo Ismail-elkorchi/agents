@@ -2,6 +2,8 @@
 
 Dependency: `e9ec556d96814a8029936106e5a1a6ef70b5da3c`, resolved from upstream `main` on 2026-09-08. Applications consume this exact commit; this implementation authors no terminal-ui source changes.
 
+The same revision remains upstream main on 2026-09-13, verified during this implementation.
+
 The public modal-dialog type permits an input that its runtime rejects (TU01). Other observations below distinguish application responsibilities from dependency limitations.
 
 ## Application responsibilities established at baseline
@@ -54,3 +56,29 @@ Each confirmed issue records an ID and status, affected public API and revision,
 - Impact: retaining the collection and parser does not retain component measurement. A CPU profile of the application workload attributed about 9.3 seconds of 40.5 seconds of samples to terminal-ui grapheme functions, including `richText` measurement through `wrapRenderSpans`. This does not establish that all latency comes from the library.
 - General proposal: provide bounded retention of measured component content with explicit invalidation for model revision, constraints, width profile, theme and other declared measurement inputs. Establish the row invariant when those inputs change and reuse the result for unrelated updates. Verify unchanged siblings, changed wrapping, resize, Unicode and stale measurements; preserve validation of mismatched row geometry.
 - Consumer disposition: use the supported measured viewport and correct its inputs, without bypassing measurement validation or implementing a second layout engine. The final recorded workload meets its 50/50/100 ms input/rendering/history budgets. Earlier runs missed the input/rendering budgets and are preserved under `validation/`; their CPU 0 clock samples are not a continuous record of execution speed. Neither host conditions nor this hotspot alone establish the full cause of the variation. Retaining component measurement remains a general performance opportunity.
+
+## TU05 — Modal dismissal requires a focusable descendant
+
+- Confirmed through the public runtime with raw Escape on 2026-09-12 at the dependency revision above. A modal `dialog` with explicit `focusPolicy`, `dismissOnEscape: true` and `onDismiss`, whose content is a viewport containing only text, does not dismiss. Advancing the memory host's Escape ambiguity deadline makes no difference. The same dialog containing a focusable button dismisses.
+- Cause: the runtime invokes component key handlers through `renderNodeLayoutKeyChainForFocus`, which returns an empty chain without a valid focused target. Thus the modal's own Escape handler is unreachable in loading, empty or error states with no focusable content.
+- Expected/proposal: route unconsumed input through the active modal scope even without a focused descendant, while preserving child consumption and preventing input from reaching obscured content. Verify text-only/loading/error dialogs, nested scopes, focus restoration, raw Escape and enhanced keyboard events.
+- Consumer disposition: provide useful visible Close/Cancel actions and valid focus policies for application interactions. These affordances do not resolve the general defect. Do not add dummy focus targets, copy the input router or intercept Escape globally as a substitute. The general dismissal guarantee remains blocked upstream.
+
+## TU06 — Legacy Alt input can be indistinguishable from Unicode text
+
+- xterm 407's default eight-bit Meta profile emitted UTF-8 `c3 ae` (î) for Alt+N. With its Meta-as-Escape profile it emitted `1b 6e`; the latter opened notes, and Escape/Ctrl+C/repeating the opener closed the application panel and restored composer focus. Ctrl+P works in both profiles.
+- This is an input ambiguity, not evidence that a Unicode î should be decoded as Alt+N. Consumers cannot distinguish identical byte sequences and must not guess or replace their input decoder.
+- General improvement: expose supported Meta-as-Escape negotiation and input-profile diagnostics through terminal host ownership where the terminal supports them. Verify restoration and preserve literal Unicode under legacy profiles. Command menus remain the discoverable application path; no per-agent byte heuristic is installed.
+
+## TU07 — tmux capability evidence disagrees with session setup
+
+- Reproduced on 2026-09-13 with tmux 3.6a inside xterm 407, `TERM=tmux-256color`, at the pinned dependency. An unwrapped Node `createTerminalHost().getCapabilities()` reports alternate-screen support as `supported/available`; `runTui()` then rejects its required alternate-screen operation as `unknown/available`. Mouse and cursor operations also become unknown. The shell's `stty -g` state is restored after failure.
+- A neutral `defineTui` application containing only a Close button reproduces the failure with the native host. It needs no Core or agent imports, custom stdin wrapper, filesystem authority, or provider. Thus the failure is upstream of application rendering; affected tmux startup remains blocked.
+- Expected/proposal: host capability discovery and session protocol application must use consistent terminal evidence, while honoring actual multiplexer capabilities and rejected operations. Verify the neutral application under tmux and ordinary xterm, including raw mode, alternate screen, cursor, input ownership, and restoration.
+- Consumer disposition: retain required terminal ownership and report failure. Do not override capability truth, weaken required operations, emit private protocol resets, or add a second rendering mode as a workaround.
+
+## Current interaction evidence
+
+- The 2026-09-13 xterm checks exercised command/empty-notes dismissal, focus return, exact drafts, writing patch results, tool disclosure, settings, resize, external-editor success/failure, and exit. A direct Node SIGTERM test preserved the unsent Unicode draft and restored the same terminal settings. Editor output retained Unicode and its trailing newline; failure retained the prior draft. The completed shell sessions had identical before/after `stty -g` values.
+- `validation/tui-performance-2026-09-13.json` covers 3,000 stored entries, 48/80/120 columns, simultaneous streaming and typing, command pickers, message navigation, and resize. Typing p95 was 30.8–46.2 ms, streaming p95 33.3–45.9 ms, warm history-page p95 17.3 ms. Picker p95 was 60.6–90.4 ms; paired resize p95 was 315–379 ms. These are measured observations; only the existing input/render/history budgets are enforced. The memory host retains frames and contributes to heap use.
+- Actual screen readers, Windows/macOS terminals, SSH, IME and AltGr were not exercised here. Memory-host tests and cross-platform CI do not establish those interactive guarantees. TU02's unrestricted exact clipboard guarantee and TU07's affected multiplexer startup remain unresolved.

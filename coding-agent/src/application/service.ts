@@ -1,30 +1,35 @@
-import { FileCredentialStore } from '@agent-core/auth';
-import { type ModelReasoningRequest } from '@agent-core/model';
+import {
+  assertModelRequestSupported,
+  parseModelSelection,
+  type ModelProvider,
+  type ModelSelection
+} from '@agent-core/model';
 import { JsonlEventRepository } from '@agent-core/persistence/node';
-import { loginOpenAICodexDeviceCode } from '@agent-core/provider-openai-codex';
 import {
   agentEventCodec,
+  ApplicationEvents,
+  assertHistoryModelCompatibility,
+  assertSessionImagesSupported,
+  progressReplacementKey,
+  SessionNotes,
   sourceRef,
   type AgentEvent,
   type AgentRunResult,
   type AgentSession,
+  type SessionNoteRead,
   type SessionSubmissionInput
 } from '@agent-core/runtime';
 import { JsonlSessionRepository } from '@agent-core/runtime/node';
-import {
-  ApplicationEvents,
-  progressReplacementKey,
-  SessionNotes,
-  type SessionNoteRead
-} from '@agents/application';
+import { DEFAULT_LOCAL_TOOL_CONFIGURATION, readRootedImage, readRootedText } from '@agent-core/tools-local';
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { readRecordedMutationPatches, readRunChangeReport } from '../changes/run-change-report.js';
-import { type CodingAgentProviderId } from '../configuration.js';
 import { resolveCodingAuthority, type CodingPermissionMode } from '../security/permission-mode.js';
 import { createTrustDecision } from '../security/workspace-trust.js';
-import { readConfiguredCheckResults } from '../verification/configured-check-tool.js';
 import { closeCodingSession } from '../session.js';
 import { ModelSelectionStore } from '../state/model-selection-store.js';
+import { readConfiguredCheckResults } from '../verification/configured-check-tool.js';
 import {
   codingWorkspaceSessionBinding,
   openCodingWorkspace,
@@ -33,12 +38,12 @@ import {
 import type {
   CodingApplicationEvent,
   CodingApplicationState,
-  CodingLoginResult,
   CodingRuntimeDetails,
   CodingSubmissionResult
 } from './contracts.js';
 import {
   admittedTrustLevel,
+  createProviderRuntime,
   createRuntime,
   loadProjectConfiguration,
   parseProviderId,
@@ -62,6 +67,9 @@ export class CodingApplication {
   private runtime: CodingAgentRuntimeComposition | undefined;
   private runtimeUnsubscribe: (() => void) | undefined;
   private selectedSessionId: string | undefined;
+  private modelOverride:
+    | { readonly selection: ModelSelection; readonly adapter: ModelProvider }
+    | undefined;
   private resolvedSettings: RuntimeSettingsSelection = {};
   private configurationLoaded = false;
   private started = false;
@@ -77,8 +85,19 @@ export class CodingApplication {
     this.applicationState = Object.freeze({
       status: 'initializing',
       requirements: Object.freeze([]),
-      runtimeDetails: Object.freeze({ workspaceTrust: workspace.security.trustLevel })
+      runtimeDetails: Object.freeze({
+        workspaceTrust: workspace.security.trustLevel,
+        workspacePath: workspace.layout.workspaceRoot
+      })
     });
+  }
+
+  draftDirectory(): string {
+    return `${this.workspace.layout.runtimeDir}/drafts`;
+  }
+
+  presentationPath(): string {
+    return `${this.workspace.privateState.path}/settings/presentation.json`;
   }
 
   state(): CodingApplicationState {
@@ -102,6 +121,56 @@ export class CodingApplication {
     });
   }
 
+  async readContext(
+    filePath: string,
+    signal: AbortSignal
+  ): Promise<import('@agent-core/runtime').PromptContextItemInput> {
+    this.assertOpen();
+    const decision = this.workspace.security.decide('workspace_read');
+    if (decision.kind !== 'allowed') throw new Error(decision.reason);
+    const root = this.workspace.fileRoot;
+    const snapshot = await readRootedText(
+      root,
+      root.canonicalPath(filePath),
+      DEFAULT_LOCAL_TOOL_CONFIGURATION.readFiles.maxBytesPerFile,
+      signal
+    );
+    return {
+      id: `file:${snapshot.sha256}`,
+      title: snapshot.path,
+      sourceKind: 'user',
+      sourceUri: pathToFileURL(path.join(root.identity.canonicalPath, snapshot.path)).href,
+      integrity: 'verified',
+      representation: 'full',
+      mediaType: 'text/plain',
+      content: snapshot.content,
+      purpose: 'File snapshot explicitly attached by the user.'
+    };
+  }
+
+  async readImage(filePath: string, signal?: AbortSignal) {
+    this.assertOpen();
+    const decision = this.workspace.security.decide('workspace_read');
+    if (decision.kind !== 'allowed') throw new Error(decision.reason);
+    const runtime = this.requireRuntime();
+    const profile = await runtime.provider.describeModel(runtime.agent.state().configuration.model);
+    const root = this.workspace.fileRoot;
+    if (!profile.modalities.input.includes('image'))
+      throw new Error('The selected model does not accept images. Choose an image-capable model.');
+    const canonical = root.canonicalPath(filePath);
+    const result = await readRootedImage(root, canonical, DEFAULT_LOCAL_TOOL_CONFIGURATION.artifact, {
+      signal
+    });
+    const repository = runtime.artifacts;
+    const artifact = await repository.store({
+      label: canonical,
+      content: result.bytes,
+      mediaType: result.mediaType
+    });
+    const image = { artifact };
+    return { path: canonical, image };
+  }
+
   submit(
     input: SessionSubmissionInput,
     options: {
@@ -118,6 +187,11 @@ export class CodingApplication {
           reason: 'setup_required',
           requirements: this.applicationState.requirements
         };
+      if (input.images?.length)
+        assertSessionImagesSupported(
+          input.images,
+          await this.runtime.provider.describeModel(this.runtime.agent.state().configuration.model)
+        );
       const { relationship, ...runInput } = input;
       return this.runtime.agent.submit(runInput, {
         ...options,
@@ -225,6 +299,7 @@ export class CodingApplication {
   }
 
   private async resolveSettings(): Promise<RuntimeSettingsSelection> {
+    if (this.modelOverride !== undefined) return this.selectionSettings(this.modelOverride.selection);
     const sessions = new JsonlSessionRepository({ rootDir: this.workspace.layout.sessionsDir });
     const session = await selectSession(
       this.options,
@@ -242,7 +317,7 @@ export class CodingApplication {
     );
   }
 
-  private async activateRuntime(): Promise<void> {
+  private async activateRuntime(prepared?: CodingAgentRuntimeComposition): Promise<void> {
     const provider = this.resolvedSettings.provider;
     const model = this.resolvedSettings.model;
     if (provider === undefined || model === undefined)
@@ -254,9 +329,31 @@ export class CodingApplication {
       ...(this.resolvedSettings.temperature === undefined
         ? {}
         : { temperature: this.resolvedSettings.temperature }),
-      ...(this.resolvedSettings.reasoning === undefined ? {} : { reasoning: this.resolvedSettings.reasoning })
+      ...(this.resolvedSettings.reasoning === undefined
+        ? {}
+        : { reasoning: this.resolvedSettings.reasoning })
     };
-    const runtime = await createRuntime(activationOptions, this.workspace, this.selectedSessionId);
+    const runtime =
+      prepared ??
+      (await createRuntime(
+        activationOptions,
+        this.workspace,
+        { ...this.resolvedSettings, provider, model },
+        this.selectedSessionId,
+        this.modelOverride?.adapter
+      ));
+    if (prepared === undefined) {
+      try {
+        await assertHistoryModelCompatibility({
+          history: runtime.history,
+          artifacts: runtime.artifacts,
+          profile: await runtime.provider.describeModel(model)
+        });
+      } catch (error) {
+        await closeCodingSession(runtime);
+        throw error;
+      }
+    }
     this.runtime = runtime;
     this.selectedSessionId = runtime.session.id;
     delete this.options.branch;
@@ -266,7 +363,16 @@ export class CodingApplication {
         this.events.fail(error);
       }
     );
-    await runtime.agent.restore();
+    if (prepared === undefined)
+      try {
+        await runtime.agent.restore();
+      } catch (error) {
+        this.runtimeUnsubscribe();
+        this.runtimeUnsubscribe = undefined;
+        this.runtime = undefined;
+        await closeCodingSession(runtime);
+        throw error;
+      }
     await this.emit({ type: 'session.restored', view: await readCodingSessionView(runtime) });
     if (runtime.agent.state().queuedInputs > 0) void runtime.agent.waitForIdle().catch(() => undefined);
   }
@@ -295,30 +401,89 @@ export class CodingApplication {
     if (event.type !== 'run.progress') await this.publishState('ready', []);
   }
 
-  selectProvider(provider: CodingAgentProviderId): Promise<CodingApplicationState> {
+  modelSelection(): ModelSelection | undefined {
+    const settings = this.resolvedSettings;
+    if (settings.provider === undefined || settings.model === undefined) return undefined;
+    return {
+      provider: settings.provider,
+      model: settings.model,
+      ...(settings.providerEndpoint === undefined ? {} : { endpoint: settings.providerEndpoint }),
+      ...(settings.reasoning === undefined ? {} : { reasoning: settings.reasoning }),
+      ...(settings.temperature === undefined ? {} : { temperature: settings.temperature })
+    };
+  }
+
+  connectProvider(provider: string, endpoint?: string): ModelProvider {
+    return createProviderRuntime({
+      provider: parseProviderId(provider),
+      model: '',
+      ...(endpoint === undefined ? {} : { providerEndpoint: endpoint })
+    }).provider;
+  }
+
+  configureModel(selection: ModelSelection, adapter: ModelProvider): Promise<void> {
+    const owned = parseModelSelection(selection);
     return this.serial(async () => {
-      await this.beginReconfiguration();
-      this.options.provider = provider;
-      delete this.options.model;
-      await new ModelSelectionStore(this.workspace.privateState).write({ provider });
-      await this.refreshAndActivate();
-      return this.state();
+      const settings = this.selectionSettings(owned);
+      if (adapter.id !== settings.provider)
+        throw new Error('The selected provider does not match this configuration.');
+      const profile = await adapter.describeModel(settings.model);
+      assertModelRequestSupported(profile, {
+        model: settings.model,
+        messages: [],
+        ...(settings.reasoning === undefined ? {} : { reasoning: settings.reasoning }),
+        ...(settings.temperature === undefined ? {} : { temperature: settings.temperature })
+      });
+      if (this.runtime !== undefined) requireIdleSession(this.runtime.agent);
+      let prepared: CodingAgentRuntimeComposition | undefined;
+      try {
+        if (this.workspace.security.trustLevel !== 'untrusted') {
+          prepared = await createRuntime(
+            this.options,
+            this.workspace,
+            settings,
+            this.selectedSessionId,
+            adapter
+          );
+          await assertHistoryModelCompatibility({
+            history: prepared.history,
+            artifacts: prepared.artifacts,
+            profile
+          });
+          await prepared.agent.restore();
+          requireIdleSession(prepared.agent);
+        }
+        await new ModelSelectionStore(this.workspace.privateState).write({
+          ...owned,
+          provider: settings.provider
+        });
+      } catch (error) {
+        if (prepared !== undefined) await closeCodingSession(prepared);
+        throw error;
+      }
+      const previous = this.runtime;
+      this.runtimeUnsubscribe?.();
+      this.runtimeUnsubscribe = undefined;
+      this.runtime = undefined;
+      this.modelOverride = { selection: owned, adapter };
+      this.resolvedSettings = settings;
+      if (prepared !== undefined) await this.activateRuntime(prepared);
+      await this.publishState(
+        prepared === undefined ? 'setup_required' : 'ready',
+        prepared === undefined ? setupRequirements(this.workspace, settings) : []
+      );
+      if (previous !== undefined) await closeCodingSession(previous);
     });
   }
 
-  selectModel(value: string): Promise<CodingApplicationState> {
-    return this.serial(async () => {
-      const model = value.trim();
-      if (!model) throw new Error('A model ID is required.');
-      const provider = this.options.provider ?? this.resolvedSettings.provider;
-      if (provider === undefined) throw new Error('Select a provider before selecting a model.');
-      await this.beginReconfiguration();
-      this.options.provider = provider;
-      this.options.model = model;
-      await new ModelSelectionStore(this.workspace.privateState).write({ provider, model });
-      await this.refreshAndActivate();
-      return this.state();
-    });
+  private selectionSettings(selection: ModelSelection): import('./runtime.js').ResolvedSessionSettings {
+    return {
+      provider: parseProviderId(selection.provider),
+      model: selection.model,
+      ...(selection.endpoint === undefined ? {} : { providerEndpoint: selection.endpoint }),
+      ...(selection.reasoning === undefined ? {} : { reasoning: selection.reasoning }),
+      ...(selection.temperature === undefined ? {} : { temperature: selection.temperature })
+    };
   }
 
   selectPermissionMode(permissionMode: CodingPermissionMode): Promise<CodingApplicationState> {
@@ -352,54 +517,6 @@ export class CodingApplication {
     });
   }
 
-  async login(selected?: CodingAgentProviderId): Promise<CodingLoginResult> {
-    const provider = selected ?? this.resolvedSettings.provider;
-    if (provider === undefined) throw new Error('Select a provider before authenticating.');
-    if (provider === 'ollama') return { kind: 'not_required', provider };
-    if (provider === 'openrouter' || provider === 'openai')
-      return {
-        kind: 'api_key',
-        provider,
-        available: Boolean(
-          process.env[provider === 'openai' ? 'OPENAI_API_KEY' : 'OPENROUTER_API_KEY']?.trim()
-        )
-      };
-    let delivery: Promise<void> | undefined;
-    await loginOpenAICodexDeviceCode({
-      store: new FileCredentialStore(),
-      key: provider,
-      onDeviceCode: (info) => {
-        delivery = this.emit({
-          type: 'authentication.required',
-          verificationUri: info.verificationUri,
-          userCode: info.userCode,
-          expiresInSeconds: info.expiresInSeconds
-        });
-      }
-    });
-    await delivery;
-    return { kind: 'authenticated', provider };
-  }
-
-  selectTemperature(temperature: number): Promise<CodingApplicationState> {
-    return this.serial(async () => {
-      if (!Number.isFinite(temperature)) throw new Error('Temperature must be finite.');
-      await this.beginReconfiguration();
-      this.options.temperature = temperature;
-      await this.refreshAndActivate();
-      return this.state();
-    });
-  }
-
-  selectReasoning(reasoning: ModelReasoningRequest): Promise<CodingApplicationState> {
-    return this.serial(async () => {
-      await this.beginReconfiguration();
-      this.options.reasoning = reasoning;
-      await this.refreshAndActivate();
-      return this.state();
-    });
-  }
-
   steer(input: SessionSubmissionInput, expectedRunId?: string): Promise<CodingSubmissionResult> {
     return this.submit(input, {
       delivery: 'steer',
@@ -421,7 +538,18 @@ export class CodingApplication {
   }
 
   inspectContext() {
-    return this.requireRuntime().context.inspect();
+    return this.requireRuntime().inspectContext();
+  }
+
+  listProcesses() {
+    return this.requireRuntime().listProcesses();
+  }
+
+  controlProcess(
+    target: import('../execution/process-controls.js').CodingProcessTarget,
+    action: import('../execution/process-controls.js').CodingProcessAction
+  ) {
+    return this.requireRuntime().controlProcess(target, action);
   }
 
   async retainHistory() {
@@ -453,7 +581,10 @@ export class CodingApplication {
   }
   persistenceLocations(runId: string) {
     const runtime = this.requireRuntime();
-    return { ledger: runtime.events.location(runId), session: runtime.sessions.location(runtime.session.id) };
+    return {
+      ledger: runtime.events.location(runId),
+      session: runtime.sessions.location(runtime.session.id)
+    };
   }
   restoreRun(runId: string): Promise<void> {
     return this.serial(async () => {
@@ -522,10 +653,25 @@ export class CodingApplication {
     return new JsonlSessionRepository({ rootDir: this.workspace.layout.sessionsDir }).list();
   }
 
+  newSession(): Promise<void> {
+    return this.serial(async () => {
+      await this.deactivateRuntime();
+      this.selectedSessionId = undefined;
+      this.options.sessionSelection = { kind: 'new' };
+      await this.refreshAndActivate();
+    });
+  }
+
   selectSession(sessionId: string): Promise<void> {
     return this.serial(async () => {
       await this.deactivateRuntime();
       this.selectedSessionId = sessionId;
+      this.modelOverride = undefined;
+      delete this.options.provider;
+      delete this.options.model;
+      delete this.options.providerEndpoint;
+      delete this.options.reasoning;
+      delete this.options.temperature;
       await this.refreshAndActivate();
     });
   }
@@ -546,7 +692,8 @@ export class CodingApplication {
     await agent.restore();
     const suspension = agent.inspectSuspension();
     if (suspension === undefined) throw new Error('The selected session is not suspended.');
-    if (expectedRunId !== undefined && suspension.runId !== expectedRunId) throw new Error('The selected run has changed.');
+    if (expectedRunId !== undefined && suspension.runId !== expectedRunId)
+      throw new Error('The selected run has changed.');
     if (suspension.category === 'external_recovery') return agent.reconcileExternal(suspension.runId);
     if (suspension.category === 'implementation') return agent.resumeImplementation(suspension.runId);
     throw new Error('The suspension requires a decision.');
@@ -594,15 +741,18 @@ export class CodingApplication {
           }).permissions);
     const runtimeDetails: CodingRuntimeDetails = Object.freeze({
       ...(runtime?.details ?? {}),
-      ...(this.resolvedSettings.provider === undefined ? {} : { providerId: this.resolvedSettings.provider }),
+      ...(this.resolvedSettings.provider === undefined
+        ? {}
+        : { providerId: this.resolvedSettings.provider }),
       ...(this.resolvedSettings.model === undefined ? {} : { modelId: this.resolvedSettings.model }),
       ...(this.resolvedSettings.temperature === undefined
         ? {}
         : { temperature: this.resolvedSettings.temperature }),
-      ...(this.resolvedSettings.reasoning?.strategy === 'effort'
-        ? { reasoningEffort: this.resolvedSettings.reasoning.effort }
-        : {}),
+      ...(this.resolvedSettings.reasoning === undefined
+        ? {}
+        : { reasoning: this.resolvedSettings.reasoning }),
       workspaceTrust: this.workspace.security.trustLevel,
+      workspacePath: this.workspace.layout.workspaceRoot,
       ...(permissions === undefined ? {} : { permissions })
     });
     this.applicationState = Object.freeze({

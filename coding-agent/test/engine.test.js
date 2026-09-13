@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
-for (const name of ['coding-agent', 'writing-agent', 'application', 'rpc', 'tui'])
+for (const name of ['coding-agent', 'writing-agent'])
   test(`${name} declares the supported Node engine`, async () => {
     const manifest = JSON.parse(
       await readFile(new URL(`../../${name}/package.json`, import.meta.url), 'utf8')

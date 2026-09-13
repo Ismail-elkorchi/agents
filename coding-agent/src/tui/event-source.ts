@@ -1,5 +1,5 @@
-import { progressReplacementKey } from '@agents/application';
-import { TuiEventChannel } from '@agents/tui';
+import { progressReplacementKey } from '@agent-core/runtime';
+import { TuiEventChannel } from '@agent-core/tui';
 import type { CodingAgentTuiMessage } from './messages.js';
 
 export function createCodingTuiEventSource() {

@@ -7,7 +7,7 @@ This directory retains the reproducible terminal measurements referenced by `ter
 - `terminal-measurement-repro.mjs` isolates repeated terminal-ui measurement of unchanged content.
 - `terminal-session.mjs` runs a scripted application through the Node terminal host for emulator review.
 
-The adjacent JSON files are recorded results from those programs. Memory-terminal frames contribute to measured heap use, and host load affects latency; treat the reports as bounded observations rather than product guarantees.
+The adjacent JSON files are recorded results from those programs. The September 13 workload uses 3,000 persisted entries and interleaves streamed output with typing, pickers, message navigation, and resizes at 48, 80, and 120 columns. `terminal-session.mjs` takes `coding|writing` and an absolute evidence prefix; it isolates application data and records frames, focus, input bytes, capabilities, and outcomes for emulator checks. Memory-terminal frames contribute to measured heap use, and host load affects latency; treat the reports as bounded observations rather than product guarantees.
 
 Run the source and package gate with `npm run verify:release`.
 

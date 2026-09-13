@@ -1,7 +1,12 @@
 import type { SessionBranchPageRequest } from '@agent-core/runtime';
-import { isDeepStrictEqual } from 'node:util';
-import { diagnosticMessage } from '@agents/tui';
+import {
+  diagnosticMessage,
+  oversizedHistoryEntry,
+  projectSessionEntry,
+  reconcileConversationEntries
+} from '@agent-core/tui';
 import type { TuiEffect, TuiUpdateResult } from '@ismail-elkorchi/terminal-ui/tui';
+import { isDeepStrictEqual } from 'node:util';
 import type { CodingHistoryPage } from '../application/contracts.js';
 import { applyBranchEntry } from './branch-presentation.js';
 import { appendNotice } from './conversation.js';
@@ -66,6 +71,13 @@ export function presentHistoryPages(
 ): CodingAgentTuiState {
   let presented: CodingAgentTuiState = { ...state, conversation: { ...state.conversation, items: [] } };
   for (const page of pages) {
+    presented = {
+      ...presented,
+      conversation: {
+        ...presented.conversation,
+        items: [...presented.conversation.items, ...oversizedHistoryEntry(page.history)]
+      }
+    };
     for (const entry of page.history.entries) presented = applyBranchEntry(presented, entry);
     for (const verification of page.verification)
       presented = applyConfiguredChecks(presented, verification);
@@ -76,18 +88,15 @@ export function presentHistoryPages(
     return retained !== undefined && isDeepStrictEqual(retained, entry) ? retained : entry;
   });
   const ids = new Set(presented.conversation.items.map((entry) => entry.id));
-  const recordedInputs = new Set(
+  const previouslyRecorded = new Set(
     state.conversation.pages.flatMap((page) =>
-      page.history.entries.flatMap((entry) => (entry.type === 'input' ? [`input:${entry.runId}`] : []))
+      page.history.entries.flatMap((entry) => projectSessionEntry(entry).map((item) => item.id))
     )
   );
   const live = retainLive
     ? state.conversation.items.filter(
         (entry) =>
-          !ids.has(entry.id) &&
-          ((entry.kind === 'assistant' && entry.status === 'streaming') ||
-            (entry.kind === 'activity' && entry.status === 'running') ||
-            (entry.kind === 'user' && !recordedInputs.has(entry.id)))
+          !entry.id.startsWith('notice:local:') && (!previouslyRecorded.has(entry.id) || ids.has(entry.id))
       )
     : [];
   const notices = state.conversation.items
@@ -103,8 +112,10 @@ export function presentHistoryPages(
     conversation: {
       ...state.conversation,
       pages,
-      items: [...recorded, ...live, ...notices],
-      expandedIds: presented.conversation.expandedIds.filter((id) => ids.has(id))
+      items: [...reconcileConversationEntries(recorded, live), ...notices],
+      expandedIds: state.conversation.expandedIds.filter(
+        (id) => ids.has(id) || live.some((entry) => entry.id === id)
+      )
     },
     nextLocalId: presented.nextLocalId
   };

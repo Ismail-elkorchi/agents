@@ -1,6 +1,5 @@
 import { parseJsonObject, type JsonObject } from '@agent-core/json';
 import {
-  type ResourceLeaseCoordinator,
   adoptCommandExecution,
   createCommandExecutionReservation,
   type CommandExecution,
@@ -13,6 +12,7 @@ import {
   type CommandExecutionStatus,
   type CommandOutputView,
   type CommandReconciliationResult,
+  type ResourceLeaseCoordinator,
   type StartCommandExecutionOptions
 } from '@agent-core/tools';
 import { processScope, type RootedFileAuthority } from '@agent-core/tools-local';
@@ -25,6 +25,7 @@ import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import { PrivateStateDirectory } from '../state/private-state.js';
+import type { CodingProcess } from './coding-command-authority.js';
 
 const PROCESS_OBSERVATION_TIMEOUT_MS = 30_000;
 
@@ -372,6 +373,27 @@ export class SandboxCommandExecution implements CommandExecution {
     return Object.freeze({ status: 'settled', result });
   }
 
+  async listProcesses(): Promise<readonly CodingProcess[]> {
+    this.#ensureOpen();
+    const inventory = await this.options.repository.reconcile();
+    return Promise.all(
+      [...inventory.settled, ...inventory.unresolved].map(async (observation) => {
+        const stored = await this.#storedOwner(observation.executionId);
+        assertRequestBinding(stored, observation);
+        return {
+          processId: observation.executionId,
+          owner: stored.owner,
+          status:
+            observation.kind === 'settled'
+              ? statusFromTermination(observation.result.termination)
+              : observation.kind === 'rejected'
+                ? 'failed'
+                : observation.kind
+        };
+      })
+    );
+  }
+
   async reconcile(): Promise<CommandReconciliationResult> {
     this.#recovered.clear();
     this.#unresolved.clear();
@@ -556,7 +578,9 @@ export class SandboxCommandExecution implements CommandExecution {
     const observe = async () => {
       for (;;) {
         const observation = await this.options.repository.inspect(processId, {
-          afterCursor, maxBytes: 1, waitMs: 1_000
+          afterCursor,
+          maxBytes: 1,
+          waitMs: 1_000
         });
         if (this.#closed || controller.signal.aborted) return;
         if (observation.kind === 'settled' || observation.kind === 'rejected') {
@@ -567,13 +591,15 @@ export class SandboxCommandExecution implements CommandExecution {
         afterCursor = observation.output.availableCursorEnd;
       }
     };
-    const completion = observe().catch((error: unknown) => {
-      if (this.#closed || controller.signal.aborted) return;
-      this.#unresolved.set(processId, {
-        rootPath: this.options.rootedFileAuthority.identity.canonicalPath,
-        diagnostic: error instanceof Error ? error.message : String(error)
-      });
-    }).finally(() => this.#observers.delete(processId));
+    const completion = observe()
+      .catch((error: unknown) => {
+        if (this.#closed || controller.signal.aborted) return;
+        this.#unresolved.set(processId, {
+          rootPath: this.options.rootedFileAuthority.identity.canonicalPath,
+          diagnostic: error instanceof Error ? error.message : String(error)
+        });
+      })
+      .finally(() => this.#observers.delete(processId));
     this.#observers.set(processId, { controller, completion });
   }
 
@@ -919,9 +945,7 @@ function sandboxCommandAuthorization(
   return parseJsonObject({
     authority: descriptor.implementationId,
     confinement:
-      authorization.summary.filesystem.kind === 'isolated'
-        ? 'isolated workspace'
-        : 'workspace confined',
+      authorization.summary.filesystem.kind === 'isolated' ? 'isolated workspace' : 'workspace confined',
     recoveryIdentity: descriptor.recoveryIdentity,
     executionId: authorization.executionId,
     requestDigest: authorization.requestDigest,
