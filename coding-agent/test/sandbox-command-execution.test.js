@@ -510,6 +510,9 @@ class FakeSandboxExecutionRepository {
     if (executionId === this.unknownId) this.unknownId = undefined;
   }
   async forget(executionId) {
+    const state = this.observations.get(executionId);
+    if (state && ['preparing', 'prepared', 'running'].includes(state.kind))
+      throw new Error('A live or uncertain execution cannot be forgotten.');
     this.observations.delete(executionId);
   }
   async close() {}
@@ -626,3 +629,25 @@ function unknown(executionId) {
     output: output()
   };
 }
+
+test('background observation failure reaches queued tools without releasing uncertain resources', { timeout: 5_000 }, async (t) => {
+  const fixture = await createFixture();
+  const execution = await SandboxCommandExecution.create({
+    resourceLeases: new ResourceLeaseCoordinator(), repository: fixture.repository, rootedFileAuthority: fixture.root, state: fixture.state,
+    maxRetainedOutputBytes: 1024, createRun: (value) => commandRun(fixture.workspace, value.command), validateAuthorization: () => undefined
+  });
+  t.after(async () => { await execution.close(); fixture.root.close(); await rm(fixture.parent, { recursive: true, force: true }); });
+  fixture.repository.activate = async (executionId) => {
+    const { requestDigest, output } = settled(executionId);
+    fixture.repository.observations.set(executionId, { kind: 'running', executionId, requestDigest, output, processId: 'native' });
+  };
+  const effects = { accesses: [{ scope: 'files', mode: 'write' }], lockScopes: ['files'] };
+  const lease = await execution.resourceLeases.acquire(effects, owner.ownerId);
+  const result = await startCommand(execution, { ...request(), yieldMs: 0 }, { lease });
+  assert.equal(result.status, 'running');
+  const waiting = assert.rejects(execution.resourceLeases.acquire(effects, 'next-tool', t.signal), /unresolved outcome: unknown outcome/);
+  fixture.repository.observations.set(result.processId, unknown(result.processId));
+  await waiting;
+  assert.equal(execution.resourceLeases.activeCount(), 1);
+  await assert.rejects(execution.plan(request()), /Unresolved sandbox executions/);
+});

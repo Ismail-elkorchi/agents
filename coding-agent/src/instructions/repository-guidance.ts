@@ -1,5 +1,5 @@
 import type { AgentInstruction, PromptContextItemInput } from '@agent-core/runtime';
-import type { ToolAuthorizationDecision, ToolAuthorizationRequest } from '@agent-core/tools';
+import type { ToolAuthorizationDecision, ToolAuthorizationRequest, ToolInputInspection } from '@agent-core/tools';
 import { rootedFileIdentitiesEqual, type RootedFileAuthority } from '@agent-core/tools-local';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
@@ -150,7 +150,7 @@ export class RepositoryGuidanceSession {
     return undefined;
   }
 
-  async contextPrerequisite(request: ToolAuthorizationRequest): Promise<
+  async contextPrerequisite(request: ToolInputInspection): Promise<
     | {
         readonly summary: string;
         readonly context: readonly PromptContextItemInput[];
@@ -241,7 +241,7 @@ export class RepositoryGuidanceSession {
 
 function repositoryTargets(
   root: RootedFileAuthority,
-  request: ToolAuthorizationRequest
+  request: ToolInputInspection
 ): readonly string[] {
   const targets = new Set<string>();
   for (const access of request.effects.accesses) {
@@ -270,7 +270,7 @@ async function guidancePaths(root: RootedFileAuthority, target: string): Promise
   return Object.freeze(paths);
 }
 
-function mutatesOrExecutes(request: ToolAuthorizationRequest): boolean {
+function mutatesOrExecutes(request: ToolInputInspection): boolean {
   return request.effects.accesses.some(
     (access) => access.mode === 'write' || access.mode === 'delete' || access.mode === 'execute'
   );

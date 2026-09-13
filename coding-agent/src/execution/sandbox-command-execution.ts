@@ -193,20 +193,24 @@ export class SandboxCommandExecution implements CommandExecution {
           })
         );
       } catch (error) {
-        await this.options.repository.terminate(processId).catch(() => undefined);
-        await this.options.repository.forget(processId).catch(() => undefined);
+        try { await this.#discardPreparation(processId); }
+        catch (releaseError) { throw new AggregateError([error, releaseError], 'Command authorization and preparation release failed.', { cause: releaseError }); }
         throw error;
       }
     }
     const owned = new SandboxCommandPlan(this, request, observation, async () => {
       if (observation.kind !== 'prepared') return;
-      await this.options.repository.terminate(observation.executionId);
-      await this.options.repository.forget(observation.executionId);
-      await this.options.state.delete(ownerPath(observation.executionId));
+      await this.#discardPreparation(observation.executionId);
     });
     const plan = createCommandExecutionReservation(authorization, () => owned.release());
     this.#plans.set(plan, owned);
     return plan;
+  }
+
+  async #discardPreparation(processId: string): Promise<void> {
+    await this.options.repository.terminate(processId);
+    await this.options.repository.forget(processId);
+    await this.options.state.delete(ownerPath(processId));
   }
 
   async start(
@@ -594,10 +598,12 @@ export class SandboxCommandExecution implements CommandExecution {
     const completion = observe()
       .catch((error: unknown) => {
         if (this.#closed || controller.signal.aborted) return;
+        const diagnostic = error instanceof Error ? error.message : String(error);
         this.#unresolved.set(processId, {
           rootPath: this.options.rootedFileAuthority.identity.canonicalPath,
-          diagnostic: error instanceof Error ? error.message : String(error)
+          diagnostic
         });
+        this.resourceLeases.failResource(processId, new Error(`Command ${processId} has an unresolved outcome: ${diagnostic}`));
       })
       .finally(() => this.#observers.delete(processId));
     this.#observers.set(processId, { controller, completion });

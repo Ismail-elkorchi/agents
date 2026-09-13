@@ -12,11 +12,11 @@
   ],
   "agentCore": {
     "path": "../agent-core",
-    "commit": "29e2bfd0bab0c83d558de4b75d6c1f8d3d108887"
+    "commit": "52077eacae2d2bb9337d92f81a35c603674f2127"
   },
   "sandbox": {
     "path": "../sandbox",
-    "commit": "89f9115290e804519c0c1f9b08075d3b5bdeda6f"
+    "commit": "b8b9493c59180dd07851ec782d042a502c74c82e"
   },
   "scripts": {
     "build": "node scripts/verify-source-dependencies.mjs && tsc -b && node scripts/post-build.mjs",
