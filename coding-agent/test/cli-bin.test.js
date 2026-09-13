@@ -2,12 +2,33 @@ import { testResult } from './helpers/results.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { access, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { resolveCodingAuthority } from '@ismail-elkorchi/coding-agent';
 import { resultExitCode } from '@ismail-elkorchi/coding-agent/cli';
 import { decodeAgentTerminalSnapshot } from '@agent-core/runtime';
+import { rpcClient } from '../../test-helpers/rpc-client.js';
+
+for (const [agent, flag] of [['coding-agent', '--reasoning-effort'], ['writing-agent', '--reasoning']])
+  test(`${agent} CLI preserves provider-defined reasoning in configuration`, { skip: process.platform !== 'linux' }, async (t) => {
+    const parent = await mkdtemp(path.join(tmpdir(), `${agent}-reasoning-`));
+    const root = path.join(parent, 'workspace');
+    await mkdir(root);
+    const client = rpcClient([
+      `${agent}/dist/cli.js`, 'rpc', '--root', root, '--state-root', path.join(parent, 'state'),
+      '--provider', 'openai-codex', '--model', 'gpt-5.6', flag, 'provider-defined-effort'
+    ]);
+    t.after(async () => {
+      await client.close();
+      await rm(parent, { recursive: true, force: true });
+    });
+    const selection = await client.request('configuration.read');
+    assert.deepEqual(selection.reasoning, { strategy: 'effort', effort: 'provider-defined-effort' });
+    await assert.rejects(client.request('configuration.set', selection), /reasoning effort provider-defined-effort is not supported/u);
+    await client.request('application.shutdown');
+    assert.equal((await client.exited).code, 0);
+  });
 
 test('permission modes expose exact tools and authority', () => {
   const review = resolveCodingAuthority({

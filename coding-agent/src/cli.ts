@@ -19,7 +19,6 @@ import { parseCodingPermissionMode } from './security/permission-mode.js';
 
 import { createTrustDecision } from './security/workspace-trust.js';
 
-import { parseReasoningEffort } from './application/input.js';
 import {
   parseProviderId,
   reasoningFromEffort,
@@ -201,8 +200,8 @@ const CLI_OPTION_SPECS = {
     if (!Number.isFinite(temperature)) throw new Error('--temperature must be a finite number.');
     options.temperature = temperature;
   }),
-  '--reasoning-effort': valued((options, value, key) => {
-    options.reasoning = reasoningFromEffort(parseReasoningEffort(value, key));
+  '--reasoning-effort': valued((options, value) => {
+    options.reasoning = reasoningFromEffort(value);
   }),
   '--permissions': valued((options, value) => {
     options.permissionMode = parseCodingPermissionMode(value, '--permissions');
@@ -880,7 +879,7 @@ Common options:
                          Optional per-request output token override.
   --temperature <n>      Provider temperature.
   --reasoning-effort <level>
-                         Optional reasoning effort: none, minimal, low, medium, high, xhigh, max.
+                         Model-supported reasoning effort; none requests disabled reasoning.
   --show-reasoning       Stream separate model reasoning or reasoning summaries to stderr.
   --permissions <mode>   Authority ceiling: review, edit, or develop. Default: review.
   --resume               Select the latest session; taskless exec drives only its unfinished run.

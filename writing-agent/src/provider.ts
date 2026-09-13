@@ -1,4 +1,9 @@
-import type { ModelProvider, ModelReasoningEffort, ModelReasoningRequest } from '@agent-core/model';
+import {
+  parseModelReasoningRequest,
+  type ModelProvider,
+  type ModelReasoningEffort,
+  type ModelReasoningRequest
+} from '@agent-core/model';
 import { OllamaProvider } from '@agent-core/provider-ollama';
 import { OpenAIProvider } from '@agent-core/provider-openai';
 import { OpenAICodexProvider, type OpenAICodexTransport } from '@agent-core/provider-openai-codex';
@@ -74,5 +79,7 @@ export function createWritingReasoningRequest(
   effort: ModelReasoningEffort | undefined
 ): ModelReasoningRequest | undefined {
   if (effort === undefined) return undefined;
-  return effort === 'none' ? { strategy: 'disabled' } : { strategy: 'effort', effort, summary: 'auto' };
+  return parseModelReasoningRequest(
+    effort === 'none' ? { strategy: 'disabled' } : { strategy: 'effort', effort }
+  );
 }

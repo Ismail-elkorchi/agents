@@ -1,4 +1,5 @@
 import {
+  parseModelReasoningRequest,
   type ModelProvider,
   type ModelReasoningEffort,
   type ModelReasoningRequest
@@ -22,7 +23,6 @@ import { type CodingAgentModelSelection } from '../state/model-selection-store.j
 import { readConfiguredCheckResults } from '../verification/configured-check-tool.js';
 import { codingWorkspaceSessionBinding, type OpenCodingWorkspace } from '../workspace.js';
 import type { CodingRuntimeDetails } from './contracts.js';
-import { parseReasoningEffort } from './input.js';
 
 export type SessionSelection =
   | { readonly kind: 'new' }
@@ -145,9 +145,7 @@ export function resolveRuntimeSettingsSelection(
     options.reasoning ??
     selected?.reasoning ??
     (selected === undefined && process.env.CODING_AGENT_REASONING_EFFORT
-      ? reasoningFromEffort(
-          parseReasoningEffort(process.env.CODING_AGENT_REASONING_EFFORT, 'CODING_AGENT_REASONING_EFFORT')
-        )
+      ? reasoningFromEffort(process.env.CODING_AGENT_REASONING_EFFORT)
       : undefined);
   if (options.codexTransport !== undefined && provider !== undefined && provider !== 'openai-codex') {
     throw new Error('--codex-transport requires provider openai-codex.');
@@ -348,5 +346,7 @@ export async function selectSession(
 }
 
 export function reasoningFromEffort(effort: ModelReasoningEffort): ModelReasoningRequest {
-  return effort === 'none' ? { strategy: 'disabled' } : { strategy: 'effort', effort };
+  return parseModelReasoningRequest(
+    effort === 'none' ? { strategy: 'disabled' } : { strategy: 'effort', effort }
+  );
 }

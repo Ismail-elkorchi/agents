@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { type ModelReasoningEffort } from '@agent-core/model';
 import { realpathSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -49,10 +48,7 @@ export async function main(argv: readonly string[]): Promise<void> {
   if (mode !== 'edit' && mode !== 'review') throw new Error('Mode must be edit or review.');
   const provider = values.provider ?? process.env.WRITING_AGENT_PROVIDER;
   const model = values.model ?? process.env.WRITING_AGENT_MODEL;
-  const effort = values.reasoning;
-  if (effort !== undefined && !isReasoningEffort(effort))
-    throw new Error(`Unsupported reasoning effort: ${effort}`);
-  const reasoning = createWritingReasoningRequest(effort);
+  const reasoning = createWritingReasoningRequest(values.reasoning);
   const application = await openWritingApplication({
     rootDirectory: path.resolve(values.root ?? process.cwd()),
     mode,
@@ -102,11 +98,6 @@ export async function main(argv: readonly string[]): Promise<void> {
   } finally {
     await application.close();
   }
-}
-function isReasoningEffort(value: string): value is ModelReasoningEffort {
-  return (['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const).some(
-    (effort) => effort === value
-  );
 }
 function printHelp() {
   process.stdout.write(
