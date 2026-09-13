@@ -20,7 +20,7 @@ export function restoreSessionView(
       composer: state.composer,
       history: historyBookmark(
         state.conversation.pages.map((page) => page.history),
-        state.conversation.anchor ?? state.presentation.anchor(state.conversation.scroll.offsetRow),
+        state.conversation.anchor ?? state.presentation.anchor(state.presentation.layout.scroll.offsetRow),
         state.conversation.scroll.followTail,
         sessionConversationId
       )

@@ -17,13 +17,9 @@ import type {
   TextAreaTransition,
   UnscrolledSearchPickerState
 } from '@ismail-elkorchi/terminal-ui/behavior';
-import type { MeasuredWindowAnchor } from '@ismail-elkorchi/terminal-ui/collection';
+import type { MeasuredViewportAnchor } from '@ismail-elkorchi/terminal-ui/interaction';
 import type { ScrollRequest } from '@ismail-elkorchi/terminal-ui/interaction';
-import type {
-  WritingApplication,
-  WritingApplicationState,
-  WritingDocument
-} from '../application/service.js';
+import type { WritingApplication, WritingApplicationState, WritingDocument } from '../application/service.js';
 
 export type WritingView = 'document' | 'conversation';
 export type WritingTuiOverlay =
@@ -98,7 +94,7 @@ export interface WritingTuiState {
   readonly history: readonly SessionBranchPage[];
   readonly historyRequestId?: string;
   readonly conversationOffset: number;
-  readonly presentation: RetainedListPresentation<ConversationEntry>;
+  readonly presentation: RetainedListPresentation<ConversationEntry, WritingTuiMessage>;
   readonly historyEntryCache: WeakMap<
     SessionBranchEntry,
     {
@@ -108,7 +104,7 @@ export interface WritingTuiState {
   >;
   readonly followTail: boolean;
   readonly unread: boolean;
-  readonly conversationAnchor?: MeasuredWindowAnchor;
+  readonly conversationAnchor?: MeasuredViewportAnchor;
   readonly offsets: Readonly<Record<string, number>>;
   readonly promptHistory: import('@agent-core/tui').PromptHistory;
   readonly source?: { readonly title: string; readonly input: TextAreaState };
@@ -259,10 +255,7 @@ export type WritingTuiMessage =
             >,
             'completion'
           >
-        | Extract<
-            import('../application/service.js').WritingSubmissionResult,
-            { readonly kind: 'rejected' }
-          >;
+        | Extract<import('../application/service.js').WritingSubmissionResult, { readonly kind: 'rejected' }>;
     }
   | { readonly type: 'view'; readonly view: WritingView }
   | {

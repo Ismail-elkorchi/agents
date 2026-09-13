@@ -31,7 +31,7 @@ Escape closes the top interaction. Ctrl+C copies an active selection, otherwise 
 
 `/sessions`, `/new`, `/name`, `/notes`, `/queue`, and `/branches` manage conversation navigation. Queue controls distinguish editing/canceling accepted pending input from composing a new request; steering is an explicit action. Branching history does not revert files. `/source` inspects messages, code, and tool results; `/export` writes the loaded history coverage locally. `/context` distinguishes available resources and the unsent draft from the latest admitted request. `/processes` inspects owned commands and offers input/termination through their existing capabilities. `/changes` shows recorded patches; `/recovery` handles pending approvals and uncertain outcomes.
 
-Clipboard fidelity and terminal-host limitations are documented in [terminal-ui consumer findings](../terminal-ui-consumer-findings.md). Unsupported exact copy is reported without altering source.
+Clipboard transport preserves selected source text, including tabs and line endings. Terminal capabilities are negotiated by terminal-ui; unsupported operations are reported explicitly.
 
 ## Workspace authority
 

@@ -1,7 +1,8 @@
+import { InMemorySessionRepository } from '@agent-core/runtime';
 import { activityDetails } from '@agent-core/tui';import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
-import { runTui } from '@ismail-elkorchi/terminal-ui/tui';
+import { createTuiRuntime, runTui } from '@ismail-elkorchi/terminal-ui/tui';
 import { createCodingTuiEventSource, createCodingAgentTuiApp } from '@ismail-elkorchi/coding-agent/tui';
 import { waitFor } from './coding-agent-tui-test-helpers.js';
 
@@ -96,3 +97,37 @@ function toolEnded(callId, ok, summary) {
     }
   };
 }
+
+
+test('wrapped conversation entries survive tool disclosure, streaming, and resize', async (t) => {
+  const repository = new InMemorySessionRepository();
+  const session = await repository.create({ binding: { schemaId: 'test/viewport', schemaVersion: 1, subject: {} } });
+  await repository.appendInput(session, { runId: 'run-1', task: '文 · e\u0301 words '.repeat(200) });
+  const runtime = createTuiRuntime({
+    host: createMemoryTerminalHost({ terminalSize: { columns: 48, rows: 20 } }),
+    app: createCodingAgentTuiApp('', { initialHydration: {
+      history: await repository.readBranchPage(session), changes: [], verification: [],
+      session: { sessionId: session.id, phase: 'idle', queuedInputs: 0, configuration: { provider: 'test', model: 'test' } },
+      branchPoints: [], pendingSubmissions: [], runs: []
+    } })
+  });
+  t.after(() => runtime.dispose());
+  await runtime.start();
+  const progress = (event) => runtime.dispatch({ type: 'progress', runId: 'run-1', event });
+  await progress({ type: 'turn.started', runId: 'run-1', turnIndex: 1, turnId: 'turn-1', requestAttempt: 1 });
+  await progress(toolStarted('call-ok', 'a very long command argument '.repeat(30)));
+  await progress(toolEnded('call-ok', true, 'Output '.repeat(50)));
+  for (const columns of [12, 80, 48]) {
+    await runtime.resize({ columns, rows: 20 });
+    await runtime.dispatch({ type: 'activity.toggle', id: 'tool:run-1:turn-1:batch-1:0' });
+    await progress({ type: 'assistant.delta', turnIndex: 1, turnId: 'turn-1', requestAttempt: 1,
+      delta: 'More output ', accumulated: 'More output '.repeat(columns) });
+    const { geometry, scroll } = runtime.state().presentation.layout;
+    assert.equal(scroll.offsetRow, Math.max(0, geometry.contentRows - geometry.viewportRows));
+    assert.ok(geometry.viewportColumns <= columns);
+  }
+  await runtime.dispatch({ type: 'conversation.scroll', transition: { kind: 'top' } });
+  assert.equal(runtime.state().presentation.layout.scroll.offsetRow, 0);
+  await runtime.dispatch({ type: 'conversation.message', direction: 'next' });
+  assert.ok(runtime.state().conversation.anchor);
+});

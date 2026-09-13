@@ -1,6 +1,6 @@
 # Terminal application measurements
 
-This directory retains the reproducible terminal measurements referenced by `terminal-ui-consumer-findings.md`.
+This directory retains reproducible terminal measurements. Dated results describe their recorded dependency revisions; rerun the scripts to measure the current applications.
 
 - `tui-baseline.mjs` records the pre-redesign Coding Agent TUI surface.
 - `tui-performance.mjs` measures input, rendering, and JSONL history-page latency for Coding Agent and Writing Agent.

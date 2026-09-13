@@ -79,8 +79,7 @@ export function presentHistoryPages(
       }
     };
     for (const entry of page.history.entries) presented = applyBranchEntry(presented, entry);
-    for (const verification of page.verification)
-      presented = applyConfiguredChecks(presented, verification);
+    for (const verification of page.verification) presented = applyConfiguredChecks(presented, verification);
   }
   const previous = new Map(state.conversation.items.map((entry) => [entry.id, entry]));
   const recorded = presented.conversation.items.map((entry) => {
@@ -140,7 +139,7 @@ export function receiveHistory(
   const anchor =
     direction === 'tail'
       ? undefined
-      : (conversation.anchor ?? state.presentation.anchor(conversation.scroll.offsetRow));
+      : (conversation.anchor ?? state.presentation.anchor(state.presentation.layout.scroll.offsetRow));
   const presented = presentHistoryPages({ ...state, conversation }, pages, direction === 'tail');
   return {
     ...presented,

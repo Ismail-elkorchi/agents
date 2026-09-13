@@ -1,3 +1,4 @@
+import type { CodingAgentTuiMessage } from './messages.js';
 import type {
   AgentApprovalSuspension,
   AgentDeliveryDiagnostic,
@@ -17,7 +18,7 @@ import type { ComposerDraft, ConversationEntry, NotesState } from '@agent-core/t
 import { defaultTuiPreferences, RetainedListPresentation } from '@agent-core/tui';
 import type { ScrollState, UnscrolledSearchPickerState } from '@ismail-elkorchi/terminal-ui/behavior';
 import { createScrollState, createTextAreaState } from '@ismail-elkorchi/terminal-ui/behavior';
-import type { MeasuredWindowAnchor } from '@ismail-elkorchi/terminal-ui/collection';
+import type { MeasuredViewportAnchor } from '@ismail-elkorchi/terminal-ui/interaction';
 import type {
   CodingHistoryPage,
   CodingRuntimeDetails,
@@ -106,7 +107,7 @@ export interface CodingAgentTuiConversationState {
     readonly direction: 'older' | 'newer' | 'tail' | 'restore';
     readonly refreshTail?: boolean;
   };
-  readonly anchor?: MeasuredWindowAnchor;
+  readonly anchor?: MeasuredViewportAnchor;
   readonly scroll: ScrollState;
   readonly expandedIds: readonly string[];
 }
@@ -134,7 +135,7 @@ export interface CodingAgentTuiState {
       }
     >
   >;
-  readonly presentation: RetainedListPresentation<ConversationEntry>;
+  readonly presentation: RetainedListPresentation<ConversationEntry, CodingAgentTuiMessage>;
   readonly preferences: import('@agent-core/tui').TuiPreferences;
   readonly setup: CodingAgentTuiSetupState;
   readonly run: CodingAgentTuiRunState;
@@ -156,7 +157,7 @@ export function createInitialCodingAgentTuiState(
     sessionViews: {},
     attention: { focused: true },
     progress: { label: 'Idle' },
-    presentation: new RetainedListPresentation<ConversationEntry>(),
+    presentation: new RetainedListPresentation<ConversationEntry, CodingAgentTuiMessage>(),
     preferences,
     setup,
     run: { kind: 'idle' },

@@ -72,11 +72,11 @@ export function writingView(
           ? row(
               [
                 documentView(state, Math.floor(columns * 0.6)),
-                sectionView(state, columns - Math.floor(columns * 0.6), rows - composerHeight - 3, context)
+                sectionView(state, columns - Math.floor(columns * 0.6))
               ],
               { sizes: [{ kind: 'percent', value: 60 }, { kind: 'fill' }] }
             )
-          : sectionView(state, columns, rows - composerHeight - 3, context),
+          : sectionView(state, columns),
       composer: column(
         [
           ...(rows < 8
@@ -90,9 +90,7 @@ export function writingView(
                   onQueue: (): WritingTuiMessage => ({ type: 'queue.open' })
                 })
               ]),
-          ...(state.resourceCompletion === undefined
-            ? []
-            : [resourceSuggestions(state.resourceCompletion)]),
+          ...(state.resourceCompletion === undefined ? [] : [resourceSuggestions(state.resourceCompletion)]),
           ...(state.completion === undefined
             ? []
             : [
@@ -163,12 +161,12 @@ export function writingView(
   return overlay(modal === undefined ? [main] : [main, modal]);
 }
 
-function sectionView(state: WritingTuiState, width: number, height: number, context: TuiContext): View {
+function sectionView(state: WritingTuiState, width: number): View {
   switch (state.view) {
     case 'document':
       return documentView(state, width);
     case 'conversation':
-      return conversationView(state, width, height, context);
+      return conversationView(state, width);
   }
 }
 
@@ -225,15 +223,10 @@ function documentView(state: WritingTuiState, width: number): View {
   );
 }
 
-function conversationView(
-  state: WritingTuiState,
-  width: number,
-  height: number,
-  context: TuiContext
-): View {
+function conversationView(state: WritingTuiState, width: number): View {
   return column(
     [
-      historyViewport(state, width, Math.max(1, height - 1), context),
+      historyViewport(state, width),
       row([
         action('writing-history-older', 'Older', {
           type: 'history.load',

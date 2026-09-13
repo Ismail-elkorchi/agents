@@ -165,7 +165,7 @@ test('palette commands and interrupted setup commands preserve the instruction d
   assert.equal(draft(runtime), 'My instruction');
 });
 
-test('keyboard source selection copies Unicode exactly and reports source-changing clipboard normalization', async (t) => {
+test('keyboard source selection copies Unicode, tabs, and CRLF exactly', async (t) => {
   const { host, runtime } = await open(t, {});
   const source = '# Source\n\nUnicode 文 👩🏽‍💻\n';
   await runtime.dispatch({ type: 'panel.source-loaded', title: 'Original source', content: source });
@@ -177,6 +177,7 @@ test('keyboard source selection copies Unicode exactly and reports source-changi
   await runtime.dispatch({ type: 'panel.source-loaded', title: 'Original source', content: exact });
   await runtime.handleInput(key('a', { ctrl: true }));
   await runtime.handleInput(key('c', { ctrl: true }));
-  await waitFor(() => runtime.state().overlay.notice?.includes('Exact copy is unavailable'));
+  await waitFor(() => runtime.state().overlay.notice === 'Source sent to clipboard.');
+  assert(host.output().includes(`\x1b]52;c;${Buffer.from(exact).toString('base64')}\x07`));
   assert.equal(textDocumentText(runtime.state().overlay.input.document), exact);
 });

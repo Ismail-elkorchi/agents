@@ -133,9 +133,7 @@ export function createWritingAgentTuiApp(application: WritingApplication, option
           },
           effects: [
             refresh(application),
-            ...(options.drafts === undefined
-              ? []
-              : [loadDraft(options.drafts, sessionId, initial.composer)])
+            ...(options.drafts === undefined ? [] : [loadDraft(options.drafts, sessionId, initial.composer)])
           ],
           focus: { kind: 'element', elementId: 'writing-composer' }
         };
@@ -282,12 +280,7 @@ export function createWritingAgentTuiApp(application: WritingApplication, option
           binding('Saved drafts', 'd', { type: 'recall.open' }, { alt: true }),
           binding('External instruction editor', 'g', { type: 'external-editor' }, { ctrl: true }),
           binding('Older history', 'pageUp', { type: 'history.load', direction: 'older' }, { ctrl: true }),
-          binding(
-            'Newer history',
-            'pageDown',
-            { type: 'history.load', direction: 'newer' },
-            { ctrl: true }
-          ),
+          binding('Newer history', 'pageDown', { type: 'history.load', direction: 'newer' }, { ctrl: true }),
           binding('Latest history', 'end', { type: 'history.load', direction: 'tail' }, { ctrl: true }),
           {
             ...binding('Interrupt', 'c', { type: 'interrupt' }, { ctrl: true }),
@@ -1092,9 +1085,7 @@ function update(
                   async search(query, signal) {
                     signal.throwIfAborted();
                     const slash = query.lastIndexOf('/');
-                    const documents = await app.listDocuments(
-                      slash < 0 ? '.' : query.slice(0, slash) || '.'
-                    );
+                    const documents = await app.listDocuments(slash < 0 ? '.' : query.slice(0, slash) || '.');
                     signal.throwIfAborted();
                     return documents
                       .filter((item) => item.path.startsWith(query))
@@ -1161,14 +1152,12 @@ function update(
                   ? {}
                   : {
                       delivery: message.delivery,
-                      ...(message.delivery === 'steer' &&
-                      state.sessionView?.session.activeRunId !== undefined
+                      ...(message.delivery === 'steer' && state.sessionView?.session.activeRunId !== undefined
                         ? { expectedRunId: state.sessionView.session.activeRunId }
                         : {})
                     }
               );
-              if (result.kind === 'rejected')
-                return { type: 'submitted', sessionId, draft, receipt: result };
+              if (result.kind === 'rejected') return { type: 'submitted', sessionId, draft, receipt: result };
               const { completion, ...receipt } = result;
               void completion.catch(() => undefined);
               return { type: 'submitted', sessionId, draft, receipt };
@@ -1228,8 +1217,7 @@ function update(
           ? state.liveConversation
           : insert(state.liveConversation, {
               kind: 'user',
-              id:
-                receipt.kind === 'steered' ? `steering:${receipt.submissionId}` : `input:${receipt.runId}`,
+              id: receipt.kind === 'steered' ? `steering:${receipt.submissionId}` : `input:${receipt.runId}`,
               runId: receipt.runId,
               text: textDocumentText(message.draft.input.document),
               ...(images.length === 0 ? {} : { images })
@@ -1239,9 +1227,7 @@ function update(
           ...state,
           submitting: false,
           liveConversation,
-          promptHistory: accepted
-            ? rememberPrompt(state.promptHistory, message.draft)
-            : state.promptHistory,
+          promptHistory: accepted ? rememberPrompt(state.promptHistory, message.draft) : state.promptHistory,
           notice:
             state.failure ??
             (receipt.kind === 'rejected'
@@ -1342,8 +1328,7 @@ function update(
     case 'picker.open':
       return openPicker(state, message.subject, app, options.sessionNames);
     case 'picker.loaded':
-      if (state.overlay.kind !== 'loading' || state.overlay.requestId !== message.requestId)
-        return { state };
+      if (state.overlay.kind !== 'loading' || state.overlay.requestId !== message.requestId) return { state };
       return {
         state: {
           ...state,
@@ -1477,7 +1462,8 @@ function update(
       const anchor =
         message.direction === 'tail'
           ? undefined
-          : (state.conversationAnchor ?? state.presentation.anchor(state.conversationOffset));
+          : (state.conversationAnchor ??
+            state.presentation.anchor(state.presentation.layout.scroll.offsetRow));
       return {
         state: {
           ...rest,
@@ -1819,7 +1805,7 @@ function loadView(
         view: state.view,
         bookmark: historyBookmark(
           state.history,
-          state.conversationAnchor ?? state.presentation.anchor(state.conversationOffset),
+          state.conversationAnchor ?? state.presentation.anchor(state.presentation.layout.scroll.offsetRow),
           state.followTail,
           sessionConversationId
         )

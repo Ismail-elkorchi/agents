@@ -6,11 +6,8 @@ import {
   sessionConversationId,
   type ConversationEntry
 } from '@agent-core/tui';
-import { measuredWindow } from '@ismail-elkorchi/terminal-ui/collection';
 import { button, richText, type Element } from '@ismail-elkorchi/terminal-ui/components';
 import { column, measuredViewport } from '@ismail-elkorchi/terminal-ui/layout';
-import { wrapTextCells } from '@ismail-elkorchi/terminal-ui/text';
-import type { TuiContext } from '@ismail-elkorchi/terminal-ui/tui';
 import type { WritingTuiMessage, WritingTuiState } from './state.js';
 
 export function historyMessages(state: WritingTuiState): readonly ConversationEntry[] {
@@ -40,77 +37,52 @@ export function historyMessages(state: WritingTuiState): readonly ConversationEn
     : conversation.filter((entry) => entry.kind !== 'reasoning');
 }
 
-export function historyViewport(
-  state: WritingTuiState,
-  width: number,
-  rows: number,
-  context: TuiContext
-): Element<WritingTuiMessage> {
-  // Reserve the visible vertical scrollbar so history measurements have one stable width.
-  const columns = Math.max(1, width - 1);
+export function historyViewport(state: WritingTuiState, width: number): Element<WritingTuiMessage> {
   const expanded = (entry: ConversationEntry) =>
     state.preferences.showTools !== state.expandedTools.includes(entry.id);
   const source = (entry: ConversationEntry) => conversationText(entry, expanded(entry));
   const segments = (entry: ConversationEntry) =>
     entry.kind === 'assistant'
-      ? state.presentation.markdown(entry.id, entry.text).render(columns).segments
+      ? state.presentation.markdown(entry.id, entry.text).render(width).segments
       : [{ kind: 'text' as const, text: source(entry) }];
-  const collection = state.presentation.measure(
+  const entries = state.presentation.render(
     historyMessages(state),
     state.expandedTools,
-    `${String(columns)}:${String(state.preferences.showTools)}:${JSON.stringify(context.capabilities.unicode.widthProfile)}`,
-    (entry) => {
-      if (entry.kind === 'reference') return 1;
-      const content = segments(entry)
-        .map((segment) => segment.text)
-        .join('');
-      return (
-        (entry.kind === 'activity' ? 1 : 0) +
-        Math.max(
-          1,
-          wrapTextCells(content, columns, {
-            widthProfile: context.capabilities.unicode.widthProfile,
-            preserveWords: true
-          }).length
-        )
-      );
-    }
-  );
-  const window = measuredWindow(collection, {
-    viewportRows: rows,
-    ...(state.followTail
-      ? { offsetRow: Math.max(0, collection.totalRows - rows) }
-      : state.conversationAnchor === undefined
-        ? { offsetRow: state.conversationOffset }
-        : { anchor: state.conversationAnchor })
-  });
-  return measuredViewport(
-    window,
+    `${String(width)}:${String(state.preferences.showTools)}`,
     (entry) =>
-      entry.item.value.kind === 'reference'
-        ? referenceButton(entry.item.value)
-        : column([
-            ...(entry.item.value.kind === 'activity'
-              ? [
-                  button<WritingTuiMessage>({
-                    id: `history-toggle:${entry.item.id}`,
-                    label: `${expanded(entry.item.value) ? 'Hide' : 'Show'} ${entry.item.value.label}`,
-                    onPress: () => ({ type: 'tool.toggle', id: entry.item.id })
-                  })
-                ]
-              : []),
-            richText({
-              id: `history:${entry.item.id}`,
-              segments: segments(entry.item.value),
-              wrap: { preserveWords: true }
-            })
-          ]),
-    {
-      id: 'writing-conversation',
-      scrollbar: { axis: 'vertical', visible: 'always' },
-      onScroll: (request): WritingTuiMessage => ({ type: 'conversation.scroll', request })
-    }
+      entry.kind === 'reference'
+        ? referenceButton(entry)
+        : column(
+            [
+              ...(entry.kind === 'activity'
+                ? [
+                    button<WritingTuiMessage>({
+                      id: `history-toggle:${entry.id}`,
+                      label: `${expanded(entry) ? 'Hide' : 'Show'} ${entry.label}`,
+                      onPress: () => ({ type: 'tool.toggle', id: entry.id })
+                    })
+                  ]
+                : []),
+              richText({
+                id: `history:${entry.id}`,
+                segments: segments(entry),
+                wrap: { preserveWords: true }
+              })
+            ],
+            { id: entry.id }
+          )
   );
+  return measuredViewport(entries, {
+    id: 'writing-conversation',
+    offset: { row: state.conversationOffset },
+    followTail: state.followTail,
+    ...(state.conversationAnchor === undefined ? {} : { anchor: state.conversationAnchor }),
+    onLayout: (layout) => {
+      state.presentation.layout = layout;
+    },
+    scrollbar: { axis: 'vertical', visible: 'auto' },
+    onScroll: (request): WritingTuiMessage => ({ type: 'conversation.scroll', request })
+  });
 }
 
 function referenceButton(
