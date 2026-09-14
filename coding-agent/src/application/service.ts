@@ -270,14 +270,6 @@ export class CodingApplication {
         failures.push(error);
       }
     }
-    for (const continuing of this.continuingRuntimes) {
-      try {
-        await closeCodingSession(continuing);
-      } catch (error) {
-        failures.push(error);
-      }
-    }
-    this.continuingRuntimes.clear();
     try {
       this.workspace.fileRoot.close();
     } catch (error) {
@@ -339,8 +331,6 @@ export class CodingApplication {
     );
   }
 
-  private readonly continuingRuntimes = new Set<CodingAgentRuntimeComposition>();
-
   private async activateRuntime(prepared?: CodingAgentRuntimeComposition): Promise<void> {
     const provider = this.resolvedSettings.provider;
     const model = this.resolvedSettings.model;
@@ -364,7 +354,10 @@ export class CodingApplication {
         this.workspace,
         { ...this.resolvedSettings, provider, model },
         this.selectedSessionId,
-        this.modelOverride?.adapter
+        this.modelOverride?.adapter,
+        (result) => {
+          this.events.publish({ type: 'command.settled', result });
+        }
       ));
     if (prepared === undefined) {
       try {
@@ -500,13 +493,18 @@ export class CodingApplication {
       let prepared: CodingAgentRuntimeComposition | undefined;
       try {
         if (this.workspace.security.trustLevel !== 'untrusted') {
-          prepared = await createRuntime(
-            this.options,
-            this.workspace,
-            settings,
-            this.selectedSessionId,
-            adapter
-          );
+          prepared =
+            this.runtime ??
+            (await createRuntime(
+              this.options,
+              this.workspace,
+              settings,
+              this.selectedSessionId,
+              adapter,
+              (result) => {
+                this.events.publish({ type: 'command.settled', result });
+              }
+            ));
           await prepared.agent.changeModel({
             selection: owned,
             profile,
@@ -515,28 +513,19 @@ export class CodingApplication {
           });
         }
       } catch (error) {
-        if (prepared !== undefined) await closeCodingSession(prepared);
+        if (prepared !== undefined && prepared !== this.runtime) await closeCodingSession(prepared);
         throw error;
       }
-      const previous = this.runtime;
-      this.runtimeUnsubscribe?.();
-      this.runtimeUnsubscribe = undefined;
-      this.runtime = undefined;
       this.modelOverride = { selection: owned, adapter };
       this.resolvedSettings = settings;
-      if (prepared !== undefined) await this.activateRuntime(prepared);
+      if (prepared !== undefined) {
+        prepared.setProvider(adapter);
+        if (prepared !== this.runtime) await this.activateRuntime(prepared);
+      }
       await this.publishState(
         prepared === undefined ? 'setup_required' : 'ready',
         prepared === undefined ? setupRequirements(this.workspace, settings) : []
       );
-      if (previous !== undefined) {
-        await previous.agent.close();
-        this.continuingRuntimes.add(previous);
-        if ((await previous.listProcesses()).length === 0) {
-          await closeCodingSession(previous);
-          this.continuingRuntimes.delete(previous);
-        }
-      }
       try {
         await new ModelSelectionStore(this.workspace.privateState).write({
           ...owned,
@@ -629,28 +618,18 @@ export class CodingApplication {
     return this.requireRuntime().inspectContext();
   }
 
-  async listProcesses() {
-    const current = this.requireRuntime();
-    const owners = [current, ...this.continuingRuntimes].filter(
-      (runtime) => runtime.session.id === current.session.id
-    );
-    const groups = await Promise.all(owners.map((runtime) => runtime.listProcesses()));
-    return [...new Map(groups.flat().map((process) => [process.processId, process])).values()];
+  listProcesses() {
+    return this.requireRuntime().listProcesses();
+  }
+  reconcileProcesses(acknowledge?: import('../execution/process-controls.js').CodingProcessTarget) {
+    return this.requireRuntime().reconcileProcesses(acknowledge);
   }
 
-  async controlProcess(
+  controlProcess(
     target: import('../execution/process-controls.js').CodingProcessTarget,
     action: import('../execution/process-controls.js').CodingProcessAction
   ) {
-    const current = this.requireRuntime();
-    if (target.sessionId !== current.session.id)
-      throw new Error('This process belongs to another session.');
-    for (const runtime of [current, ...this.continuingRuntimes]) {
-      if (runtime.session.id !== current.session.id) continue;
-      if ((await runtime.listProcesses()).some((process) => process.processId === target.processId))
-        return runtime.controlProcess(target, action);
-    }
-    throw new Error('The process authority is no longer available.');
+    return this.requireRuntime().controlProcess(target, action);
   }
 
   async retainHistory() {

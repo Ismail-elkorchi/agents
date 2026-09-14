@@ -45,3 +45,10 @@ The model selector offers **Continue fresh in this session** after a native-cont
 CLI: `--session ID --provider PROVIDER --model MODEL --fresh-continuation`. RPC: add `"continuation": "fresh"` to the flat `configuration.set` model-selection command. This is a one-command choice, not a default for future sessions. Compatible changes follow ordinary admission.
 
 RPC error `-32010` means the selected native context requires an explicit fresh-continuation choice. Image and unresolved-work conflicts remain separate errors.
+
+Generation allowance is an application decision. The default reserves up to 16,384
+output tokens, bounded by advertised output capacity and half the context window;
+`--max-output-tokens` overrides it. Context inspection reports the effective
+reservation and whether the endpoint enforces a cap. A reservation-only endpoint
+can exceed that amount; actual usage still counts against the continuing session
+budget. This default has structural coverage, not live-model quality validation.

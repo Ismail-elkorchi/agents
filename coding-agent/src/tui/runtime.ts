@@ -208,6 +208,13 @@ async function presentControllerEvent(
     case 'session.restored':
       message = { type: 'session.hydrated', hydration: event.view };
       break;
+    case 'command.settled':
+      message = {
+        type: 'interactive.notice',
+        message: `Command ${event.result.status}${event.result.exitCode === undefined ? '' : ` · exit ${String(event.result.exitCode)}`} · ${event.result.processId}. Open Processes to inspect output.`,
+        tone: event.result.status === 'exited' && event.result.exitCode === 0 ? 'info' : 'warning'
+      };
+      break;
     case 'verification.updated':
       message = { type: 'verification.updated', verification: event.verification };
       break;

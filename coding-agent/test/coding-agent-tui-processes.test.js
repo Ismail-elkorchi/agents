@@ -10,6 +10,8 @@ import { waitForState } from '../../test-helpers/tui-runtime.js';
 const target = {
   sessionId: 'session',
   processId: 'process',
+  command: 'node server.js',
+  revision: 'initial',
   status: 'running',
   owner: { ownerId: 'owner', runId: 'run', turnId: 'turn', toolBatchId: 'batch', callIndex: 0 }
 };
@@ -86,8 +88,7 @@ test('process actions bind the exact session and causal owner, including after t
       return result;
     }
   };
-  const authorities = new Set([authority]);
-  const controls = processControls('session', authorities);
+  const controls = processControls('session', authority);
   await assert.rejects(
     controls.controlProcess({ ...target, sessionId: 'other' }, { kind: 'input', text: 'x' }),
     /another session/
@@ -102,6 +103,25 @@ test('process actions bind the exact session and causal owner, including after t
   assert.equal(writes, 0);
   await controls.controlProcess(target, { kind: 'input', text: 'x' });
   assert.equal(writes, 1);
-  authorities.clear();
-  await assert.rejects(controls.controlProcess(target, { kind: 'terminate' }), /authority has closed/);
+  const closed = processControls('session', undefined);
+  await assert.rejects(closed.controlProcess(target, { kind: 'terminate' }), /authority has closed/);
+});
+
+
+test('uncertainty decisions bind the current evidence revision and causal owner before acknowledgement', async () => {
+  let acknowledgements = 0;
+  let current = { ...target, status: 'unknown', diagnostic: 'Worker connection is unavailable.' };
+  const authority = {
+    async listProcesses() { return [current]; },
+    async acknowledgeUnresolved(ids) { assert.deepEqual(ids, ['process']); acknowledgements++; current = { ...current, status: 'acknowledged-unknown', revision: 'accepted' }; },
+    async retryReconciliation() {}
+  };
+  const controls = processControls('session', authority);
+  await assert.rejects(controls.reconcileProcesses({ ...current, sessionId: 'other' }), /another session/);
+  await assert.rejects(controls.reconcileProcesses({ ...current, revision: 'stale' }), /evidence changed/);
+  await assert.rejects(controls.reconcileProcesses({ ...current, owner: { ...current.owner, runId: 'other' } }), /owner/);
+  assert.equal(acknowledgements, 0);
+  const processes = await controls.reconcileProcesses(current);
+  assert.equal(processes[0].status, 'acknowledged-unknown');
+  assert.equal(acknowledgements, 1);
 });

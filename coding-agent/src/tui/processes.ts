@@ -44,6 +44,7 @@ export interface ProcessPanel {
 
 export type ProcessMessage =
   | { readonly type: 'processes.open' | 'processes.refresh' | 'processes.back' }
+  | { readonly type: 'processes.reconcile'; readonly acknowledge: boolean }
   | { readonly type: 'processes.transition'; readonly transition: SearchPickerControlTransition }
   | { readonly type: 'processes.select'; readonly processId: string }
   | {
@@ -77,7 +78,7 @@ export type ProcessMessage =
 const processIndex = (processes: readonly CodingProcessTarget[]) =>
   createSearchPickerIndex(processes, (process) => ({
     id: process.processId,
-    label: `${process.status} · ${process.processId}`,
+    label: `${process.status} · ${process.command}`,
     value: process.processId
   }));
 
@@ -96,6 +97,39 @@ export function updateProcesses(
   operations: CodingProcessOperations
 ): TuiUpdateResult<ProcessPanel, ProcessMessage> {
   switch (message.type) {
+    case 'processes.reconcile': {
+      if (state.pending || (message.acknowledge && !state.selected)) return { state };
+      return {
+        state: { ...state, pending: true },
+        effects: [
+          {
+            id: 'process-reconciliation',
+            concurrency: 'keep-first',
+            async run() {
+              return {
+                kind: 'message',
+                message: {
+                  type: 'processes.listed',
+                  id: state.id,
+                  processes: await operations.reconcileProcesses(
+                    message.acknowledge ? state.selected?.target : undefined
+                  )
+                }
+              };
+            },
+            onError: ({ diagnostic }) => ({
+              kind: 'message',
+              message: {
+                type: 'processes.failed',
+                operation: 'list',
+                id: state.id,
+                message: diagnosticMessage(diagnostic)
+              }
+            })
+          }
+        ]
+      };
+    }
     case 'processes.open':
     case 'processes.refresh': {
       if (state.pending) return { state };
@@ -133,7 +167,24 @@ export function updateProcesses(
     case 'processes.listed':
       return message.id !== state.id
         ? { state }
-        : { state: { ...state, pending: false, processes: message.processes } };
+        : {
+            state: {
+              ...state,
+              pending: false,
+              processes: message.processes,
+              ...(state.selected
+                ? {
+                    selected: {
+                      ...state.selected,
+                      target:
+                        message.processes.find(
+                          (item) => item.processId === state.selected?.target.processId
+                        ) ?? state.selected.target
+                    }
+                  }
+                : {})
+            }
+          };
     case 'processes.failed':
       return message.id !== state.id
         ? { state }
@@ -149,6 +200,21 @@ export function updateProcesses(
       };
     case 'processes.select': {
       const target = state.processes.find((process) => process.processId === message.processId);
+      if (target?.status === 'unknown' || target?.status === 'acknowledged-unknown')
+        return {
+          state: {
+            ...state,
+            selected: {
+              target,
+              input: createTextAreaState({ value: '' }),
+              output: createTextAreaState({
+                value:
+                  target.diagnostic ??
+                  'The command outcome is unknown. Acknowledgement accepts uncertainty and does not replay the command.'
+              })
+            }
+          }
+        };
       return target === undefined || state.pending
         ? { state }
         : updateProcesses(
@@ -172,7 +238,8 @@ export function updateProcesses(
               ...state,
               selected: {
                 ...state.selected,
-                [message.field]: textAreaReducer(state.selected[message.field], message.transition).state
+                [message.field]: textAreaReducer(state.selected[message.field], message.transition)
+                  .state
               }
             }
           };
@@ -274,7 +341,7 @@ export function processesView(
       : column(
           [
             text({
-              content: `${selected.target.processId}\nRun ${selected.target.owner.runId} · ${selected.target.status}`
+              content: `${selected.target.command}\nRun ${selected.target.owner.runId} · ${selected.target.status}`
             }),
             textArea<Message>({
               id: 'process-output',
@@ -292,11 +359,14 @@ export function processesView(
             text({
               content:
                 selected.result === undefined
-                  ? 'Inspecting output…'
+                  ? (selected.target.diagnostic ?? 'No command output is available.')
                   : `Output bytes ${String(selected.result.cursorStart)}–${String(selected.result.cursorEnd)} · ${String(selected.result.combined.omittedBytes)} bytes omitted${selected.result.cursorExpired ? ' · earlier output expired' : ''}${selected.result.diagnostic === undefined ? '' : ` · ${selected.result.diagnostic}`}`
             }),
             row([
-              control('process-inspect', 'Refresh', { type: 'processes.action', action: 'inspect' }),
+              control('process-inspect', 'Refresh', {
+                type: 'processes.action',
+                action: 'inspect'
+              }),
               control('process-more', 'Next output', {
                 type: 'processes.action',
                 action: 'inspect',
@@ -318,7 +388,10 @@ export function processesView(
                     })
                   }),
                   column([
-                    control('process-send', 'Send input', { type: 'processes.action', action: 'input' }),
+                    control('process-send', 'Send input', {
+                      type: 'processes.action',
+                      action: 'input'
+                    }),
                     control('process-close-input', 'Close stdin', {
                       type: 'processes.action',
                       action: 'close-input'
@@ -367,7 +440,21 @@ export function processesView(
       actions:
         selected === undefined
           ? control('process-list-refresh', 'Refresh', { type: 'processes.refresh' })
-          : control('process-back', 'Back', { type: 'processes.back' })
+          : row([
+              control('process-back', 'Back', { type: 'processes.back' }),
+              control('process-reconcile', 'Retry observation', {
+                type: 'processes.reconcile',
+                acknowledge: false
+              }),
+              ...(selected.target.status === 'unknown'
+                ? [
+                    control('process-acknowledge', 'Accept unknown outcome', {
+                      type: 'processes.reconcile',
+                      acknowledge: true
+                    })
+                  ]
+                : [])
+            ])
     }
   });
 }

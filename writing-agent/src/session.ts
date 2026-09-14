@@ -197,9 +197,9 @@ export function createWritingSession(
           instructions,
           contextItems,
           ...(configuration.limits === undefined ? {} : { limits: configuration.limits }),
-          ...(configuration.maxOutputTokens === undefined
-            ? {}
-            : { maxOutputTokens: configuration.maxOutputTokens }),
+          maxOutputTokens:
+            configuration.maxOutputTokens ??
+            defaultGenerationAllowance(await provider.describeModel(settings.model)),
           ...(settings.reasoning === undefined ? {} : { reasoning: settings.reasoning }),
           ...(settings.temperature === undefined ? {} : { temperature: settings.temperature }),
           ...(settings.responseFormat === undefined
@@ -229,9 +229,16 @@ export function createWritingSession(
     sessions,
     context,
     async inspectContext(mode: WritingMode) {
+      const profile = await provider.describeModel(agent.state().configuration.model);
       return {
         ...(await context.inspect()),
         suspension: agent.inspectSuspension(),
+        generation: {
+          outputReservation: configuration.maxOutputTokens ?? defaultGenerationAllowance(profile),
+          enforcement: profile.supportedParameters.includes('maxOutputTokens')
+            ? 'provider-cap'
+            : 'reservation-only'
+        },
         available: {
           instructions,
           resources: workspaceContext(workspace, mode),
@@ -303,4 +310,15 @@ function workspaceContext(
       purpose: 'Selected workspace and file authority.'
     }
   ];
+}
+
+/** Application policy: reserve at most half the context and up to 16,384 output tokens. */
+function defaultGenerationAllowance(profile: import('@agent-core/model').ModelProfile): number {
+  return Math.min(
+    16_384,
+    profile.limits.outputTokens ?? Infinity,
+    profile.limits.contextTokens === undefined
+      ? Infinity
+      : Math.max(1, Math.floor(profile.limits.contextTokens / 2))
+  );
 }

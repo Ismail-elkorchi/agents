@@ -59,6 +59,10 @@ export type CodingSubmissionResult =
       readonly requirements: readonly CodingSetupRequirement[];
     };
 export type CodingApplicationEvent =
+  | {
+      readonly type: 'command.settled';
+      readonly result: import('@agent-core/tools').CommandExecutionResult;
+    }
   | AgentSessionEvent
   | ApplicationDeliveryEvent
   | { readonly type: 'application.state.changed'; readonly state: CodingApplicationState }

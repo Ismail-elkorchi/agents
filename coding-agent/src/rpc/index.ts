@@ -16,6 +16,42 @@ import type { CodingApplication } from '../application/service.js';
 
 const empty = z.strictObject({});
 const id = z.string().min(1);
+const processTarget = z
+  .strictObject({
+    sessionId: id,
+    processId: id,
+    command: z.string(),
+    revision: id,
+    diagnostic: z.string().optional(),
+    status: z.enum([
+      'running',
+      'exited',
+      'stopped',
+      'timed_out',
+      'failed',
+      'preparing',
+      'prepared',
+      'unknown',
+      'acknowledged-unknown'
+    ]),
+    owner: z.strictObject({
+      ownerId: id,
+      runId: id,
+      turnId: id,
+      toolBatchId: id,
+      callIndex: z.int().nonnegative()
+    })
+  })
+  .transform(({ diagnostic, ...value }) => ({
+    ...value,
+    ...(diagnostic === undefined ? {} : { diagnostic })
+  }));
+const processAction = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('inspect'), afterCursor: z.int().nonnegative() }),
+  z.strictObject({ kind: z.literal('input'), text: z.string() }),
+  z.strictObject({ kind: z.literal('close-input') }),
+  z.strictObject({ kind: z.literal('terminate') })
+]);
 
 export function codingRpcMethods(application: CodingApplication, shutdown: () => void) {
   return {
@@ -68,6 +104,15 @@ export function codingRpcMethods(application: CodingApplication, shutdown: () =>
     ),
     'change.read': rpcMethod(z.strictObject({ runId: id, path: id }), ({ runId, path }) =>
       application.readChange(runId, path)
+    ),
+    'process.list': rpcMethod(empty, () => application.listProcesses()),
+    'process.control': rpcMethod(
+      z.strictObject({ target: processTarget, action: processAction }),
+      ({ target, action }) => application.controlProcess(target, action)
+    ),
+    'process.reconcile': rpcMethod(
+      z.strictObject({ acknowledge: processTarget.optional() }),
+      ({ acknowledge }) => application.reconcileProcesses(acknowledge)
     ),
     'context.read': rpcMethod(empty, () => application.inspectContext()),
     'workspace.files': rpcMethod(

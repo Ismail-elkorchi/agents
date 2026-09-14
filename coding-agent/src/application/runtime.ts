@@ -247,7 +247,8 @@ export async function createRuntime(
   openedWorkspace: OpenCodingWorkspace,
   settings: ResolvedSessionSettings,
   persistedSessionId?: string,
-  selectedProvider?: ModelProvider
+  selectedProvider?: ModelProvider,
+  onCommandSettlement?: (result: import('@agent-core/tools').CommandExecutionResult) => void
 ): Promise<CodingAgentRuntimeComposition> {
   const workspace = openedWorkspace.layout;
   const sessions = new JsonlSessionRepository({ rootDir: workspace.sessionsDir });
@@ -266,6 +267,7 @@ export async function createRuntime(
     workspace: openedWorkspace,
     provider: providerRuntime.provider,
     descriptor: session,
+    ...(onCommandSettlement ? { onCommandSettlement } : {}),
     settings: {
       provider: settings.provider,
       model: settings.model,
@@ -282,14 +284,22 @@ export async function createRuntime(
   if (options.branch) await composition.agent.branchFrom(options.branch, 'cli branch');
   return {
     ...composition,
-    provider: providerRuntime.provider,
-    details: {
-      providerId: providerRuntime.providerId,
-      modelId: providerRuntime.model,
-      ...(settings.temperature === undefined ? {} : { temperature: settings.temperature }),
-      ...(settings.reasoning === undefined ? {} : { reasoning: settings.reasoning }),
-      sessionLocation: sessions.location(session.id),
-      permissions: composition.permissions
+    get provider() {
+      return composition.provider;
+    },
+    get inference() {
+      return composition.inference;
+    },
+    get details() {
+      const current = composition.agent.state().configuration;
+      return {
+        providerId: current.provider,
+        modelId: current.model,
+        ...(current.temperature === undefined ? {} : { temperature: current.temperature }),
+        ...(current.reasoning === undefined ? {} : { reasoning: current.reasoning }),
+        sessionLocation: sessions.location(session.id),
+        permissions: composition.permissions
+      };
     }
   };
 }

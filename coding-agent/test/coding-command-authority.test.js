@@ -3,6 +3,8 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { InMemoryArtifactRepository, InMemoryEventRepository } from '@agent-core/persistence';
+import { agentEventCodec } from '@agent-core/runtime';
 import { RootedFileAuthority } from '@agent-core/tools-local';
 import { createCodingCommandAuthority } from '../dist/execution/coding-command-authority.js';
 import { PrivateStateDirectory } from '../dist/state/private-state.js';
@@ -22,7 +24,7 @@ test(
       execution = await createCodingCommandAuthority({
         repositoryDirectory: path.join(parent, 'executions'),
         rootedFileAuthority: root,
-        state
+        state, events: new InMemoryEventRepository(agentEventCodec), artifacts: new InMemoryArtifactRepository()
       });
       const script = `
         const fs = require('node:fs');

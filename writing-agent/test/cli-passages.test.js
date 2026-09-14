@@ -35,14 +35,22 @@ test(
       'v0-scripted',
       '--endpoint',
       provider.endpoint,
+      '--max-output-tokens',
+      '777',
       '--passage',
       JSON.stringify(request)
     ];
     const result = await promisify(execFile)(process.execPath, args);
     assert.match(result.stdout, /Reviewed the original/);
+    assert.equal(provider.chatRequests[0].options.num_predict, 777);
     const sent = JSON.stringify(provider.chatRequests);
     assert.match(sent, /Original quotation 😀/);
     assert(sent.includes(doc.sha256));
     assert(!sent.includes('Changed by the user'));
   }
 );
+
+
+test('CLI rejects an invalid generation allowance before opening a workspace', async () => {
+  await assert.rejects(promisify(execFile)(process.execPath, ['writing-agent/dist/cli.js', 'review', 'Review this.', '--max-output-tokens', '0']), /must be a positive integer/);
+});

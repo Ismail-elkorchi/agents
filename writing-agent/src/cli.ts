@@ -23,6 +23,7 @@ export async function main(argv: readonly string[]): Promise<void> {
       'fresh-continuation': { type: 'boolean' },
       endpoint: { type: 'string' },
       reasoning: { type: 'string' },
+      'max-output-tokens': { type: 'string' },
       mode: { type: 'string' },
       passage: { type: 'string', multiple: true },
       help: { type: 'boolean', short: 'h' }
@@ -60,7 +61,15 @@ export async function main(argv: readonly string[]): Promise<void> {
     (values.session === undefined || values.provider === undefined || values.model === undefined)
   )
     throw new Error('--fresh-continuation requires --session and explicit --provider and --model.');
+  const maxOutputTokens =
+    values['max-output-tokens'] === undefined ? undefined : Number(values['max-output-tokens']);
+  if (
+    maxOutputTokens !== undefined &&
+    (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 1)
+  )
+    throw new Error('--max-output-tokens must be a positive integer.');
   const application = await openWritingApplication({
+    ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
     ...(values['fresh-continuation'] ? { freshContinuation: true } : {}),
     rootDirectory: path.resolve(values.root ?? process.cwd()),
     mode,
@@ -123,7 +132,7 @@ export async function main(argv: readonly string[]): Promise<void> {
 }
 function printHelp() {
   process.stdout.write(
-    `Writing Agent\n\nwriting-agent [tui|rpc|write|review] [instruction]\n\n--root PATH          Workspace directory (default: current directory)\n--provider ID        ollama, openai, openai-codex, or openrouter\n--model ID           Provider model\n--fresh-continuation Explicitly continue the same session from portable originals\n--endpoint URL       Provider endpoint\n--reasoning EFFORT   Requested model reasoning effort\n--mode edit|review   File editing or read-only review (default: edit)\n--state-root PATH    Private state outside the workspace\n--session ID         Resume a recorded conversation\n--passage JSON       Attach a revision-bound passage (repeatable)\n\nNo arguments opens the TUI in an interactive terminal.\nWRITING_AGENT_PROVIDER and WRITING_AGENT_MODEL supply provider defaults.\n`
+    `Writing Agent\n\nwriting-agent [tui|rpc|write|review] [instruction]\n\n--root PATH          Workspace directory (default: current directory)\n--provider ID        ollama, openai, openai-codex, or openrouter\n--model ID           Provider model\n--fresh-continuation Explicitly continue the same session from portable originals\n--endpoint URL       Provider endpoint\n--reasoning EFFORT   Requested model reasoning effort\n--max-output-tokens N  Generation allowance (reservation only where caps are unsupported)\n--mode edit|review   File editing or read-only review (default: edit)\n--state-root PATH    Private state outside the workspace\n--session ID         Resume a recorded conversation\n--passage JSON       Attach a revision-bound passage (repeatable)\n\nNo arguments opens the TUI in an interactive terminal.\nWRITING_AGENT_PROVIDER and WRITING_AGENT_MODEL supply provider defaults.\n`
   );
 }
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {

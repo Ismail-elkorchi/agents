@@ -68,6 +68,7 @@ export interface WritingApplicationOptions {
   readonly mode?: WritingMode;
   readonly configuration?: WritingConfiguration;
   readonly freshContinuation?: boolean;
+  readonly maxOutputTokens?: number;
 }
 export interface WritingApplicationState {
   readonly workspace: string;
@@ -103,6 +104,7 @@ export class WritingApplication {
   private mode: WritingMode;
   private freshContinuation: boolean;
   private unsubscribe: (() => void) | undefined;
+  private readonly maxOutputTokens: number | undefined;
   private mutations: Promise<void> = Promise.resolve();
   private closeCompletion: Promise<void> | undefined;
 
@@ -120,6 +122,7 @@ export class WritingApplication {
       })
     );
     this.initialSessionId = options.sessionId;
+    this.maxOutputTokens = options.maxOutputTokens;
     this.configuration = options.configuration;
     this.mode = options.mode ?? 'edit';
     this.freshContinuation = options.freshContinuation ?? false;
@@ -278,7 +281,11 @@ export class WritingApplication {
       this.selection = selection;
       return;
     }
-    const prepared = createWritingSession(this.workspace, this.requireDescriptor(), configuration);
+    const prepared = createWritingSession(
+      this.workspace,
+      this.requireDescriptor(),
+      this.generationConfiguration(configuration)
+    );
     try {
       await prepared.agent.changeModel({
         selection: selection ?? {
@@ -568,9 +575,19 @@ export class WritingApplication {
     return this.closeCompletion;
   }
 
+  private generationConfiguration(configuration: WritingConfiguration): WritingConfiguration {
+    return this.maxOutputTokens === undefined
+      ? configuration
+      : { ...configuration, maxOutputTokens: this.maxOutputTokens };
+  }
+
   private async connect() {
     if (!this.configuration || !this.descriptor) return;
-    const composition = createWritingSession(this.workspace, this.descriptor, this.configuration);
+    const composition = createWritingSession(
+      this.workspace,
+      this.descriptor,
+      this.generationConfiguration(this.configuration)
+    );
     try {
       const profile = await this.configuration.provider.describeModel(this.configuration.model);
       if (this.freshContinuation) {

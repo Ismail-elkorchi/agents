@@ -595,6 +595,7 @@ function updateCodingAgentTui(
     }
     case 'processes.open':
     case 'processes.refresh':
+    case 'processes.reconcile':
     case 'processes.back':
     case 'processes.transition':
     case 'processes.select':

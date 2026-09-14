@@ -25,8 +25,12 @@ import {
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import type { CommandObservationsOptions } from './command-observations.js';
 import type { PrivateStateDirectory } from '../state/private-state.js';
-import { SandboxCommandExecution, type SandboxCommandAuthorization } from './sandbox-command-execution.js';
+import {
+  SandboxCommandExecution,
+  type SandboxCommandAuthorization
+} from './sandbox-command-execution.js';
 import {
   discoverCodingCommandEnvironment,
   hostPath,
@@ -50,20 +54,26 @@ const TERMINATION_GRACE_MS = 1_000;
 export class CodingCommandUnavailableError extends Error {}
 
 export interface CodingProcess {
+  readonly command: string;
+  readonly revision: string;
+  readonly diagnostic?: string;
   readonly processId: string;
   readonly owner: CommandExecutionOwner;
-  readonly status: CommandExecutionStatus | 'preparing' | 'prepared' | 'expired' | 'unknown';
+  readonly status:
+    CommandExecutionStatus | 'preparing' | 'prepared' | 'unknown' | 'acknowledged-unknown';
 }
 
 export interface CodingCommandAuthority extends CommandExecution {
   listProcesses(): Promise<readonly CodingProcess[]>;
 }
 
-export function createCodingCommandAuthority(input: {
-  readonly repositoryDirectory: string;
-  readonly rootedFileAuthority: RootedFileAuthority;
-  readonly state: PrivateStateDirectory;
-}): CodingCommandAuthority {
+export function createCodingCommandAuthority(
+  input: CommandObservationsOptions & {
+    readonly repositoryDirectory: string;
+    readonly rootedFileAuthority: RootedFileAuthority;
+    readonly state: PrivateStateDirectory;
+  }
+): CodingCommandAuthority {
   return new LazySandboxCommandExecution(input);
 }
 
@@ -93,7 +103,11 @@ class LazySandboxCommandExecution implements CodingCommandAuthority {
         .update('\0')
         .update(input.rootedFileAuthority.identity.canonicalPath)
         .digest('hex')}`,
-      capabilities: Object.freeze(['sandbox-process', 'caller-process-recovery', 'staged-authorization']),
+      capabilities: Object.freeze([
+        'sandbox-process',
+        'caller-process-recovery',
+        'staged-authorization'
+      ]),
       supportsPty: false
     });
     adoptCommandExecution(this);
@@ -124,7 +138,11 @@ class LazySandboxCommandExecution implements CodingCommandAuthority {
     return (await this.open()).query(processId, outputTokenBudget, yieldMs, afterCursor, requester);
   }
 
-  async writeInput(processId: string, text: string, requester?: CommandExecutionOwner): Promise<void> {
+  async writeInput(
+    processId: string,
+    text: string,
+    requester?: CommandExecutionOwner
+  ): Promise<void> {
     await (await this.open()).writeInput(processId, text, requester);
   }
 
@@ -132,7 +150,10 @@ class LazySandboxCommandExecution implements CodingCommandAuthority {
     await (await this.open()).closeInput(processId, requester);
   }
 
-  async terminate(processId: string, requester?: CommandExecutionOwner): Promise<CommandExecutionResult> {
+  async terminate(
+    processId: string,
+    requester?: CommandExecutionOwner
+  ): Promise<CommandExecutionResult> {
     return (await this.open()).terminate(processId, requester);
   }
 
@@ -186,12 +207,14 @@ class LazySandboxCommandExecution implements CodingCommandAuthority {
 
   private open(): Promise<SandboxCommandExecution> {
     if (this.#closed) return Promise.reject(new Error('Command execution is closed.'));
-    this.#opening ??= openCodingCommandAuthority(this.input, this.descriptor, this.resourceLeases).then(
-      (execution) => {
-        this.#execution = execution;
-        return execution;
-      }
-    );
+    this.#opening ??= openCodingCommandAuthority(
+      this.input,
+      this.descriptor,
+      this.resourceLeases
+    ).then((execution) => {
+      this.#execution = execution;
+      return execution;
+    });
     return this.#opening;
   }
 }
@@ -206,34 +229,29 @@ async function openCodingCommandAuthority(
   resourceLeases: ResourceLeaseCoordinator
 ): Promise<SandboxCommandExecution> {
   const environment = await discoverCodingCommandEnvironment();
-  const profile = await selectSandboxProfile(input.rootedFileAuthority.identity.canonicalPath, environment);
+  const profile = await selectSandboxProfile(
+    input.rootedFileAuthority.identity.canonicalPath,
+    environment
+  );
   const repository = await openSandboxExecutionRepository({
     directory: input.repositoryDirectory,
     maxRetainedOutputBytes: MAX_RETAINED_OUTPUT_BYTES
   });
-  try {
-    return await SandboxCommandExecution.create({
-      descriptor,
-      resourceLeases,
-      repository,
-      rootedFileAuthority: input.rootedFileAuthority,
-      state: input.state,
-      maxRetainedOutputBytes: MAX_RETAINED_OUTPUT_BYTES,
-      createRun: (request) => commandRun(request, profile, environment),
-      validateAuthorization: (authorization) => {
-        validateAuthorization(authorization, profile, environment);
-      }
-    });
-  } catch (error) {
-    try {
-      await repository.close();
-    } catch (cleanupError) {
-      throw new AggregateError([error, cleanupError], 'Sandbox composition and release failed.', {
-        cause: cleanupError
-      });
+  return SandboxCommandExecution.create({
+    descriptor,
+    resourceLeases,
+    repository,
+    rootedFileAuthority: input.rootedFileAuthority,
+    state: input.state,
+    events: input.events,
+    artifacts: input.artifacts,
+    ...(input.onSettlement ? { onSettlement: input.onSettlement } : {}),
+    maxRetainedOutputBytes: MAX_RETAINED_OUTPUT_BYTES,
+    createRun: (request) => commandRun(request, profile, environment),
+    validateAuthorization: (authorization) => {
+      validateAuthorization(authorization, profile, environment);
     }
-    throw error;
-  }
+  });
 }
 
 async function selectSandboxProfile(
@@ -308,10 +326,18 @@ function isolatedProfile(
   });
 }
 
-function hostProfile(workspaceRoot: string, environment: CodingCommandEnvironment): CodingSandboxProfile {
+function hostProfile(
+  workspaceRoot: string,
+  environment: CodingCommandEnvironment
+): CodingSandboxProfile {
   const resources = [
     ...hostRuntimeRoots(environment.runtimeRoots).map((root, index) =>
-      hostResource(`runtime-${String(index)}`, root.sourcePath, runtimeAccess(root), runtimePurposes(root))
+      hostResource(
+        `runtime-${String(index)}`,
+        root.sourcePath,
+        runtimeAccess(root),
+        runtimePurposes(root)
+      )
     ),
     hostResource('workspace', workspaceRoot, WORKSPACE_ACCESS, ['data'], 'reject-if-link')
   ];
@@ -430,7 +456,9 @@ function expectedEnvironmentNames(profile: CodingSandboxProfile): readonly strin
 function rootedDirectory(workspaceRoot: string, rooted: string): string {
   if (rooted === '' || rooted === '.') return workspaceRoot;
   const parts = rooted.split('/');
-  if (parts.some((part) => part.length === 0 || part === '.' || part === '..' || part.includes('\\')))
+  if (
+    parts.some((part) => part.length === 0 || part === '.' || part === '..' || part.includes('\\'))
+  )
     throw new Error(`Invalid command rooted directory: ${rooted}`);
   const resolved = path.join(workspaceRoot, ...parts);
   const relative = path.relative(workspaceRoot, resolved);

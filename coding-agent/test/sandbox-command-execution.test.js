@@ -4,6 +4,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { InMemoryArtifactRepository, InMemoryEventRepository } from '@agent-core/persistence';
+import { agentEventCodec } from '@agent-core/runtime';
 import { isCommandExecution, ResourceLeaseCoordinator } from '@agent-core/tools';
 import { RootedFileAuthority } from '@agent-core/tools-local';
 import { SandboxCommandExecution } from '../dist/execution/sandbox-command-execution.js';
@@ -30,7 +32,7 @@ test('sandbox command adapter authorizes the exact command and preserves cursor 
       resourceLeases: new ResourceLeaseCoordinator(),
       repository: fixture.repository,
       rootedFileAuthority: fixture.root,
-      state: fixture.state,
+      state: fixture.state, ...fixture.evidence,
       maxRetainedOutputBytes: 1024,
       createRun: (request) => commandRun(fixture.workspace, request.command),
       validateAuthorization(value) {
@@ -68,7 +70,7 @@ test('sandbox activation readiness is independent of the target wall-time limit'
       resourceLeases: new ResourceLeaseCoordinator(),
       repository: fixture.repository,
       rootedFileAuthority: fixture.root,
-      state: fixture.state,
+      state: fixture.state, ...fixture.evidence,
       maxRetainedOutputBytes: 1024,
       createRun: (requestValue) => commandRun(fixture.workspace, requestValue.command),
       validateAuthorization: () => undefined
@@ -87,7 +89,7 @@ test('settlement releases the workspace lease without a model poll', { timeout: 
   const fixture = await createFixture();
   const execution = await SandboxCommandExecution.create({
     resourceLeases: new ResourceLeaseCoordinator(),
-    repository: fixture.repository, rootedFileAuthority: fixture.root, state: fixture.state,
+    repository: fixture.repository, rootedFileAuthority: fixture.root, state: fixture.state, ...fixture.evidence,
     maxRetainedOutputBytes: 1024,
     createRun: (value) => commandRun(fixture.workspace, value.command),
     validateAuthorization: () => undefined
@@ -120,7 +122,7 @@ test('stop reconciles a process that already exited and preserves unknown contro
   const fixture = await createFixture();
   const execution = await SandboxCommandExecution.create({
     resourceLeases: new ResourceLeaseCoordinator(),
-    repository: fixture.repository, rootedFileAuthority: fixture.root, state: fixture.state,
+    repository: fixture.repository, rootedFileAuthority: fixture.root, state: fixture.state, ...fixture.evidence,
     maxRetainedOutputBytes: 1024,
     createRun: (value) => commandRun(fixture.workspace, value.command),
     validateAuthorization: () => undefined
@@ -137,7 +139,7 @@ test('stop reconciles a process that already exited and preserves unknown contro
   assert.equal(result.exitCode, 0);
   assert.equal(result.stdout.text, 'sandboxed');
   fixture.repository.observations.set(started.processId, unknown(started.processId));
-  await assert.rejects(execution.terminate(started.processId, owner), /Control endpoint closed/);
+  assert.equal((await execution.terminate(started.processId, owner)).exitCode, 0);
 });
 
 test('sandbox command adapter cancels invalid authorization without activation', async () => {
@@ -147,7 +149,7 @@ test('sandbox command adapter cancels invalid authorization without activation',
       resourceLeases: new ResourceLeaseCoordinator(),
       repository: fixture.repository,
       rootedFileAuthority: fixture.root,
-      state: fixture.state,
+      state: fixture.state, ...fixture.evidence,
       maxRetainedOutputBytes: 1024,
       createRun: (request) => commandRun(fixture.workspace, request.command),
       validateAuthorization: () => {
@@ -164,35 +166,6 @@ test('sandbox command adapter cancels invalid authorization without activation',
   }
 });
 
-test('a released command plan can be recreated with a fresh time-bound authorization record', async () => {
-  const fixture = await createFixture();
-  try {
-    const execution = await SandboxCommandExecution.create({
-      resourceLeases: new ResourceLeaseCoordinator(),
-      repository: fixture.repository,
-      rootedFileAuthority: fixture.root,
-      state: fixture.state,
-      maxRetainedOutputBytes: 1024,
-      createRun: (requestValue) => commandRun(fixture.workspace, requestValue.command),
-      validateAuthorization: () => undefined
-    });
-    const first = await execution.plan(request());
-    const authorization = first.authorization;
-    await first.release();
-    const second = await execution.plan(request());
-    assert.equal(second.authorization.requestDigest, authorization.requestDigest);
-    assert.equal(second.authorization.policyDigest, authorization.policyDigest);
-    assert.equal(second.authorization.executionDigest, authorization.executionDigest);
-    const result = await execution.start(second);
-    assert.equal(result.status, 'exited');
-    assert.equal(fixture.repository.activationCount, 1);
-    await execution.close();
-  } finally {
-    fixture.root.close();
-    await rm(fixture.parent, { recursive: true, force: true });
-  }
-});
-
 test('sandbox command adapter blocks new effects until unknown recovery is acknowledged', async () => {
   const fixture = await createFixture({ initialUnknown: true });
   try {
@@ -200,7 +173,7 @@ test('sandbox command adapter blocks new effects until unknown recovery is ackno
       resourceLeases: new ResourceLeaseCoordinator(),
       repository: fixture.repository,
       rootedFileAuthority: fixture.root,
-      state: fixture.state,
+      state: fixture.state, ...fixture.evidence,
       maxRetainedOutputBytes: 1024,
       createRun: (request) => commandRun(fixture.workspace, request.command),
       validateAuthorization: () => undefined
@@ -225,7 +198,7 @@ test('sandbox command adapter rejects plans that do not bind the adopted workspa
       resourceLeases: new ResourceLeaseCoordinator(),
       repository: fixture.repository,
       rootedFileAuthority: fixture.root,
-      state: fixture.state,
+      state: fixture.state, ...fixture.evidence,
       maxRetainedOutputBytes: 1024,
       createRun: (request) => commandRun('/different/root', request.command),
       validateAuthorization: () => undefined
@@ -249,7 +222,7 @@ test('sandbox command adapter rejects a receipt that conflicts with its durable 
       resourceLeases: new ResourceLeaseCoordinator(),
       repository: fixture.repository,
       rootedFileAuthority: fixture.root,
-      state: fixture.state,
+      state: fixture.state, ...fixture.evidence,
       maxRetainedOutputBytes: 1024,
       createRun: (requestValue) => commandRun(fixture.workspace, requestValue.command),
       validateAuthorization: () => undefined
@@ -258,14 +231,14 @@ test('sandbox command adapter rejects a receipt that conflicts with its durable 
     await execution.close();
     await fixture.state.write(
       `sandbox-processes/${result.processId}.json`,
-      `${JSON.stringify({ schemaVersion: 1, processId: result.processId, owner, requestDigest: `sha256:${'f'.repeat(64)}`, authorization: {} })}\n`
+      `${JSON.stringify({ schemaVersion: 1, processId: result.processId, command: request().command, owner, requestDigest: `sha256:${'f'.repeat(64)}`, authorization: {} })}\n`
     );
     await assert.rejects(
       SandboxCommandExecution.create({
         resourceLeases: new ResourceLeaseCoordinator(),
         repository: fixture.repository,
         rootedFileAuthority: fixture.root,
-        state: fixture.state,
+        state: fixture.state, ...fixture.evidence,
         maxRetainedOutputBytes: 1024,
         createRun: (requestValue) => commandRun(fixture.workspace, requestValue.command),
         validateAuthorization: () => undefined
@@ -286,7 +259,7 @@ test('sandbox command adapter decodes progress across byte-chunk boundaries', as
       resourceLeases: new ResourceLeaseCoordinator(),
       repository: fixture.repository,
       rootedFileAuthority: fixture.root,
-      state: fixture.state,
+      state: fixture.state, ...fixture.evidence,
       maxRetainedOutputBytes: 1024,
       createRun: (requestValue) => commandRun(fixture.workspace, requestValue.command),
       validateAuthorization: () => undefined
@@ -311,7 +284,7 @@ test('sandbox command adapter preserves native runtime failure diagnostics', asy
       resourceLeases: new ResourceLeaseCoordinator(),
       repository: fixture.repository,
       rootedFileAuthority: fixture.root,
-      state: fixture.state,
+      state: fixture.state, ...fixture.evidence,
       maxRetainedOutputBytes: 1024,
       createRun: (requestValue) => commandRun(fixture.workspace, requestValue.command),
       validateAuthorization: () => undefined
@@ -337,6 +310,7 @@ test(
     await mkdir(workspace);
     const root = RootedFileAuthority.adopt(workspace);
     const state = await PrivateStateDirectory.create(path.join(parent, 'state'));
+    const evidence = { events: new InMemoryEventRepository(agentEventCodec), artifacts: new InMemoryArtifactRepository() };
     const createRun = (request) => commandRun(workspace, request.command, request.timeoutMs);
     try {
       const firstRepository = await openSandboxExecutionRepository({
@@ -347,7 +321,7 @@ test(
         resourceLeases: new ResourceLeaseCoordinator(),
         repository: firstRepository,
         rootedFileAuthority: root,
-        state,
+        state, ...evidence,
         maxRetainedOutputBytes: 1024 * 1024,
         createRun,
         validateAuthorization: () => undefined
@@ -373,7 +347,7 @@ test(
         resourceLeases: new ResourceLeaseCoordinator(),
         repository: secondRepository,
         rootedFileAuthority: root,
-        state,
+        state, ...evidence,
         maxRetainedOutputBytes: 1024 * 1024,
         createRun,
         validateAuthorization: () => undefined
@@ -383,7 +357,7 @@ test(
       assert.equal(reports[0].result.processId, result.processId);
       assert.deepEqual(reports[0].result.owner, owner);
       await second.acknowledgeTerminalReport(result.processId);
-      assert.equal(second.recoveredTerminalReports().length, 0);
+      assert.equal(second.recoveredTerminalReports().length, 1);
       await second.close();
     } finally {
       root.close();
@@ -440,11 +414,11 @@ async function createFixture(options = {}) {
         .digest('hex');
     await state.write(
       `sandbox-processes/${processId}.json`,
-      `${JSON.stringify({ schemaVersion: 1, processId, owner })}\n`
+      `${JSON.stringify({ schemaVersion: 1, processId, owner, command: 'unknown command' })}\n`
     );
     repository.unknownId = processId;
   }
-  return { parent, workspace, root, state, repository };
+  return { parent, workspace, root, state, repository, evidence: { events: new InMemoryEventRepository(agentEventCodec), artifacts: new InMemoryArtifactRepository() } };
 }
 
 class FakeSandboxExecutionRepository {
@@ -488,7 +462,22 @@ class FakeSandboxExecutionRepository {
     if (['prepared', 'preparing', 'running'].includes(initial.kind) && options.waitMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, options.waitMs));
     }
-    return this.observations.get(executionId) ?? unknown(executionId);
+    const observation = this.observations.get(executionId) ?? unknown(executionId);
+    if (observation.kind === 'settled' || observation.kind === 'rejected') observation.receipt ??= {
+      digest: 'sha256:' + '4'.repeat(64), finalCursor: observation.output.availableCursorEnd,
+      outputHash: '5'.repeat(64), stdoutBytes: observation.output.stdoutBytes, stderrBytes: observation.output.stderrBytes,
+      omittedStdoutBytes: 0, omittedStderrBytes: 0
+    };
+    if (options.maxBytes === 0) return { ...observation, output: { kind: 'not-requested' } };
+    if (observation.output.kind !== 'available') return observation;
+    const start = options.afterCursor ?? 0;
+    const end = Math.min(observation.output.availableCursorEnd, start + (options.maxBytes ?? 65536));
+    return { ...observation, output: { ...observation.output, cursorStart: start, cursorEnd: end,
+      chunks: observation.output.chunks.filter((chunk) => chunk.cursorEnd > start && chunk.cursorStart < end).map((chunk) => ({
+        ...chunk, cursorStart: Math.max(start, chunk.cursorStart), cursorEnd: Math.min(end, chunk.cursorEnd),
+        data: chunk.data.subarray(Math.max(0, start - chunk.cursorStart), Math.min(chunk.data.length, end - chunk.cursorStart))
+      }))
+    } };
   }
 
   async writeInput() {}
@@ -501,19 +490,19 @@ class FakeSandboxExecutionRepository {
   async reconcile() {
     const values = [...this.observations.values()];
     if (this.unknownId) values.push(unknown(this.unknownId));
-    return {
-      settled: values.filter((value) => value.kind === 'settled' || value.kind === 'rejected'),
-      unresolved: values.filter((value) => value.kind !== 'settled' && value.kind !== 'rejected')
-    };
+    return { observations: await Promise.all(values.map((value) => this.inspect(value.executionId))) };
   }
   async acknowledgeUnknown(executionId) {
     if (executionId === this.unknownId) this.unknownId = undefined;
   }
-  async forget(executionId) {
+  async forget(executionId, { receiptDigest }) {
     const state = this.observations.get(executionId);
     if (state && ['preparing', 'prepared', 'running'].includes(state.kind))
       throw new Error('A live or uncertain execution cannot be forgotten.');
-    this.observations.delete(executionId);
+    if (state.kind === 'retired') { assert.equal(state.receiptDigest, receiptDigest); return; }
+    assert.equal(state.receipt.digest, receiptDigest);
+    this.observations.set(executionId, { kind: 'retired', executionId, requestDigest: state.requestDigest,
+      receiptDigest, reason: 'released', cleanupPending: false, output: { kind: 'unavailable', reason: 'released', diagnostic: 'Released' } });
   }
   async close() {}
 }
@@ -521,12 +510,12 @@ class FakeSandboxExecutionRepository {
 function output(data = '') {
   const bytes = Buffer.from(data);
   return {
+    kind: 'available',
     cursorStart: 0,
     cursorEnd: bytes.byteLength,
     availableCursorEnd: bytes.byteLength,
     stdoutBytes: bytes.byteLength,
     stderrBytes: 0,
-    cursorExpired: false,
     chunks:
       bytes.byteLength === 0
         ? []
@@ -572,13 +561,13 @@ function settledWithSplitUtf8(executionId) {
   return {
     ...settled(executionId),
     output: {
+      kind: 'available',
       cursorStart: 0,
       cursorEnd: bytes.byteLength,
       availableCursorEnd: bytes.byteLength,
       stdoutBytes: bytes.byteLength,
       stderrBytes: 0,
-      cursorExpired: false,
-      chunks: [
+        chunks: [
         { cursorStart: 0, cursorEnd: 3, stream: 'stdout', data: bytes.subarray(0, 3) },
         { cursorStart: 3, cursorEnd: bytes.byteLength, stream: 'stdout', data: bytes.subarray(3) }
       ]
@@ -633,7 +622,7 @@ function unknown(executionId) {
 test('background observation failure reaches queued tools without releasing uncertain resources', { timeout: 5_000 }, async (t) => {
   const fixture = await createFixture();
   const execution = await SandboxCommandExecution.create({
-    resourceLeases: new ResourceLeaseCoordinator(), repository: fixture.repository, rootedFileAuthority: fixture.root, state: fixture.state,
+    resourceLeases: new ResourceLeaseCoordinator(), repository: fixture.repository, rootedFileAuthority: fixture.root, state: fixture.state, ...fixture.evidence,
     maxRetainedOutputBytes: 1024, createRun: (value) => commandRun(fixture.workspace, value.command), validateAuthorization: () => undefined
   });
   t.after(async () => { await execution.close(); fixture.root.close(); await rm(fixture.parent, { recursive: true, force: true }); });
@@ -645,9 +634,234 @@ test('background observation failure reaches queued tools without releasing unce
   const lease = await execution.resourceLeases.acquire(effects, owner.ownerId);
   const result = await startCommand(execution, { ...request(), yieldMs: 0 }, { lease });
   assert.equal(result.status, 'running');
-  const waiting = assert.rejects(execution.resourceLeases.acquire(effects, 'next-tool', t.signal), /unresolved outcome: unknown outcome/);
+  const waiting = assert.rejects(execution.resourceLeases.acquire(effects, 'next-tool', t.signal), /needs reconciliation: .*unknown outcome/);
   fixture.repository.observations.set(result.processId, unknown(result.processId));
   await waiting;
   assert.equal(execution.resourceLeases.activeCount(), 1);
   await assert.rejects(execution.plan(request()), /Unresolved sandbox executions/);
+});
+
+async function evidenceFixture(t, overrides = {}) {
+  const fixture = await createFixture();
+  const options = { resourceLeases: new ResourceLeaseCoordinator(), repository: fixture.repository,
+    rootedFileAuthority: fixture.root, state: fixture.state, ...fixture.evidence,
+    maxRetainedOutputBytes: 1024 * 1024, createRun: (value) => commandRun(fixture.workspace, value.command),
+    validateAuthorization: () => undefined, ...overrides };
+  const execution = await SandboxCommandExecution.create(options);
+  t.after(async () => { await execution.close(); fixture.root.close(); await rm(fixture.parent, { recursive: true, force: true }); });
+  return { ...fixture, options, execution };
+}
+
+test('receipt release failure keeps exact settlement and retries without executing again', async (t) => {
+  const fixture = await evidenceFixture(t);
+  const forget = fixture.repository.forget.bind(fixture.repository);
+  fixture.repository.forget = async () => { throw new Error('Injected receipt write failure.'); };
+  const result = await startCommand(fixture.execution, request());
+  assert.equal(result.status, 'exited');
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.originalOutput.kind, 'captured');
+  assert.match((await fixture.execution.listProcesses())[0].diagnostic, /receipt.*failed/i);
+  fixture.repository.forget = forget;
+  await fixture.execution.retryReconciliation();
+  assert.equal(fixture.repository.observations.get(result.processId).kind, 'retired');
+  assert.equal(fixture.repository.activationCount, 1);
+  assert.equal((await fixture.execution.query(result.processId, 4000, 0, 0, owner)).stdout.text, 'sandboxed');
+});
+
+test('unavailable original output retains known exit and does not release the receipt', async (t) => {
+  const fixture = await evidenceFixture(t);
+  const inspect = fixture.repository.inspect.bind(fixture.repository);
+  fixture.repository.inspect = async (...args) => {
+    const observation = await inspect(...args);
+    return observation.kind === 'settled' ? { ...observation, output: { kind: 'unavailable', reason: 'missing', diagnostic: 'Injected missing output file.' } } : observation;
+  };
+  const result = await startCommand(fixture.execution, request());
+  assert.equal(result.status, 'exited');
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.originalOutput.kind, 'unavailable');
+  assert.equal(result.stdout.observedBytes, 9);
+  assert.equal(result.stdout.omittedBytes, 9);
+  assert.equal(fixture.repository.observations.get(result.processId).kind, 'settled');
+  await fixture.execution.close();
+  const reopened = await SandboxCommandExecution.create({ ...fixture.options, resourceLeases: new ResourceLeaseCoordinator() });
+  t.after(() => reopened.close());
+  assert.equal((await reopened.listProcesses())[0].status, 'exited');
+  assert.equal((await reopened.query(result.processId, 4000, 0, 0, owner)).originalOutput.kind, 'unavailable');
+});
+
+test('original mixed-stream bytes survive bounded presentation and receipt release', async (t) => {
+  const deliveries = [];
+  const fixture = await evidenceFixture(t, { onSettlement: (report) => deliveries.push(report) });
+  const original = Buffer.from('First 🙂\n' + 'a'.repeat(90000) + '\nlast bytes\n');
+  fixture.repository.activate = async (executionId) => {
+    fixture.repository.activationCount++;
+    const value = settled(executionId);
+    value.output = { ...output(), cursorEnd: original.length, availableCursorEnd: original.length,
+      stdoutBytes: 10, stderrBytes: original.length - 10, chunks: [
+        { cursorStart: 0, cursorEnd: 10, stream: 'stdout', data: original.subarray(0, 10) },
+        { cursorStart: 10, cursorEnd: original.length, stream: 'stderr', data: original.subarray(10) }
+      ] };
+    fixture.repository.observations.set(executionId, value);
+  };
+  const result = await startCommand(fixture.execution, request());
+  assert.equal(result.originalOutput.cursorEnd, original.length);
+  assert.ok(result.cursorEnd < original.length);
+  assert.equal(deliveries.length, 1);
+  assert.deepEqual(Buffer.from(await fixture.evidence.artifacts.readVerified(result.artifact)), original);
+  await fixture.execution.close();
+  const reopened = await SandboxCommandExecution.create({ ...fixture.options, resourceLeases: new ResourceLeaseCoordinator() });
+  t.after(() => reopened.close());
+  const tail = await reopened.query(result.processId, 4000, 0, original.length - 11, owner);
+  assert.equal(tail.cursorStart, original.length - 11);
+  assert.equal(tail.cursorEnd, original.length);
+  assert.equal(tail.stderr.text, 'last bytes\n');
+  assert.equal(tail.combined.observedBytes, original.length);
+  assert.equal(tail.combined.omittedBytes, original.length - 11);
+  const statusOnly = await reopened.query(result.processId, 0, 0, 0, owner);
+  assert.equal(statusOnly.combined.text, '');
+  assert.equal(statusOnly.combined.capturedBytes, 0);
+  assert.equal(statusOnly.combined.omittedBytes, original.length);
+  assert.equal(statusOnly.cursorEnd, 0);
+  assert.equal(statusOnly.exitCode, 0);
+  assert.equal(deliveries.length, 1);
+  assert.equal(fixture.repository.activationCount, 1);
+});
+
+test('failed artifact capture cannot acknowledge a receipt or repeat the command', async (t) => {
+  const fixture = await evidenceFixture(t);
+  const store = fixture.evidence.artifacts.storeProtected.bind(fixture.evidence.artifacts);
+  fixture.evidence.artifacts.storeProtected = async () => { throw new Error('Injected artifact write failure.'); };
+  await assert.rejects(startCommand(fixture.execution, request()), /artifact write failure/);
+  assert.equal([...fixture.repository.observations.values()][0].kind, 'settled');
+  fixture.evidence.artifacts.storeProtected = store;
+  await fixture.execution.retryReconciliation();
+  assert.equal([...fixture.repository.observations.values()][0].kind, 'retired');
+  assert.equal(fixture.repository.activationCount, 1);
+});
+
+for (const eventType of ['resource.observed', 'resource.released']) {
+  for (const committed of [false, true]) {
+    test(`command handoff recovers ${committed ? 'after' : 'before'} ${eventType} append`, async (t) => {
+      const fixture = await evidenceFixture(t);
+      const events = fixture.evidence.events;
+      const append = events.append.bind(events);
+      let injected = false;
+      events.append = async (runId, event, options) => {
+        if (event.type !== eventType || injected) return append(runId, event, options);
+        injected = true;
+        if (committed) await append(runId, event, options);
+        throw new Error('Injected observation append interruption.');
+      };
+      await assert.rejects(startCommand(fixture.execution, request()), /append interruption/);
+      assert.equal([...fixture.repository.observations.values()][0].kind, 'settled');
+      await fixture.execution.close();
+      const reopened = await SandboxCommandExecution.create({ ...fixture.options, resourceLeases: new ResourceLeaseCoordinator() });
+      t.after(() => reopened.close());
+      const [process] = await reopened.listProcesses();
+      const result = await reopened.query(process.processId, 4000, 0, 0, owner);
+      assert.equal(result.exitCode, 0);
+      assert.equal(result.stdout.text, 'sandboxed');
+      assert.equal(fixture.repository.activationCount, 1);
+      assert.equal(fixture.repository.observations.get(process.processId).kind, 'retired');
+      const terminal = [];
+      for await (const record of events.read(owner.runId)) {
+        if (record.event.type === 'resource.released') terminal.push(record);
+      }
+      assert.equal(terminal.length, 1);
+    });
+  }
+}
+
+test('final output mismatch preserves exit truth and retains the unacknowledged receipt', async (t) => {
+  const fixture = await evidenceFixture(t);
+  const inspect = fixture.repository.inspect.bind(fixture.repository);
+  fixture.repository.inspect = async (...args) => {
+    const observation = await inspect(...args);
+    return observation.kind === 'settled'
+      ? { ...observation, receipt: { ...observation.receipt, finalCursor: observation.receipt.finalCursor + 1 } }
+      : observation;
+  };
+  const result = await startCommand(fixture.execution, request());
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.originalOutput.kind, 'unavailable');
+  assert.match(result.originalOutput.diagnostic, /does not cover/);
+  assert.equal(fixture.repository.observations.get(result.processId).kind, 'settled');
+});
+
+test('failed reconciliation closes its repository once and leaves the borrowed root usable', async (t) => {
+  const fixture = await createFixture();
+  t.after(async () => { fixture.root.close(); await rm(fixture.parent, { recursive: true, force: true }); });
+  let closed = 0;
+  fixture.repository.close = async () => { closed++; };
+  fixture.repository.reconcile = async () => { throw new Error('Injected reconciliation failure.'); };
+  await assert.rejects(SandboxCommandExecution.create({ resourceLeases: new ResourceLeaseCoordinator(),
+    repository: fixture.repository, rootedFileAuthority: fixture.root, state: fixture.state, ...fixture.evidence,
+    maxRetainedOutputBytes: 1024, createRun: (value) => commandRun(fixture.workspace, value.command), validateAuthorization: () => undefined
+  }), /reconciliation failure/);
+  assert.equal(closed, 1);
+  const derived = fixture.root.derive();
+  derived.close();
+});
+
+test('a background observer seeing receipt retirement reuses the committed settlement', async (t) => {
+  const fixture = await evidenceFixture(t);
+  let releaseObserver;
+  const gate = new Promise((resolve) => { releaseObserver = resolve; });
+  t.after(() => releaseObserver());
+  const inspect = fixture.repository.inspect.bind(fixture.repository);
+  fixture.repository.inspect = async (id, options = {}) => {
+    if (options.maxBytes === 0 && options.waitMs > 0) await gate;
+    return inspect(id, options);
+  };
+  fixture.repository.activate = async (executionId) => {
+    const { requestDigest, output } = settled(executionId);
+    fixture.repository.observations.set(executionId, { kind: 'running', executionId, requestDigest, output, processId: 'native' });
+  };
+  const running = await startCommand(fixture.execution, request());
+  assert.equal(running.status, 'running');
+  fixture.repository.observations.set(running.processId, settled(running.processId));
+  const completed = await fixture.execution.query(running.processId, 4000, 0, 0, owner);
+  assert.equal(completed.exitCode, 0);
+  releaseObserver();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const next = await fixture.execution.plan({ ...request(), owner: { ...owner, callIndex: 1 } });
+  await next.release();
+  assert.equal((await fixture.execution.reconcile()).unresolved.length, 0);
+});
+
+test('a failed settlement subscriber cannot change terminal truth or retain execution authority', async (t) => {
+  const fixture = await evidenceFixture(t, { onSettlement: () => { throw new Error('Injected subscriber failure.'); } });
+  const result = await startCommand(fixture.execution, request());
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.status, 'exited');
+  assert.equal(fixture.repository.observations.get(result.processId).kind, 'retired');
+  assert.equal(fixture.execution.resourceLeases.activeCount(), 0);
+  assert.equal((await fixture.execution.query(result.processId, 4000, 0, 0, owner)).exitCode, 0);
+});
+
+test('running command presentation redacts secrets without changing original stream bytes', async (t) => {
+  const fixture = await evidenceFixture(t);
+  const original = Buffer.from('API_KEY=private-value\n');
+  const progress = [];
+  fixture.repository.activate = async (executionId) => {
+    const value = settled(executionId);
+    fixture.repository.observations.set(executionId, {
+      kind: 'running', executionId, requestDigest: value.requestDigest, processId: 'native',
+      output: { ...output(), cursorEnd: original.length, availableCursorEnd: original.length,
+        stdoutBytes: original.length, stderrBytes: 0,
+        chunks: [
+          { cursorStart: 0, cursorEnd: 10, stream: 'stdout', data: original.subarray(0, 10) },
+          { cursorStart: 10, cursorEnd: original.length, stream: 'stdout', data: original.subarray(10) }
+        ] }
+    });
+  };
+  const result = await startCommand(fixture.execution, request(), { onProgress: (item) => progress.push(item) });
+  assert.equal(result.status, 'running');
+  assert.doesNotMatch(result.stdout.text, /private-value/);
+  assert.doesNotMatch(result.combined.text, /private-value/);
+  assert.equal(result.cursorEnd, original.length);
+  assert.equal(result.stdout.observedBytes, original.length);
+  assert.ok(progress.length > 0);
+  assert.doesNotMatch(progress.map((item) => item.text).join(''), /private-value/);
+  assert.deepEqual(Buffer.concat(fixture.repository.observations.get(result.processId).output.chunks.map((chunk) => chunk.data)), original);
 });

@@ -1,3 +1,4 @@
+import { hashJson, redactTextPreservingLength } from '@agent-core/persistence';
 import { parseJsonObject, type JsonObject } from '@agent-core/json';
 import {
   adoptCommandExecution,
@@ -24,6 +25,11 @@ import type {
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
+import {
+  CommandObservations,
+  type CommandIdentity,
+  type CommandObservationsOptions
+} from './command-observations.js';
 import { PrivateStateDirectory } from '../state/private-state.js';
 import type { CodingProcess } from './coding-command-authority.js';
 
@@ -49,9 +55,9 @@ export interface SandboxCommandAuthorization {
 export type SandboxCommandRecovery =
   | Readonly<{ readonly status: 'running' }>
   | Readonly<{ readonly status: 'settled'; readonly result: CommandExecutionResult }>
-  | Readonly<{ readonly status: 'unknown' | 'expired' }>;
+  | Readonly<{ readonly status: 'unknown' }>;
 
-export interface SandboxCommandExecutionOptions {
+export interface SandboxCommandExecutionOptions extends CommandObservationsOptions {
   readonly resourceLeases: ResourceLeaseCoordinator;
   readonly descriptor?: CommandExecutionDescriptor;
   readonly repository: SandboxExecutionRepository;
@@ -61,12 +67,15 @@ export interface SandboxCommandExecutionOptions {
     request: CommandExecutionPlanRequest,
     context: SandboxCommandPlanContext
   ) => SandboxDetachedRunOptions | Promise<SandboxDetachedRunOptions>;
-  readonly validateAuthorization: (authorization: SandboxCommandAuthorization) => void | Promise<void>;
+  readonly validateAuthorization: (
+    authorization: SandboxCommandAuthorization
+  ) => void | Promise<void>;
   readonly maxRetainedOutputBytes: number;
 }
 
 interface StoredOwner {
   readonly schemaVersion: 1;
+  readonly command: string;
   readonly processId: string;
   readonly owner: CommandExecutionOwner;
   readonly requestDigest?: string;
@@ -108,39 +117,72 @@ export class SandboxCommandExecution implements CommandExecution {
   readonly #recovered = new Map<string, CommandExecutionReport>();
   readonly #unresolved = new Map<string, { rootPath: string; diagnostic: string }>();
   readonly #abortListeners = new Map<string, { signal: AbortSignal; listener: () => void }>();
-  readonly #observers = new Map<string, { controller: AbortController; completion: Promise<void> }>();
+  readonly #observers = new Map<
+    string,
+    { controller: AbortController; completion: Promise<void> }
+  >();
   readonly #plans = new WeakMap<CommandExecutionReservation, SandboxCommandPlan>();
+  readonly #observations: CommandObservations;
+  readonly #pending = new Map<string, Promise<unknown>>();
   #closed = false;
 
   private constructor(private readonly options: SandboxCommandExecutionOptions) {
     this.resourceLeases = options.resourceLeases;
+    this.#observations = new CommandObservations(options);
     this.descriptor =
       options.descriptor ??
       Object.freeze({
         implementationId: 'coding-agent.sandbox-command-execution@1',
         recoveryIdentity: `${options.repository.identity}:${createHash('sha256').update(options.rootedFileAuthority.identity.canonicalPath).digest('hex')}`,
-        capabilities: Object.freeze(['sandbox-process', 'caller-process-recovery', 'staged-authorization']),
+        capabilities: Object.freeze([
+          'sandbox-process',
+          'caller-process-recovery',
+          'staged-authorization'
+        ]),
         supportsPty: false
       });
     adoptCommandExecution(this);
   }
 
   static async create(options: SandboxCommandExecutionOptions): Promise<SandboxCommandExecution> {
-    if (!Number.isSafeInteger(options.maxRetainedOutputBytes) || options.maxRetainedOutputBytes < 1)
-      throw new TypeError('maxRetainedOutputBytes must be positive.');
-    const execution = new SandboxCommandExecution(options);
-    await execution.reconcile();
-    return execution;
+    let execution: SandboxCommandExecution | undefined;
+    try {
+      if (
+        !Number.isSafeInteger(options.maxRetainedOutputBytes) ||
+        options.maxRetainedOutputBytes < 1
+      )
+        throw new TypeError('maxRetainedOutputBytes must be positive.');
+      execution = new SandboxCommandExecution(options);
+      await execution.reconcile();
+      return execution;
+    } catch (error) {
+      try {
+        await (execution ? execution.close() : options.repository.close());
+      } catch (cleanup) {
+        throw new AggregateError(
+          [error, cleanup],
+          'Sandbox command construction and cleanup failed.',
+          { cause: cleanup }
+        );
+      }
+      throw error;
+    }
   }
 
   async plan(request: CommandExecutionPlanRequest): Promise<CommandExecutionReservation> {
     this.#ensureOpen();
     if (this.#unresolved.size > 0)
       throw new Error('Unresolved sandbox executions block new command starts for this workspace.');
-    if (request.pty) throw new Error('The configured sandbox command execution does not support PTY mode.');
+    if (request.pty)
+      throw new Error('The configured sandbox command execution does not support PTY mode.');
     validateOwner(request.owner);
     const processId = processIdentity(request.owner, this.descriptor.recoveryIdentity);
-    await this.#bindOwner({ schemaVersion: 1, processId, owner: ownOwner(request.owner) });
+    await this.#bindOwner({
+      schemaVersion: 1,
+      command: request.command,
+      processId,
+      owner: ownOwner(request.owner)
+    });
     const run = await this.options.createRun(request, {
       hostWorkspaceRoot: this.options.rootedFileAuthority.identity.canonicalPath,
       workspacePath: request.rootedDirectory
@@ -150,13 +192,14 @@ export class SandboxCommandExecution implements CommandExecution {
     const observation = await this.options.repository.prepare(
       { executionId: processId, run },
       {
-        maxBytes: this.options.maxRetainedOutputBytes,
+        maxBytes: 64 * 1024,
         waitMs: Math.max(1, Math.min(request.timeoutMs, 30_000))
       }
     );
     if (observation.kind === 'rejected') {
       await this.#bindOwner({
         schemaVersion: 1,
+        command: request.command,
         processId,
         owner: ownOwner(request.owner),
         requestDigest: observation.requestDigest
@@ -173,6 +216,7 @@ export class SandboxCommandExecution implements CommandExecution {
       throw new Error(`Sandbox execution ${processId} has no durable authorization record.`);
     await this.#bindOwner({
       schemaVersion: 1,
+      command: request.command,
       processId,
       owner: ownOwner(request.owner),
       requestDigest: observation.requestDigest,
@@ -193,8 +237,15 @@ export class SandboxCommandExecution implements CommandExecution {
           })
         );
       } catch (error) {
-        try { await this.#discardPreparation(processId); }
-        catch (releaseError) { throw new AggregateError([error, releaseError], 'Command authorization and preparation release failed.', { cause: releaseError }); }
+        try {
+          await this.#discardPreparation(processId);
+        } catch (releaseError) {
+          throw new AggregateError(
+            [error, releaseError],
+            'Command authorization and preparation release failed.',
+            { cause: releaseError }
+          );
+        }
         throw error;
       }
     }
@@ -209,8 +260,10 @@ export class SandboxCommandExecution implements CommandExecution {
 
   async #discardPreparation(processId: string): Promise<void> {
     await this.options.repository.terminate(processId);
-    await this.options.repository.forget(processId);
-    await this.options.state.delete(ownerPath(processId));
+    const observation = await this.options.repository.inspect(processId);
+    if (observation.kind !== 'settled' && observation.kind !== 'rejected')
+      throw new Error('Command preparation did not settle.');
+    await this.#result(observation, await this.#owner(processId), 0, 0);
   }
 
   async start(
@@ -239,14 +292,14 @@ export class SandboxCommandExecution implements CommandExecution {
         : authorization;
     if (observation.kind === 'running' && request.yieldMs > 0) {
       observation = await this.options.repository.inspect(processId, {
-        maxBytes: this.options.maxRetainedOutputBytes,
+        maxBytes: 64 * 1024,
         waitMs: request.yieldMs
       });
     }
-    const result = this.#result(observation, request.owner, request.outputTokenBudget, 0);
+    const result = await this.#result(observation, request.owner, request.outputTokenBudget, 0);
     if (result.status === 'running' && options.lease)
       options.lease.transferToResource(processId, processScope(processId));
-    if (result.status === 'running') this.#observeProcess(processId, observation.output.availableCursorEnd);
+    if (result.status === 'running') this.#observeProcess(processId);
     await this.#emitOutput(options.onProgress, observation);
     this.#releaseIfTerminal(result);
     return result;
@@ -264,15 +317,19 @@ export class SandboxCommandExecution implements CommandExecution {
     assertRequester(owner, requester, processId);
     const observation = await this.options.repository.inspect(processId, {
       afterCursor,
-      maxBytes: this.options.maxRetainedOutputBytes,
+      maxBytes: 64 * 1024,
       waitMs: yieldMs
     });
-    const result = this.#result(observation, owner, outputTokenBudget, afterCursor);
+    const result = await this.#result(observation, owner, outputTokenBudget, afterCursor);
     this.#releaseIfTerminal(result);
     return result;
   }
 
-  async writeInput(processId: string, text: string, requester?: CommandExecutionOwner): Promise<void> {
+  async writeInput(
+    processId: string,
+    text: string,
+    requester?: CommandExecutionOwner
+  ): Promise<void> {
     const owner = await this.#owner(processId);
     assertRequester(owner, requester, processId);
     await this.options.repository.writeInput(processId, Buffer.from(text, 'utf8'));
@@ -284,28 +341,32 @@ export class SandboxCommandExecution implements CommandExecution {
     await this.options.repository.closeInput(processId);
   }
 
-  async terminate(processId: string, requester?: CommandExecutionOwner): Promise<CommandExecutionResult> {
+  async terminate(
+    processId: string,
+    requester?: CommandExecutionOwner
+  ): Promise<CommandExecutionResult> {
     const owner = await this.#owner(processId);
     assertRequester(owner, requester, processId);
+    if (await this.#observations.terminal(await this.#identity(processId)))
+      return this.query(processId, 4_000, 0, 0, owner);
     try {
       await this.options.repository.terminate(processId);
     } catch (error) {
       // The process can settle between its last observation and the control request.
       const observation = await this.options.repository.inspect(processId);
       if (observation.kind !== 'settled' && observation.kind !== 'rejected') throw error;
-      const result = this.#result(observation, owner, 4_000, 0);
+      const result = await this.#result(observation, owner, 4_000, 0);
       this.#releaseIfTerminal(result);
       return result;
     }
     const observation = await this.#waitForTerminalObservation(processId, 15_000);
-    const result = this.#result(observation, owner, 4_000, 0);
+    const result = await this.#result(observation, owner, 4_000, 0);
     this.#releaseIfTerminal(result);
     return result;
   }
 
   async disposeOwner(ownerId: string): Promise<readonly CommandExecutionReport[]> {
-    const inventory = await this.options.repository.reconcile();
-    const observations = [...inventory.settled, ...inventory.unresolved];
+    const observations = await this.#inventory();
     for (const observation of observations) {
       const owner = await this.#owner(observation.executionId);
       if (
@@ -330,17 +391,17 @@ export class SandboxCommandExecution implements CommandExecution {
   }
 
   recoveredTerminalReports(): readonly CommandExecutionReport[] {
-    return Object.freeze(
-      [...this.#recovered.values()].sort((left, right) =>
-        left.result.processId.localeCompare(right.result.processId)
-      )
-    );
+    return Object.freeze([...this.#recovered.values()]);
   }
 
   async acknowledgeTerminalReport(processId: string): Promise<void> {
-    await this.options.repository.forget(processId);
-    await this.options.state.delete(ownerPath(processId));
-    this.#recovered.delete(processId);
+    const identity = await this.#identity(processId);
+    const report = await this.#observations.terminal(identity);
+    if (!report || report.result.originalOutput?.kind !== 'captured')
+      throw new Error('Command receipt has not been durably captured.');
+    const receiptDigest = await this.#observations.receiptDigest(identity);
+    if (!receiptDigest) throw new Error('Committed command receipt is unavailable.');
+    await this.options.repository.forget(processId, { receiptDigest });
   }
 
   executionId(owner: CommandExecutionOwner): string {
@@ -359,12 +420,17 @@ export class SandboxCommandExecution implements CommandExecution {
     const stored = await this.#storedOwner(processId);
     assertRequester(stored.owner, owner, processId);
     const observation = await this.options.repository.inspect(processId, {
-      maxBytes: this.options.maxRetainedOutputBytes,
+      maxBytes: 64 * 1024,
       waitMs
     });
     assertRequestBinding(stored, observation);
-    if (observation.kind === 'unknown') return Object.freeze({ status: 'unknown' });
-    if (observation.kind === 'expired') return Object.freeze({ status: 'expired' });
+    if (
+      observation.kind === 'unknown' &&
+      !(await this.#observations.terminal(await this.#identity(processId)))
+    )
+      return Object.freeze({ status: 'unknown' });
+    if (observation.kind === 'retired' && observation.reason === 'acknowledged-unknown')
+      return Object.freeze({ status: 'unknown' });
     if (
       observation.kind === 'preparing' ||
       observation.kind === 'prepared' ||
@@ -372,55 +438,108 @@ export class SandboxCommandExecution implements CommandExecution {
     ) {
       return Object.freeze({ status: 'running' });
     }
-    const result = this.#result(observation, owner, outputTokenBudget, 0);
+    const result = await this.#result(observation, owner, outputTokenBudget, 0);
     this.#releaseIfTerminal(result);
     return Object.freeze({ status: 'settled', result });
   }
 
+  readonly #releaseFailures = new Map<string, string>();
+
   async listProcesses(): Promise<readonly CodingProcess[]> {
     this.#ensureOpen();
-    const inventory = await this.options.repository.reconcile();
-    return Promise.all(
-      [...inventory.settled, ...inventory.unresolved].map(async (observation) => {
-        const stored = await this.#storedOwner(observation.executionId);
-        assertRequestBinding(stored, observation);
-        return {
-          processId: observation.executionId,
+    const processes: CodingProcess[] = [];
+    for (const observation of await this.#inventory()) {
+      const stored = await this.#storedOwner(observation.executionId);
+      assertRequestBinding(stored, observation);
+      const report = stored.requestDigest
+        ? await this.#observations.terminal(await this.#identity(observation.executionId))
+        : undefined;
+      const releaseFailure = this.#releaseFailures.get(observation.executionId);
+      processes.push({
+        processId: observation.executionId,
+        owner: stored.owner,
+        command: stored.command,
+        revision: hashJson({
           owner: stored.owner,
-          status:
-            observation.kind === 'settled'
-              ? statusFromTermination(observation.result.termination)
-              : observation.kind === 'rejected'
-                ? 'failed'
+          requestDigest: stored.requestDigest ?? null,
+          kind: observation.kind,
+          receipt: 'receipt' in observation ? observation.receipt.digest : null,
+          diagnostic: observation.kind === 'unknown' ? observation.diagnostic : null
+        }),
+        ...(observation.kind === 'unknown'
+          ? { diagnostic: observation.diagnostic }
+          : releaseFailure !== undefined
+            ? { diagnostic: releaseFailure }
+            : report?.result.originalOutput?.kind === 'unavailable'
+              ? { diagnostic: report.result.originalOutput.diagnostic }
+              : {}),
+        status: report
+          ? report.result.status
+          : observation.kind === 'settled'
+            ? statusFromTermination(observation.result.termination)
+            : observation.kind === 'rejected'
+              ? 'failed'
+              : observation.kind === 'retired'
+                ? 'acknowledged-unknown'
                 : observation.kind
-        };
-      })
-    );
+      });
+    }
+    return processes;
   }
 
   async reconcile(): Promise<CommandReconciliationResult> {
-    this.#recovered.clear();
-    this.#unresolved.clear();
-    const inventory = await this.options.repository.reconcile();
-    for (const observation of inventory.settled) {
+    for (const observation of await this.#inventory()) {
       const stored = await this.#storedOwner(observation.executionId);
       assertRequestBinding(stored, observation);
-      const owner = stored.owner;
-      const result = this.#result(observation, owner, 4_000, 0);
-      this.#releaseIfTerminal(result);
-      this.#recovered.set(observation.executionId, Object.freeze({ result }));
-    }
-    for (const observation of inventory.unresolved) {
-      const stored = await this.#storedOwner(observation.executionId);
-      assertRequestBinding(stored, observation);
-      this.#unresolved.set(observation.executionId, {
-        rootPath: this.options.rootedFileAuthority.identity.canonicalPath,
-        diagnostic: unresolvedDiagnostic(observation)
-      });
+      if (observation.kind === 'retired' && observation.reason === 'acknowledged-unknown') continue;
+      if (
+        observation.kind === 'settled' ||
+        observation.kind === 'rejected' ||
+        observation.kind === 'retired' ||
+        (observation.kind === 'unknown' &&
+          stored.requestDigest &&
+          (await this.#observations.terminal(await this.#identity(observation.executionId))))
+      ) {
+        await this.#result(observation, stored.owner, 4_000, 0);
+      } else if (
+        observation.kind === 'running' ||
+        observation.kind === 'prepared' ||
+        observation.kind === 'preparing'
+      ) {
+        this.#unresolved.delete(observation.executionId);
+        this.resourceLeases.clearResourceFailure(observation.executionId);
+        this.#restoreLease(observation.executionId);
+        this.#observeProcess(observation.executionId);
+      } else {
+        this.#restoreLease(observation.executionId);
+        this.resourceLeases.failResource(
+          observation.executionId,
+          new Error(
+            'Command outcome requires reconciliation. Open Processes to inspect or acknowledge uncertainty.'
+          )
+        );
+        this.#unresolved.set(observation.executionId, {
+          rootPath: this.options.rootedFileAuthority.identity.canonicalPath,
+          diagnostic: unresolvedDiagnostic(observation)
+        });
+      }
     }
     return this.#reconciliationResult();
   }
 
+  async #inventory(): Promise<readonly SandboxExecutionObservation[]> {
+    const observations: SandboxExecutionObservation[] = [];
+    let afterCursor: number | undefined;
+    do {
+      const page = await this.options.repository.reconcile({
+        ...(afterCursor === undefined ? {} : { afterCursor }),
+        limit: 100
+      });
+      observations.push(...page.observations);
+      afterCursor = page.nextCursor;
+    } while (afterCursor !== undefined);
+    return observations;
+  }
   retryReconciliation(): Promise<CommandReconciliationResult> {
     return this.reconcile();
   }
@@ -430,22 +549,35 @@ export class SandboxCommandExecution implements CommandExecution {
       if (!this.#unresolved.has(processId))
         throw new Error(`Sandbox execution is not unresolved: ${processId}`);
       const observation = await this.options.repository.inspect(processId);
-      if (observation.kind === 'unknown') await this.options.repository.acknowledgeUnknown(processId);
-      else if (observation.kind === 'expired') await this.options.repository.forget(processId);
-      else throw new Error(`Live sandbox execution cannot be acknowledged unresolved: ${processId}`);
-      await this.options.state.delete(ownerPath(processId));
-      this.#unresolved.delete(processId);
+      if (observation.kind === 'unknown')
+        await this.options.repository.acknowledgeUnknown(processId);
+      else
+        throw new Error(`Live sandbox execution cannot be acknowledged unresolved: ${processId}`);
+      this.#releaseProcess(processId);
     }
   }
 
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    for (const observer of this.#observers.values()) observer.controller.abort();
     for (const binding of this.#abortListeners.values())
       binding.signal.removeEventListener('abort', binding.listener);
     this.#abortListeners.clear();
     await Promise.all([...this.#observers.values()].map((observer) => observer.completion));
+    await Promise.allSettled([...this.#pending.values()]);
     await this.options.repository.close();
+  }
+
+  async #identity(processId: string): Promise<CommandIdentity> {
+    const stored = await this.#storedOwner(processId);
+    if (!stored.requestDigest) throw new Error('Command request binding is unavailable.');
+    return {
+      processId,
+      owner: stored.owner,
+      requestDigest: stored.requestDigest,
+      authority: this.descriptor.recoveryIdentity
+    };
   }
 
   #result(
@@ -453,10 +585,63 @@ export class SandboxCommandExecution implements CommandExecution {
     owner: CommandExecutionOwner,
     outputTokenBudget: number,
     afterCursor: number
+  ): Promise<CommandExecutionResult> {
+    const processId = observation.executionId;
+    const previous = this.#pending.get(processId) ?? Promise.resolve();
+    const task = previous
+      .catch(() => undefined)
+      .then(async () => {
+        const identity = await this.#identity(processId);
+        let report = await this.#observations.terminal(identity);
+        if (!report) {
+          const result = this.#renderResult(observation, owner, outputTokenBudget, afterCursor);
+          if (observation.kind !== 'settled' && observation.kind !== 'rejected') {
+            await this.#observations.capture(identity, this.options.repository, observation);
+            return result;
+          }
+          report = await this.#observations.settle(
+            identity,
+            this.options.repository,
+            observation,
+            result
+          );
+        }
+        this.#recovered.set(processId, report);
+        this.#releaseProcess(processId);
+        if (
+          (observation.kind === 'settled' || observation.kind === 'rejected') &&
+          report.result.originalOutput?.kind === 'captured'
+        ) {
+          try {
+            await this.acknowledgeTerminalReport(processId);
+            this.#releaseFailures.delete(processId);
+          } catch (error) {
+            this.#releaseFailures.set(
+              processId,
+              `Receipt release failed; the command result is retained. ${error instanceof Error ? error.message : String(error)}`
+            );
+          }
+        }
+        return this.#observations.present(identity, report.result, afterCursor, outputTokenBudget);
+      });
+    this.#pending.set(processId, task);
+    void task
+      .finally(() => {
+        if (this.#pending.get(processId) === task) this.#pending.delete(processId);
+      })
+      .catch(() => undefined);
+    return task;
+  }
+
+  #renderResult(
+    observation: SandboxExecutionObservation,
+    owner: CommandExecutionOwner,
+    outputTokenBudget: number,
+    afterCursor: number
   ): CommandExecutionResult {
     if (
       observation.kind === 'unknown' ||
-      observation.kind === 'expired' ||
+      observation.kind === 'retired' ||
       observation.kind === 'prepared' ||
       observation.kind === 'preparing'
     ) {
@@ -470,7 +655,6 @@ export class SandboxCommandExecution implements CommandExecution {
         status: 'failed',
         cursorStart: output.cursorStart,
         cursorEnd: output.cursorEnd,
-        ...(observation.output.cursorExpired ? { cursorExpired: true } : {}),
         stdout: output.stdout,
         stderr: output.stderr,
         combined: output.combined,
@@ -484,7 +668,6 @@ export class SandboxCommandExecution implements CommandExecution {
         status: 'running',
         cursorStart: output.cursorStart,
         cursorEnd: output.cursorEnd,
-        ...(observation.output.cursorExpired ? { cursorExpired: true } : {}),
         stdout: output.stdout,
         stderr: output.stderr,
         combined: output.combined
@@ -507,7 +690,6 @@ export class SandboxCommandExecution implements CommandExecution {
       status,
       cursorStart: output.cursorStart,
       cursorEnd: output.cursorEnd,
-      ...(observation.output.cursorExpired ? { cursorExpired: true } : {}),
       stdout: output.stdout,
       stderr: output.stderr,
       combined: output.combined,
@@ -524,10 +706,8 @@ export class SandboxCommandExecution implements CommandExecution {
   #requireKnown(observation: SandboxExecutionObservation): never {
     if (observation.kind === 'unknown')
       throw new Error(`Sandbox execution outcome is unknown: ${observation.diagnostic}`);
-    if (observation.kind === 'expired')
-      throw new Error(
-        `Sandbox execution receipt expired at ${new Date(observation.expiredAtMs).toISOString()}.`
-      );
+    if (observation.kind === 'retired')
+      throw new Error(`Sandbox execution was retired: ${observation.reason}.`);
     throw new Error(`Sandbox execution did not reach a process observation: ${observation.kind}.`);
   }
 
@@ -535,13 +715,22 @@ export class SandboxCommandExecution implements CommandExecution {
     callback: StartCommandExecutionOptions['onProgress'],
     observation: SandboxExecutionObservation
   ): Promise<void> {
-    if (!callback) return;
+    if (!callback || observation.output.kind !== 'available') return;
     let sequence = 0;
     const observed = { stdout: 0, stderr: 0 };
     const decoders = { stdout: new StringDecoder('utf8'), stderr: new StringDecoder('utf8') };
+    const publicBytes = Buffer.from(
+      redactTextPreservingLength(
+        Buffer.concat(observation.output.chunks.map((chunk) => chunk.data)).toString('latin1')
+      ).text,
+      'latin1'
+    );
+    let offset = 0;
     for (const chunk of observation.output.chunks) {
       observed[chunk.stream] += chunk.data.byteLength;
-      const text = decoders[chunk.stream].write(chunk.data);
+      const end = offset + chunk.data.byteLength;
+      const text = decoders[chunk.stream].write(publicBytes.subarray(offset, end));
+      offset = end;
       if (text.length === 0) continue;
       sequence += 1;
       try {
@@ -577,22 +766,19 @@ export class SandboxCommandExecution implements CommandExecution {
     this.#abortListeners.set(processId, { signal, listener });
   }
 
-  #observeProcess(processId: string, afterCursor: number): void {
+  #observeProcess(processId: string): void {
+    if (this.#observers.has(processId)) return;
     const controller = new AbortController();
     const observe = async () => {
-      for (;;) {
+      while (!this.#closed && !controller.signal.aborted) {
         const observation = await this.options.repository.inspect(processId, {
-          afterCursor,
-          maxBytes: 1,
+          maxBytes: 0,
           waitMs: 1_000
         });
-        if (this.#closed || controller.signal.aborted) return;
-        if (observation.kind === 'settled' || observation.kind === 'rejected') {
-          this.#releaseProcess(processId);
-          return;
-        }
-        if (observation.kind !== 'running') throw new Error(unresolvedDiagnostic(observation));
-        afterCursor = observation.output.availableCursorEnd;
+        controller.signal.throwIfAborted();
+        if (observation.kind === 'preparing' || observation.kind === 'prepared') continue;
+        await this.#result(observation, await this.#owner(processId), 0, 0);
+        if (observation.kind !== 'running') return;
       }
     };
     const completion = observe()
@@ -603,7 +789,10 @@ export class SandboxCommandExecution implements CommandExecution {
           rootPath: this.options.rootedFileAuthority.identity.canonicalPath,
           diagnostic
         });
-        this.resourceLeases.failResource(processId, new Error(`Command ${processId} has an unresolved outcome: ${diagnostic}`));
+        this.resourceLeases.failResource(
+          processId,
+          new Error(`Command ${processId} needs reconciliation: ${diagnostic}`)
+        );
       })
       .finally(() => this.#observers.delete(processId));
     this.#observers.set(processId, { controller, completion });
@@ -615,17 +804,22 @@ export class SandboxCommandExecution implements CommandExecution {
   ): Promise<SandboxExecutionObservation> {
     const deadline = Date.now() + Math.max(1, waitMs);
     let observation = await this.options.repository.inspect(processId, {
-      maxBytes: this.options.maxRetainedOutputBytes,
+      maxBytes: 64 * 1024,
       waitMs: Math.min(50, Math.max(0, deadline - Date.now()))
     });
-    while ((observation.kind === 'prepared' || observation.kind === 'preparing') && Date.now() < deadline) {
+    while (
+      (observation.kind === 'prepared' || observation.kind === 'preparing') &&
+      Date.now() < deadline
+    ) {
       observation = await this.options.repository.inspect(processId, {
-        maxBytes: this.options.maxRetainedOutputBytes,
+        maxBytes: 64 * 1024,
         waitMs: Math.min(50, Math.max(0, deadline - Date.now()))
       });
     }
     if (observation.kind === 'prepared' || observation.kind === 'preparing')
-      throw new Error('Sandbox activation did not publish a process observation before its deadline.');
+      throw new Error(
+        'Sandbox activation did not publish a process observation before its deadline.'
+      );
     return observation;
   }
 
@@ -635,18 +829,18 @@ export class SandboxCommandExecution implements CommandExecution {
   ): Promise<SandboxExecutionObservation> {
     const deadline = Date.now() + Math.max(1, waitMs);
     let observation = await this.options.repository.inspect(processId, {
-      maxBytes: this.options.maxRetainedOutputBytes,
+      maxBytes: 64 * 1024,
       waitMs: Math.min(50, Math.max(0, deadline - Date.now()))
     });
     while (
       observation.kind !== 'settled' &&
       observation.kind !== 'rejected' &&
       observation.kind !== 'unknown' &&
-      observation.kind !== 'expired' &&
+      observation.kind !== 'retired' &&
       Date.now() < deadline
     ) {
       observation = await this.options.repository.inspect(processId, {
-        maxBytes: this.options.maxRetainedOutputBytes,
+        maxBytes: 64 * 1024,
         waitMs: Math.min(50, Math.max(0, deadline - Date.now()))
       });
     }
@@ -654,10 +848,22 @@ export class SandboxCommandExecution implements CommandExecution {
       observation.kind !== 'settled' &&
       observation.kind !== 'rejected' &&
       observation.kind !== 'unknown' &&
-      observation.kind !== 'expired'
+      observation.kind !== 'retired'
     )
       throw new Error(`Sandbox execution did not terminate before its deadline: ${processId}`);
     return observation;
+  }
+
+  #restoreLease(processId: string): void {
+    this.resourceLeases.restoreResource(
+      processId,
+      {
+        accesses: [{ mode: 'write', scope: 'files' }],
+        lockScopes: ['files'],
+        recovery: { kind: 'unknown' }
+      },
+      processScope(processId)
+    );
   }
 
   #releaseIfTerminal(result: CommandExecutionResult): void {
@@ -678,7 +884,7 @@ export class SandboxCommandExecution implements CommandExecution {
     const existingText = await this.options.state.read(ownerPath(owner.processId));
     if (existingText !== undefined) {
       const existing = decodeStoredOwner(existingText, owner.processId);
-      if (!sameOwner(existing.owner, owner.owner))
+      if (!sameOwner(existing.owner, owner.owner) || existing.command !== owner.command)
         throw new Error(
           `Sandbox process owner binding conflicts with its durable identity: ${owner.processId}`
         );
@@ -715,7 +921,9 @@ export class SandboxCommandExecution implements CommandExecution {
     if (text === undefined) throw new Error(`Sandbox process owner is unavailable: ${processId}`);
     const stored = decodeStoredOwner(text, processId);
     if (processIdentity(stored.owner, this.descriptor.recoveryIdentity) !== processId)
-      throw new Error(`Sandbox process owner record does not match its process identity: ${processId}`);
+      throw new Error(
+        `Sandbox process owner record does not match its process identity: ${processId}`
+      );
     return stored;
   }
 
@@ -748,103 +956,64 @@ function renderOutput(
   outputTokenBudget: number,
   afterCursor: number
 ): RenderedOutput {
-  const budgetBytes = Math.max(256, positive(outputTokenBudget, 'outputTokenBudget') * 4);
-  const chunks = observation.output.chunks;
-  const stdoutChunks = chunks.filter((chunk) => chunk.stream === 'stdout').map((chunk) => chunk.data);
-  const stderrChunks = chunks.filter((chunk) => chunk.stream === 'stderr').map((chunk) => chunk.data);
-  const startsAtOutputStart = afterCursor === 0 && observation.output.cursorStart === 0;
-  const stdoutObserved =
-    afterCursor === 0
-      ? observation.output.stdoutBytes
-      : stdoutChunks.reduce((total, chunk) => total + chunk.byteLength, 0);
-  const stderrObserved =
-    afterCursor === 0
-      ? observation.output.stderrBytes
-      : stderrChunks.reduce((total, chunk) => total + chunk.byteLength, 0);
-  const requestedCursor = Math.max(afterCursor, observation.output.cursorStart);
-  const combinedObserved = Math.max(0, observation.output.availableCursorEnd - requestedCursor);
-  const endsAtOutputEnd =
-    (chunks.at(-1)?.cursorEnd ?? requestedCursor) === observation.output.availableCursorEnd;
-  const stdout = outputView(
-    stdoutChunks,
-    Math.max(64, Math.floor(budgetBytes / 4)),
-    stdoutObserved,
-    startsAtOutputStart,
-    endsAtOutputEnd
-  );
-  const stderr = outputView(
-    stderrChunks,
-    Math.max(64, Math.floor(budgetBytes / 4)),
-    stderrObserved,
-    startsAtOutputStart,
-    endsAtOutputEnd
-  );
-  const combined = outputView(
-    chunks.map((chunk) => chunk.data),
-    Math.max(128, Math.floor(budgetBytes / 2)),
-    combinedObserved,
-    startsAtOutputStart,
-    endsAtOutputEnd
-  );
+  nonnegative(outputTokenBudget, 'outputTokenBudget');
+  const output = observation.output;
+  const end = afterCursor + Math.min(64 * 1024, outputTokenBudget * 4);
+  const chunks =
+    output.kind === 'available'
+      ? output.chunks
+          .filter((chunk) => chunk.cursorStart < end && chunk.cursorEnd > afterCursor)
+          .map((chunk) => {
+            const start = Math.max(afterCursor, chunk.cursorStart),
+              stop = Math.min(end, chunk.cursorEnd);
+            return {
+              ...chunk,
+              cursorStart: start,
+              cursorEnd: stop,
+              data: chunk.data.subarray(start - chunk.cursorStart, stop - chunk.cursorStart)
+            };
+          })
+      : [];
+  const cursorEnd = chunks.at(-1)?.cursorEnd ?? afterCursor;
+  const availableEnd = output.kind === 'available' ? output.availableCursorEnd : afterCursor;
+  const view = (stream?: 'stdout' | 'stderr') => {
+    const selected = chunks
+      .filter((chunk) => stream === undefined || stream === chunk.stream)
+      .map((chunk) => chunk.data);
+    const observed =
+      output.kind !== 'available'
+        ? 0
+        : stream === 'stdout'
+          ? output.stdoutBytes
+          : stream === 'stderr'
+            ? output.stderrBytes
+            : output.stdoutBytes + output.stderrBytes;
+    return outputView(selected, observed, afterCursor === 0, cursorEnd === availableEnd);
+  };
   return {
-    cursorStart: observation.output.cursorStart,
-    cursorEnd: observation.output.availableCursorEnd,
-    stdout,
-    stderr,
-    combined
+    cursorStart: afterCursor,
+    cursorEnd,
+    stdout: view('stdout'),
+    stderr: view('stderr'),
+    combined: view()
   };
 }
 
 function outputView(
   chunks: readonly Buffer[],
-  maxBytes: number,
   observedBytes: number,
   startsAtOutputStart: boolean,
   endsAtOutputEnd: boolean
 ): CommandOutputView {
   const bytes = Buffer.concat(chunks);
-  const text = bytes.toString('utf8');
-  const headBudget = maxBytes - Math.floor(maxBytes / 3);
-  const head = takeUtf8Start(text, headBudget);
-  const selected =
-    observedBytes <= maxBytes
-      ? text
-      : head + takeUtf8End(text.slice(head.length), maxBytes - Buffer.byteLength(head));
-  const capturedBytes = Buffer.byteLength(selected);
   return Object.freeze({
-    text: selected,
+    text: redactTextPreservingLength(bytes.toString('utf8')).text,
     observedBytes,
-    capturedBytes,
-    omittedBytes: Math.max(0, observedBytes - capturedBytes),
+    capturedBytes: bytes.length,
+    omittedBytes: Math.max(0, observedBytes - bytes.length),
     startsAtOutputStart,
     endsAtOutputEnd
   });
-}
-
-function takeUtf8Start(value: string, maxBytes: number): string {
-  if (Buffer.byteLength(value) <= maxBytes) return value;
-  let low = 0;
-  let high = value.length;
-  while (low < high) {
-    const middle = Math.ceil((low + high) / 2);
-    if (Buffer.byteLength(value.slice(0, middle)) <= maxBytes) low = middle;
-    else high = middle - 1;
-  }
-  if (low > 0 && /[\uD800-\uDBFF]/u.test(value[low - 1] ?? '')) low -= 1;
-  return value.slice(0, low);
-}
-
-function takeUtf8End(value: string, maxBytes: number): string {
-  if (Buffer.byteLength(value) <= maxBytes) return value;
-  let low = 0;
-  let high = value.length;
-  while (low < high) {
-    const middle = Math.floor((low + high) / 2);
-    if (Buffer.byteLength(value.slice(middle)) <= maxBytes) high = middle;
-    else low = middle + 1;
-  }
-  if (/[\uDC00-\uDFFF]/u.test(value[low] ?? '')) low += 1;
-  return value.slice(low);
 }
 
 function statusFromTermination(
@@ -867,7 +1036,9 @@ function validateWorkspaceResource(run: SandboxDetachedRunOptions, canonicalRoot
       'Sandbox command plan must contain exactly one resource for the adopted physical workspace root.'
     );
   if (run.process.stdout !== 'pipe' || run.process.stderr !== 'pipe')
-    throw new Error('Sandbox command plan must expose stdout and stderr as durable output streams.');
+    throw new Error(
+      'Sandbox command plan must expose stdout and stderr as durable output streams.'
+    );
 }
 
 function processIdentity(owner: CommandExecutionOwner, recoveryIdentity: string): string {
@@ -883,7 +1054,8 @@ function processIdentity(owner: CommandExecutionOwner, recoveryIdentity: string)
 }
 
 function ownerPath(processId: string): string {
-  if (!/^sandbox-[a-f0-9]{64}$/u.test(processId)) throw new TypeError('Invalid sandbox process identity.');
+  if (!/^sandbox-[a-f0-9]{64}$/u.test(processId))
+    throw new TypeError('Invalid sandbox process identity.');
   return `sandbox-processes/${processId}.json`;
 }
 
@@ -914,13 +1086,22 @@ function decodeStoredOwner(text: string, processId: string): StoredOwner {
   if (typeof value !== 'object' || value === null || Array.isArray(value))
     throw new Error(`Sandbox process owner record is invalid: ${processId}`);
   const source = value as Record<string, unknown>;
-  const keys = Object.keys(source).sort();
-  const expected =
-    source.requestDigest === undefined
-      ? ['owner', 'processId', 'schemaVersion']
-      : ['authorization', 'owner', 'processId', 'requestDigest', 'schemaVersion'];
-  if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index]))
-    throw new Error(`Sandbox process owner record has unsupported fields: ${processId}`);
+  if (
+    Object.keys(source).some(
+      (key) =>
+        ![
+          'schemaVersion',
+          'processId',
+          'owner',
+          'command',
+          'requestDigest',
+          'authorization'
+        ].includes(key)
+    ) ||
+    typeof source.command !== 'string' ||
+    source.command.length === 0
+  )
+    throw new Error(`Incompatible command owner record: ${processId}`);
   if (source.schemaVersion !== 1 || source.processId !== processId)
     throw new Error(`Sandbox process owner record identity is invalid: ${processId}`);
   const requestDigest = source.requestDigest;
@@ -931,16 +1112,24 @@ function decodeStoredOwner(text: string, processId: string): StoredOwner {
     throw new Error(`Sandbox process request binding is invalid: ${processId}`);
   }
   validateOwner(source.owner);
-  const authorization = requestDigest === undefined ? undefined : parseJsonObject(source.authorization);
+  const authorization =
+    source.authorization === undefined ? undefined : parseJsonObject(source.authorization);
+  if (requestDigest === undefined && authorization !== undefined)
+    throw new Error(`Sandbox authorization has no request binding: ${processId}`);
   if (requestDigest === undefined)
-    return Object.freeze({ schemaVersion: 1, processId, owner: ownOwner(source.owner) });
-  if (!authorization) throw new Error(`Sandbox process authorization record is missing: ${processId}`);
+    return Object.freeze({
+      schemaVersion: 1,
+      processId,
+      command: source.command,
+      owner: ownOwner(source.owner)
+    });
   return Object.freeze({
     schemaVersion: 1,
     processId,
+    command: source.command,
     owner: ownOwner(source.owner),
     requestDigest,
-    authorization
+    ...(authorization === undefined ? {} : { authorization })
   });
 }
 
@@ -951,7 +1140,9 @@ function sandboxCommandAuthorization(
   return parseJsonObject({
     authority: descriptor.implementationId,
     confinement:
-      authorization.summary.filesystem.kind === 'isolated' ? 'isolated workspace' : 'workspace confined',
+      authorization.summary.filesystem.kind === 'isolated'
+        ? 'isolated workspace'
+        : 'workspace confined',
     recoveryIdentity: descriptor.recoveryIdentity,
     executionId: authorization.executionId,
     requestDigest: authorization.requestDigest,
@@ -1024,18 +1215,20 @@ function hasControlCharacter(value: string): boolean {
 
 function unresolvedDiagnostic(observation: SandboxExecutionObservation): string {
   if (observation.kind === 'unknown') return observation.diagnostic;
-  if (observation.kind === 'expired')
-    return `Execution receipt expired at ${new Date(observation.expiredAtMs).toISOString()}.`;
+  if (observation.kind === 'retired') return `Execution retired: ${observation.reason}.`;
   return `Execution remains ${observation.kind}; reconcile or terminate it before starting more commands.`;
 }
 
-function positive(value: number, label: string): number {
-  if (!Number.isSafeInteger(value) || value < 1) throw new TypeError(`${label} must be positive.`);
+function nonnegative(value: number, label: string): number {
+  if (!Number.isSafeInteger(value) || value < 0)
+    throw new TypeError(`${label} must be non-negative.`);
   return value;
 }
 
 function abortError(signal: AbortSignal): Error {
   return signal.reason instanceof Error
     ? signal.reason
-    : new Error(typeof signal.reason === 'string' ? signal.reason : 'Command execution was aborted.');
+    : new Error(
+        typeof signal.reason === 'string' ? signal.reason : 'Command execution was aborted.'
+      );
 }

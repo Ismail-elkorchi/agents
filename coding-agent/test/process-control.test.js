@@ -109,3 +109,47 @@ for (const action of ['poll', 'stop', 'settle'])
       }
     }
   );
+
+test('session command controls remain available while idle and after restart before a prompt', { skip: process.platform !== 'linux', timeout: 45000 }, async (t) => {
+  const provider = await scriptedOllama([
+    toolResponse('exec_command', { command: `node -e 'process.stdin.on("data", data => process.stdout.write(data)); process.stdin.on("end", () => process.exit(0))'`, yieldMs: 0, timeoutMs: 35000 }),
+    finalResponse('The command is still available.')
+  ]);
+  const fixture = await createWorkspace({ endpoint: provider.endpoint, tools: ['exec_command', 'write_stdin', 'stop_process'], checks: [], files: {} });
+  let application;
+  let target;
+  t.after(async () => {
+    if (application && target) await application.controlProcess(target, { kind: 'terminate' }).catch(() => undefined);
+    await application?.close(); await provider.close(); await fixture.close();
+  });
+  await trust(fixture);
+  const options = { root: fixture.root, stateRoot: fixture.stateRoot, providerEndpoint: provider.endpoint, permissionMode: 'develop' };
+  application = await openCodingApplication(options);
+  await application.start();
+  const submitted = await application.submit({ task: 'Start a continuing command.' });
+  assert.equal(submitted.kind, 'started');
+  const completed = await submitted.completion;
+  assert.equal(completed.terminal?.executionStatus, 'completed', JSON.stringify(completed));
+  [target] = await application.listProcesses();
+  assert.equal(target.status, 'running');
+  assert.equal((await application.controlProcess(target, { kind: 'input', text: 'before restart\n' })).status, 'running');
+  await application.close();
+  application = await openCodingApplication({ ...options, sessionSelection: { kind: 'existing', id: target.sessionId } });
+  await application.start();
+  const [restored] = await application.listProcesses();
+  assert.equal(restored.processId, target.processId);
+  assert.deepEqual(restored.owner, target.owner);
+  assert.equal(restored.status, 'running');
+  target = restored;
+  await application.controlProcess(target, { kind: 'input', text: 'after restart\n' });
+  await application.controlProcess(target, { kind: 'close-input' });
+  let result;
+  for (let attempt = 0; attempt < 40; attempt++) {
+    result = await application.controlProcess(target, { kind: 'inspect', afterCursor: 0 });
+    if (result.status !== 'running') break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal(result.status, 'exited');
+  assert.match(result.stdout.text, /before restart\nafter restart\n/);
+  assert.equal(provider.chatRequests.length, 2);
+});
