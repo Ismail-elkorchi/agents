@@ -29,7 +29,9 @@ test('taskless exec resume rejects a session without unfinished work', async () 
 });
 
 test('a review question completes without creating mutable work or opening command execution', async () => {
-  const provider = await scriptedOllama([finalResponse('The function returns the number of values.')]);
+  const provider = await scriptedOllama([
+    finalResponse('The function returns the number of values.')
+  ]);
   const fixture = await createWorkspace({
     endpoint: provider.endpoint,
     tools: ['read_files', 'apply_patch', 'exec_command'],
@@ -134,9 +136,9 @@ test('an explicitly configured failed check reaches the model and remains visibl
       (message) => message.role === 'tool' && message.tool_name === 'run_check'
     );
     assert(toolMessage);
-    const observation = JSON.parse(toolMessage.content);
-    assert.equal(observation.results.output.status, 'failed');
-    assert.equal(observation.results.output.processStatus, 'exited');
+    assert.match(toolMessage.content, /Check explicit: failed; process exited, exit 7/u);
+    assert.match(toolMessage.content, /Applicability: unknown/u);
+    assert.match(result.stdout, /applicability unknown/u);
   } finally {
     await provider.close();
     await fixture.close();

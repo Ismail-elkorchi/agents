@@ -1,4 +1,5 @@
-import type { EventRepository } from '@agent-core/persistence';
+import { resolveToolObservation } from '@agent-core/runtime';
+import type { ArtifactRepository, EventRepository } from '@agent-core/persistence';
 import type { AgentEvent } from '@agent-core/runtime';
 import { applyPatchOutputSchema, type ApplyPatchOutput } from '@agent-core/tools-local';
 import { createHash } from 'node:crypto';
@@ -48,16 +49,18 @@ interface MutationRecord {
 export async function readRunChangeReport(
   events: EventRepository<AgentEvent>,
   runId: string,
-  workspaceRoot: string
+  workspaceRoot: string,
+  artifacts?: ArtifactRepository
 ): Promise<RunChangeReport> {
-  const mutations = await readMutations(events, runId);
+  const mutations = await readMutations(events, runId, artifacts);
   const changes = new Map<string, WorkspaceChange>();
   for (const mutation of mutations) {
     for (const file of mutation.files) {
       if (!file.plannedChange || file.finalState === 'unchanged') continue;
-      const key = file.operation === 'move' && file.destinationPath
-        ? `${file.path}\0${file.destinationPath}`
-        : file.path;
+      const key =
+        file.operation === 'move' && file.destinationPath
+          ? `${file.path}\0${file.destinationPath}`
+          : file.path;
       const previous = changes.get(key);
       changes.set(
         key,
@@ -76,7 +79,7 @@ export async function readRunChangeReport(
           ...(file.destinationPath === undefined
             ? {}
             : { destinationAbsolutePath: workspacePath(workspaceRoot, file.destinationPath) }),
-          ...(previous?.beforeSha256 ?? file.oldSha256
+          ...((previous?.beforeSha256 ?? file.oldSha256)
             ? { beforeSha256: previous?.beforeSha256 ?? file.oldSha256 }
             : {}),
           ...(file.newSha256 === undefined ? {} : { afterSha256: file.newSha256 }),
@@ -99,7 +102,9 @@ export async function readRunChangeReport(
   }
   return Object.freeze({
     runId,
-    changes: Object.freeze([...changes.values()].sort((left, right) => left.path.localeCompare(right.path))),
+    changes: Object.freeze(
+      [...changes.values()].sort((left, right) => left.path.localeCompare(right.path))
+    ),
     mutationReceipts: Object.freeze(mutations.map((mutation) => mutation.receipt))
   });
 }
@@ -146,7 +151,8 @@ export async function readRecordedMutationPatches(
 
 async function readMutations(
   events: EventRepository<AgentEvent>,
-  runId: string
+  runId: string,
+  artifacts?: ArtifactRepository
 ): Promise<readonly MutationRecord[]> {
   const starts = new Map<string, Extract<AgentEvent, { type: 'tool.started' }>>();
   const mutations: MutationRecord[] = [];
@@ -162,7 +168,9 @@ async function readMutations(
       event.observation.kind !== 'result'
     )
       continue;
-    const parsed = applyPatchOutputSchema.safeParse(event.observation.output);
+    const observation = await resolveToolObservation(event.observation, artifacts);
+    if (observation.kind !== 'result') continue;
+    const parsed = applyPatchOutputSchema.safeParse(observation.output);
     if (!parsed.success)
       throw new Error(`Run ${runId} contains an invalid apply_patch observation.`);
     const started = starts.get(attemptKey(event));
@@ -219,6 +227,7 @@ function attemptKey(
 function patchDocument(event: Extract<AgentEvent, { type: 'tool.started' }>): string {
   if (event.input.input.kind === 'text') return event.input.input.value;
   const patch = event.input.input.value.patch;
-  if (typeof patch !== 'string') throw new Error('Persisted apply_patch input has no patch document.');
+  if (typeof patch !== 'string')
+    throw new Error('Persisted apply_patch input has no patch document.');
   return patch;
 }

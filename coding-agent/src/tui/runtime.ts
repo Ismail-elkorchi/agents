@@ -65,15 +65,19 @@ export async function runCodingAgentTuiApp(
         eventSource: events,
         runtimeDetails: initial.runtimeDetails,
         navigation: controller,
-        inspectContext: () => controller.inspectContext(),
+        context: controller,
         processes: controller,
         attachments: controller,
         configuration: {
           openBrowser,
-          providers: ['ollama', 'openrouter', 'openai', 'openai-codex'].map((id) => ({ id, label: id })),
+          providers: ['ollama', 'openrouter', 'openai', 'openai-codex'].map((id) => ({
+            id,
+            label: id
+          })),
           current: () => controller.modelSelection(),
           connect: (provider, endpoint) => controller.connectProvider(provider, endpoint),
-          save: (selection, provider) => controller.configureModel(selection, provider)
+          save: (selection, provider, options) =>
+            controller.configureModel(selection, provider, options)
         },
         resources: {
           async search(query, signal) {
@@ -111,7 +115,8 @@ export async function runCodingAgentTuiApp(
         },
         approvalHandler: async (suspension, decision) => {
           const approval = suspension.pendingApprovals[0];
-          if (approval === undefined) throw new Error('Approval suspension contains no pending request.');
+          if (approval === undefined)
+            throw new Error('Approval suspension contains no pending request.');
           await controller.resolveApproval({
             runId: suspension.runId,
             approvalId: approval.approvalId,
@@ -146,7 +151,10 @@ export async function runCodingAgentTuiApp(
               message: 'Display delivery skipped updates; refreshing recorded state.',
               tone: 'warning'
             });
-            await events.enqueue({ type: 'session.hydrated', hydration: await controller.readSession() });
+            await events.enqueue({
+              type: 'session.hydrated',
+              hydration: await controller.readSession()
+            });
             return;
           }
           result = await presentControllerEvent(event, events, result);
@@ -172,7 +180,8 @@ export async function runCodingAgentTuiApp(
       }
       if (initialTask.length > 0) {
         await events.enqueue({ type: 'composer.restore', text: initialTask });
-        if (controller.state().status === 'ready') await events.enqueue({ type: 'composer.submit' });
+        if (controller.state().status === 'ready')
+          await events.enqueue({ type: 'composer.submit' });
       }
       const exitResult = await exit;
       return result === undefined ? { exit: exitResult } : { exit: exitResult, result };

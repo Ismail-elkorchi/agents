@@ -1,3 +1,4 @@
+import { renderLocalToolObservation } from '@agent-core/tools-local';
 import type {
   AgentEndedRunResult,
   AgentProgressEvent,
@@ -20,9 +21,16 @@ export function applyProgress(
   runId: string
 ): CodingAgentTuiState {
   state = { ...state, progress: presentProgress(state.progress, event) };
-  state = projectProgress({ runId, event }, state.conversation.items, toolLabel).reduce(
+  state = projectProgress(
+    { runId, event },
+    state.conversation.items,
+    toolLabel,
+    renderLocalToolObservation
+  ).reduce(
     (state, entry) =>
-      entry.kind === 'activity' ? upsertActivity(state, entry) : upsertConversationEntry(state, entry),
+      entry.kind === 'activity'
+        ? upsertActivity(state, entry)
+        : upsertConversationEntry(state, entry),
     state
   );
   switch (event.type) {
@@ -66,7 +74,7 @@ export function applyProgress(
     case 'tool.updated':
       return withWorking(state, 'Running tool');
     case 'tool.ended':
-      return withWorking(state, event.observation.ok ? 'Working' : 'Tool failed');
+      return withWorking(state, event.observation.kind === 'failure' ? 'Tool failed' : 'Working');
     case 'run.ended':
       return applyTerminal(state, event.terminal, event.deliveryDiagnostics);
   }
@@ -97,7 +105,9 @@ function reduceReplayRestored(
       ...state.debug,
       sessionId: event.sessionId,
       replay: event,
-      ...(event.restoredProviderState === undefined ? {} : { providerState: event.restoredProviderState })
+      ...(event.restoredProviderState === undefined
+        ? {}
+        : { providerState: event.restoredProviderState })
     }
   };
 }
@@ -195,29 +205,59 @@ export function applyConfiguredChecks(
   const reports: readonly CodingRunVerification[] = state.debug.verification.some(
     (item) => item.runId === verification.runId
   )
-    ? state.debug.verification.map((item) => (item.runId === verification.runId ? verification : item))
+    ? state.debug.verification.map((item) =>
+        item.runId === verification.runId ? verification : item
+      )
     : [...state.debug.verification, verification];
+  const historyId = `check-history:${verification.runId}`;
+  if (
+    !verification.history.complete ||
+    state.conversation.items.some((entry) => entry.id === historyId)
+  )
+    state = upsertActivity(state, {
+      id: historyId,
+      kind: 'activity',
+      activity: 'check-history',
+      label: 'Check history',
+      status: verification.history.complete ? 'complete' : 'warning',
+      summary: verification.history.complete
+        ? 'Recorded check history loaded.'
+        : `Partial history through event ${String(verification.history.nextSequence)}; ${String(verification.history.omittedEarlierChecks)} earlier checks outside this view. Further history reads advance the bounded page.`
+    });
   return verification.checks.reduce<CodingAgentTuiState>(
     (current, check) =>
       upsertActivity(current, {
-        id: `check:${verification.runId}:${check.id}`,
+        id: `check:${verification.runId}:${check.receipt?.eventId ?? check.definition.definitionIdentity}`,
         kind: 'activity',
         activity: 'check',
         label: `Check ${check.id}`,
         status:
-          check.status === 'passed'
+          check.status === 'passed' && check.applicability.status === 'current'
             ? 'success'
-            : check.status === 'failed' && check.requirement === 'required'
+            : check.status === 'failed'
               ? 'failed'
               : 'warning',
-        summary: `${check.requirement} · ${check.status} · ${check.coverage}`,
-        ...(check.output ? { details: [{ id: 'check-output', content: check.output }] } : {})
+        summary: `${check.requirement} · ${check.receipt ? 'historical ' : ''}${check.status} · ${check.coverage} · applicability ${check.applicability.status}${check.outputComplete === false ? ' · output incomplete' : ''}`,
+        details: [
+          {
+            id: 'check-definition',
+            content: `${check.definition.command}\nTimeout: ${String(check.definition.timeoutMs)}ms\nDefinition: ${check.definition.definitionIdentity}\nTested paths: ${check.definition.testedPaths.join(', ') || 'undeclared'}\n${check.applicability.reasons.join(', ')}${check.receipt ? `\nEvent: ${check.receipt.eventId}` : ''}`
+          },
+          ...(check.output ? [{ id: 'check-output', content: check.output }] : []),
+          ...(check.outputArtifacts ?? []).map((artifact) => ({
+            id: `check-artifact:${artifact.artifactId}`,
+            content: `Original output: ${artifact.artifactId}`
+          }))
+        ]
       }),
     { ...state, debug: { ...state.debug, verification: reports } }
   );
 }
 
-export function applyResult(state: CodingAgentTuiState, result: AgentEndedRunResult): CodingAgentTuiState {
+export function applyResult(
+  state: CodingAgentTuiState,
+  result: AgentEndedRunResult
+): CodingAgentTuiState {
   return applyTerminal(state, result.terminal, result.deliveryDiagnostics);
 }
 
@@ -246,7 +286,11 @@ function applyTerminal(
   if (presentation.message.trim().length > 0 && !hasVisibleMessage(next, presentation.message)) {
     next =
       terminal.modelOutput.status === 'absent'
-        ? appendNotice(next, presentation.message, presentation.status === 'error' ? 'error' : 'warning')
+        ? appendNotice(
+            next,
+            presentation.message,
+            presentation.status === 'error' ? 'error' : 'warning'
+          )
         : upsertConversationEntry(next, {
             id: `assistant:terminal:${terminal.finalizationId}`,
             turnId: `terminal:${terminal.finalizationId}`,
@@ -270,7 +314,8 @@ function applyTerminal(
 function hasVisibleMessage(state: CodingAgentTuiState, message: string): boolean {
   const normalized = message.trim();
   return state.conversation.items.some(
-    (item) => (item.kind === 'assistant' || item.kind === 'notice') && item.text.trim() === normalized
+    (item) =>
+      (item.kind === 'assistant' || item.kind === 'notice') && item.text.trim() === normalized
   );
 }
 

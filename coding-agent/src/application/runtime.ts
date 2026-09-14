@@ -8,7 +8,12 @@ import { OllamaProvider } from '@agent-core/provider-ollama';
 import { OpenAIProvider } from '@agent-core/provider-openai';
 import { OpenAICodexProvider, type OpenAICodexTransport } from '@agent-core/provider-openai-codex';
 import { OpenRouterProvider } from '@agent-core/provider-openrouter';
-import { type AgentSession, type SessionBindingInput, type SessionDescriptor } from '@agent-core/runtime';
+import {
+  recordedModelSelection,
+  type AgentSession,
+  type SessionBindingInput,
+  type SessionDescriptor
+} from '@agent-core/runtime';
 import { JsonlSessionRepository } from '@agent-core/runtime/node';
 import { readRunChangeReport } from '../changes/run-change-report.js';
 import {
@@ -33,6 +38,7 @@ export interface CodingApplicationOptions {
   root: string;
   provider?: CodingAgentProviderId;
   model?: string;
+  freshContinuation?: boolean;
   providerEndpoint?: string;
   codexTransport?: OpenAICodexTransport;
   maxOutputTokens?: number;
@@ -93,9 +99,9 @@ export async function persistedModelSettings(
   session: SessionDescriptor
 ): Promise<PersistedModelSettings> {
   const replay = await repository.loadReplayState(session);
-  const latest = [...replay.branch].reverse().find((entry) => entry.type === 'model_settings');
+  const settings = recordedModelSelection(replay.branch);
   return (
-    latest ?? {
+    settings ?? {
       ...(session.header.provider ? { provider: session.header.provider } : {}),
       ...(session.header.model ? { model: session.header.model } : {})
     }
@@ -115,10 +121,13 @@ export function resolveRuntimeSettingsSelection(
     (persistedProvider ? parseProviderId(persistedProvider) : undefined) ??
     projectConfiguration?.provider ??
     stored?.provider ??
-    (process.env.CODING_AGENT_PROVIDER ? parseProviderId(process.env.CODING_AGENT_PROVIDER) : undefined);
+    (process.env.CODING_AGENT_PROVIDER
+      ? parseProviderId(process.env.CODING_AGENT_PROVIDER)
+      : undefined);
   const persistedMatches = provider !== undefined && persistedProvider === provider;
   const storedMatches = provider !== undefined && stored?.provider === provider;
-  const projectMatches = projectConfiguration !== undefined && projectConfiguration.provider === provider;
+  const projectMatches =
+    projectConfiguration !== undefined && projectConfiguration.provider === provider;
   const model =
     options.model ??
     (persistedMatches ? persisted?.model : undefined) ??
@@ -127,7 +136,8 @@ export function resolveRuntimeSettingsSelection(
     process.env.CODING_AGENT_MODEL;
   const normalizedModel = model?.trim();
   const persistedSettingsMatch = persistedMatches && persisted?.model === normalizedModel;
-  const configurationSettingsMatch = projectMatches && projectConfiguration.model === normalizedModel;
+  const configurationSettingsMatch =
+    projectMatches && projectConfiguration.model === normalizedModel;
   const selected = persistedSettingsMatch
     ? persisted
     : configurationSettingsMatch
@@ -140,19 +150,26 @@ export function resolveRuntimeSettingsSelection(
     (selected && 'endpoint' in selected ? selected.endpoint : undefined) ??
     (selected === undefined ? process.env.CODING_AGENT_PROVIDER_ENDPOINT : undefined);
   const temperature =
-    options.temperature ?? (selected && 'temperature' in selected ? selected.temperature : undefined);
+    options.temperature ??
+    (selected && 'temperature' in selected ? selected.temperature : undefined);
   const reasoning =
     options.reasoning ??
     selected?.reasoning ??
     (selected === undefined && process.env.CODING_AGENT_REASONING_EFFORT
       ? reasoningFromEffort(process.env.CODING_AGENT_REASONING_EFFORT)
       : undefined);
-  if (options.codexTransport !== undefined && provider !== undefined && provider !== 'openai-codex') {
+  if (
+    options.codexTransport !== undefined &&
+    provider !== undefined &&
+    provider !== 'openai-codex'
+  ) {
     throw new Error('--codex-transport requires provider openai-codex.');
   }
   return Object.freeze({
     ...(provider === undefined ? {} : { provider }),
-    ...(normalizedModel === undefined || normalizedModel.length === 0 ? {} : { model: normalizedModel }),
+    ...(normalizedModel === undefined || normalizedModel.length === 0
+      ? {}
+      : { model: normalizedModel }),
     ...(providerEndpoint === undefined ? {} : { providerEndpoint }),
     ...(options.codexTransport === undefined ? {} : { codexTransport: options.codexTransport }),
     ...(temperature === undefined ? {} : { temperature }),
@@ -180,9 +197,18 @@ export async function readCodingSessionView(runtime: CodingAgentRuntimeCompositi
     const session = runtime.agent.state();
     if (JSON.stringify(before) !== JSON.stringify(session)) continue;
     const runs = [...inspection.runs];
-    if (session.activeRunId !== undefined && !runs.some((run) => run.state.runId === session.activeRunId))
+    if (
+      session.activeRunId !== undefined &&
+      !runs.some((run) => run.state.runId === session.activeRunId)
+    )
       runs.push(await runtime.runs.inspect(session.activeRunId));
-    return { session, ...history, branchPoints, pendingSubmissions: inspection.pendingSubmissions, runs };
+    return {
+      session,
+      ...history,
+      branchPoints,
+      pendingSubmissions: inspection.pendingSubmissions,
+      runs
+    };
   }
   throw new Error('Session scheduling changed during the read; request a fresh session view.');
 }
@@ -192,11 +218,25 @@ export async function readCodingHistoryPage(
   request?: Parameters<JsonlSessionRepository['readBranchPage']>[1]
 ) {
   const history = await runtime.sessions.readBranchPage(runtime.session, request);
-  const runIds = [...new Set(history.entries.flatMap((entry) => ('runId' in entry ? [entry.runId] : [])))];
+  const runIds = [
+    ...new Set(history.entries.flatMap((entry) => ('runId' in entry ? [entry.runId] : [])))
+  ];
   const [changes, verification] = await Promise.all([
-    Promise.all(runIds.map((runId) => readRunChangeReport(runtime.events, runId, runtime.workspaceRoot))),
     Promise.all(
-      runIds.map((runId) => readConfiguredCheckResults(runtime.events, runId, runtime.configuration))
+      runIds.map((runId) =>
+        readRunChangeReport(runtime.events, runId, runtime.workspaceRoot, runtime.artifacts)
+      )
+    ),
+    Promise.all(
+      runIds.map((runId) =>
+        readConfiguredCheckResults(
+          runtime.events,
+          runId,
+          runtime.configuration,
+          runtime.fileRoot,
+          runtime.artifacts
+        )
+      )
     )
   ]);
   return { history, changes, verification };

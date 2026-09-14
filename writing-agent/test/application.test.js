@@ -3,23 +3,41 @@ import test from 'node:test';
 import { readFile, writeFile, symlink } from 'node:fs/promises';
 import path from 'node:path';
 import { openWritingApplication } from '@ismail-elkorchi/writing-agent';
-import { fixture, patchResponse, toolCall, submit, ScriptedWritingProvider } from './helpers/runtime.js';
+import {
+  fixture,
+  patchResponse,
+  toolCall,
+  submit,
+  ScriptedWritingProvider
+} from './helpers/runtime.js';
 
 const integration = { skip: process.platform !== 'linux', timeout: 30_000 };
-const patch = '*** Begin Patch\n*** Update File: document.txt\n@@\n-Old line.\n+New line.\n*** End Patch';
+const patch =
+  '*** Begin Patch\n*** Update File: document.txt\n@@\n-Old line.\n+New line.\n*** End Patch';
 
-test('an authorized revision edits the workspace directly with no proposal or second-model gate', integration, async (t) => {
-  const f = await fixture('Old line.\n', { responses: [patchResponse(patch), 'Updated.'] });
-  t.after(() => f.close());
-  await f.application.start();
-  const result = await submit(f.application, 'Replace Old line. with New line. in document.txt.');
-  assert.equal(result.state, 'ended', JSON.stringify(result));
-  assert.equal(result.terminal.executionStatus, 'completed', JSON.stringify(result));
-  assert.equal(await readFile(path.join(f.root, 'document.txt'), 'utf8'), 'New line.\n');
-  assert.equal(f.provider.requests.length, 2);
-  const history = await f.application.readHistory();
-  assert(history.entries.some((entry) => entry.type === 'observation' && entry.toolName === 'apply_patch' && entry.ok));
-});
+test(
+  'an authorized revision edits the workspace directly with no proposal or second-model gate',
+  integration,
+  async (t) => {
+    const f = await fixture('Old line.\n', { responses: [patchResponse(patch), 'Updated.'] });
+    t.after(() => f.close());
+    await f.application.start();
+    const result = await submit(f.application, 'Replace Old line. with New line. in document.txt.');
+    assert.equal(result.state, 'ended', JSON.stringify(result));
+    assert.equal(result.terminal.executionStatus, 'completed', JSON.stringify(result));
+    assert.equal(await readFile(path.join(f.root, 'document.txt'), 'utf8'), 'New line.\n');
+    assert.equal(f.provider.requests.length, 2);
+    const history = await f.application.readHistory();
+    assert(
+      history.entries.some(
+        (entry) =>
+          entry.type === 'observation' &&
+          entry.toolName === 'apply_patch' &&
+          entry.kind === 'result'
+      )
+    );
+  }
+);
 
 test(
   'review mode denies workspace mutations even when the model asks to patch a file',
@@ -36,7 +54,7 @@ test(
     const observation = (await f.application.readHistory()).entries.find(
       (entry) => entry.type === 'observation'
     );
-    assert.equal(observation.ok, false);
+    assert.equal(observation.kind, 'failure');
     assert(!f.provider.requests[0].tools.some((tool) => tool.name === 'apply_patch'));
     assert(
       f.provider.requests[0].tools.some(
@@ -55,7 +73,9 @@ test(
       'Actually write in Arabic, without the earlier length restriction.',
       'Discuss a new topic without changing files.'
     ];
-    const f = await fixture('نص المستخدم\n', { responses: ['D’accord.', 'حسنًا.', 'A discussion.'] });
+    const f = await fixture('نص المستخدم\n', {
+      responses: ['D’accord.', 'حسنًا.', 'A discussion.']
+    });
     let reopened;
     t.after(async () => {
       await reopened?.close();
@@ -91,17 +111,27 @@ test(
   }
 );
 
-test('workspace tools and document viewing reject aliases and private state, while external user edits remain readable', integration, async (t) => {
-  const f = await fixture();
-  t.after(() => f.close());
-  await f.application.start();
-  await writeFile(path.join(f.root, 'document.txt'), '\uFEFFChanged by the user.\n');
-  assert.equal((await f.application.readDocument('document.txt')).content, '\uFEFFChanged by the user.\n');
-  await assert.rejects(f.application.readDocument('../state/.writing-agent-state-root'));
-  await symlink(path.join(f.stateRoot, '.writing-agent-state-root'), path.join(f.root, 'alias'));
-  await assert.rejects(f.application.readDocument('alias'));
-  await assert.rejects(openWritingApplication({ rootDirectory: f.root, stateRoot: path.join(f.root, 'private') }), /outside/);
-});
+test(
+  'workspace tools and document viewing reject aliases and private state, while external user edits remain readable',
+  integration,
+  async (t) => {
+    const f = await fixture();
+    t.after(() => f.close());
+    await f.application.start();
+    await writeFile(path.join(f.root, 'document.txt'), '\uFEFFChanged by the user.\n');
+    assert.equal(
+      (await f.application.readDocument('document.txt')).content,
+      '\uFEFFChanged by the user.\n'
+    );
+    await assert.rejects(f.application.readDocument('../state/.writing-agent-state-root'));
+    await symlink(path.join(f.stateRoot, '.writing-agent-state-root'), path.join(f.root, 'alias'));
+    await assert.rejects(f.application.readDocument('alias'));
+    await assert.rejects(
+      openWritingApplication({ rootDirectory: f.root, stateRoot: path.join(f.root, 'private') }),
+      /outside/
+    );
+  }
+);
 
 test(
   'history and notes are available as model tools without preselected document excerpts',
@@ -190,5 +220,40 @@ test(
     assert.equal(provider.requests.length, 0);
     assert.equal(await readFile(path.join(f.root, 'document.txt'), 'utf8'), 'Old line.\n');
     await reopened.abort(recorded.runId);
+  }
+);
+
+test(
+  'explicit fresh model configuration continues the same writing session and original sources',
+  integration,
+  async (t) => {
+    const f = await fixture('Original prose.\n', { responses: ['An initial answer.'] });
+    t.after(() => f.close());
+    await f.application.start();
+    await submit(f.application, 'Keep the wording “café” exactly.');
+    const sessionId = f.application.state().sessionId;
+    const target = new ScriptedWritingProvider(['Still café.']);
+    await f.application.configureModel({ provider: target.id, model: 'writing-test' }, target, {
+      continuation: 'fresh'
+    });
+    assert.equal(f.application.state().sessionId, sessionId);
+    const before = await f.application.readHistory();
+    assert(
+      before.entries.some(
+        (entry) =>
+          entry.type === 'context_transition' && entry.window.selection.continuity?.kind === 'fresh'
+      )
+    );
+    await submit(f.application, 'Continue.');
+    assert(
+      target.requests[0].messages.some((message) =>
+        message.content.includes('Keep the wording “café” exactly.')
+      )
+    );
+    assert(
+      (await f.application.readHistory()).entries.some(
+        (entry) => entry.type === 'input' && entry.task.includes('café')
+      )
+    );
   }
 );

@@ -9,6 +9,7 @@ import {
   agentEventCodec,
   ApplicationEvents,
   assertHistoryModelCompatibility,
+  type ModelChangeOptions,
   assertSessionImagesSupported,
   progressReplacementKey,
   SessionNotes,
@@ -20,7 +21,11 @@ import {
   type SessionSubmissionInput
 } from '@agent-core/runtime';
 import { JsonlSessionRepository } from '@agent-core/runtime/node';
-import { DEFAULT_LOCAL_TOOL_CONFIGURATION, readRootedImage, readRootedText } from '@agent-core/tools-local';
+import {
+  DEFAULT_LOCAL_TOOL_CONFIGURATION,
+  readRootedImage,
+  readRootedText
+} from '@agent-core/tools-local';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -68,8 +73,7 @@ export class CodingApplication {
   private runtimeUnsubscribe: (() => void) | undefined;
   private selectedSessionId: string | undefined;
   private modelOverride:
-    | { readonly selection: ModelSelection; readonly adapter: ModelProvider }
-    | undefined;
+    { readonly selection: ModelSelection; readonly adapter: ModelProvider } | undefined;
   private resolvedSettings: RuntimeSettingsSelection = {};
   private configurationLoaded = false;
   private started = false;
@@ -158,9 +162,14 @@ export class CodingApplication {
     if (!profile.modalities.input.includes('image'))
       throw new Error('The selected model does not accept images. Choose an image-capable model.');
     const canonical = root.canonicalPath(filePath);
-    const result = await readRootedImage(root, canonical, DEFAULT_LOCAL_TOOL_CONFIGURATION.artifact, {
-      signal
-    });
+    const result = await readRootedImage(
+      root,
+      canonical,
+      DEFAULT_LOCAL_TOOL_CONFIGURATION.artifact,
+      {
+        signal
+      }
+    );
     const repository = runtime.artifacts;
     const artifact = await repository.store({
       label: canonical,
@@ -204,7 +213,9 @@ export class CodingApplication {
     return this.requireRuntime().agent.resolveApproval(input);
   }
 
-  async updateQueuedSubmission(...args: Parameters<AgentSession['updateQueuedSubmission']>): Promise<void> {
+  async updateQueuedSubmission(
+    ...args: Parameters<AgentSession['updateQueuedSubmission']>
+  ): Promise<void> {
     await this.requireRuntime().agent.updateQueuedSubmission(...args);
     await this.publishState('ready', []);
   }
@@ -259,13 +270,22 @@ export class CodingApplication {
         failures.push(error);
       }
     }
+    for (const continuing of this.continuingRuntimes) {
+      try {
+        await closeCodingSession(continuing);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    this.continuingRuntimes.clear();
     try {
       this.workspace.fileRoot.close();
     } catch (error) {
       failures.push(error);
     }
     this.events.close();
-    if (failures.length > 0) throw new AggregateError(failures, 'Coding application cleanup failed.');
+    if (failures.length > 0)
+      throw new AggregateError(failures, 'Coding application cleanup failed.');
   }
 
   private async refreshAndActivate(): Promise<void> {
@@ -299,7 +319,8 @@ export class CodingApplication {
   }
 
   private async resolveSettings(): Promise<RuntimeSettingsSelection> {
-    if (this.modelOverride !== undefined) return this.selectionSettings(this.modelOverride.selection);
+    if (this.modelOverride !== undefined)
+      return this.selectionSettings(this.modelOverride.selection);
     const sessions = new JsonlSessionRepository({ rootDir: this.workspace.layout.sessionsDir });
     const session = await selectSession(
       this.options,
@@ -307,7 +328,8 @@ export class CodingApplication {
       codingWorkspaceSessionBinding(this.workspace.layout.identity),
       this.selectedSessionId
     );
-    const persisted = session === undefined ? undefined : await persistedModelSettings(sessions, session);
+    const persisted =
+      session === undefined ? undefined : await persistedModelSettings(sessions, session);
     const stored = await new ModelSelectionStore(this.workspace.privateState).read();
     return resolveRuntimeSettingsSelection(
       this.options,
@@ -316,6 +338,8 @@ export class CodingApplication {
       stored
     );
   }
+
+  private readonly continuingRuntimes = new Set<CodingAgentRuntimeComposition>();
 
   private async activateRuntime(prepared?: CodingAgentRuntimeComposition): Promise<void> {
     const provider = this.resolvedSettings.provider;
@@ -344,11 +368,33 @@ export class CodingApplication {
       ));
     if (prepared === undefined) {
       try {
-        await assertHistoryModelCompatibility({
-          history: runtime.history,
-          artifacts: runtime.artifacts,
-          profile: await runtime.provider.describeModel(model)
-        });
+        const profile = await runtime.provider.describeModel(model);
+        if (this.options.freshContinuation) {
+          await runtime.agent.changeModel({
+            selection: {
+              provider,
+              model,
+              ...(this.resolvedSettings.providerEndpoint === undefined
+                ? {}
+                : { endpoint: this.resolvedSettings.providerEndpoint }),
+              ...(this.resolvedSettings.reasoning === undefined
+                ? {}
+                : { reasoning: this.resolvedSettings.reasoning }),
+              ...(this.resolvedSettings.temperature === undefined
+                ? {}
+                : { temperature: this.resolvedSettings.temperature })
+            },
+            profile,
+            artifacts: runtime.artifacts,
+            continuation: 'fresh'
+          });
+          delete this.options.freshContinuation;
+        } else
+          await assertHistoryModelCompatibility({
+            history: runtime.history,
+            artifacts: runtime.artifacts,
+            profile
+          });
       } catch (error) {
         await closeCodingSession(runtime);
         throw error;
@@ -374,7 +420,8 @@ export class CodingApplication {
         throw error;
       }
     await this.emit({ type: 'session.restored', view: await readCodingSessionView(runtime) });
-    if (runtime.agent.state().queuedInputs > 0) void runtime.agent.waitForIdle().catch(() => undefined);
+    if (runtime.agent.state().queuedInputs > 0)
+      void runtime.agent.waitForIdle().catch(() => undefined);
   }
 
   private async deactivateRuntime(): Promise<void> {
@@ -393,10 +440,21 @@ export class CodingApplication {
   ): Promise<void> {
     if (this.runtime !== runtime) return;
     await this.emit(event);
-    if (event.type === 'run.completed')
+    if (
+      event.type === 'run.completed' ||
+      (event.type === 'run.progress' &&
+        event.event.type === 'tool.ended' &&
+        event.event.toolName === 'run_check')
+    )
       await this.emit({
         type: 'verification.updated',
-        verification: await readConfiguredCheckResults(runtime.events, event.runId, runtime.configuration)
+        verification: await readConfiguredCheckResults(
+          runtime.events,
+          event.runId,
+          runtime.configuration,
+          runtime.fileRoot,
+          runtime.artifacts
+        )
       });
     if (event.type !== 'run.progress') await this.publishState('ready', []);
   }
@@ -421,7 +479,11 @@ export class CodingApplication {
     }).provider;
   }
 
-  configureModel(selection: ModelSelection, adapter: ModelProvider): Promise<void> {
+  configureModel(
+    selection: ModelSelection,
+    adapter: ModelProvider,
+    change: ModelChangeOptions = {}
+  ): Promise<void> {
     const owned = parseModelSelection(selection);
     return this.serial(async () => {
       const settings = this.selectionSettings(owned);
@@ -445,18 +507,13 @@ export class CodingApplication {
             this.selectedSessionId,
             adapter
           );
-          await assertHistoryModelCompatibility({
-            history: prepared.history,
+          await prepared.agent.changeModel({
+            selection: owned,
+            profile,
             artifacts: prepared.artifacts,
-            profile
+            ...change
           });
-          await prepared.agent.restore();
-          requireIdleSession(prepared.agent);
         }
-        await new ModelSelectionStore(this.workspace.privateState).write({
-          ...owned,
-          provider: settings.provider
-        });
       } catch (error) {
         if (prepared !== undefined) await closeCodingSession(prepared);
         throw error;
@@ -472,11 +529,30 @@ export class CodingApplication {
         prepared === undefined ? 'setup_required' : 'ready',
         prepared === undefined ? setupRequirements(this.workspace, settings) : []
       );
-      if (previous !== undefined) await closeCodingSession(previous);
+      if (previous !== undefined) {
+        await previous.agent.close();
+        this.continuingRuntimes.add(previous);
+        if ((await previous.listProcesses()).length === 0) {
+          await closeCodingSession(previous);
+          this.continuingRuntimes.delete(previous);
+        }
+      }
+      try {
+        await new ModelSelectionStore(this.workspace.privateState).write({
+          ...owned,
+          provider: settings.provider
+        });
+      } catch (cause) {
+        throw new Error('The session model changed, but saving the default model failed.', {
+          cause
+        });
+      }
     });
   }
 
-  private selectionSettings(selection: ModelSelection): import('./runtime.js').ResolvedSessionSettings {
+  private selectionSettings(
+    selection: ModelSelection
+  ): import('./runtime.js').ResolvedSessionSettings {
     return {
       provider: parseProviderId(selection.provider),
       model: selection.model,
@@ -537,36 +613,93 @@ export class CodingApplication {
     return new SessionNotes(history, notes).read(request);
   }
 
+  contextSources(request: import('@agent-core/runtime').HistorySearchRequest) {
+    return this.requireRuntime().history.search(request);
+  }
+  async renewContext(selection?: import('@agent-core/runtime').ContextSelection) {
+    const agent = this.requireRuntime().agent;
+    const selected = await agent.renewContext(selection);
+    const suspension = agent.inspectSuspension();
+    if (suspension?.category === 'context_admission')
+      return { selection: selected, run: await agent.resumeContextAdmission(suspension.runId) };
+    return { selection: selected };
+  }
+
   inspectContext() {
     return this.requireRuntime().inspectContext();
   }
 
-  listProcesses() {
-    return this.requireRuntime().listProcesses();
+  async listProcesses() {
+    const current = this.requireRuntime();
+    const owners = [current, ...this.continuingRuntimes].filter(
+      (runtime) => runtime.session.id === current.session.id
+    );
+    const groups = await Promise.all(owners.map((runtime) => runtime.listProcesses()));
+    return [...new Map(groups.flat().map((process) => [process.processId, process])).values()];
   }
 
-  controlProcess(
+  async controlProcess(
     target: import('../execution/process-controls.js').CodingProcessTarget,
     action: import('../execution/process-controls.js').CodingProcessAction
   ) {
-    return this.requireRuntime().controlProcess(target, action);
+    const current = this.requireRuntime();
+    if (target.sessionId !== current.session.id)
+      throw new Error('This process belongs to another session.');
+    for (const runtime of [current, ...this.continuingRuntimes]) {
+      if (runtime.session.id !== current.session.id) continue;
+      if ((await runtime.listProcesses()).some((process) => process.processId === target.processId))
+        return runtime.controlProcess(target, action);
+    }
+    throw new Error('The process authority is no longer available.');
   }
 
   async retainHistory() {
     const runtime = this.requireRuntime();
-    const view = await runtime.history.view();
+    const cut = await runtime.history.capture();
+    const window = await runtime.history.selectedContext(cut);
+    const retained: import('@agent-core/runtime').HistorySourceRef[] = [];
+    let cursor: string | undefined;
+    let bytes = 0;
+    do {
+      const page = await runtime.history.page({
+        cut,
+        ...(cursor ? { cursor } : {}),
+        limit: 1000,
+        maxBytes: 8 * 1024 * 1024 - bytes
+      });
+      bytes += page.bytes;
+      if (page.unavailable?.length)
+        throw new Error(
+          'Original history exceeds the bounded source read. Select specific original sources.'
+        );
+      retained.push(
+        ...page.entries
+          .filter(
+            (entry) =>
+              entry.type !== 'context_transition' &&
+              entry.type !== 'model_settings' &&
+              entry.type !== 'branch'
+          )
+          .map((entry) => sourceRef(cut.sessionId, entry))
+      );
+      cursor = page.cursor;
+      if (retained.length > 10000 || (cursor && bytes >= 8 * 1024 * 1024))
+        throw new Error(
+          'Original history exceeds the bounded selection. Select specific original sources.'
+        );
+    } while (cursor);
     return runtime.agent.transitionContext({
-      expectedWindowId: view.contextWindow?.windowId ?? null,
-      expectedSourceRevision: view.cut.sourceRevision,
+      expectedWindowId: window?.windowId ?? null,
+      expectedSourceRevision: cut.sourceRevision,
       idempotencyKey: randomUUID(),
       reason: 'User requested original history retention.',
       selection: {
-        strategy: 'retain',
-        retained: view.entries
-          .filter((entry) => entry.type !== 'context_transition')
-          .map((entry) => sourceRef(view.cut.sessionId, entry)),
-        notes: view.contextWindow?.selection.notes ?? [],
-        omitted: []
+        strategy: 'sources',
+        retained,
+        notes: window?.selection.notes ?? [],
+        ...(window?.selection.continuity === undefined
+          ? {}
+          : { continuity: window.selection.continuity })
       }
     });
   }
@@ -615,7 +748,12 @@ export class CodingApplication {
     const runtime = this.requireRuntime();
     const decision = this.workspace.security.decide('workspace_read');
     if (decision.kind !== 'allowed') throw new Error(decision.reason);
-    const report = await readRunChangeReport(runtime.events, runId, runtime.workspaceRoot);
+    const report = await readRunChangeReport(
+      runtime.events,
+      runId,
+      runtime.workspaceRoot,
+      runtime.artifacts
+    );
     const change = report.changes.find((change) => change.path === path);
     if (change === undefined) throw new Error('The requested change is not recorded in this run.');
     const receipts = report.mutationReceipts.filter((receipt) =>
@@ -631,7 +769,13 @@ export class CodingApplication {
 
   readVerification(runId: string) {
     const runtime = this.requireRuntime();
-    return readConfiguredCheckResults(runtime.events, runId, runtime.configuration);
+    return readConfiguredCheckResults(
+      runtime.events,
+      runId,
+      runtime.configuration,
+      runtime.fileRoot,
+      runtime.artifacts
+    );
   }
 
   readHistory(request?: Parameters<JsonlSessionRepository['readBranchPage']>[1]) {
@@ -643,7 +787,10 @@ export class CodingApplication {
     return runtime.sessions.searchBranch(runtime.session, request);
   }
 
-  readHistoryEntry(boundary: Parameters<JsonlSessionRepository['readBranchEntry']>[1], entryId: string) {
+  readHistoryEntry(
+    boundary: Parameters<JsonlSessionRepository['readBranchEntry']>[1],
+    entryId: string
+  ) {
     const runtime = this.requireRuntime();
     return runtime.sessions.readBranchEntry(runtime.session, boundary, entryId);
   }
@@ -694,8 +841,12 @@ export class CodingApplication {
     if (suspension === undefined) throw new Error('The selected session is not suspended.');
     if (expectedRunId !== undefined && suspension.runId !== expectedRunId)
       throw new Error('The selected run has changed.');
-    if (suspension.category === 'external_recovery') return agent.reconcileExternal(suspension.runId);
-    if (suspension.category === 'implementation') return agent.resumeImplementation(suspension.runId);
+    if (suspension.category === 'external_recovery')
+      return agent.reconcileExternal(suspension.runId);
+    if (suspension.category === 'context_admission')
+      return agent.resumeContextAdmission(suspension.runId);
+    if (suspension.category === 'implementation')
+      return agent.resumeImplementation(suspension.runId);
     throw new Error('The suspension requires a decision.');
   }
 
@@ -706,7 +857,8 @@ export class CodingApplication {
   }
 
   private requireRuntime(): CodingAgentRuntimeComposition {
-    if (this.runtime === undefined) throw new Error(setupGuidance(this.applicationState.requirements));
+    if (this.runtime === undefined)
+      throw new Error(setupGuidance(this.applicationState.requirements));
     return this.runtime;
   }
 
@@ -744,7 +896,9 @@ export class CodingApplication {
       ...(this.resolvedSettings.provider === undefined
         ? {}
         : { providerId: this.resolvedSettings.provider }),
-      ...(this.resolvedSettings.model === undefined ? {} : { modelId: this.resolvedSettings.model }),
+      ...(this.resolvedSettings.model === undefined
+        ? {}
+        : { modelId: this.resolvedSettings.model }),
       ...(this.resolvedSettings.temperature === undefined
         ? {}
         : { temperature: this.resolvedSettings.temperature }),

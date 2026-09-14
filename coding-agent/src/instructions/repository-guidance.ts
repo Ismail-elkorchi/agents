@@ -1,5 +1,9 @@
 import type { AgentInstruction, PromptContextItemInput } from '@agent-core/runtime';
-import type { ToolAuthorizationDecision, ToolAuthorizationRequest, ToolInputInspection } from '@agent-core/tools';
+import type {
+  ToolAuthorizationDecision,
+  ToolAuthorizationRequest,
+  ToolInputInspection
+} from '@agent-core/tools';
 import { rootedFileIdentitiesEqual, type RootedFileAuthority } from '@agent-core/tools-local';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
@@ -9,6 +13,7 @@ import { DEFAULT_CODING_CONTRACT } from './coding-contract.js';
 
 const INSTRUCTION_NAME = 'AGENTS.md';
 const MAX_GUIDANCE_DOCUMENTS = 64;
+const MAX_REMEMBERED_GUIDANCE_PATHS = 256;
 const MAX_GUIDANCE_DOCUMENT_BYTES = 32 * 1024;
 const MAX_TOTAL_GUIDANCE_BYTES = 128 * 1024;
 
@@ -25,7 +30,8 @@ export interface RepositoryGuidanceSource {
 
 export interface RepositoryGuidanceOmission {
   readonly path: string;
-  readonly reason: 'not_regular_file' | 'oversized' | 'unreadable' | 'total_byte_limit' | 'file_limit';
+  readonly reason:
+    'not_regular_file' | 'oversized' | 'unreadable' | 'total_byte_limit' | 'file_limit';
   readonly detail?: string;
 }
 
@@ -47,7 +53,11 @@ export async function loadInitialRepositoryGuidance(
   workspace: OpenCodingWorkspace,
   configuredPaths: readonly string[] = []
 ): Promise<RepositoryGuidanceSet> {
-  return loadInitialRepositoryGuidanceFromRoot(workspace.fileRoot, workspace.security, configuredPaths);
+  return loadInitialRepositoryGuidanceFromRoot(
+    workspace.fileRoot,
+    workspace.security,
+    configuredPaths
+  );
 }
 
 export async function loadInitialRepositoryGuidanceFromRoot(
@@ -55,181 +65,223 @@ export async function loadInitialRepositoryGuidanceFromRoot(
   security: WorkspaceSecurityBoundary,
   configuredPaths: readonly string[] = []
 ): Promise<RepositoryGuidanceSet> {
-  const configuredOrder = new Map(
-    configuredPaths.map((candidate, index) => [root.canonicalPath(candidate), index])
-  );
-  const candidates = new Map<string, { readonly configuredIndex?: number }>();
-  candidates.set(INSTRUCTION_NAME, {});
-  for (const [candidatePath, configuredIndex] of configuredOrder)
-    candidates.set(candidatePath, { configuredIndex });
+  return RepositoryGuidanceSession.open({ root, security, configuredPaths }).refresh();
+}
 
-  const documents: RepositoryGuidanceDocument[] = [];
-  const omissions: RepositoryGuidanceOmission[] = [];
-  let retainedBytes = 0;
-  for (const [candidatePath, candidate] of [...candidates].sort(([left], [right]) =>
-    comparePathByScope(left, right)
-  )) {
-    const status = await root.inspectPath(candidatePath);
-    if (status.kind === 'absent' && candidate.configuredIndex === undefined) continue;
-    if (status.kind !== 'file') {
-      if (candidate.configuredIndex !== undefined)
-        throw new Error(`Configured repository instruction is not a regular file: ${candidatePath}.`);
-      omissions.push(Object.freeze({ path: candidatePath, reason: 'not_regular_file' }));
-      continue;
-    }
-    const loaded = await readInstruction(root, security, candidatePath);
-    if (retainedBytes + loaded.source.retainedBytes > MAX_TOTAL_GUIDANCE_BYTES) {
-      if (candidate.configuredIndex !== undefined)
-        throw new Error(
-          `Configured repository guidance exceeds the total guidance budget: ${candidatePath}.`
-        );
-      omissions.push(Object.freeze({ path: candidatePath, reason: 'total_byte_limit' }));
-      continue;
-    }
-    retainedBytes += loaded.source.retainedBytes;
-    const source = completeSource(
-      loaded.source,
-      candidate.configuredIndex === undefined ? 'discovered' : 'configured',
-      candidate.configuredIndex
-    );
-    documents.push(Object.freeze({ source, content: loaded.content }));
-  }
-  return guidanceSet(documents, omissions);
+interface GuidanceRevision {
+  readonly path: string;
+  readonly id: string;
+  readonly document?: RepositoryGuidanceDocument;
+  readonly omission?: RepositoryGuidanceOmission;
 }
 
 export class RepositoryGuidanceSession {
   readonly #root: RootedFileAuthority;
   readonly #security: WorkspaceSecurityBoundary;
-  readonly #documents = new Map<string, RepositoryGuidanceDocument>();
-  readonly #omissions = new Map<string, RepositoryGuidanceOmission>();
-  readonly #deliveredPaths = new Set<string>();
-  readonly #loadedPaths = new Set<string>();
+  readonly #configured: ReadonlyMap<string, number>;
+  readonly #configurationIdentity: string;
+  readonly #revisions = new Map<string, GuidanceRevision>();
+  readonly #admitted = new Map<string, { readonly id: string; readonly requestId: string }>();
   #serial: Promise<void> = Promise.resolve();
 
   private constructor(input: {
     readonly root: RootedFileAuthority;
     readonly security: WorkspaceSecurityBoundary;
-    readonly initial: RepositoryGuidanceSet;
+    readonly configuredPaths?: readonly string[];
   }) {
     this.#root = input.root;
     this.#security = input.security;
-    for (const document of input.initial.documents) {
-      this.#documents.set(document.source.path, document);
-      this.#loadedPaths.add(document.source.path);
-      this.#deliveredPaths.add(document.source.path);
-    }
-    for (const omission of input.initial.omissions) {
-      this.#omissions.set(omission.path, omission);
-      this.#loadedPaths.add(omission.path);
-    }
+    this.#configured = new Map(
+      (input.configuredPaths ?? []).map((item, index) => [input.root.canonicalPath(item), index])
+    );
+    this.#configurationIdentity = digest(JSON.stringify([...this.#configured]));
   }
 
   static open(input: {
     readonly root: RootedFileAuthority;
     readonly security: WorkspaceSecurityBoundary;
-    readonly initial: RepositoryGuidanceSet;
+    readonly configuredPaths?: readonly string[];
   }): RepositoryGuidanceSession {
     return new RepositoryGuidanceSession(input);
   }
 
-  async authorize(request: ToolAuthorizationRequest): Promise<ToolAuthorizationDecision | undefined> {
-    const targets = repositoryTargets(this.#root, request);
-    if (targets.length === 0) return undefined;
-    let unavailable: RepositoryGuidanceOmission[] = [];
-    await this.#exclusive(async () => {
-      for (const target of targets) await this.#loadTarget(target);
-      unavailable = this.#applicableOmissions(targets);
-    });
-    if (!mutatesOrExecutes(request)) return undefined;
-    if (unavailable.length > 0) {
-      return Object.freeze({
-        decision: 'deny' as const,
-        reason: `Repository guidance could not be safely loaded for this target: ${unavailable.map((item) => `${item.path} (${item.reason})`).join(', ')}.`
-      });
+  /** Called only with the source IDs in an actually admitted request. Collection is not delivery. */
+  markRequestAdmitted(input: {
+    readonly requestId: string;
+    readonly sourceIds: readonly string[];
+  }): void {
+    if (!input.requestId)
+      throw new Error('Guidance delivery requires an admitted request identity.');
+    const ids = new Set(input.sourceIds);
+    for (const revision of this.#revisions.values()) {
+      if (ids.has(revision.id))
+        this.#admitted.set(
+          revision.path,
+          Object.freeze({ id: revision.id, requestId: input.requestId })
+        );
     }
-    return undefined;
   }
 
-  async contextPrerequisite(request: ToolInputInspection): Promise<
-    | {
-        readonly summary: string;
-        readonly context: readonly PromptContextItemInput[];
-      }
-    | undefined
+  async refresh(): Promise<RepositoryGuidanceSet> {
+    let result!: RepositoryGuidanceSet;
+    await this.#exclusive(async () => {
+      await this.#refreshPaths([...this.#revisions.keys()]);
+      const revisions = [...this.#revisions.values()];
+      const set = guidanceSet(
+        revisions.flatMap((item) => (item.document ? [item.document] : [])),
+        revisions.flatMap((item) => (item.omission ? [item.omission] : []))
+      );
+      result = Object.freeze({
+        ...set,
+        instructions: Object.freeze([
+          DEFAULT_CODING_CONTRACT,
+          ...revisions
+            .filter((revision) => this.#requiresDelivery(revision))
+            .map((revision): AgentInstruction =>
+              Object.freeze({
+                ...(revision.document
+                  ? guidanceInstruction(revision.document)
+                  : {
+                      role: 'developer' as const,
+                      priority: 1000,
+                      sourceUri: workspaceUri(revision.path),
+                      content: revisionContext(revision).content
+                    }),
+                id: revision.id
+              })
+            )
+        ])
+      });
+    });
+    return result;
+  }
+
+  async authorize(
+    request: ToolAuthorizationRequest
+  ): Promise<ToolAuthorizationDecision | undefined> {
+    if (!mutatesOrExecutes(request)) return undefined;
+    let omissions: readonly RepositoryGuidanceOmission[] = [];
+    await this.#exclusive(async () => {
+      const revisions = await this.#resolve(request);
+      omissions = revisions.flatMap((item) => (item.omission ? [item.omission] : []));
+    });
+    if (omissions.length === 0) return undefined;
+    return Object.freeze({
+      decision: 'deny',
+      reason: `Repository guidance could not be safely loaded for this target: ${omissions.map((item) => `${item.path} (${item.reason})`).join(', ')}.`
+    });
+  }
+
+  /** Recheck under the effect's resource lease, including after approval suspension. */
+  async contextPrerequisite(
+    request: ToolInputInspection
+  ): Promise<
+    { readonly summary: string; readonly context: readonly PromptContextItemInput[] } | undefined
   > {
     if (!mutatesOrExecutes(request)) return undefined;
-    const targets = repositoryTargets(this.#root, request);
+    let pending: readonly GuidanceRevision[] = [];
     await this.#exclusive(async () => {
-      for (const target of targets) await this.#loadTarget(target);
+      pending = (await this.#resolve(request)).filter(
+        (revision) =>
+          this.#requiresDelivery(revision) && this.#admitted.get(revision.path)?.id !== revision.id
+      );
     });
-    const pending = this.#applicableDocuments(targets).filter(
-      (document) => !this.#deliveredPaths.has(document.source.path)
-    );
     if (pending.length === 0) return undefined;
-    for (const document of pending) this.#deliveredPaths.add(document.source.path);
     return Object.freeze({
       summary:
-        'Applicable repository guidance requires consideration before this action. The proposed effect has not started. Choose the next action using this guidance.',
-      context: Object.freeze(pending.map(guidanceContext))
+        'Applicable repository guidance has a revision not present in the admitted request. The proposed effect has not started.',
+      context: Object.freeze(pending.map(revisionContext))
     });
   }
 
-  async #loadTarget(target: string): Promise<void> {
-    for (const candidatePath of await guidancePaths(this.#root, target)) {
-      if (this.#loadedPaths.has(candidatePath)) continue;
-      this.#loadedPaths.add(candidatePath);
-      const status = await this.#root.inspectPath(candidatePath);
-      if (status.kind === 'absent') continue;
-      if (status.kind !== 'file') {
-        this.#omissions.set(
-          candidatePath,
-          Object.freeze({ path: candidatePath, reason: 'not_regular_file' })
-        );
-        continue;
-      }
-      if (this.#documents.size >= MAX_GUIDANCE_DOCUMENTS) {
-        this.#omissions.set(candidatePath, Object.freeze({ path: candidatePath, reason: 'file_limit' }));
-        continue;
-      }
-      try {
-        const loaded = await readInstruction(this.#root, this.#security, candidatePath);
-        const retained = [...this.#documents.values()].reduce(
-          (sum, item) => sum + item.source.retainedBytes,
-          0
-        );
-        if (retained + loaded.source.retainedBytes > MAX_TOTAL_GUIDANCE_BYTES) {
-          this.#omissions.set(
-            candidatePath,
-            Object.freeze({ path: candidatePath, reason: 'total_byte_limit' })
-          );
-        } else {
-          const source = completeSource(loaded.source, 'discovered');
-          this.#documents.set(candidatePath, Object.freeze({ source, content: loaded.content }));
-        }
-      } catch (error) {
-        this.#omissions.set(
-          candidatePath,
-          Object.freeze({
-            path: candidatePath,
-            reason: error instanceof OversizedGuidanceError ? 'oversized' : 'unreadable',
-            detail: errorMessage(error)
-          })
-        );
-      }
-    }
-  }
-
-  #applicableDocuments(targets: readonly string[]): RepositoryGuidanceDocument[] {
-    return [...this.#documents.values()].filter((document) =>
-      targets.some((target) => scopeContains(document.source.scope, target))
+  #requiresDelivery(revision: GuidanceRevision): boolean {
+    return (
+      revision.document !== undefined ||
+      revision.omission !== undefined ||
+      this.#admitted.has(revision.path)
     );
   }
 
-  #applicableOmissions(targets: readonly string[]): RepositoryGuidanceOmission[] {
-    return [...this.#omissions.values()].filter((omission) => {
-      const scope = path.posix.dirname(omission.path);
-      return targets.some((target) => scopeContains(scope, target));
+  async #resolve(request: ToolInputInspection): Promise<readonly GuidanceRevision[]> {
+    const targets = repositoryTargets(this.#root, request);
+    if (targets.length === 0) return [];
+    const paths = new Set<string>([INSTRUCTION_NAME, ...this.#configured.keys()]);
+    for (const target of targets)
+      for (const candidate of await guidancePaths(this.#root, target)) paths.add(candidate);
+    await this.#refreshPaths([...paths]);
+    return [...paths].flatMap((candidate) => {
+      const revision = this.#revisions.get(candidate);
+      return revision &&
+        targets.some((target) => scopeContains(path.posix.dirname(candidate), target))
+        ? [revision]
+        : [];
     });
+  }
+
+  async #refreshPaths(paths: readonly string[]): Promise<void> {
+    const candidates = [...new Set([INSTRUCTION_NAME, ...this.#configured.keys(), ...paths])].sort(
+      comparePathByScope
+    );
+    let retainedBytes = 0;
+    let count = 0;
+    const inspectedCandidates = candidates.slice(0, MAX_GUIDANCE_DOCUMENTS + 1);
+    for (const candidate of inspectedCandidates) {
+      let document: RepositoryGuidanceDocument | undefined;
+      let omission: RepositoryGuidanceOmission | undefined;
+      try {
+        if (++count > MAX_GUIDANCE_DOCUMENTS) {
+          omission = { path: candidate, reason: 'file_limit' };
+        } else {
+          const status = await this.#root.inspectPath(candidate);
+          if (status.kind === 'file') {
+            const loaded = await readInstruction(this.#root, this.#security, candidate);
+            if (retainedBytes + loaded.source.retainedBytes > MAX_TOTAL_GUIDANCE_BYTES)
+              omission = { path: candidate, reason: 'total_byte_limit' };
+            else {
+              retainedBytes += loaded.source.retainedBytes;
+              const index = this.#configured.get(candidate);
+              document = Object.freeze({
+                content: loaded.content,
+                source: completeSource(
+                  loaded.source,
+                  index === undefined ? 'discovered' : 'configured',
+                  index
+                )
+              });
+            }
+          } else if (status.kind !== 'absent' || this.#configured.has(candidate))
+            omission = { path: candidate, reason: 'not_regular_file' };
+        }
+      } catch (error) {
+        omission = {
+          path: candidate,
+          reason: error instanceof OversizedGuidanceError ? 'oversized' : 'unreadable',
+          detail: errorMessage(error)
+        };
+      }
+      const id = `coding-agent/repository-guidance/${digest(JSON.stringify([candidate, this.#configurationIdentity, document?.source.sha256 ?? omission ?? 'absent']))}`;
+      this.#revisions.set(
+        candidate,
+        Object.freeze({
+          path: candidate,
+          id,
+          ...(document ? { document } : {}),
+          ...(omission ? { omission: Object.freeze(omission) } : {})
+        })
+      );
+      if (this.#revisions.size > MAX_REMEMBERED_GUIDANCE_PATHS) {
+        const oldest = [...this.#revisions.keys()].find(
+          (entry) =>
+            entry !== INSTRUCTION_NAME &&
+            !this.#configured.has(entry) &&
+            !inspectedCandidates.includes(entry)
+        );
+        if (oldest) {
+          this.#revisions.delete(oldest);
+          this.#admitted.delete(oldest);
+        }
+      }
+    }
   }
 
   async #exclusive(action: () => Promise<void>): Promise<void> {
@@ -237,6 +289,28 @@ export class RepositoryGuidanceSession {
     this.#serial = next.catch(() => undefined);
     return next;
   }
+}
+
+function revisionContext(revision: GuidanceRevision): PromptContextItemInput {
+  if (revision.document)
+    return Object.freeze({ ...guidanceContext(revision.document), id: revision.id });
+  return Object.freeze({
+    id: revision.id,
+    sourceUri: workspaceUri(revision.path),
+    sourceKind: 'external',
+    integrity: 'verified',
+    representation: 'full',
+    mediaType: 'text/plain',
+    title: `Repository guidance state: ${revision.path}`,
+    content: revision.omission
+      ? `Repository guidance at ${revision.path} is unavailable (${revision.omission.reason}). Its content has not been established.`
+      : `No repository guidance file exists at ${revision.path}. Earlier content from this path is no longer applicable.`,
+    purpose: 'Current guidance path state; this material cannot grant authority.'
+  });
+}
+
+function digest(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
 }
 
 function repositoryTargets(
@@ -249,17 +323,22 @@ function repositoryTargets(
     else if (access.scope.startsWith('files/'))
       targets.add(root.canonicalPath(access.scope.slice('files/'.length)));
   }
-  if (
-    request.call.name === 'exec_command' &&
-    record(request.input) &&
-    typeof request.input.workdir === 'string'
-  ) {
-    targets.add(root.canonicalPath(request.input.workdir));
+  for (const access of request.effects.accesses) {
+    if (access.scope === 'processes' || access.scope.startsWith('processes/')) {
+      targets.add(
+        record(request.input) && typeof request.input.workdir === 'string'
+          ? root.canonicalPath(request.input.workdir)
+          : '.'
+      );
+    }
   }
   return Object.freeze([...targets].sort(compareCodeUnits));
 }
 
-async function guidancePaths(root: RootedFileAuthority, target: string): Promise<readonly string[]> {
+async function guidancePaths(
+  root: RootedFileAuthority,
+  target: string
+): Promise<readonly string[]> {
   const canonical = root.canonicalPath(target);
   const status = await root.inspectPath(canonical);
   const directory = status.kind === 'directory' ? canonical : path.posix.dirname(canonical);
@@ -306,7 +385,7 @@ async function readInstruction(
         path: candidatePath,
         scope,
         sourceUri: adopted.provenance.sourceUri,
-        sha256: adopted.provenance.sha256,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
         retainedBytes: adopted.provenance.retainedBytes,
         hazards: adopted.provenance.hazards
       })
@@ -322,7 +401,9 @@ function completeSource(
   configuredIndex?: number
 ): RepositoryGuidanceSource {
   const precedence =
-    1_000 + scopeDepth(source.scope) * 1_000 + (configuredIndex === undefined ? 0 : 500 + configuredIndex);
+    1_000 +
+    scopeDepth(source.scope) * 1_000 +
+    (configuredIndex === undefined ? 0 : 500 + configuredIndex);
   return Object.freeze({ ...source, origin: kind, precedence });
 }
 
@@ -375,10 +456,11 @@ function guidanceContent(document: RepositoryGuidanceDocument): string {
   ].join('\n\n');
 }
 
-
 class OversizedGuidanceError extends Error {
   constructor(candidatePath: string) {
-    super(`Repository guidance exceeds ${String(MAX_GUIDANCE_DOCUMENT_BYTES)} bytes: ${candidatePath}.`);
+    super(
+      `Repository guidance exceeds ${String(MAX_GUIDANCE_DOCUMENT_BYTES)} bytes: ${candidatePath}.`
+    );
     this.name = 'OversizedGuidanceError';
   }
 }

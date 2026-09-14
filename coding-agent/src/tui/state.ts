@@ -16,7 +16,10 @@ import type {
 } from '@agent-core/runtime';
 import type { ComposerDraft, ConversationEntry, NotesState } from '@agent-core/tui';
 import { defaultTuiPreferences, RetainedListPresentation } from '@agent-core/tui';
-import type { ScrollState, UnscrolledSearchPickerState } from '@ismail-elkorchi/terminal-ui/behavior';
+import type {
+  ScrollState,
+  UnscrolledSearchPickerState
+} from '@ismail-elkorchi/terminal-ui/behavior';
 import { createScrollState, createTextAreaState } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { MeasuredViewportAnchor } from '@ismail-elkorchi/terminal-ui/interaction';
 import type {
@@ -81,7 +84,7 @@ export type CodingAgentTuiOverlay =
       readonly preferences: import('@agent-core/tui').TuiPreferences;
     }
   | { readonly kind: 'configuration'; readonly state: import('@agent-core/tui').ConfigurationState }
-  | { readonly kind: 'context-loading'; readonly requestId: string }
+  | { readonly kind: 'context'; readonly state: import('@agent-core/tui').ContextState }
   | { readonly kind: 'none' }
   | { readonly kind: 'decision' }
   | { readonly kind: 'notes'; readonly state: NotesState }

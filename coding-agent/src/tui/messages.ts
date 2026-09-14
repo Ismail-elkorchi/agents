@@ -20,18 +20,14 @@ import type {
   CodingSessionView
 } from '../application/contracts.js';
 import type { CodingRunVerification } from '../verification/configured-check-tool.js';
-import type { CodingAgentTuiCommandExecution, CodingAgentTuiCommandRequest } from './command-surface.js';
+import type {
+  CodingAgentTuiCommandExecution,
+  CodingAgentTuiCommandRequest
+} from './command-surface.js';
 import type { PanelItem, PanelKind } from './panels.js';
 
 export type CodingAgentTuiMessage =
-  | {
-      readonly type: 'context.loaded';
-      readonly requestId: string;
-      readonly sessionId: string;
-      readonly content: string;
-    }
-  | { readonly type: 'context.failed'; readonly requestId: string; readonly message: string }
-  | { readonly type: 'context.open' }
+  | import('@agent-core/tui').ContextMessage
   | { readonly type: 'search.adjacent'; readonly direction: 'previous' | 'next' }
   | { readonly type: 'conversation.message'; readonly direction: 'previous' | 'next' }
   | import('./processes.js').ProcessMessage
@@ -135,7 +131,10 @@ export type CodingAgentTuiMessage =
   | { readonly type: 'modal.scrolled'; readonly offsetRow: number }
   | { readonly type: 'commands.transition'; readonly transition: SearchPickerControlTransition }
   | { readonly type: 'commands.accept'; readonly event: SearchPickerAcceptEvent }
-  | { readonly type: 'command-values.transition'; readonly transition: SearchPickerControlTransition }
+  | {
+      readonly type: 'command-values.transition';
+      readonly transition: SearchPickerControlTransition;
+    }
   | { readonly type: 'command-values.accept'; readonly event: SearchPickerAcceptEvent }
   | { readonly type: 'search.more' }
   | {

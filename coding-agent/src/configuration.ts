@@ -19,6 +19,8 @@ export interface CodingAgentCheckConfiguration {
   readonly command: string;
   readonly coverage: 'targeted' | 'full';
   readonly timeoutMs?: number;
+  /** Explicit rooted files to observe; this does not assert complete shell dependencies. */
+  readonly testedPaths?: readonly string[];
 }
 export type CodingAgentProviderId = 'ollama' | 'openrouter' | 'openai' | 'openai-codex';
 export interface CodingAgentLimitConfiguration {
@@ -71,7 +73,10 @@ export async function loadCodingAgentConfiguration(
     if (adopted.provenance.hazards.length > 0 || adopted.provenance.truncated)
       throw new Error('Project configuration contains unsafe or oversized text.');
     const value: unknown = JSON.parse(text);
-    return Object.freeze({ value: parseCodingAgentConfiguration(value), provenance: adopted.provenance });
+    return Object.freeze({
+      value: parseCodingAgentConfiguration(value),
+      provenance: adopted.provenance
+    });
   } finally {
     await file.close();
   }
@@ -84,7 +89,8 @@ export function parseCodingAgentConfiguration(input: unknown): CodingAgentConfig
     maxStringBytes: 1_000_000,
     maxTotalBytes: 4_000_000
   });
-  if (value.version !== 1) throw new Error('Coding Agent configuration must be a version 1 object.');
+  if (value.version !== 1)
+    throw new Error('Coding Agent configuration must be a version 1 object.');
   if (
     Object.keys(value).some(
       (key) =>
@@ -138,7 +144,8 @@ export function parseCodingAgentConfiguration(input: unknown): CodingAgentConfig
     !checkArray(verification.advisory)
   )
     throw new Error('Verification configuration is invalid.');
-  const reasoning = value.reasoning === undefined ? undefined : parseModelReasoningRequest(value.reasoning);
+  const reasoning =
+    value.reasoning === undefined ? undefined : parseModelReasoningRequest(value.reasoning);
   const limits = value.limits;
   let ownedLimits: CodingAgentLimitConfiguration | undefined;
   if (limits !== undefined) {
@@ -148,7 +155,8 @@ export function parseCodingAgentConfiguration(input: unknown): CodingAgentConfig
   const checkIds = verification.required
     .map((item) => item.id)
     .concat(verification.advisory.map((item) => item.id));
-  if (new Set(checkIds).size !== checkIds.length) throw new Error('Verification check IDs must be unique.');
+  if (new Set(checkIds).size !== checkIds.length)
+    throw new Error('Verification check IDs must be unique.');
   const instructionPaths = value.instructions.map((item) => item.path);
   if (new Set(instructionPaths).size !== instructionPaths.length)
     throw new Error('Workspace instruction paths must be unique.');
@@ -157,7 +165,9 @@ export function parseCodingAgentConfiguration(input: unknown): CodingAgentConfig
     provider: value.provider,
     model: value.model,
     ...(reasoning === undefined ? {} : { reasoning }),
-    instructions: Object.freeze(value.instructions.map((item) => Object.freeze({ path: item.path }))),
+    instructions: Object.freeze(
+      value.instructions.map((item) => Object.freeze({ path: item.path }))
+    ),
     tools: Object.freeze({ enabled: Object.freeze(value.tools.enabled.map((tool) => tool)) }),
     permissions: Object.freeze({ maximumMode, requireApprovalFor: approvalKinds }),
     verification: Object.freeze({
@@ -173,12 +183,17 @@ function snapshotCheck(check: CodingAgentCheckConfiguration): CodingAgentCheckCo
     id: check.id,
     command: check.command,
     coverage: check.coverage,
-    ...(check.timeoutMs === undefined ? {} : { timeoutMs: check.timeoutMs })
+    ...(check.timeoutMs === undefined ? {} : { timeoutMs: check.timeoutMs }),
+    ...(check.testedPaths === undefined
+      ? {}
+      : { testedPaths: Object.freeze([...check.testedPaths]) })
   });
 }
 
 export function isCodingAgentProviderId(value: unknown): value is CodingAgentProviderId {
-  return value === 'ollama' || value === 'openrouter' || value === 'openai' || value === 'openai-codex';
+  return (
+    value === 'ollama' || value === 'openrouter' || value === 'openai' || value === 'openai-codex'
+  );
 }
 function instructionArray(value: unknown): value is readonly CodingAgentInstructionConfiguration[] {
   return (
@@ -186,7 +201,9 @@ function instructionArray(value: unknown): value is readonly CodingAgentInstruct
     value.length <= 32 &&
     value.every(
       (item) =>
-        isRecord(item) && Object.keys(item).every((key) => key === 'path') && relativePath(item.path)
+        isRecord(item) &&
+        Object.keys(item).every((key) => key === 'path') &&
+        relativePath(item.path)
     )
   );
 }
@@ -197,14 +214,19 @@ function checkArray(value: unknown): value is readonly CodingAgentCheckConfigura
       (item) =>
         isRecord(item) &&
         Object.keys(item).every((key) =>
-          ['id', 'command', 'coverage', 'timeoutMs'].includes(key)
+          ['id', 'command', 'coverage', 'timeoutMs', 'testedPaths'].includes(key)
         ) &&
         typeof item.id === 'string' &&
         item.id.length > 0 &&
         typeof item.command === 'string' &&
         item.command.length > 0 &&
         (item.coverage === 'targeted' || item.coverage === 'full') &&
-        optionalPositive(item.timeoutMs)
+        optionalPositive(item.timeoutMs) &&
+        (item.testedPaths === undefined ||
+          (Array.isArray(item.testedPaths) &&
+            item.testedPaths.length <= 256 &&
+            item.testedPaths.every(relativePath) &&
+            new Set(item.testedPaths).size === item.testedPaths.length))
     )
   );
 }
@@ -222,10 +244,11 @@ function validLimits(value: unknown): value is CodingAgentLimitConfiguration {
     'completionTokens',
     'activeImageCount',
     'activeImageBytes',
-    'activeImageTokens',
+    'activeImageTokens'
   ];
   if (Object.keys(value).some((key) => ![...numeric, 'knownCost'].includes(key))) return false;
-  if (numeric.some((key) => value[key] !== undefined && !optionalPositive(value[key]))) return false;
+  if (numeric.some((key) => value[key] !== undefined && !optionalPositive(value[key])))
+    return false;
   return (
     value.knownCost === undefined ||
     (isRecord(value.knownCost) &&

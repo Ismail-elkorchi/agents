@@ -5,12 +5,31 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { loadWorkspace } from '@ismail-elkorchi/coding-agent';
 import { LocalArtifactRepository } from '@agent-core/persistence/node';
-import { createLocalToolHost, TextPatchJournal, RootedFileAuthority } from '@agent-core/tools-local';
+import {
+  createLocalToolHost,
+  TextPatchJournal,
+  RootedFileAuthority
+} from '@agent-core/tools-local';
 import { createToolCall, planToolCall } from '@agent-core/tools';
 import { invokePlannedForTest, invokeToolCall, jsonToolCall } from './tool-call-helpers.js';
 
-const owner = { runId: 'cli-composition-run', turnId: 'turn-1', requestAttempt: 1, toolBatchId: 'batch-1', callIndex: 0, toolAttempt: 1 };
-const codingTools = ['list_directory', 'find_files', 'read_files', 'search_text', 'apply_patch', 'view_image', 'read_artifact'];
+const owner = {
+  runId: 'cli-composition-run',
+  turnId: 'turn-1',
+  requestAttempt: 1,
+  toolBatchId: 'batch-1',
+  callIndex: 0,
+  toolAttempt: 1
+};
+const codingTools = [
+  'list_directory',
+  'find_files',
+  'read_files',
+  'search_text',
+  'apply_patch',
+  'view_image',
+  'read_artifact'
+];
 
 test('Coding Agent local tool composition exposes exact structured and artifact capabilities', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'coding-agent-cli-composition-'));
@@ -19,7 +38,9 @@ test('Coding Agent local tool composition exposes exact structured and artifact 
   const patchJournalPath = path.join(workspace.runtimeDir, 'transactions', 'patch');
   await mkdir(patchJournalPath, { recursive: true, mode: 0o700 });
   const host = createLocalToolHost({
-    rootedFileAuthority: RootedFileAuthority.adopt(workspace.workspaceRoot, { additionalDeniedEntries: ['.coding-agent'] }),
+    rootedFileAuthority: RootedFileAuthority.adopt(workspace.workspaceRoot, {
+      additionalDeniedEntries: ['.coding-agent']
+    }),
     artifactRepository: new LocalArtifactRepository({ rootDir: workspace.artifactsDir }),
     patchJournal: TextPatchJournal.adopt(patchJournalPath),
     enabledTools: codingTools
@@ -27,17 +48,42 @@ test('Coding Agent local tool composition exposes exact structured and artifact 
   await host.ready();
   assert.deepEqual(await host.reconciliation(), { resolved: [], unresolved: [] });
   const artifacts = host.artifactRepository;
-  assert.deepEqual(host.tools.map((tool) => tool.name), codingTools);
+  assert.deepEqual(
+    host.tools.map((tool) => tool.name),
+    codingTools
+  );
   assert.equal(host.services.artifactRepository, artifacts);
 
   const imagePath = path.join(root, 'pixel.png');
-  await writeFile(imagePath, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'));
-  const stored = await artifacts.store({ label: 'text', content: new TextEncoder().encode('artifact text'), mediaType: 'text/plain; charset=utf-8' });
-  const context = { policy: { allowedRisks: ['read'] }, services: host.services, invocation: owner };
+  await writeFile(
+    imagePath,
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+      'base64'
+    )
+  );
+  const stored = await artifacts.store({
+    label: 'text',
+    content: new TextEncoder().encode('artifact text'),
+    mediaType: 'text/plain; charset=utf-8'
+  });
+  const context = {
+    policy: { allowedRisks: ['read'] },
+    services: host.services,
+    invocation: owner
+  };
 
-  const viewed = await invokeToolCall(jsonToolCall('view_image', { path: 'pixel.png' }), host.tools, context);
-  assert.equal(viewed.ok, true);
-  const read = await invokeToolCall(jsonToolCall('read_artifact', { artifactId: stored.artifactId, offset: 0, byteCount: 64 }), host.tools, context);
+  const viewed = await invokeToolCall(
+    jsonToolCall('view_image', { path: 'pixel.png' }),
+    host.tools,
+    context
+  );
+  assert.equal(viewed.kind, 'result');
+  const read = await invokeToolCall(
+    jsonToolCall('read_artifact', { artifactId: stored.artifactId, offset: 0, byteCount: 64 }),
+    host.tools,
+    context
+  );
   assert.equal(read.output.text, 'artifact text');
 
   await host.close();
@@ -48,24 +94,41 @@ test('local host exposes dry-run patching without a transaction directory and ga
   await writeFile(path.join(root, 'note.txt'), 'old\n');
   const patch = '*** Begin Patch\n*** Update File: note.txt\n@@\n-old\n+new\n*** End Patch';
   const contextFor = (services) => ({
-    policy: { allowedRisks: ['read', 'write', 'destructive'] }, services,
+    policy: { allowedRisks: ['read', 'write', 'destructive'] },
+    services,
     signal: new AbortController().signal,
     boundary: { authorizationPolicyId: 'tests/local-host-patch@1', executionTargetId: root }
   });
   const withoutDirectory = createLocalToolHost({
     rootedFileAuthority: RootedFileAuthority.adopt(root),
-    artifactRepository: new LocalArtifactRepository({ rootDir: path.join(root, 'artifacts-without-patch') }),
+    artifactRepository: new LocalArtifactRepository({
+      rootDir: path.join(root, 'artifacts-without-patch')
+    }),
     enabledTools: codingTools
   });
   await withoutDirectory.ready();
-  assert.equal(withoutDirectory.tools.some(tool => tool.name === 'apply_patch'), true);
+  assert.equal(
+    withoutDirectory.tools.some((tool) => tool.name === 'apply_patch'),
+    true
+  );
   assert.equal('patchJournal' in withoutDirectory.services, false);
   const dryContext = contextFor(withoutDirectory.services);
-  const dryPrepared = await planToolCall(createToolCall({ name: 'apply_patch', input: { kind: 'json', value: { patch, dryRun: true } } }), withoutDirectory.tools, dryContext);
+  const dryPrepared = await planToolCall(
+    createToolCall({
+      name: 'apply_patch',
+      input: { kind: 'json', value: { patch, dryRun: true } }
+    }),
+    withoutDirectory.tools,
+    dryContext
+  );
   assert.equal(dryPrepared.ok, true);
   const dry = await invokePlannedForTest(dryPrepared.plan, dryContext);
   assert.equal(dry.output.applicationStatus, 'dry_run');
-  const writePrepared = await planToolCall(createToolCall({ name: 'apply_patch', input: { kind: 'text', value: patch } }), withoutDirectory.tools, dryContext);
+  const writePrepared = await planToolCall(
+    createToolCall({ name: 'apply_patch', input: { kind: 'text', value: patch } }),
+    withoutDirectory.tools,
+    dryContext
+  );
   assert.equal(writePrepared.ok, true);
   const missing = await invokePlannedForTest(writePrepared.plan, dryContext);
   assert.equal(missing.kind, 'failure');
@@ -76,14 +139,23 @@ test('local host exposes dry-run patching without a transaction directory and ga
   await mkdir(patchJournalPath, { recursive: true, mode: 0o700 });
   const withDirectory = createLocalToolHost({
     rootedFileAuthority: RootedFileAuthority.adopt(root),
-    artifactRepository: new LocalArtifactRepository({ rootDir: path.join(root, 'artifacts-with-patch') }),
+    artifactRepository: new LocalArtifactRepository({
+      rootDir: path.join(root, 'artifacts-with-patch')
+    }),
     patchJournal: TextPatchJournal.adopt(patchJournalPath),
     enabledTools: codingTools
   });
   await withDirectory.ready();
-  assert.equal(withDirectory.tools.some(tool => tool.name === 'apply_patch'), true);
+  assert.equal(
+    withDirectory.tools.some((tool) => tool.name === 'apply_patch'),
+    true
+  );
   const writeContext = contextFor(withDirectory.services);
-  const plan = await planToolCall(createToolCall({ name: 'apply_patch', input: { kind: 'text', value: patch } }), withDirectory.tools, writeContext);
+  const plan = await planToolCall(
+    createToolCall({ name: 'apply_patch', input: { kind: 'text', value: patch } }),
+    withDirectory.tools,
+    writeContext
+  );
   assert.equal(plan.ok, true);
   const applied = await invokePlannedForTest(plan.plan, writeContext);
   assert.equal(applied.output.applicationStatus, 'applied');

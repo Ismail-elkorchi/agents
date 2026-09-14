@@ -1,9 +1,13 @@
 import { InMemorySessionRepository } from '@agent-core/runtime';
-import { activityDetails } from '@agent-core/tui';import assert from 'node:assert/strict';
+import { activityDetails } from '@agent-core/tui';
+import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import { createTuiRuntime, runTui } from '@ismail-elkorchi/terminal-ui/tui';
-import { createCodingTuiEventSource, createCodingAgentTuiApp } from '@ismail-elkorchi/coding-agent/tui';
+import {
+  createCodingTuiEventSource,
+  createCodingAgentTuiApp
+} from '@ismail-elkorchi/coding-agent/tui';
 import { waitFor } from './coding-agent-tui-test-helpers.js';
 
 test('tool activity collapses success, expands failure, and keeps bounded observed facts', async () => {
@@ -21,13 +25,21 @@ test('tool activity collapses success, expands failure, and keeps bounded observ
     runId: 'run-1',
     event: { type: 'turn.started', runId: 'run', turnIndex: 1, turnId: 'turn-1', requestAttempt: 1 }
   });
-  await events.enqueue({ type: 'progress', runId: 'run-1', event: toolStarted('call-ok', 'echo ok') });
+  await events.enqueue({
+    type: 'progress',
+    runId: 'run-1',
+    event: toolStarted('call-ok', 'echo ok')
+  });
   await events.enqueue({
     type: 'progress',
     runId: 'run-1',
     event: toolEnded('call-ok', true, 'Command completed.')
   });
-  await events.enqueue({ type: 'progress', runId: 'run-1', event: toolStarted('call-failed', 'false') });
+  await events.enqueue({
+    type: 'progress',
+    runId: 'run-1',
+    event: toolStarted('call-failed', 'false')
+  });
   await events.enqueue({
     type: 'progress',
     runId: 'run-1',
@@ -38,9 +50,13 @@ test('tool activity collapses success, expands failure, and keeps bounded observ
   const exit = await running;
   await events.close();
 
-  const success = exit.state.conversation.items.find((item) => item.id === 'tool:run-1:turn-1:batch-1:0');
-  const failure = exit.state.conversation.items.find((item) => item.id === 'tool:run-1:turn-1:batch-1:1');
-  assert.equal(success.status, 'success');
+  const success = exit.state.conversation.items.find(
+    (item) => item.id === 'tool:run-1:turn-1:batch-1:0'
+  );
+  const failure = exit.state.conversation.items.find(
+    (item) => item.id === 'tool:run-1:turn-1:batch-1:1'
+  );
+  assert.equal(success.status, 'complete');
   assert.equal(failure.status, 'failed');
   assert.ok(!exit.state.conversation.expandedIds.includes(success.id));
   assert.ok(exit.state.conversation.expandedIds.includes(failure.id));
@@ -74,23 +90,23 @@ function toolStarted(callId, command) {
   };
 }
 
-function toolEnded(callId, ok, summary) {
+function toolEnded(callId, completed, summary) {
   return {
     type: 'tool.ended',
     ...identity(callId),
     toolName: 'exec_command',
     observation: {
-      kind: 'result',
-      ok,
+      kind: completed ? 'result' : 'failure',
+      ...(!completed ? { code: 'execution_failed' } : {}),
       summary,
       scope: { resources: ['workspace/command'], coverage: 'complete' },
-      output: { outcome: ok ? 'exited' : 'runtime_error', command: callId },
+      output: { outcome: completed ? 'exited' : 'runtime_error', command: callId },
       observedFacts: {
         items: [
           {
             action: 'execute',
             resources: [{ uri: 'workspace://command' }],
-            outcome: ok ? 'success' : 'failure'
+            outcome: completed ? 'success' : 'failure'
           }
         ]
       }
@@ -98,30 +114,57 @@ function toolEnded(callId, ok, summary) {
   };
 }
 
-
 test('wrapped conversation entries survive tool disclosure, streaming, and resize', async (t) => {
   const repository = new InMemorySessionRepository();
-  const session = await repository.create({ binding: { schemaId: 'test/viewport', schemaVersion: 1, subject: {} } });
-  await repository.appendInput(session, { runId: 'run-1', task: '文 · e\u0301 words '.repeat(200) });
+  const session = await repository.create({
+    binding: { schemaId: 'test/viewport', schemaVersion: 1, subject: {} }
+  });
+  await repository.appendInput(session, {
+    runId: 'run-1',
+    task: '文 · e\u0301 words '.repeat(200)
+  });
   const runtime = createTuiRuntime({
     host: createMemoryTerminalHost({ terminalSize: { columns: 48, rows: 20 } }),
-    app: createCodingAgentTuiApp('', { initialHydration: {
-      history: await repository.readBranchPage(session), changes: [], verification: [],
-      session: { sessionId: session.id, phase: 'idle', queuedInputs: 0, configuration: { provider: 'test', model: 'test' } },
-      branchPoints: [], pendingSubmissions: [], runs: []
-    } })
+    app: createCodingAgentTuiApp('', {
+      initialHydration: {
+        history: await repository.readBranchPage(session),
+        changes: [],
+        verification: [],
+        session: {
+          sessionId: session.id,
+          phase: 'idle',
+          queuedInputs: 0,
+          configuration: { provider: 'test', model: 'test' }
+        },
+        branchPoints: [],
+        pendingSubmissions: [],
+        runs: []
+      }
+    })
   });
   t.after(() => runtime.dispose());
   await runtime.start();
   const progress = (event) => runtime.dispatch({ type: 'progress', runId: 'run-1', event });
-  await progress({ type: 'turn.started', runId: 'run-1', turnIndex: 1, turnId: 'turn-1', requestAttempt: 1 });
+  await progress({
+    type: 'turn.started',
+    runId: 'run-1',
+    turnIndex: 1,
+    turnId: 'turn-1',
+    requestAttempt: 1
+  });
   await progress(toolStarted('call-ok', 'a very long command argument '.repeat(30)));
   await progress(toolEnded('call-ok', true, 'Output '.repeat(50)));
   for (const columns of [12, 80, 48]) {
     await runtime.resize({ columns, rows: 20 });
     await runtime.dispatch({ type: 'activity.toggle', id: 'tool:run-1:turn-1:batch-1:0' });
-    await progress({ type: 'assistant.delta', turnIndex: 1, turnId: 'turn-1', requestAttempt: 1,
-      delta: 'More output ', accumulated: 'More output '.repeat(columns) });
+    await progress({
+      type: 'assistant.delta',
+      turnIndex: 1,
+      turnId: 'turn-1',
+      requestAttempt: 1,
+      delta: 'More output ',
+      accumulated: 'More output '.repeat(columns)
+    });
     const { geometry, scroll } = runtime.state().presentation.layout;
     assert.equal(scroll.offsetRow, Math.max(0, geometry.contentRows - geometry.viewportRows));
     assert.ok(geometry.viewportColumns <= columns);

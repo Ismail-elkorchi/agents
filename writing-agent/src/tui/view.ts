@@ -1,3 +1,4 @@
+import { contextView } from '@agent-core/tui';
 import {
   attachmentsView,
   commandSuggestions,
@@ -51,7 +52,8 @@ export function writingView(
 ): View {
   const { columns, rows } = context.terminalSize;
   composerHeight += (rows >= 8 ? 1 : 0) + resourceCompletionRows(state.resourceCompletion);
-  composerHeight += state.completion === undefined ? 0 : Math.min(5, state.completion.names.length) + 1;
+  composerHeight +=
+    state.completion === undefined ? 0 : Math.min(5, state.completion.names.length) + 1;
   const fields = writingStatusFields(state);
   const preferences =
     columns < 80
@@ -90,7 +92,9 @@ export function writingView(
                   onQueue: (): WritingTuiMessage => ({ type: 'queue.open' })
                 })
               ]),
-          ...(state.resourceCompletion === undefined ? [] : [resourceSuggestions(state.resourceCompletion)]),
+          ...(state.resourceCompletion === undefined
+            ? []
+            : [resourceSuggestions(state.resourceCompletion)]),
           ...(state.completion === undefined
             ? []
             : [
@@ -121,10 +125,17 @@ export function writingView(
             ...(rows < 8 ? [] : [{ kind: 'fixed' as const, cells: 1 }]),
             ...(state.resourceCompletion === undefined
               ? []
-              : [{ kind: 'fixed' as const, cells: resourceCompletionRows(state.resourceCompletion) }]),
+              : [
+                  {
+                    kind: 'fixed' as const,
+                    cells: resourceCompletionRows(state.resourceCompletion)
+                  }
+                ]),
             ...(state.completion === undefined
               ? []
-              : [{ kind: 'fixed' as const, cells: Math.min(5, state.completion.names.length) + 1 }]),
+              : [
+                  { kind: 'fixed' as const, cells: Math.min(5, state.completion.names.length) + 1 }
+                ]),
             { kind: 'fill' }
           ]
         }
@@ -132,7 +143,11 @@ export function writingView(
       footer: [
         ...(state.sessionView?.session.suspension === undefined
           ? []
-          : [action('writing-pending-decision', 'Review pending decision', { type: 'recovery.open' })]),
+          : [
+              action('writing-pending-decision', 'Review pending decision', {
+                type: 'recovery.open'
+              })
+            ]),
         action('writing-commands', 'Commands', { type: 'commands.open' }),
         ...(state.application.status === 'running'
           ? [action('writing-stop', 'Stop', { type: 'interrupt' })]
@@ -214,7 +229,7 @@ function documentView(state: WritingTuiState, width: number): View {
         action('document-source-toggle', document.source ? 'Rendered' : 'Source / select', {
           type: 'document.toggle-source'
         }),
-        action('document-use-passage', 'Use passage', {
+        action('document-use-passage', 'Use snapshot passage', {
           type: 'document.use-passage'
         })
       ])
@@ -286,6 +301,8 @@ function modalView(
       focusId = 'writing-modal-close';
       content = plain('Reading…');
       break;
+    case 'context':
+      return contextView(modal.state, width, height);
     case 'notes':
       return notesView(modal.state, width, height, (message) => message);
     case 'none':

@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import path from 'node:path';import test from 'node:test';
+import path from 'node:path';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import { createTuiRuntime } from '@ismail-elkorchi/terminal-ui/tui';
@@ -222,7 +223,8 @@ function setupController() {
       return () => listeners.delete(listener);
     },
     async start() {
-      for (const listener of listeners) await listener({ type: 'application.state.changed', state });
+      for (const listener of listeners)
+        await listener({ type: 'application.state.changed', state });
     },
     async submit(task) {
       this.tasks.push(task);
@@ -256,15 +258,20 @@ test('closing a pending context inspection keeps the composer and rejects its la
   const runtime = createTuiRuntime({
     host,
     app: createCodingAgentTuiApp('Exact draft 文', {
-      inspectContext: () => result.promise
+      context: {
+        inspectContext: () => result.promise,
+        contextSources: async () => ({ items: [] }),
+        listNotes: async () => ({ items: [] }),
+        renewContext: async () => {}
+      }
     })
   });
   t.after(() => runtime.dispose());
   await runtime.start();
   const draft = runtime.state().composer.input;
   await runtime.dispatch({ type: 'context.open' });
-  assert.equal(runtime.state().overlay.kind, 'context-loading');
-  const requestId = runtime.state().overlay.requestId;
+  assert.equal(runtime.state().overlay.kind, 'context');
+  const requestId = runtime.state().overlay.state.requestId;
   await runtime.dispatch({ type: 'overlay.close' });
   result.resolve({ sources: [] });
   await runtime.dispatch({

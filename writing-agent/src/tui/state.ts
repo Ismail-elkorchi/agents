@@ -19,10 +19,15 @@ import type {
 } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { MeasuredViewportAnchor } from '@ismail-elkorchi/terminal-ui/interaction';
 import type { ScrollRequest } from '@ismail-elkorchi/terminal-ui/interaction';
-import type { WritingApplication, WritingApplicationState, WritingDocument } from '../application/service.js';
+import type {
+  WritingApplication,
+  WritingApplicationState,
+  WritingDocument
+} from '../application/service.js';
 
 export type WritingView = 'document' | 'conversation';
 export type WritingTuiOverlay =
+  | { readonly kind: 'context'; readonly state: import('@agent-core/tui').ContextState }
   | { readonly kind: 'session-name'; readonly state: import('@agent-core/tui').SessionNameState }
   | { readonly kind: 'inspector'; readonly state: import('@agent-core/tui').SourceInspector }
   | { readonly kind: 'attachments'; readonly state: import('@agent-core/tui').AttachmentState }
@@ -55,7 +60,10 @@ export type WritingTuiOverlay =
       }[];
       readonly picker: UnscrolledSearchPickerState;
     }
-  | { readonly kind: 'configuration'; readonly state: import('@agent-core/tui').ConfigurationState };
+  | {
+      readonly kind: 'configuration';
+      readonly state: import('@agent-core/tui').ConfigurationState;
+    };
 
 export interface WritingTuiState {
   readonly historyMatch?: import('@agent-core/tui').HistoryMatchPosition;
@@ -145,13 +153,7 @@ export function initialWritingState(
 
 export type WritingTuiMessage =
   | { readonly type: 'submission.failed'; readonly sessionId: string; readonly message: string }
-  | {
-      readonly type: 'context.loaded';
-      readonly requestId: string;
-      readonly sessionId: string;
-      readonly content: string;
-    }
-  | { readonly type: 'context.failed'; readonly requestId: string; readonly message: string }
+  | import('@agent-core/tui').ContextMessage
   | { readonly type: 'search.adjacent'; readonly direction: 'previous' | 'next' }
   | { readonly type: 'conversation.message'; readonly direction: 'previous' | 'next' }
   | { readonly type: 'terminal.resized' }
@@ -167,7 +169,7 @@ export type WritingTuiMessage =
   | import('@agent-core/tui').AttachmentMessage
   | import('@agent-core/tui').PromptRecallMessage
   | import('@agent-core/tui').QueueMessage
-  | { readonly type: 'queue.open' | 'context.open' | 'status.open' }
+  | { readonly type: 'queue.open' | 'status.open' }
   | { readonly type: 'prompt.navigate'; readonly direction: 'older' | 'newer' }
   | { readonly type: 'terminal.focus'; readonly focused: boolean }
   | import('@agent-core/tui').PreferencesMessage
@@ -255,7 +257,10 @@ export type WritingTuiMessage =
             >,
             'completion'
           >
-        | Extract<import('../application/service.js').WritingSubmissionResult, { readonly kind: 'rejected' }>;
+        | Extract<
+            import('../application/service.js').WritingSubmissionResult,
+            { readonly kind: 'rejected' }
+          >;
     }
   | { readonly type: 'view'; readonly view: WritingView }
   | {
@@ -278,12 +283,18 @@ export type WritingTuiMessage =
     }
   | {
       readonly type: 'picker.open';
-      readonly subject: Exclude<Extract<WritingTuiOverlay, { kind: 'picker' }>['subject'], 'commands'>;
+      readonly subject: Exclude<
+        Extract<WritingTuiOverlay, { kind: 'picker' }>['subject'],
+        'commands'
+      >;
     }
   | {
       readonly type: 'picker.loaded';
       readonly requestId: string;
-      readonly subject: Exclude<Extract<WritingTuiOverlay, { kind: 'picker' }>['subject'], 'commands'>;
+      readonly subject: Exclude<
+        Extract<WritingTuiOverlay, { kind: 'picker' }>['subject'],
+        'commands'
+      >;
       readonly entries: readonly {
         readonly id: string;
         readonly label: string;
@@ -295,6 +306,11 @@ export type WritingTuiMessage =
     }
   | { readonly type: 'picker.accept'; readonly id: string }
   | { readonly type: 'document.loaded'; readonly document: WritingDocument }
+  | {
+      readonly type: 'document.passage-loaded';
+      readonly sessionId: string | undefined;
+      readonly item: import('@agent-core/runtime').PromptContextItemInput;
+    }
   | import('@agent-core/tui').ConfigurationMessage
   | { readonly type: 'configuration.open' }
   | {

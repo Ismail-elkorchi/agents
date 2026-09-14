@@ -11,10 +11,12 @@ import {
 } from '@agent-core/persistence/node';
 import {
   ApplicationEvents,
+  recordedModelSelection,
   HistoryReader,
   SessionNotes,
   agentEventCodec,
   assertHistoryModelCompatibility,
+  type ModelChangeOptions,
   assertSessionImagesSupported,
   ownSessionSubmissionInput,
   progressReplacementKey,
@@ -31,7 +33,11 @@ import {
   type SessionSubmissionInput
 } from '@agent-core/runtime';
 import { JsonlNoteRepository, JsonlSessionRepository } from '@agent-core/runtime/node';
-import { DEFAULT_LOCAL_TOOL_CONFIGURATION, readRootedImage, readRootedText } from '@agent-core/tools-local';
+import {
+  DEFAULT_LOCAL_TOOL_CONFIGURATION,
+  readRootedImage,
+  readRootedText
+} from '@agent-core/tools-local';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -43,16 +49,25 @@ import {
   type WritingConfiguration,
   type WritingMode
 } from '../session.js';
-import { openWritingWorkspace, readWritingDocument, type WritingWorkspace } from '../workspace.js';
+import { openWritingWorkspace, type WritingWorkspace } from '../workspace.js';
+import {
+  WritingDocuments,
+  documentSectionSchema,
+  documentPassageSchema,
+  documentComparisonSchema,
+  type DocumentPassageInput
+} from '../documents.js';
+import type * as z from 'zod';
 
 export type { WritingConfiguration, WritingMode } from '../session.js';
-export type { WritingDocument } from '../workspace.js';
+export type { WritingDocument, DocumentRevision, DocumentPassageInput } from '../documents.js';
 export interface WritingApplicationOptions {
   readonly rootDirectory: string;
   readonly stateRoot?: string;
   readonly sessionId?: string;
   readonly mode?: WritingMode;
   readonly configuration?: WritingConfiguration;
+  readonly freshContinuation?: boolean;
 }
 export interface WritingApplicationState {
   readonly workspace: string;
@@ -79,12 +94,14 @@ export class WritingApplication {
     event.type === 'run.progress' ? progressReplacementKey(event.event) : undefined
   );
   private readonly sessions: JsonlSessionRepository;
+  private readonly documents: WritingDocuments;
   private descriptor: SessionDescriptor | undefined;
   private readonly initialSessionId: string | undefined;
   private composition: ReturnType<typeof createWritingSession> | undefined;
   private selection: ModelSelection | undefined;
   private configuration: WritingConfiguration | undefined;
   private mode: WritingMode;
+  private freshContinuation: boolean;
   private unsubscribe: (() => void) | undefined;
   private mutations: Promise<void> = Promise.resolve();
   private closeCompletion: Promise<void> | undefined;
@@ -96,9 +113,16 @@ export class WritingApplication {
     this.sessions = new JsonlSessionRepository({
       rootDir: path.join(workspace.stateDirectory, 'sessions')
     });
+    this.documents = new WritingDocuments(
+      workspace.root,
+      new LocalArtifactRepository({
+        rootDir: path.join(workspace.stateDirectory, 'artifacts')
+      })
+    );
     this.initialSessionId = options.sessionId;
     this.configuration = options.configuration;
     this.mode = options.mode ?? 'edit';
+    this.freshContinuation = options.freshContinuation ?? false;
   }
 
   draftDirectory(): string {
@@ -148,7 +172,7 @@ export class WritingApplication {
           : await this.sessions.open(id, this.workspace.binding);
       if (this.configuration === undefined) {
         const replay = await this.sessions.loadReplayState(this.descriptor);
-        const recorded = [...replay.branch].reverse().find((entry) => entry.type === 'model_settings');
+        const recorded = recordedModelSelection(replay.branch);
         let selection: ModelSelection | undefined =
           recorded === undefined
             ? undefined
@@ -167,7 +191,8 @@ export class WritingApplication {
               'utf8'
             );
           } catch (error) {
-            if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+            if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT'))
+              throw error;
           }
           if (encoded !== undefined) selection = parseModelSelection(JSON.parse(encoded));
         }
@@ -206,7 +231,11 @@ export class WritingApplication {
     }).provider;
   }
 
-  configureModel(selection: ModelSelection, provider: ModelProvider): Promise<void> {
+  configureModel(
+    selection: ModelSelection,
+    provider: ModelProvider,
+    change: ModelChangeOptions = {}
+  ): Promise<void> {
     const owned = parseModelSelection(selection);
     return this.mutate(async () => {
       const configuration = { ...this.configuration, provider, model: owned.model };
@@ -214,7 +243,7 @@ export class WritingApplication {
       delete configuration.temperature;
       if (owned.reasoning !== undefined) configuration.reasoning = owned.reasoning;
       if (owned.temperature !== undefined) configuration.temperature = owned.temperature;
-      await this.replaceConfiguration(configuration, owned);
+      await this.replaceConfiguration(configuration, owned, change);
     });
   }
 
@@ -224,7 +253,8 @@ export class WritingApplication {
 
   private async replaceConfiguration(
     configuration: WritingConfiguration,
-    selection?: ModelSelection
+    selection?: ModelSelection,
+    change: ModelChangeOptions = {}
   ): Promise<void> {
     this.requireIdle();
     if (selection !== undefined && selection.provider !== configuration.provider.id)
@@ -238,28 +268,31 @@ export class WritingApplication {
     });
     if (this.descriptor === undefined) {
       if (selection !== undefined)
-        await atomicWritePrivateJson(path.join(this.workspace.stateDirectory, 'model-selection.json'), {
-          ...selection
-        });
+        await atomicWritePrivateJson(
+          path.join(this.workspace.stateDirectory, 'model-selection.json'),
+          {
+            ...selection
+          }
+        );
       this.configuration = configuration;
       this.selection = selection;
       return;
     }
     const prepared = createWritingSession(this.workspace, this.requireDescriptor(), configuration);
     try {
-      await assertHistoryModelCompatibility({
-        history: prepared.history,
+      await prepared.agent.changeModel({
+        selection: selection ?? {
+          provider: configuration.provider.id,
+          model: configuration.model,
+          ...(configuration.reasoning === undefined ? {} : { reasoning: configuration.reasoning }),
+          ...(configuration.temperature === undefined
+            ? {}
+            : { temperature: configuration.temperature })
+        },
+        profile,
         artifacts: prepared.artifacts,
-        profile
+        ...change
       });
-      await prepared.agent.restore();
-      const state = prepared.agent.state();
-      if (state.phase !== 'idle' || state.queuedInputs > 0)
-        throw new Error('Finish pending work before changing configuration.');
-      if (selection !== undefined)
-        await atomicWritePrivateJson(path.join(this.workspace.stateDirectory, 'model-selection.json'), {
-          ...selection
-        });
     } catch (error) {
       await prepared.close();
       throw error;
@@ -272,6 +305,18 @@ export class WritingApplication {
     this.composition = prepared;
     this.subscribeComposition();
     await previous?.close();
+    if (selection !== undefined) {
+      try {
+        await atomicWritePrivateJson(
+          path.join(this.workspace.stateDirectory, 'model-selection.json'),
+          { ...selection }
+        );
+      } catch (cause) {
+        throw new Error('The session model changed, but saving the default model failed.', {
+          cause
+        });
+      }
+    }
   }
 
   setMode(mode: WritingMode): Promise<void> {
@@ -313,9 +358,14 @@ export class WritingApplication {
     if (!profile.modalities.input.includes('image'))
       throw new Error('The selected model does not accept images. Choose an image-capable model.');
     const canonical = root.canonicalPath(filePath);
-    const result = await readRootedImage(root, canonical, DEFAULT_LOCAL_TOOL_CONFIGURATION.artifact, {
-      signal
-    });
+    const result = await readRootedImage(
+      root,
+      canonical,
+      DEFAULT_LOCAL_TOOL_CONFIGURATION.artifact,
+      {
+        signal
+      }
+    );
     const repository = this.composition?.artifacts;
     if (repository === undefined) throw new Error('Start a session before adding an image.');
     const artifact = await repository.store({
@@ -329,14 +379,19 @@ export class WritingApplication {
 
   submit(
     input: SessionSubmissionInput,
-    options: { readonly delivery?: 'default' | 'steer' | 'follow_up'; readonly expectedRunId?: string } = {}
+    options: {
+      readonly delivery?: 'default' | 'steer' | 'follow_up';
+      readonly expectedRunId?: string;
+    } = {}
   ): Promise<WritingSubmissionResult> {
     return this.mutate(async () => {
       if (!this.composition) return { kind: 'rejected', reason: 'configuration_required' };
       if (input.images?.length)
         assertSessionImagesSupported(
           input.images,
-          await this.composition.provider.describeModel(this.composition.agent.state().configuration.model)
+          await this.composition.provider.describeModel(
+            this.composition.agent.state().configuration.model
+          )
         );
       const runId = randomUUID();
       await recordWritingPermission(this.workspace, runId, this.mode);
@@ -361,7 +416,9 @@ export class WritingApplication {
     return this.sessions.loadPendingSubmissions(this.descriptor);
   }
 
-  async updateQueuedSubmission(...args: Parameters<AgentSession['updateQueuedSubmission']>): Promise<void> {
+  async updateQueuedSubmission(
+    ...args: Parameters<AgentSession['updateQueuedSubmission']>
+  ): Promise<void> {
     if (this.composition === undefined) throw new Error('No session is configured.');
     await this.composition.agent.updateQueuedSubmission(...args);
   }
@@ -412,7 +469,27 @@ export class WritingApplication {
 
   readDocument(documentPath: string) {
     this.assertOpen();
-    return readWritingDocument(this.workspace.root, documentPath);
+    return this.documents.read(documentPath, true);
+  }
+
+  readDocumentSection(input: z.input<typeof documentSectionSchema>) {
+    this.assertOpen();
+    return this.documents.section(documentSectionSchema.parse(input));
+  }
+
+  readDocumentPassage(input: DocumentPassageInput) {
+    this.assertOpen();
+    return this.documents.passage(documentPassageSchema.parse(input));
+  }
+
+  compareDocumentRevisions(input: z.input<typeof documentComparisonSchema>) {
+    this.assertOpen();
+    return this.documents.compare(documentComparisonSchema.parse(input));
+  }
+
+  readPassageContext(input: unknown) {
+    this.assertOpen();
+    return this.documents.passageContext(documentPassageSchema.parse(input));
   }
 
   readSession() {
@@ -434,9 +511,23 @@ export class WritingApplication {
   readNote(request: SessionNoteRead) {
     return this.sessionNotes().read(request);
   }
+  contextSources(request: import('@agent-core/runtime').HistorySearchRequest) {
+    if (!this.composition) throw new Error('Open a session before inspecting context.');
+    return this.composition.history.search(request);
+  }
+  async renewContext(selection?: import('@agent-core/runtime').ContextSelection) {
+    const agent = this.requireAgent();
+    const selected = await agent.renewContext(selection);
+    const suspension = agent.inspectSuspension();
+    if (suspension?.category === 'context_admission')
+      return { selection: selected, run: await agent.resumeContextAdmission(suspension.runId) };
+    return { selection: selected };
+  }
+
   inspectContext() {
     this.assertOpen();
-    if (this.composition === undefined) throw new Error('Configure a session before inspecting context.');
+    if (this.composition === undefined)
+      throw new Error('Configure a session before inspecting context.');
     return this.composition.inspectContext(this.mode);
   }
   inspectSuspension() {
@@ -450,6 +541,8 @@ export class WritingApplication {
   async resume(runId: string) {
     this.assertOpen();
     const agent = this.requireAgent();
+    if (agent.inspectSuspension()?.category === 'context_admission')
+      return agent.resumeContextAdmission(runId);
     return agent.inspectSuspension()?.category === 'implementation'
       ? agent.resumeImplementation(runId)
       : agent.reconcileExternal(runId);
@@ -479,11 +572,23 @@ export class WritingApplication {
     if (!this.configuration || !this.descriptor) return;
     const composition = createWritingSession(this.workspace, this.descriptor, this.configuration);
     try {
-      await assertHistoryModelCompatibility({
-        history: composition.history,
-        artifacts: composition.artifacts,
-        profile: await this.configuration.provider.describeModel(this.configuration.model)
-      });
+      const profile = await this.configuration.provider.describeModel(this.configuration.model);
+      if (this.freshContinuation) {
+        const selection = this.modelSelection();
+        if (!selection) throw new Error('Fresh continuation requires a target model selection.');
+        await composition.agent.changeModel({
+          selection,
+          profile,
+          artifacts: composition.artifacts,
+          continuation: 'fresh'
+        });
+        this.freshContinuation = false;
+      } else
+        await assertHistoryModelCompatibility({
+          history: composition.history,
+          artifacts: composition.artifacts,
+          profile
+        });
       this.composition = composition;
       this.subscribeComposition();
       await composition.agent.restore();

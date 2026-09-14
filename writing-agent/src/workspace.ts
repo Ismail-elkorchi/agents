@@ -1,14 +1,8 @@
 import { hashJson } from '@agent-core/persistence';
 import type { SessionBindingInput } from '@agent-core/runtime';
-import { readRootedText, RootedFileAuthority } from '@agent-core/tools-local';
+import { RootedFileAuthority } from '@agent-core/tools-local';
 import path from 'node:path';
 import { defaultWritingAgentStateRoot, WritingStateRoot } from './private-state.js';
-
-export interface WritingDocument {
-  readonly path: string;
-  readonly content: string;
-  readonly sha256: string;
-}
 
 export interface WritingWorkspace {
   readonly root: RootedFileAuthority;
@@ -49,11 +43,4 @@ export async function openWritingWorkspace(
     root.close();
     throw error;
   }
-}
-
-export async function readWritingDocument(
-  root: RootedFileAuthority,
-  requestedPath: string
-): Promise<WritingDocument> {
-  return readRootedText(root, requestedPath, 64 * 1024 * 1024);
 }

@@ -1,3 +1,4 @@
+import { renderLocalToolObservation } from '@agent-core/tools-local';
 import {
   conversationText,
   oversizedHistoryEntry,
@@ -21,7 +22,7 @@ export function historyMessages(state: WritingTuiState): readonly ConversationEn
       if (projection === undefined || projection.activity !== activity) {
         projection = {
           ...(activity === undefined ? {} : { activity }),
-          entries: projectSessionEntry(entry, activity)
+          entries: projectSessionEntry(entry, activity, undefined, renderLocalToolObservation)
         };
         state.historyEntryCache.set(entry, projection);
       }

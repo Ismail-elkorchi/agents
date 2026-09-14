@@ -42,7 +42,13 @@ export function hydrateCodingAgentTuiState(
     next,
     historical
       ? state.conversation.pages
-      : [{ history: hydration.history, changes: hydration.changes, verification: hydration.verification }],
+      : [
+          {
+            history: hydration.history,
+            changes: hydration.changes,
+            verification: hydration.verification
+          }
+        ],
     sameSession && !historical
   );
   if (historical)
@@ -52,7 +58,8 @@ export function hydrateCodingAgentTuiState(
         ...next.conversation,
         unread:
           state.conversation.unread ||
-          state.conversation.pages.at(-1)?.history.boundary.leafId !== hydration.history.boundary.leafId
+          state.conversation.pages.at(-1)?.history.boundary.leafId !==
+            hydration.history.boundary.leafId
       }
     };
   next = applySessionState(next, hydration.session);
@@ -95,7 +102,9 @@ function restoreSessionRunState(
     return { ...state, run: { kind: 'working', label: runLabel(run.state) } };
   }
   if (session.queuedInputs > 0) {
-    const recovering = hydration.pendingSubmissions.some((submission) => submission.state === 'claimed');
+    const recovering = hydration.pendingSubmissions.some(
+      (submission) => submission.state === 'claimed'
+    );
     return {
       ...state,
       run: {
@@ -165,18 +174,27 @@ function runSuspensionReason(run: AgentRunState): AgentRunSuspension['reason'] |
   if (phase.kind === 'suspended') return phase.reason === 'approval' ? undefined : phase.reason;
   if (run.providerRequests.some((request) => request.stage === 'outcome_unknown'))
     return 'provider_outcome_unknown';
-  if (run.toolBatches.some((batch) => batch.callStates.some((call) => call.stage === 'outcome_unknown')))
+  if (
+    run.toolBatches.some((batch) =>
+      batch.callStates.some((call) => call.stage === 'outcome_unknown')
+    )
+  )
     return 'tool_outcome_unknown';
   return undefined;
 }
 
 function runEffectId(run: AgentRunState, reason: AgentRunSuspension['reason']): string | undefined {
   const phase = run.phase;
-  if (phase.kind === 'suspended' && phase.reason !== 'approval' && phase.effectId !== undefined)
+  if (
+    phase.kind === 'suspended' &&
+    phase.reason !== 'approval' &&
+    phase.reason !== 'context_admission' &&
+    phase.effectId !== undefined
+  )
     return phase.effectId;
   if (reason === 'provider_outcome_unknown') {
-    return run.providerRequests.find((request) => request.stage === 'outcome_unknown')?.effect.intent
-      .effectId;
+    return run.providerRequests.find((request) => request.stage === 'outcome_unknown')?.effect
+      .intent.effectId;
   }
   if (reason === 'tool_outcome_unknown') {
     return run.toolBatches
@@ -193,7 +211,8 @@ function runLabel(run: AgentRunState): string {
       : run.control.status === 'abort_requested'
         ? 'abort requested'
         : `driver generation ${String(run.driverGeneration)}`;
-  const phase = run.phase.kind === 'initializing' ? run.phase.step.replaceAll('_', ' ') : run.phase.kind;
+  const phase =
+    run.phase.kind === 'initializing' ? run.phase.step.replaceAll('_', ' ') : run.phase.kind;
   const providers = run.providerRequests.filter((request) => request.stage !== 'consumed').length;
   const calls = run.toolBatches
     .flatMap((batch) => batch.callStates)

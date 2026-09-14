@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 import { FileCredentialStore } from '@agent-core/auth';
 
-import { loginOpenAICodexDeviceCode, type OpenAICodexTransport } from '@agent-core/provider-openai-codex';
+import {
+  loginOpenAICodexDeviceCode,
+  type OpenAICodexTransport
+} from '@agent-core/provider-openai-codex';
 
 import { type AgentProgressEvent, type AgentRunResult } from '@agent-core/runtime';
 
@@ -51,11 +54,24 @@ export async function main(argv: string[]): Promise<void> {
 
   const rpc = argv[0] === 'rpc';
   const exec = argv[0] === 'exec';
-  if (exec && argv.length === 2 && (argv[1] === 'help' || argv[1] === '--help' || argv[1] === '-h')) {
+  if (
+    exec &&
+    argv.length === 2 &&
+    (argv[1] === 'help' || argv[1] === '--help' || argv[1] === '-h')
+  ) {
     printHelp();
     return;
   }
   const parsed = parseOptions(exec || rpc ? argv.slice(1) : argv);
+  if (
+    parsed.options.freshContinuation &&
+    (parsed.options.sessionSelection.kind === 'new' ||
+      parsed.options.provider === undefined ||
+      parsed.options.model === undefined)
+  )
+    throw new Error(
+      '--fresh-continuation requires --session or --resume and explicit --provider and --model.'
+    );
   let task = parsed.positionals.join(' ');
   if (exec && (task === '-' || (task.length === 0 && !process.stdin.isTTY)))
     task = await readStandardInput();
@@ -65,7 +81,9 @@ export async function main(argv: string[]): Promise<void> {
       'coding-agent exec requires a task string, piped stdin, or an existing session selected with --resume or --session.'
     );
   if (!exec && !rpc && !process.stdin.isTTY)
-    throw new Error('Interactive mode requires a terminal. Use coding-agent exec with piped input.');
+    throw new Error(
+      'Interactive mode requires a terminal. Use coding-agent exec with piped input.'
+    );
   const root = path.resolve(parsed.options.root);
   const workspace = await openCodingWorkspace(
     root,
@@ -86,7 +104,9 @@ export async function main(argv: string[]): Promise<void> {
   }
   if (exec) {
     const application = new CodingApplication(parsed.options, workspace);
-    const progress = new CodingAgentProgressRenderer({ showReasoning: parsed.options.showReasoning });
+    const progress = new CodingAgentProgressRenderer({
+      showReasoning: parsed.options.showReasoning
+    });
     let completed: AgentRunResult | undefined;
     let failure: Error | undefined;
     const unsubscribe = application.subscribe(
@@ -124,7 +144,12 @@ export async function main(argv: string[]): Promise<void> {
         if (accepted.kind === 'rejected') throw new Error(`Task was rejected: ${accepted.reason}.`);
         result = await accepted.completion;
       }
-      printResult(result, progress, process.stdout, await application.readVerification(runIdOf(result)));
+      printResult(
+        result,
+        progress,
+        process.stdout,
+        await application.readVerification(runIdOf(result))
+      );
       printPersistenceLocations(application, result);
       process.exitCode = resultExitCode(result);
     } finally {
@@ -179,6 +204,9 @@ const CLI_OPTION_SPECS = {
   }),
   '--state-root': valued((options, value) => {
     options.stateRoot = value;
+  }),
+  '--fresh-continuation': flagged((options) => {
+    options.freshContinuation = true;
   }),
   '--model': valued((options, value) => {
     options.model = value;
@@ -244,7 +272,11 @@ function isCliOptionKey(key: string): key is keyof typeof CLI_OPTION_SPECS {
   return Object.hasOwn(CLI_OPTION_SPECS, key);
 }
 
-function setSessionSelection(options: CliOptions, selection: SessionSelection, option: string): void {
+function setSessionSelection(
+  options: CliOptions,
+  selection: SessionSelection,
+  option: string
+): void {
   if (options.sessionSelection.kind !== 'new')
     throw new Error(`${option} conflicts with another session selector.`);
   options.sessionSelection = selection;
@@ -257,7 +289,12 @@ function parseCodexTransport(value: string): OpenAICodexTransport {
 
 async function runApprovalCommand(args: string[]): Promise<void> {
   const [decisionValue, runId, approvalId, fingerprint, ...optionArgs] = args;
-  if ((decisionValue !== 'allow' && decisionValue !== 'deny') || !runId || !approvalId || !fingerprint) {
+  if (
+    (decisionValue !== 'allow' && decisionValue !== 'deny') ||
+    !runId ||
+    !approvalId ||
+    !fingerprint
+  ) {
     throw new Error(
       'Usage: coding-agent approval <allow|deny> <run-id> <approval-id> <fingerprint> [options]'
     );
@@ -297,7 +334,12 @@ async function runApprovalCommand(args: string[]): Promise<void> {
       decision: decisionValue
     });
     if (deliveryFailure !== undefined) throw deliveryFailure;
-    printResult(result, progress, process.stdout, await application.readVerification(runIdOf(result)));
+    printResult(
+      result,
+      progress,
+      process.stdout,
+      await application.readVerification(runIdOf(result))
+    );
     printPersistenceLocations(application, result);
     process.exitCode = resultExitCode(result);
   } finally {
@@ -323,13 +365,20 @@ async function runAuthCommand(args: string[]): Promise<void> {
       await loginAuth(providerId);
       return;
     default:
-      throw new Error(`Unknown auth command: ${command}. Supported commands: login, logout, status.`);
+      throw new Error(
+        `Unknown auth command: ${command}. Supported commands: login, logout, status.`
+      );
   }
 }
 
 async function runTrustCommand(args: string[]): Promise<void> {
   const [command, ...optionArgs] = args;
-  if (command !== 'status' && command !== 'restricted' && command !== 'trusted' && command !== 'revoke') {
+  if (
+    command !== 'status' &&
+    command !== 'restricted' &&
+    command !== 'trusted' &&
+    command !== 'revoke'
+  ) {
     throw new Error(
       'Usage: coding-agent trust <status|restricted|trusted|revoke> [--root <dir>] [--state-root <dir>]'
     );
@@ -387,7 +436,9 @@ function parseAuthProviderId(value: string): CliAuthProviderId {
   if (value === 'openai' || value === 'openai-codex') {
     return value;
   }
-  throw new Error(`Unsupported auth provider: ${value}. Supported auth providers: openai, openai-codex.`);
+  throw new Error(
+    `Unsupported auth provider: ${value}. Supported auth providers: openai, openai-codex.`
+  );
 }
 
 async function printAuthStatus(provider: CliAuthProviderId): Promise<void> {
@@ -465,7 +516,10 @@ function printResult(
     writeLine(output, 'Execution: Waiting for approval');
     writeLine(output, `Run: ${result.runId}`);
     for (const approval of result.pendingApprovals) {
-      writeLine(output, `Approval: ${approval.approvalId} ${approval.toolName} (${approval.reason})`);
+      writeLine(
+        output,
+        `Approval: ${approval.approvalId} ${approval.toolName} (${approval.reason})`
+      );
       writeLine(output, `Fingerprint: ${approval.fingerprint}`);
       writeLine(
         output,
@@ -491,10 +545,21 @@ function printResult(
   writeLine(output, `Execution: ${title(terminal.executionStatus)}`);
   writeLine(output, `Model output: ${title(terminal.modelOutput.status)}`);
   if (terminal.modelTerminationReason)
-    writeLine(output, `Model termination: ${title(terminal.modelTerminationReason.replaceAll('_', ' '))}`);
+    writeLine(
+      output,
+      `Model termination: ${title(terminal.modelTerminationReason.replaceAll('_', ' '))}`
+    );
   if ('errorMessage' in terminal) writeLine(output, `Reason: ${terminal.errorMessage}`);
+  if (verification && !verification.history.complete)
+    writeLine(
+      output,
+      `Check history incomplete; ${String(verification.history.omittedEarlierChecks)} earlier observations outside this bounded view; through event ${String(verification.history.nextSequence)}.`
+    );
   for (const check of verification?.checks ?? [])
-    writeLine(output, `Check ${check.id}: ${check.requirement}/${check.status} (${check.coverage})`);
+    writeLine(
+      output,
+      `Check ${check.id}: ${check.requirement}/${check.status} (${check.coverage}); applicability ${check.applicability.status}; timeout ${String(check.definition.timeoutMs)}ms; command ${check.definition.command}; definition ${check.definition.definitionIdentity}${check.outputComplete === false ? '; output incomplete' : ''}${check.outputArtifacts?.length ? `; original output ${check.outputArtifacts.map((artifact) => artifact.artifactId).join(', ')}` : ''}`
+    );
   for (const diagnostic of result.deliveryDiagnostics)
     writeLine(output, `Delivery diagnostic (${diagnostic.eventType}): ${diagnostic.message}`);
 }
@@ -538,7 +603,10 @@ export class CodingAgentProgressRenderer {
   private readonly streamedToolCallTurns = new Set<number>();
   private readonly streamedToolCallKeys = new Set<string>();
   private readonly statusKeys = new Set<string>();
-  private readonly hiddenReasoningProgress = new Map<number, { chars: number; timestamp: number }>();
+  private readonly hiddenReasoningProgress = new Map<
+    number,
+    { chars: number; timestamp: number }
+  >();
   private answerLineOpen = false;
   private reasoningLineOpen = false;
   private finalAlreadyPrinted = false;
@@ -555,7 +623,10 @@ export class CodingAgentProgressRenderer {
     this.stdout = options.stdout ?? process.stdout;
     this.stderr = options.stderr ?? process.stderr;
     this.showReasoning = options.showReasoning ?? false;
-    this.hiddenReasoningHeartbeatChars = Math.max(1, options.hiddenReasoningHeartbeatChars ?? 1_200);
+    this.hiddenReasoningHeartbeatChars = Math.max(
+      1,
+      options.hiddenReasoningHeartbeatChars ?? 1_200
+    );
     this.hiddenReasoningHeartbeatMs = Math.max(1, options.hiddenReasoningHeartbeatMs ?? 8_000);
   }
 
@@ -661,11 +732,15 @@ export class CodingAgentProgressRenderer {
         this.reasoningSummaryTurns.add(event.turnIndex);
       }
       this.writeUnavailableReasoningSummaryIfNeeded(event.turnIndex);
-      this.stderr.write(`[assistant ${String(event.turnIndex)}] interrupted before final response\n`);
+      this.stderr.write(
+        `[assistant ${String(event.turnIndex)}] interrupted before final response\n`
+      );
     } else if (event.type === 'tool.started') {
       this.finishAnswerLine();
       this.finishReasoningLine();
-      this.stderr.write(`[tool ${String(event.turnIndex)}] running ${formatToolCall(event.input)}\n`);
+      this.stderr.write(
+        `[tool ${String(event.turnIndex)}] running ${formatToolCall(event.input)}\n`
+      );
     } else if (event.type === 'tool.updated') {
       const message = cliProgressMessage(event.progress);
       if (event.progress.type !== 'status' || event.progress.stage !== 'executing') {
@@ -747,8 +822,12 @@ function formatToolCall(toolCall: ToolCall): string {
   return input === '{}' || input.length === 0 ? toolCall.name : `${toolCall.name} ${input}`;
 }
 
-function formatToolResult(turnIndex: number, toolName: string, observation: ToolObservation): string {
-  const status = observation.ok ? 'ok' : 'failed';
+function formatToolResult(
+  turnIndex: number,
+  toolName: string,
+  observation: ToolObservation
+): string {
+  const status = observation.kind === 'failure' ? 'invocation failed' : 'result';
   const turnLabel = String(turnIndex);
   const artifactRefs = (observation.content ?? []).flatMap((item) =>
     item.type === 'text' ? [] : [item.artifact]
@@ -870,7 +949,7 @@ Common options:
   --state-root <dir>     Coding Agent private state root. Default: the platform user-state directory.
   --config <path>        Load a project configuration proposal. coding-agent.config.json is discovered when present.
   --provider <name>      Model provider. Supported: ollama, openrouter, openai, openai-codex.
-  --model <name>         Model name. No provider or model is selected implicitly.
+  --fresh-continuation  Explicitly reset native inference using selected portable originals in the same session.\n  --model <name>         Model name. No provider or model is selected implicitly.
   --provider-endpoint <url>
                          Provider endpoint override. Ollama host or provider base URL.
   --codex-transport <http_sse|websocket>
@@ -915,7 +994,8 @@ function formatCliError(error: unknown): string {
   const seen = new Set<unknown>();
   const visit = (value: unknown, depth: number): void => {
     if (depth > 3 || seen.has(value)) return;
-    if ((typeof value === 'object' && value !== null) || typeof value === 'function') seen.add(value);
+    if ((typeof value === 'object' && value !== null) || typeof value === 'function')
+      seen.add(value);
     if (value instanceof AggregateError) {
       lines.push(value.message);
       for (const nested of value.errors.slice(0, 8)) visit(nested, depth + 1);

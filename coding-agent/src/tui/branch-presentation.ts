@@ -1,3 +1,4 @@
+import { renderLocalToolObservation } from '@agent-core/tools-local';
 import type { SessionBranchEntry } from '@agent-core/runtime';
 import {
   projectSessionEntry,
@@ -16,7 +17,7 @@ export function applyBranchEntry(
   const current = state.conversation.items.find(
     (item): item is ConversationActivityEntry => item.kind === 'activity' && item.id === id
   );
-  return projectSessionEntry(entry, current, toolLabel).reduce(
+  return projectSessionEntry(entry, current, toolLabel, renderLocalToolObservation).reduce(
     (state, item) =>
       item.kind === 'activity' ? upsertActivity(state, item) : upsertConversationEntry(state, item),
     state

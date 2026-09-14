@@ -1,5 +1,7 @@
-import { parseModelSelection } from '@agent-core/model';
+import { contextSelectionSchema } from '@agent-core/runtime';
+import { ModelContinuationRequiredError, parseModelChangeRequest } from '@agent-core/runtime';
 import {
+  RpcError,
   historyRpcMethods,
   inputRpcMethods,
   noteRpcMethods,
@@ -26,16 +28,29 @@ export function codingRpcMethods(application: CodingApplication, shutdown: () =>
       resume: (runId) => application.resumeSuspension(runId),
       resolveApproval: (request) => application.resolveApproval(request)
     }),
+    'context.renew': rpcMethod(
+      z.strictObject({ selection: contextSelectionSchema.optional() }),
+      ({ selection }) => application.renewContext(selection)
+    ),
     'application.read': rpcMethod(empty, () => application.state()),
     'application.shutdown': rpcMethod(empty, () => {
       shutdown();
     }),
     'configuration.read': rpcMethod(empty, () => application.modelSelection()),
-    'configuration.set': rpcMethod(z.unknown().transform(parseModelSelection), async (selection) => {
-      const adapter = application.connectProvider(selection.provider, selection.endpoint);
-      await application.configureModel(selection, adapter);
-      return application.modelSelection();
-    }),
+    'configuration.set': rpcMethod(
+      z.unknown().transform(parseModelChangeRequest),
+      async ({ selection, options }) => {
+        const adapter = application.connectProvider(selection.provider, selection.endpoint);
+        try {
+          await application.configureModel(selection, adapter, options);
+        } catch (error) {
+          if (error instanceof ModelContinuationRequiredError)
+            throw new RpcError(-32010, error.message);
+          throw error;
+        }
+        return application.modelSelection();
+      }
+    ),
     'workspace.trust': rpcMethod(
       z.strictObject({ level: z.enum(['restricted', 'trusted']) }),
       ({ level }) => application.selectWorkspaceTrust(level)
@@ -47,6 +62,9 @@ export function codingRpcMethods(application: CodingApplication, shutdown: () =>
     'session.branch': rpcMethod(
       z.strictObject({ entryId: id, label: z.string().optional() }),
       ({ entryId, label }) => application.branchFrom(entryId, label)
+    ),
+    'verification.read': rpcMethod(z.strictObject({ runId: id }), ({ runId }) =>
+      application.readVerification(runId)
     ),
     'change.read': rpcMethod(z.strictObject({ runId: id, path: id }), ({ runId, path }) =>
       application.readChange(runId, path)

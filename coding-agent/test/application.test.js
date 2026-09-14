@@ -31,7 +31,10 @@ test(
   { skip: process.platform !== 'linux' },
   async () => {
     const fixture = await createWorkspace({ tools: ['read_files'], checks: [] });
-    const application = await openCodingApplication({ root: fixture.root, stateRoot: fixture.stateRoot });
+    const application = await openCodingApplication({
+      root: fixture.root,
+      stateRoot: fixture.stateRoot
+    });
     const events = [];
     let failedCalls = 0;
     let observerFailure;
@@ -44,7 +47,10 @@ test(
         observerFailure = error;
       }
     );
-    application.subscribe((event) => events.push(event), (error) => assert.fail(error));
+    application.subscribe(
+      (event) => events.push(event),
+      (error) => assert.fail(error)
+    );
     try {
       await application.start();
       assert.equal(application.state().status, 'setup_required');
@@ -174,5 +180,54 @@ test(
     const next = await app.submit({ task: 'Thank you.' });
     assert.equal((await next.completion).terminal.executionStatus, 'completed');
     assert.equal(provider.requests.length, 2);
+  }
+);
+
+test(
+  'fresh model configuration preserves the coding session and selected original constraints',
+  { skip: process.platform !== 'linux', timeout: 30000 },
+  async (t) => {
+    const provider = await scriptedOllama([
+      finalResponse('The original answer.'),
+      finalResponse('Continuing the same work.')
+    ]);
+    const fixture = await createWorkspace({ endpoint: provider.endpoint, tools: [], checks: [] });
+    await trust(fixture);
+    const application = await openCodingApplication({
+      root: fixture.root,
+      stateRoot: fixture.stateRoot,
+      provider: 'ollama',
+      model: 'v0-scripted',
+      providerEndpoint: provider.endpoint
+    });
+    t.after(async () => {
+      await application.close();
+      await provider.close();
+      await fixture.close();
+    });
+    await application.start();
+    const first = await application.submit({ task: 'Keep the original constraint: café.' });
+    assert.equal((await first.completion).terminal.executionStatus, 'completed');
+    const sessionId = application.state().session.sessionId;
+    const selection = { provider: 'ollama', model: 'v0-scripted', endpoint: provider.endpoint };
+    await application.configureModel(
+      selection,
+      application.connectProvider(selection.provider, selection.endpoint),
+      { continuation: 'fresh' }
+    );
+    assert.equal(application.state().session.sessionId, sessionId);
+    assert(
+      (await application.readHistory()).history.entries.some(
+        (entry) =>
+          entry.type === 'context_transition' && entry.window.selection.continuity?.kind === 'fresh'
+      )
+    );
+    const next = await application.submit({ task: 'Continue.' });
+    assert.equal((await next.completion).terminal.executionStatus, 'completed');
+    assert(
+      (await application.readHistory()).history.entries.some(
+        (entry) => entry.type === 'input' && entry.task.includes('café')
+      )
+    );
   }
 );

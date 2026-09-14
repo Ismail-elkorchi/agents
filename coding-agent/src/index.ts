@@ -1,10 +1,12 @@
+export type {
+  CodingRunVerification,
+  ConfiguredCheckResult
+} from './verification/configured-check-tool.js';
+export type { CheckApplicability, TestedState } from './verification/tested-state.js';
 export type * from './application/contracts.js';
 export type { CodingApplicationOptions, SessionSelection } from './application/runtime.js';
 export { CodingApplication, openCodingApplication } from './application/service.js';
-export {
-  readRecordedMutationPatches,
-  readRunChangeReport
-} from './changes/run-change-report.js';
+export { readRecordedMutationPatches, readRunChangeReport } from './changes/run-change-report.js';
 export type {
   RunChangeReport,
   StructuredMutationReceipt,

@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import { renderFramePlain } from '@ismail-elkorchi/terminal-ui/renderer';
 import { createTuiRuntime } from '@ismail-elkorchi/terminal-ui/tui';
@@ -90,6 +92,7 @@ test(
       type: 'document.loaded',
       document: await f.application.readDocument('document.txt')
     });
+    await writeFile(path.join(f.root, 'document.txt'), 'Changed by the user after opening.\n');
     await runtime.dispatch({ type: 'document.toggle-source' });
     for (const operation of [
       { kind: 'moveLineDown' },
@@ -98,11 +101,15 @@ test(
     ])
       await runtime.dispatch({ type: 'document.edit', transition: { kind: 'edit', operation } });
     await runtime.dispatch({ type: 'document.use-passage' });
+    await waitForState(runtime, t.signal, () => runtime.state().composer.attachments.length > 0);
     assert.equal(textDocumentText(runtime.state().composer.input.document), '');
     const attachment = runtime.state().composer.attachments[0];
     assert.equal(attachment.kind, 'context');
     assert.equal(attachment.item.content, 'A passage.');
     assert.equal(attachment.item.representation, 'excerpt');
+    assert.equal(attachment.item.range.kind, 'byte');
+    assert.match(attachment.item.sourceUri, /sha256=/);
+    assert.match(attachment.item.title, /retained revision/);
   }
 );
 
@@ -163,7 +170,10 @@ test(
       transition: { kind: 'edit', operation: { kind: 'insert', text: 'Preserve this instruction' } }
     });
     await runtime.dispatch({ type: 'submit' });
-    assert.equal(textDocumentText(runtime.state().composer.input.document), 'Preserve this instruction');
+    assert.equal(
+      textDocumentText(runtime.state().composer.input.document),
+      'Preserve this instruction'
+    );
     await runtime.dispatch({ type: 'recovery.abort' });
     await waitForState(runtime, t.signal, () => runtime.state().overlay.kind === 'none');
   }
@@ -194,7 +204,9 @@ test(
     });
     const draft = runtime.state().composer;
     await runtime.dispatch({ type: 'submit' });
-    await waitForState(runtime, t.signal, () => runtime.state().notice.includes('Credential expired'));
+    await waitForState(runtime, t.signal, () =>
+      runtime.state().notice.includes('Credential expired')
+    );
     assert.equal(runtime.state().submitting, false);
     assert.equal(runtime.state().composer, draft);
     assert.equal(

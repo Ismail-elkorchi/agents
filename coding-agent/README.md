@@ -68,13 +68,19 @@ Sandbox currently exposes no PTY capability, so commands use pipes for stdin, st
 
 ## Repository guidance
 
-Coding Agent loads the root `AGENTS.md` and configured instruction files when a run starts. It discovers nested `AGENTS.md` files from the root to a concrete tool target without recursively loading unrelated directories. Before the first mutation or command in a newly discovered scope, Core returns the applicable guidance with `effectStarted: false`; the model then chooses the next action with that guidance in context. Symbolic-link guidance is not followed, and unreadable or oversized applicable guidance blocks the affected mutation.
+Coding Agent refreshes root/configured guidance and discovers ancestor `AGENTS.md` files for concrete file and process effects without scanning unrelated repository trees. Content revisions, configured precedence, and absent/deleted paths determine applicability. A collection callback does not establish delivery: only the exact source IDs in an admitted request do. The runtime rechecks guidance under the effect's resource lease before execution, including after approval. Changed guidance releases the earlier binding and supplies the new material for a new model decision. Symbolic-link guidance is not followed; unsafe or oversized applicable sources remain explicit and block the affected mutation.
 
 ## Explicit checks
 
 Task budgets are optional. Project configuration can set explicit turn, tool, time, token, or cost limits; ordinary sessions have no preset task budget. Runtime capacity and compiled-request limits still apply.
 
-Project configuration may name required and advisory commands. Coding Agent exposes them through `run_check`; it does not infer commands or coverage from package manifests. Each result records the process outcome, retained output, output completeness, and passed, failed, or inconclusive status. A check not invoked remains `not_run` in the run's verification view.
+Project configuration may name required and advisory commands. `run_check` binds the complete definition and Sandbox execution before authorization, using the same file/process leases as shared tools. Its historical observation records the command, effective timeout (60 seconds by default), configuration and definition identities, requirement classification, declared coverage, invocation/process identities, and before/after tested state. History adds the committed event receipt. Changing or deleting today's configuration cannot relabel that observation.
+
+Outcomes are `passed`, `failed`, `timed_out`, `cancelled`, `execution_failed`, or `unknown`. A known nonzero exit is failed even with incomplete logs; a zero exit remains an observed pass. Output completeness and applicability are separate. Relevant observed changes make applicability `stale`; otherwise opaque command dependencies and possible external mutations leave it `unknown`. Matching before/after contents do not prove that inputs stayed unchanged during execution. Check-written changes cannot certify the resulting workspace.
+
+Optional `testedPaths` declares up to 256 explicit rooted files, including dirty/untracked or currently absent paths. It does not recursively select directories or assert a complete shell dependency graph. Capture limits are 1 MiB per file, 4 MiB total and 1,024 rooted observation operations at each boundary. Missing scope, unsafe paths, oversized files or exhausted capture bounds produce incomplete/unknown applicability without preventing an authorized command. No check becomes mandatory for unrelated requests, and a check pass does not establish overall task success.
+
+Application state, RPC session/history views, CLI and TUI expose the recorded definition, outcome, current applicability, and output completeness. Verification history uses bounded indexed pages (256 scanned events / 8 MiB per refresh), retaining at most 256 observations per cached run and 32 cached runs. `verification.history` reports completeness, omitted earlier checks and the last scanned sequence; subsequent reads advance the bounded page. A whole verification refresh shares one 256-file / 4 MiB / 1,024-operation current-state capture budget, reusing identical scopes and reporting unknown applicability when it is exhausted. A complete view may show `not_run` for an exact configured definition with no recorded observation; partial history never fabricates that claim. Original events remain available through history access.
 
 
 ```json
@@ -90,7 +96,7 @@ Project configuration may name required and advisory commands. Coding Agent expo
   },
   "verification": {
     "required": [
-      { "id": "test", "command": "npm test", "coverage": "full", "timeoutMs": 120000 }
+      { "id": "test", "command": "npm test", "coverage": "full", "timeoutMs": 120000, "testedPaths": ["package.json", "package-lock.json"] }
     ],
     "advisory": []
   }
@@ -124,3 +130,9 @@ The repository pins exact Agent Core, Sandbox, terminal-ui, and markspan revisio
 ```bash
 npm run verify:release
 ```
+
+When a model cannot use selected native state, the model selector offers **Continue fresh in this session** as an explicit second action. This preserves the session and original history, continuing from selected portable user contributions, answers, complete tool observations and selected notes. Pending or uncertain work must be resolved first; unsupported selected images remain a conflict. Continuing processes retain their original controls.
+
+For a resumed CLI session, use `--fresh-continuation --session ID --provider PROVIDER --model MODEL` (or `--resume` in place of `--session ID`). RPC `configuration.set` accepts the usual flat model selection plus `"continuation": "fresh"`. The option applies to that command only. Ordinary compatible model changes do not require it.
+
+RPC error `-32010` means the selected native context requires an explicit fresh-continuation choice. Image and unresolved-work conflicts remain separate errors.

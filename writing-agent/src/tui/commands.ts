@@ -11,7 +11,11 @@ export const WRITING_COMMANDS: readonly {
     description: 'Customize status line and appearance',
     message: { type: 'preferences.open' }
   },
-  { name: '/settings', description: 'Customize presentation', message: { type: 'preferences.open' } },
+  {
+    name: '/settings',
+    description: 'Customize presentation',
+    message: { type: 'preferences.open' }
+  },
   {
     name: '/model',
     description: 'Choose provider, model and reasoning',
@@ -37,6 +41,11 @@ export const WRITING_COMMANDS: readonly {
     name: '/sessions',
     description: 'Search saved conversations',
     message: { type: 'picker.open', subject: 'sessions' }
+  },
+  {
+    name: '/renew-context',
+    description: 'Renew working context, preserving active input and protected sources',
+    message: { type: 'context.renew' }
   },
   {
     name: '/context',
@@ -83,20 +92,36 @@ export const WRITING_COMMANDS: readonly {
     description: 'Add or inspect draft attachments',
     message: { type: 'attachments.open' }
   },
-  { name: '/queue', description: 'Inspect or revise pending inputs', message: { type: 'queue.open' } },
-  { name: '/drafts', description: 'Recall a prior or recovered draft', message: { type: 'recall.open' } },
+  {
+    name: '/queue',
+    description: 'Inspect or revise pending inputs',
+    message: { type: 'queue.open' }
+  },
+  {
+    name: '/drafts',
+    description: 'Recall a prior or recovered draft',
+    message: { type: 'recall.open' }
+  },
   { name: '/name', description: 'Name this conversation', message: { type: 'session-name.open' } },
   { name: '/new', description: 'Start a new conversation', message: { type: 'session.new' } },
   { name: '/notes', description: 'Inspect model-authored notes', message: { type: 'notes.open' } },
   { name: '/search', description: 'Search recorded history', message: { type: 'search.open' } },
-  { name: '/recovery', description: 'Review pending decisions', message: { type: 'recovery.open' } },
+  {
+    name: '/recovery',
+    description: 'Review pending decisions',
+    message: { type: 'recovery.open' }
+  },
   {
     name: '/editor',
     description: 'Edit the draft in an external editor',
     message: { type: 'external-editor' }
   },
   { name: '/tools', description: 'Toggle tool output', message: { type: 'tools.toggle' } },
-  { name: '/reasoning', description: 'Configure model reasoning', message: { type: 'configuration.open' } },
+  {
+    name: '/reasoning',
+    description: 'Configure model reasoning',
+    message: { type: 'configuration.open' }
+  },
   { name: '/stop', description: 'Interrupt active work', message: { type: 'interrupt' } },
   { name: '/exit', description: 'Close the terminal interface', message: { type: 'exit' } }
 ];

@@ -38,6 +38,7 @@ export type InteractiveCommandName =
   | '/source'
   | '/tools'
   | '/context'
+  | '/renew-context'
   | '/processes'
   | '/editor'
   | '/recovery'
@@ -83,7 +84,9 @@ const command = (
 });
 
 export const INTERACTIVE_COMMAND_REGISTRY = {
-  '/model': action('/model', 'Choose provider, model and reasoning.', { type: 'configuration.open' }),
+  '/model': action('/model', 'Choose provider, model and reasoning.', {
+    type: 'configuration.open'
+  }),
   '/provider': action('/provider', 'Choose provider and model.', { type: 'configuration.open' }),
   '/login': action('/login', 'Manage provider credentials.', { type: 'configuration.open' }),
   '/reasoning': action('/reasoning', 'Configure supported model reasoning.', {
@@ -105,7 +108,9 @@ export const INTERACTIVE_COMMAND_REGISTRY = {
     overlay: 'search'
   }),
   '/attach': action('/attach', 'Add or inspect draft attachments.', { type: 'attachments.open' }),
-  '/drafts': action('/drafts', 'Recall a prior prompt or recovered draft.', { type: 'recall.open' }),
+  '/drafts': action('/drafts', 'Recall a prior prompt or recovered draft.', {
+    type: 'recall.open'
+  }),
   '/queue': action('/queue', 'Inspect, edit or cancel queued input.', {
     type: 'queue.open'
   }),
@@ -141,11 +146,19 @@ export const INTERACTIVE_COMMAND_REGISTRY = {
   ]),
   '/trust': command('/trust', 'Choose the workspace trust decision.', 'required', [
     { value: 'restricted', description: 'Request approval for every mutation and command.' },
-    { value: 'trusted', description: 'Apply the selected permissions without per-operation approvals.' }
+    {
+      value: 'trusted',
+      description: 'Apply the selected permissions without per-operation approvals.'
+    }
   ]),
   '/temperature': command('/temperature', 'Set supported provider temperature.', 'required'),
   '/steer': command('/steer', 'Steer the active run.', 'required'),
   '/follow': command('/follow', 'Queue a follow-up after active work.', 'required'),
+  '/renew-context': action(
+    '/renew-context',
+    'Renew the working context, preserving active input and protected sources.',
+    { type: 'context.renew' }
+  ),
   '/context': action('/context', 'Inspect effective context and available resources.', {
     type: 'context.open'
   }),
@@ -158,11 +171,13 @@ export const INTERACTIVE_COMMANDS: readonly InteractiveCommandEntry[] = Object.f
   Object.values(INTERACTIVE_COMMAND_REGISTRY)
 );
 
-export function parseInteractiveCommandLine(
-  line: string
-):
+export function parseInteractiveCommandLine(line: string):
   | { readonly kind: 'interface'; readonly message: CodingAgentTuiMessage }
-  | { readonly kind: 'application'; readonly command: ApplicationCommandName; readonly value: string } {
+  | {
+      readonly kind: 'application';
+      readonly command: ApplicationCommandName;
+      readonly value: string;
+    } {
   const trimmed = line.trim();
   const separator = trimmed.search(/\s/u);
   const name = separator < 0 ? trimmed : trimmed.slice(0, separator);
