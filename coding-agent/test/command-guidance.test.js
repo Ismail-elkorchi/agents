@@ -81,7 +81,7 @@ test(
 );
 
 // Source freshness is independent of provider success or an attempted prerequisite callback.
-test('guidance revisions require actual admitted delivery and detect additions, edits, removal and configured precedence', async (t) => {
+test('guidance revisions require actual admitted delivery and detect additions, edits, removal and configured precedence', { skip: process.platform !== 'linux' }, async (t) => {
   const { mkdtemp, mkdir, writeFile, rm, rename } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
   const path = await import('node:path');
@@ -177,7 +177,7 @@ test('guidance revisions require actual admitted delivery and detect additions, 
   );
 });
 
-test('guidance targets use process effects rather than tool names; unsafe sources remain explicit', async (t) => {
+test('guidance targets use process effects rather than tool names; unsafe sources remain explicit', { skip: process.platform !== 'linux' }, async (t) => {
   const { mkdtemp, mkdir, writeFile, rm, symlink } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
   const path = await import('node:path');
@@ -315,7 +315,7 @@ test(
   }
 );
 
-test('configured guidance order is a source dependency even when file contents match', async (t) => {
+test('configured guidance order is a source dependency even when file contents match', { skip: process.platform !== 'linux' }, async (t) => {
   const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
   const path = await import('node:path');

@@ -159,7 +159,7 @@ for (const [processStatus, exitCode, status] of [
   ['stopped', null, 'cancelled'],
   ['failed', null, 'execution_failed']
 ]) {
-  test(`configured check records ${status} independently of truncated output`, async (t) => {
+  test(`configured check records ${status} independently of truncated output`, { skip: process.platform !== 'linux' }, async (t) => {
     const { root } = await fixture(t);
     const execution = executor({ status: processStatus, exitCode, incomplete: true });
     const { observation } = await run(root, execution);
@@ -171,7 +171,7 @@ for (const [processStatus, exitCode, status] of [
   });
 }
 
-test('complete immutable definition and Sandbox planning are bound before invocation', async (t) => {
+test('complete immutable definition and Sandbox planning are bound before invocation', { skip: process.platform !== 'linux' }, async (t) => {
   const { root } = await fixture(t);
   const execution = executor();
   const definition = {
@@ -217,7 +217,7 @@ test('complete immutable definition and Sandbox planning are bound before invoca
   );
 });
 
-test('check locks overlap patch files and a continuing command resource', async (t) => {
+test('check locks overlap patch files and a continuing command resource', { skip: process.platform !== 'linux' }, async (t) => {
   const { root } = await fixture(t);
   const execution = executor();
   const { tool, input } = await run(root, execution);
@@ -248,7 +248,7 @@ test('check locks overlap patch files and a continuing command resource', async 
   assert.equal(leases.wouldWait(effects), false);
 });
 
-test('historical definitions survive edit, config replacement and deletion; dirty/untracked changes become stale', async (t) => {
+test('historical definitions survive edit, config replacement and deletion; dirty/untracked changes become stale', { skip: process.platform !== 'linux' }, async (t) => {
   const { root, directory } = await fixture(t);
   await writeFile(path.join(directory, 'dirty.txt'), 'dirty');
   await writeFile(path.join(directory, 'untracked.txt'), 'untracked');
@@ -279,7 +279,7 @@ test('historical definitions survive edit, config replacement and deletion; dirt
   assert.equal(report.checks.length, 1);
 });
 
-test('check-written inputs preserve the observed pass with stale applicability', async (t) => {
+test('check-written inputs preserve the observed pass with stale applicability', { skip: process.platform !== 'linux' }, async (t) => {
   const { root, directory } = await fixture(t);
   await writeFile(path.join(directory, 'dirty.txt'), 'before');
   const { observation } = await run(
@@ -294,7 +294,7 @@ test('check-written inputs preserve the observed pass with stale applicability',
   );
 });
 
-test('bounded capture never blocks checks or fabricates current applicability', async (t) => {
+test('bounded capture never blocks checks or fabricates current applicability', { skip: process.platform !== 'linux' }, async (t) => {
   const { root, directory } = await fixture(t);
   await writeFile(path.join(directory, 'big.txt'), Buffer.alloc(TESTED_STATE_LIMITS.fileBytes + 1));
   await mkdir(path.join(directory, 'directory'));
@@ -320,7 +320,7 @@ test('bounded capture never blocks checks or fabricates current applicability', 
   assert.equal((await captureTestedState(root, undefined)).completeness, 'undeclared');
 });
 
-test('bounded history refresh avoids full replay and admits appended checks incrementally', async (t) => {
+test('bounded history refresh avoids full replay and admits appended checks incrementally', { skip: process.platform !== 'linux' }, async (t) => {
   const { root } = await fixture(t);
   const { observation } = await run(root, executor());
   const events = repository();
@@ -353,7 +353,7 @@ test('bounded history refresh avoids full replay and admits appended checks incr
   assert.equal(pages.at(-1).scanned, 1);
 });
 
-test('old configured-check shapes and contradictory outcomes are rejected without changing stored records', async (t) => {
+test('old configured-check shapes and contradictory outcomes are rejected without changing stored records', { skip: process.platform !== 'linux' }, async (t) => {
   const { root } = await fixture(t);
   const { observation } = await run(root, executor());
   assert.equal(
@@ -376,7 +376,7 @@ test('old configured-check shapes and contradictory outcomes are rejected withou
   assert.equal((await events.tail(owner.runId)).sequence, 0);
 });
 
-test('an execution exception retains the admitted definition and unknown effect instead of a fake not_run', async (t) => {
+test('an execution exception retains the admitted definition and unknown effect instead of a fake not_run', { skip: process.platform !== 'linux' }, async (t) => {
   const { root } = await fixture(t);
   const execution = executor({
     effect: () => {
@@ -394,7 +394,7 @@ test('an execution exception retains the admitted definition and unknown effect 
   assert.equal(report.checks[0].status, 'unknown');
 });
 
-test('concurrent verification refresh does not duplicate committed observations', async (t) => {
+test('concurrent verification refresh does not duplicate committed observations', { skip: process.platform !== 'linux' }, async (t) => {
   const { root } = await fixture(t);
   const { observation } = await run(root, executor());
   const events = repository();
@@ -407,7 +407,7 @@ test('concurrent verification refresh does not duplicate committed observations'
   assert(reports.every((report) => report.checks.length === 1));
 });
 
-test('observed absence additions and total-byte bounds include actual dirty/untracked bytes', async (t) => {
+test('observed absence additions and total-byte bounds include actual dirty/untracked bytes', { skip: process.platform !== 'linux' }, async (t) => {
   const { root, directory } = await fixture(t);
   const paths = Array.from({ length: 5 }, (_, i) => `input-${i}.txt`);
   const absent = await captureTestedState(root, paths);
@@ -420,7 +420,7 @@ test('observed absence additions and total-byte bounds include actual dirty/untr
   assert.equal(checkApplicability(absent, absent, full).status, 'stale');
 });
 
-test('the whole verification refresh shares bounded bytes and reuses identical tested scopes', async (t) => {
+test('the whole verification refresh shares bounded bytes and reuses identical tested scopes', { skip: process.platform !== 'linux' }, async (t) => {
   const { root, directory } = await fixture(t);
   const events = repository();
   const observations = [];
