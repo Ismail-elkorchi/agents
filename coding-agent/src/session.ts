@@ -342,7 +342,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
     const agent = new AgentSession(sessionOptions);
 
     return {
-      ...processControls(session.id, commandExecution),
+      ...processControls(session.id, ownerId, commandExecution),
       agent,
       get inference() {
         return inference;

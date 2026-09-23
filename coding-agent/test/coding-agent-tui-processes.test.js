@@ -95,7 +95,7 @@ test('process actions bind the exact session and causal owner, including after t
       return result;
     }
   };
-  const controls = processControls('session', authority);
+  const controls = processControls('session', 'owner', authority);
   await assert.rejects(
     controls.controlProcess({ ...target, sessionId: 'other' }, { kind: 'input', text: 'x' }),
     /another session/
@@ -110,7 +110,7 @@ test('process actions bind the exact session and causal owner, including after t
   assert.equal(writes, 0);
   await controls.controlProcess(target, { kind: 'input', text: 'x' });
   assert.equal(writes, 1);
-  const closed = processControls('session', undefined);
+  const closed = processControls('session', 'owner', undefined);
   await assert.rejects(
     closed.controlProcess(target, { kind: 'terminate' }),
     /authority has closed/
@@ -131,7 +131,7 @@ test('uncertainty decisions bind the current evidence revision and causal owner 
     },
     async retryReconciliation() {}
   };
-  const controls = processControls('session', authority);
+  const controls = processControls('session', 'owner', authority);
   await assert.rejects(
     controls.reconcileProcesses({ ...current, sessionId: 'other' }),
     /another session/
@@ -148,4 +148,32 @@ test('uncertainty decisions bind the current evidence revision and causal owner 
   const processes = await controls.reconcileProcesses(current);
   assert.equal(processes[0].status, 'acknowledged-unknown');
   assert.equal(acknowledgements, 1);
+});
+
+test('process controls cannot relabel another session owner as the current session', async () => {
+  const foreign = {
+    ...target,
+    processId: 'foreign',
+    owner: { ...target.owner, ownerId: 'another-owner' }
+  };
+  const controls = processControls('session', 'owner', {
+    async listProcesses() {
+      return [target, foreign];
+    },
+    async terminate() {
+      assert.fail('another owner must not reach execution');
+    }
+  });
+  assert.deepEqual(
+    (await controls.listProcesses()).map((process) => process.processId),
+    [target.processId]
+  );
+  await assert.rejects(
+    controls.controlProcess({ ...foreign, sessionId: 'session' }, { kind: 'terminate' }),
+    /unavailable/
+  );
+  await assert.rejects(
+    controls.reconcileProcesses({ ...foreign, sessionId: 'session', status: 'unknown' }),
+    /evidence changed/
+  );
 });

@@ -24,11 +24,16 @@ export interface CodingProcessOperations {
 /** The application binds controls to the session and original resource owner. */
 export function processControls(
   sessionId: string,
+  ownerId: string,
   authority: CodingCommandAuthority | undefined
 ): CodingProcessOperations {
+  const ownedProcesses = async () =>
+    ((await authority?.listProcesses()) ?? []).filter(
+      (process) => process.owner.ownerId === ownerId
+    );
   return {
     async listProcesses() {
-      return ((await authority?.listProcesses()) ?? []).map((process) => ({
+      return (await ownedProcesses()).map((process) => ({
         ...process,
         sessionId
       }));
@@ -38,7 +43,7 @@ export function processControls(
       if (acknowledge) {
         if (acknowledge.sessionId !== sessionId)
           throw new Error('The command belongs to another session.');
-        const current = (await authority.listProcesses()).find(
+        const current = (await ownedProcesses()).find(
           (item) => item.processId === acknowledge.processId
         );
         if (current?.revision !== acknowledge.revision || current.status !== 'unknown')
@@ -52,13 +57,13 @@ export function processControls(
         ]);
       }
       await authority.retryReconciliation();
-      return (await authority.listProcesses()).map((item) => ({ ...item, sessionId }));
+      return (await ownedProcesses()).map((item) => ({ ...item, sessionId }));
     },
     async controlProcess(target, action) {
       if (target.sessionId !== sessionId)
         throw new Error('This process belongs to another session.');
       if (authority) {
-        const current = (await authority.listProcesses()).find(
+        const current = (await ownedProcesses()).find(
           (process) => process.processId === target.processId
         );
         if (current === undefined)
