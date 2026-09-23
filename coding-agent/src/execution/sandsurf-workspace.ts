@@ -142,11 +142,34 @@ export class SandsurfWorkspaceFiles implements WorkspaceFiles {
     }
   }
 
+  async readRange(
+    requested: string,
+    range: { readonly offset: number; readonly length: number }
+  ): Promise<{ readonly bytes: Uint8Array; readonly revision: WorkspaceFileRevision }> {
+    const relative = this.normalize(requested);
+    if (!Number.isSafeInteger(range.offset) || range.offset < 0
+      || !Number.isSafeInteger(range.length) || range.length < 1)
+      throw new TypeError('Workspace range requires a nonnegative offset and positive length.');
+    const response = await this.#filesystem.read(this.#guest(relative), range.offset, range.length);
+    if (response.kind !== 'read' || !record(response.range))
+      throw new Error('Sandsurf returned an invalid file range.');
+    const supplied = response.range;
+    const revision = fileRevision(supplied.revision);
+    const bytes = byteArray(supplied.bytes);
+    if (supplied.offset !== range.offset || bytes.length > range.length
+      || range.offset + bytes.length > revision.size
+      || typeof supplied.eof !== 'boolean'
+      || supplied.eof !== (range.offset + bytes.length === revision.size)
+      || (!supplied.eof && bytes.length === 0))
+      throw new Error('Sandsurf returned invalid file range coverage.');
+    await this.#assertCurrent();
+    return { bytes, revision };
+  }
+
   async readFile(
     requested: string,
     options: { readonly maximumBytes?: number } = {}
   ): Promise<{ readonly bytes: Uint8Array; readonly revision: WorkspaceFileRevision }> {
-    const relative = this.normalize(requested);
     const maximum = options.maximumBytes ?? 16 * 1024 * 1024;
     if (!Number.isSafeInteger(maximum) || maximum < 0)
       throw new TypeError('Workspace read limit must be a nonnegative safe integer.');
@@ -154,37 +177,22 @@ export class SandsurfWorkspaceFiles implements WorkspaceFiles {
     let revision: WorkspaceFileRevision | undefined;
     const chunks: Uint8Array[] = [];
     for (;;) {
-      const response = await this.#filesystem.read(
-        this.#guest(relative),
+      const range = await this.readRange(requested, {
         offset,
-        Math.min(64 * 1024, Math.max(1, maximum - offset))
-      );
-      if (response.kind !== 'read' || !record(response.range))
-        throw new Error('Sandsurf returned an invalid file range.');
-      const range = response.range;
-      const observed = fileRevision(range.revision);
-      if (observed.size > maximum)
+        length: Math.min(64 * 1024, Math.max(1, maximum - offset))
+      });
+      if (range.revision.size > maximum)
         throw new Error(`Workspace file exceeds its ${String(maximum)} byte read limit.`);
-      if (revision && (revision.size !== observed.size || revision.digest !== observed.digest))
+      if (revision && (revision.size !== range.revision.size || revision.digest !== range.revision.digest))
         throw new Error('Workspace file changed while reading.');
-      revision = observed;
-      const bytes = byteArray(range.bytes);
-      if (
-        range.offset !== offset ||
-        offset + bytes.length > revision.size ||
-        typeof range.eof !== 'boolean' ||
-        range.eof !== (offset + bytes.length === revision.size) ||
-        (!range.eof && bytes.length === 0)
-      )
-        throw new Error('Sandsurf returned invalid file range coverage.');
-      chunks.push(bytes);
-      offset += bytes.length;
-      if (range.eof) break;
+      revision = range.revision;
+      chunks.push(range.bytes);
+      offset += range.bytes.length;
+      if (offset === revision.size) break;
     }
     const bytes = Buffer.concat(chunks);
     if (createHash('sha256').update(bytes).digest('hex') !== revision.digest)
       throw new Error('Workspace file bytes do not match their revision.');
-    await this.#assertCurrent();
     return { bytes, revision };
   }
 

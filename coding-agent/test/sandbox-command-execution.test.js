@@ -492,6 +492,10 @@ test('guest file selection applies bounded git-ignore rules from the guest works
     async *list(value) {
       yield* directories.get(value) ?? [];
     },
+    async readRange(value, { offset, length }) {
+      const file = await this.readFile(value);
+      return { ...file, bytes: file.bytes.subarray(offset, offset + length) };
+    },
     async readFile(value) {
       const bytes = content.get(value);
       if (!bytes) throw new Error(`Missing ${value}`);
@@ -1080,7 +1084,7 @@ test('workspace reads enforce byte bounds before collecting oversized originals 
           kind: 'read',
           range: {
             offset,
-            bytes: [],
+            bytes: Array(maximum).fill(65),
             eof: false,
             revision: { size: 100_000_000, digest: 'a'.repeat(64) }
           }
@@ -1162,4 +1166,23 @@ test('session observers capture terminal settlement after the tool has returned 
   assert.equal(report.result.originalOutput.kind, 'captured');
   assert.equal(initial.status, 'running');
   assert.equal(fixture.flags.spawnCount, 1);
+});
+
+
+test('workspace bounded ranges validate coverage independently of whole-file limits', async () => {
+  const source = Buffer.from('alpha\nbeta\n');
+  const revision = { size: source.length, digest: createHash('sha256').update(source).digest('hex') };
+  const sandbox = workspaceSandbox({
+    async read(_path, offset, maximum) {
+      const bytes = source.subarray(offset, offset + maximum);
+      return { kind: 'read', range: { offset, bytes: [...bytes], revision, eof: offset + bytes.length === source.length } };
+    }
+  });
+  const files = new SandsurfWorkspaceFiles(sandbox, 1, 1, false);
+  const range = await files.readRange('source.txt', { offset: 6, length: 5 });
+  assert.equal(Buffer.from(range.bytes).toString(), 'beta\n');
+  assert.deepEqual(range.revision, revision);
+  await assert.rejects(files.readRange('source.txt', { offset: -1, length: 5 }), /range requires/);
+  sandbox.fs.read = async () => ({ kind: 'read', range: { offset: 0, bytes: [...source], revision, eof: true } });
+  await assert.rejects(files.readRange('source.txt', { offset: 0, length: 2 }), /range coverage/);
 });

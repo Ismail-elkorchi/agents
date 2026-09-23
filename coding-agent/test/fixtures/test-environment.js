@@ -76,6 +76,11 @@ class TestWorkspaceFiles {
       .sort((left, right) => left.name.localeCompare(right.name, 'en'));
   }
 
+  async readRange(requested, { offset, length }) {
+    const bytes = new Uint8Array(await readFile(this.#physical(this.normalize(requested))));
+    return { bytes: bytes.slice(offset, offset + length), revision: this.#revisionBytes(bytes) };
+  }
+
   async readFile(requested, options = {}) {
     const relative = this.normalize(requested);
     const bytes = new Uint8Array(await readFile(this.#physical(relative)));

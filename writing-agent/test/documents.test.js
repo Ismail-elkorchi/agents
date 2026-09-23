@@ -306,3 +306,20 @@ test(
     );
   }
 );
+
+
+test('document passage edits preserve a BOM and can add paragraphs to a single-line original', integration, async (t) => {
+  const f = await fixture('\ufeffOriginal', { responses: [] });
+  t.after(() => f.close());
+  const document = await f.application.readDocumentSection({ path: 'document.txt' });
+  const passage = await f.application.readDocumentPassage({ revision: document.revision, selector: { quote: 'Original' } });
+  f.provider.responses.push(toolCall('edit_text', {
+    files: [{ path: passage.path, expectedSha256: passage.expectedSha256, edits: [{
+      range: passage.range, expectedText: passage.originalText, replacementText: 'Revised.\n\nA second paragraph.'
+    }] }]
+  }), 'Revised.');
+  await f.application.start();
+  const result = await submit(f.application, 'Revise this and add a second paragraph.');
+  assert.equal(result.terminal.executionStatus, 'completed');
+  assert.equal((await f.application.readDocument('document.txt')).content, '\ufeffRevised.\n\nA second paragraph.');
+});
