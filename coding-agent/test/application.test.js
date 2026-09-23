@@ -284,3 +284,89 @@ test(
     }
   }
 );
+
+test(
+  'shared environment completions retain the owning session in notifications and model context',
+  { skip: process.platform !== 'linux' },
+  async (t) => {
+    const provider = await scriptedOllama([finalResponse('Done.')]);
+    const fixture = await createWorkspace({
+      endpoint: provider.endpoint,
+      tools: ['exec_command'],
+      checks: []
+    });
+    let application;
+    let settle;
+    let reports = [];
+    t.after(async () => {
+      await application?.close();
+      await provider.close();
+      await fixture.close();
+    });
+    await trust(fixture);
+    application = await openCodingApplication({
+      root: fixture.root,
+      stateRoot: fixture.stateRoot,
+      providerEndpoint: provider.endpoint,
+      permissionMode: 'develop',
+      async environmentFactory(options) {
+        settle = options.onSettlement;
+        const environment = await createTestCodingEnvironment(options);
+        environment.commandExecution.recoveredTerminalReports = () => reports;
+        return environment;
+      }
+    });
+    const delivered = [];
+    application.subscribe(
+      (event) => delivered.push(event),
+      (error) => assert.fail(error)
+    );
+    await application.start();
+    const ownerId = `coding-session:${application.state().session.sessionId}`;
+    const empty = {
+      text: '',
+      observedBytes: 0,
+      capturedBytes: 0,
+      omittedBytes: 0,
+      startsAtOutputStart: true,
+      endsAtOutputEnd: true
+    };
+    const result = {
+      processId: 'owned-completion',
+      owner: {
+        ownerId,
+        runId: 'prior-run',
+        turnId: 'prior-turn',
+        toolBatchId: 'prior-batch',
+        callIndex: 0
+      },
+      status: 'exited',
+      exitCode: 0,
+      cursorStart: 0,
+      cursorEnd: 0,
+      stdout: empty,
+      stderr: empty,
+      combined: empty
+    };
+    const foreign = {
+      ...result,
+      processId: 'foreign-completion',
+      owner: { ...result.owner, ownerId: 'another-session' }
+    };
+    reports = [{ result }, { result: foreign }];
+    settle(reports[1]);
+    settle(reports[0]);
+    assert.deepEqual(
+      delivered
+        .filter((event) => event.type === 'command.settled')
+        .map((event) => event.result.processId),
+      ['owned-completion']
+    );
+    const submitted = await application.submit({ task: 'Continue.' });
+    assert.equal(submitted.kind, 'started');
+    assert.equal((await submitted.completion).terminal.executionStatus, 'completed');
+    const request = JSON.stringify(provider.chatRequests[0]);
+    assert.match(request, /owned-completion/);
+    assert.doesNotMatch(request, /foreign-completion/);
+  }
+);

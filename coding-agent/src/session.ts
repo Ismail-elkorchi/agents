@@ -165,7 +165,9 @@ export async function createCodingSession(options: CodingSessionOptions) {
       artifacts,
       commandExecution: authority.permissions.commandExecution === 'sandboxed',
       writable: authority.toolPolicy.allowedRisks.includes('write'),
-      onSettlement: ({ result }) => options.onCommandSettlement?.(result)
+      onSettlement: ({ result }) => {
+        if (result.owner.ownerId === ownerId) options.onCommandSettlement?.(result);
+      }
     }));
   const commandExecution = environment.commandExecution;
   const sessionGuidance = RepositoryGuidanceSession.open({
@@ -289,6 +291,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
           contextProvider: () =>
             commandExecution
               ?.recoveredTerminalReports()
+              .filter(({ result }) => result.owner.ownerId === ownerId)
               .slice(-16)
               .map(({ result }) => ({
                 id: `command:${result.processId}`,
