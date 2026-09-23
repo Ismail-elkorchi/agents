@@ -48,7 +48,7 @@ test(
         root: f.root,
         stateRoot: f.stateRoot,
         providerEndpoint: provider.endpoint,
-        permissionMode: 'develop'
+        permissionMode: 'sandbox'
       })
     );
     await app.start();

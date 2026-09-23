@@ -18,15 +18,14 @@ export interface CodingRuntimeDetails {
   readonly temperature?: number;
   readonly reasoning?: import('@agent-core/model').ModelReasoningRequest;
   readonly sessionLocation?: string;
-  readonly workspaceTrust?: 'untrusted' | 'restricted' | 'trusted';
+  readonly workspaceTrust?: 'untrusted' | 'trusted';
   readonly permissions?: {
-    readonly mode: 'review' | 'edit' | 'develop';
-    readonly trust: 'restricted' | 'trusted';
+    readonly mode: 'read_only' | 'sandbox' | 'full_host';
     readonly workspaceRead: 'root_bound';
     readonly workspaceWrite: 'denied' | 'structured';
-    readonly commandExecution: 'denied' | 'sandboxed';
-    readonly network: 'denied';
-    readonly hostEscape: 'denied';
+    readonly commandExecution: 'denied' | 'sandboxed' | 'host';
+    readonly network: 'denied' | 'host';
+    readonly hostEscape: 'denied' | 'allowed';
     readonly tools: readonly string[];
   };
 }

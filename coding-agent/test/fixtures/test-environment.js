@@ -189,5 +189,5 @@ export async function createTestCodingEnvironment(options) {
 }
 
 export function withTestCodingEnvironment(options) {
-  return { ...options, environmentFactory: createTestCodingEnvironment };
+  return { permissionMode: 'sandbox', ...options, environmentFactory: createTestCodingEnvironment };
 }

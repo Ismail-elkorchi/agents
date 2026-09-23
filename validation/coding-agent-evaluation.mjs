@@ -141,7 +141,6 @@ const directory = await mkdtemp(
 const settings = {
   provider: values.provider,
   model: values.model,
-  permissionMode: 'develop',
   ...(values.reasoning
     ? {
         reasoning:
@@ -167,6 +166,7 @@ try {
         await writeFile(path.join(root, file), content);
       const app = await openCodingApplication({
         ...settings,
+        permissionMode: scenario.id === 'read-only-review' ? 'read_only' : 'full_host',
         root,
         stateRoot: path.join(root, '..', 'state'),
         sessionSelection: { kind: 'new' }

@@ -29,6 +29,7 @@ import {
 import { randomUUID } from 'node:crypto';
 import { readRecordedMutationPatches, readRunChangeReport } from '../changes/run-change-report.js';
 import { resolveCodingAuthority, type CodingPermissionMode } from '../security/permission-mode.js';
+import { isWorkspaceFiles } from '@agent-core/tools';
 import { createTrustDecision } from '../security/workspace-trust.js';
 import { closeCodingSession } from '../session.js';
 import { ModelSelectionStore } from '../state/model-selection-store.js';
@@ -45,7 +46,6 @@ import type {
   CodingSubmissionResult
 } from './contracts.js';
 import {
-  admittedTrustLevel,
   createProviderRuntime,
   createRuntime,
   loadProjectConfiguration,
@@ -134,7 +134,7 @@ export class CodingApplication {
     const root = this.requireRuntime().fileRoot;
     const snapshot = await readRootedText(
       root,
-      root.normalize(filePath),
+      isWorkspaceFiles(root) ? root.normalize(filePath) : root.canonicalPath(filePath),
       DEFAULT_LOCAL_TOOL_CONFIGURATION.readFiles.maxBytesPerFile,
       signal
     );
@@ -142,7 +142,9 @@ export class CodingApplication {
       id: `file:${snapshot.sha256}`,
       title: snapshot.path,
       sourceKind: 'user',
-      sourceUri: `workspace:${root.descriptor.workspaceId}/${snapshot.path}`,
+      sourceUri: `workspace:${
+        isWorkspaceFiles(root) ? root.descriptor.workspaceId : this.workspace.layout.identity.id
+      }/${snapshot.path}`,
       integrity: 'verified',
       representation: 'full',
       mediaType: 'text/plain',
@@ -160,7 +162,9 @@ export class CodingApplication {
     const root = this.requireRuntime().fileRoot;
     if (!profile.modalities.input.includes('image'))
       throw new Error('The selected model does not accept images. Choose an image-capable model.');
-    const canonical = root.normalize(filePath);
+    const canonical = isWorkspaceFiles(root)
+      ? root.normalize(filePath)
+      : root.canonicalPath(filePath);
     const result = await readRootedImage(
       root,
       canonical,
@@ -227,16 +231,29 @@ export class CodingApplication {
     const decision = this.workspace.security.decide('workspace_read');
     if (decision.kind !== 'allowed') throw new Error(decision.reason);
     const root = this.requireRuntime().fileRoot;
-    const canonical = root.normalize(directory);
+    const canonical = isWorkspaceFiles(root)
+      ? root.normalize(directory)
+      : root.canonicalPath(directory);
     const entries: { path: string; kind: 'file' | 'directory' }[] = [];
     let visited = 0;
-    for await (const entry of root.list(canonical)) {
+    const listed = isWorkspaceFiles(root)
+      ? root.list(canonical)
+      : await (async () => {
+          const handle = await root.openDirectory(canonical);
+          try {
+            return await handle.entries();
+          } finally {
+            await handle.close();
+          }
+        })();
+    for await (const entry of listed) {
       if (++visited > 4096 || entries.length >= 256) break;
       if (!entry.name.startsWith(prefix) || (entry.type !== 'file' && entry.type !== 'directory'))
         continue;
       const pathname = canonical === '.' ? entry.name : `${canonical}/${entry.name}`;
       try {
-        root.normalize(pathname);
+        if (isWorkspaceFiles(root)) root.normalize(pathname);
+        else root.canonicalPath(pathname);
       } catch {
         continue;
       }
@@ -560,7 +577,7 @@ export class CodingApplication {
     });
   }
 
-  selectWorkspaceTrust(level: 'restricted' | 'trusted'): Promise<CodingApplicationState> {
+  selectWorkspaceTrust(level: 'trusted'): Promise<CodingApplicationState> {
     return this.serial(async () => {
       await this.beginReconfiguration();
       await this.workspace.trustStore.write(
@@ -856,15 +873,7 @@ export class CodingApplication {
         ? undefined
         : resolveCodingAuthority({
             requestedMode: this.options.permissionMode,
-            trust: admittedTrustLevel(this.workspace.security.trustLevel),
-            ...(activeConfiguration
-              ? {
-                  project: {
-                    permissions: activeConfiguration.permissions,
-                    enabledTools: activeConfiguration.tools.enabled
-                  }
-                }
-              : {}),
+            ...(activeConfiguration ? { enabledTools: activeConfiguration.tools.enabled } : {}),
             hasVerificationChecks:
               (activeConfiguration?.verification.required.length ?? 0) +
                 (activeConfiguration?.verification.advisory.length ?? 0) >
@@ -944,7 +953,7 @@ export async function openCodingApplication(
     options.stateRoot ? { stateRoot: options.stateRoot } : {}
   );
   return new CodingApplication(
-    { permissionMode: 'review', sessionSelection: { kind: 'new' }, ...options },
+    { permissionMode: 'read_only', sessionSelection: { kind: 'new' }, ...options },
     workspace
   );
 }

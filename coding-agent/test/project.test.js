@@ -60,7 +60,6 @@ test('workspace configuration validates first-party policy, checks, and exact li
     reasoning: { strategy: 'effort', effort: 'max', mode: 'standard' },
     instructions: [{ path: 'AGENTS.md' }],
     tools: { enabled: ['read_files'] },
-    permissions: { maximumMode: 'edit', requireApprovalFor: ['write'] },
     verification: {
       required: [{ id: 'test', command: 'npm test', coverage: 'full', timeoutMs: 1_000 }],
       advisory: []
@@ -69,19 +68,16 @@ test('workspace configuration validates first-party policy, checks, and exact li
   };
   await writeFile(path.join(dir, 'coding-agent.config.json'), JSON.stringify(configuration));
   const root = RootedFileAuthority.adopt(dir);
-  const security = new WorkspaceSecurityBoundary(identifyCodingWorkspace(root.identity), 'restricted');
+  const security = new WorkspaceSecurityBoundary(identifyCodingWorkspace(root.identity), 'trusted');
   assert.deepEqual((await loadCodingAgentConfiguration(root, security)).value, configuration);
   const snapshot = parseCodingAgentConfiguration(configuration);
   configuration.instructions[0].path = 'changed.md';
   configuration.verification.required[0].command = 'changed';
-  configuration.permissions.maximumMode = 'review';
   assert.equal(snapshot.instructions[0].path, 'AGENTS.md');
   assert.equal(snapshot.verification.required[0].command, 'npm test');
-  assert.equal(snapshot.permissions.maximumMode, 'edit');
   assert.equal(Object.isFrozen(snapshot.verification.required[0]), true);
   configuration.instructions[0].path = 'AGENTS.md';
   configuration.verification.required[0].command = 'npm test';
-  configuration.permissions.maximumMode = 'edit';
   assert.throws(
     () => parseCodingAgentConfiguration({ ...configuration, limits: { mysteryLimit: 1 } }),
     /run limits/iu
@@ -89,14 +85,6 @@ test('workspace configuration validates first-party policy, checks, and exact li
   assert.throws(
     () => parseCodingAgentConfiguration({ ...configuration, limits: { revisionAttempts: -1 } }),
     /run limits/iu
-  );
-  assert.throws(
-    () =>
-      parseCodingAgentConfiguration({
-        ...configuration,
-        permissions: { maximumMode: 'edit', requireApprovalFor: ['network'] }
-      }),
-    /Permission approvals/u
   );
   assert.throws(
     () =>
@@ -156,7 +144,7 @@ test('workspace configuration cannot escape through a symlink', async () => {
   const workspaceRoot = RootedFileAuthority.adopt(root);
   const security = new WorkspaceSecurityBoundary(
     identifyCodingWorkspace(workspaceRoot.identity),
-    'restricted'
+    'trusted'
   );
   await assert.rejects(
     () => loadCodingAgentConfiguration(workspaceRoot, security, 'linked.json'),

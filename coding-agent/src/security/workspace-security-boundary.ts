@@ -32,8 +32,6 @@ export class WorkspaceSecurityBoundary {
     const decision = decideToolEffects(this.trustLevel, request.effects);
     if (decision.kind === 'allowed')
       return Object.freeze({ decision: 'allow', reason: 'Allowed by the workspace trust boundary.' });
-    if (decision.kind === 'approval_required')
-      return Object.freeze({ decision: 'require_approval', reason: decision.reason });
     return Object.freeze({ decision: 'deny', reason: decision.reason });
   }
 

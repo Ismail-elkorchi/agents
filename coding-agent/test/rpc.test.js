@@ -154,87 +154,6 @@ test(
 );
 
 test(
-  'approval survives connection loss, rejects a stale fingerprint, and exposes the exact workspace patch',
-  { skip: process.platform !== 'linux' },
-  async (t) => {
-    const original = 'export const enabled = false;\n';
-    const patch =
-      '*** Begin Patch\n*** Update File: feature.js\n@@\n-export const enabled = false;\n+export const enabled = true;\n*** End Patch';
-    const provider = await scriptedOllama([
-      toolResponse('read_files', { files: [{ path: 'feature.js' }] }),
-      toolResponse('apply_patch', {
-        patch,
-        expectedOldSha256: { 'feature.js': createHash('sha256').update(original).digest('hex') }
-      }),
-      finalResponse('Feature enabled.')
-    ]);
-    const f = await createWorkspace({
-      endpoint: provider.endpoint,
-      tools: ['read_files', 'apply_patch'],
-      checks: [],
-      files: { 'feature.js': original },
-      requireApprovalFor: ['write']
-    });
-    t.after(async () => {
-      await provider.close();
-      await f.close();
-    });
-    await trust(f);
-    const args = [
-      'coding-agent/test/fixtures/scripted-cli-entry.js',
-      'rpc',
-      '--root',
-      f.root,
-      '--state-root',
-      f.stateRoot,
-      '--provider-endpoint',
-      provider.endpoint,
-      '--permissions',
-      'edit'
-    ];
-    const first = rpcClient(args);
-    t.after(() => first.close());
-    const sessionId = (await first.request('application.read')).session.sessionId;
-    const accepted = await first.request('input.submit', { task: 'Enable the feature.' });
-    const suspended = await first.notification(
-      'run.completed',
-      (event) => event.runId === accepted.runId
-    );
-    const approval = suspended.result.pendingApprovals[0];
-    await first.close();
-    const restored = rpcClient([...args, '--session', sessionId]);
-    t.after(() => restored.close());
-    const view = await restored.request('session.read');
-    assert.equal(view.session.phase, 'suspended');
-    assert(view.runs.some((run) => run.state.runId === accepted.runId));
-    const decision = {
-      runId: accepted.runId,
-      approvalId: approval.approvalId,
-      fingerprint: approval.fingerprint,
-      decision: 'allow'
-    };
-    await assert.rejects(
-      restored.request('approval.resolve', { ...decision, fingerprint: 'stale' })
-    );
-    assert.equal(await readFile(path.join(f.root, 'feature.js'), 'utf8'), original);
-    const result = await restored.request('approval.resolve', decision);
-    assert.equal(result.state, 'ended');
-    const change = await restored.request('change.read', {
-      runId: accepted.runId,
-      path: 'feature.js'
-    });
-    assert.equal(change.patches.length, 1);
-    assert.equal(change.patches[0].patch, patch);
-    assert.equal(change.patches[0].receipt.applicationStatus, 'applied');
-    assert.equal(
-      await readFile(path.join(f.root, 'feature.js'), 'utf8'),
-      'export const enabled = true;\n'
-    );
-    assert.equal((await restored.close()).code, 0);
-  }
-);
-
-test(
   'RPC exposes exact historical check definitions and stale applicability after an external edit',
   {
     skip: process.platform !== 'linux',
@@ -275,7 +194,7 @@ test(
       '--provider-endpoint',
       provider.endpoint,
       '--permissions',
-      'develop'
+      'sandbox'
     ]);
     t.after(() => client.close());
     await client.request('application.read');

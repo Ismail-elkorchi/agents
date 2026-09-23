@@ -66,7 +66,7 @@ test(
         root: fixture.root,
         stateRoot: fixture.stateRoot,
         providerEndpoint: provider.endpoint,
-        permissionMode: 'develop'
+        permissionMode: 'sandbox'
       })
     );
     await application.start();
@@ -285,65 +285,6 @@ test(
     await writeFile(path.join(fixture.root, 'AGENTS.md'), 'ROOT-SECOND-REVISION');
     const second = await application.submit({ task: 'Second request.' });
     assert.equal((await second.completion).state, 'ended');
-  }
-);
-
-test(
-  'guidance changed during approval defers the old patch before any effect',
-  { skip: process.platform !== 'linux', timeout: 30000 },
-  async (t) => {
-    const { writeFile, readFile } = await import('node:fs/promises');
-    const path = await import('node:path');
-    const { createHash } = await import('node:crypto');
-    const original = 'original\n';
-    const provider = await scriptedOllama([
-      toolResponse('apply_patch', {
-        patch: '*** Begin Patch\n*** Update File: file.txt\n@@\n-original\n+changed\n*** End Patch',
-        expectedOldSha256: { 'file.txt': createHash('sha256').update(original).digest('hex') }
-      }),
-      async (request) => {
-        assert.match(JSON.stringify(request.messages), /GUIDANCE-CHANGED-DURING-APPROVAL/u);
-        assert.equal(await readFile(path.join(fixture.root, 'file.txt'), 'utf8'), original);
-        return finalResponse('The guidance changed. The earlier patch did not execute.');
-      }
-    ]);
-    const fixture = await createWorkspace({
-      endpoint: provider.endpoint,
-      tools: ['read_files', 'apply_patch'],
-      checks: [],
-      requireApprovalFor: ['write'],
-      files: { 'file.txt': original, 'AGENTS.md': 'Initial instructions.' }
-    });
-    let application;
-    t.after(async () => {
-      await application?.close();
-      await provider.close();
-      await fixture.close();
-    });
-    await trust(fixture);
-    application = await openCodingApplication(
-      withTestCodingEnvironment({
-        root: fixture.root,
-        stateRoot: fixture.stateRoot,
-        providerEndpoint: provider.endpoint,
-        permissionMode: 'edit'
-      })
-    );
-    await application.start();
-    const submitted = await application.submit({ task: 'Apply the patch.' });
-    const suspended = await submitted.completion;
-    assert.equal(suspended.state, 'suspended');
-    const approval = suspended.pendingApprovals[0];
-    assert(approval);
-    await writeFile(path.join(fixture.root, 'AGENTS.md'), 'GUIDANCE-CHANGED-DURING-APPROVAL');
-    const resolved = await application.resolveApproval({
-      runId: submitted.runId,
-      approvalId: approval.approvalId,
-      fingerprint: approval.fingerprint,
-      decision: 'allow'
-    });
-    assert.equal(resolved.state, 'ended');
-    assert.equal(await readFile(path.join(fixture.root, 'file.txt'), 'utf8'), original);
   }
 );
 

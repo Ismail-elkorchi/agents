@@ -74,7 +74,7 @@ for (const action of ['poll', 'stop', 'settle'])
           root: fixture.root,
           stateRoot: fixture.stateRoot,
           providerEndpoint: provider.endpoint,
-          permissionMode: 'develop'
+          permissionMode: 'sandbox'
         })
       );
       await application.start();
@@ -156,7 +156,7 @@ test(
       root: fixture.root,
       stateRoot: fixture.stateRoot,
       providerEndpoint: provider.endpoint,
-      permissionMode: 'develop'
+      permissionMode: 'sandbox'
     };
     application = await openCodingApplication(options);
     await application.start();

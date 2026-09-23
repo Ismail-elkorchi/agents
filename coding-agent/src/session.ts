@@ -23,7 +23,7 @@ import {
   JsonlNoteRepository,
   JsonlSessionRepository
 } from '@agent-core/runtime/node';
-import { accessRisk, commandExecutionResources } from '@agent-core/tools';
+import { commandExecutionResources, isWorkspaceFiles } from '@agent-core/tools';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { CodingAgentConfiguration } from './configuration.js';
@@ -32,11 +32,17 @@ import {
   type CodingEnvironment
 } from './execution/coding-command-authority.js';
 import { processControls } from './execution/process-controls.js';
-import { createWorkspaceToolHost } from '@agent-core/tools-local';
+import {
+  createLocalToolHost,
+  createWorkspaceToolHost,
+  DEFAULT_LOCAL_TOOL_CONFIGURATION,
+  LocalCommandExecution,
+  TextPatchJournal,
+  type RootedFileAuthority
+} from '@agent-core/tools-local';
 import { RepositoryGuidanceSession } from './instructions/repository-guidance.js';
 import {
   resolveCodingAuthority,
-  type CodingApprovalKind,
   type CodingAuthority,
   type CodingPermissionMode
 } from './security/permission-mode.js';
@@ -58,7 +64,7 @@ export interface CodingSessionOptions {
   readonly configurationSource?: {
     readonly sourceUri: string;
     readonly sha256: string;
-    readonly trustLevel: 'restricted' | 'trusted';
+    readonly trustLevel: 'trusted';
   };
   readonly environment?: CodingEnvironment;
   readonly environmentFactory?: CodingEnvironmentFactory;
@@ -92,15 +98,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
   const configuration = projectPolicy ? options.configuration : undefined;
   const authority = resolveCodingAuthority({
     requestedMode: options.permissionMode,
-    trust: admittedTrustLevel(openedWorkspace.security.trustLevel),
-    ...(configuration
-      ? {
-          project: {
-            permissions: configuration.permissions,
-            enabledTools: configuration.tools.enabled
-          }
-        }
-      : {}),
+    ...(configuration ? { enabledTools: configuration.tools.enabled } : {}),
     hasVerificationChecks: Boolean(
       configuration &&
         (configuration.verification.required.length > 0 ||
@@ -153,22 +151,32 @@ export async function createCodingSession(options: CodingSessionOptions) {
   ]);
   const memoryToolNames = new Set(memoryTools.map((tool) => tool.name));
 
-  const ownsEnvironment = options.environment === undefined;
+  const ownsEnvironment = authority.mode !== 'sandbox' || options.environment === undefined;
   const environment =
-    options.environment ??
-    (await (options.environmentFactory ?? openCodingEnvironment)({
-      repositoryDirectory: path.join(workspace.runtimeDir, 'sandsurf'),
-      hostWorkspaceRoot: openedWorkspace.fileRoot.identity.canonicalPath,
-      workspaceId: workspace.identity.id,
-      state: openedWorkspace.privateState,
-      events,
-      artifacts,
-      commandExecution: authority.permissions.commandExecution === 'sandboxed',
-      writable: authority.toolPolicy.allowedRisks.includes('write'),
-      onSettlement: ({ result }) => {
-        if (result.owner.ownerId === ownerId) options.onCommandSettlement?.(result);
-      }
-    }));
+    authority.mode === 'sandbox'
+      ? options.environment ??
+        (await (options.environmentFactory ?? openCodingEnvironment)({
+          repositoryDirectory: path.join(workspace.runtimeDir, 'sandsurf'),
+          hostWorkspaceRoot: openedWorkspace.fileRoot.identity.canonicalPath,
+          workspaceId: workspace.identity.id,
+          state: openedWorkspace.privateState,
+          events,
+          artifacts,
+          commandExecution: true,
+          writable: true,
+          onSettlement: ({ result }) => {
+            if (result.owner.ownerId === ownerId) options.onCommandSettlement?.(result);
+          }
+        }))
+      : await openHostEnvironment(
+          openedWorkspace.fileRoot,
+          workspace.runtimeDir,
+          artifacts,
+          authority,
+          (result) => {
+            if (result.owner.ownerId === ownerId) options.onCommandSettlement?.(result);
+          }
+        );
   const commandExecution = environment.commandExecution;
   const sessionGuidance = RepositoryGuidanceSession.open({
     root: environment.files,
@@ -207,17 +215,20 @@ export async function createCodingSession(options: CodingSessionOptions) {
           security: openedWorkspace.security,
           configuredPaths: configuration?.instructions.map((instruction) => instruction.path) ?? []
         });
-        const host = createWorkspaceToolHost({
-          files: environment.files,
-          artifacts,
-          ...(commandExecution ? { commandExecution } : {}),
-          enabledTools: authority.enabledTools
-        });
+        const host =
+          'toolHost' in environment
+            ? environment.toolHost
+            : createWorkspaceToolHost({
+                files: environment.files,
+                artifacts,
+                ...(commandExecution ? { commandExecution } : {}),
+                enabledTools: authority.enabledTools
+              });
 
         const checkTools =
           commandExecution &&
           configuration &&
-          authority.verificationCommands === 'sandboxed' &&
+          authority.verificationCommands &&
           configuration.verification.required.length + configuration.verification.advisory.length >
             0
             ? [
@@ -270,19 +281,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
             if (workspaceDecision.decision === 'deny') return workspaceDecision;
             const guidanceDecision = await guidance.authorize(request);
             if (guidanceDecision) return guidanceDecision;
-            if (workspaceDecision.decision === 'require_approval') return workspaceDecision;
-            const approvals = request.effects.accesses
-              .map((access) => approvalKind(accessRisk(access.mode)))
-              .filter(
-                (kind): kind is CodingApprovalKind =>
-                  kind !== undefined && authority.requiredApprovals.includes(kind)
-              );
-            return approvals.length === 0
-              ? { decision: 'allow' as const, reason: 'Allowed by workspace policy.' }
-              : {
-                  decision: 'require_approval' as const,
-                  reason: `The permission boundary requires approval for ${[...new Set(approvals)].join(', ')}.`
-                };
+            return { decision: 'allow' as const, reason: 'Allowed by workspace policy.' };
           },
           instructions: async () => (await guidance.refresh()).instructions,
           onRequestAdmitted: (admitted) => {
@@ -318,7 +317,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
           metadata: {
             workspaceId: workspace.identity.id,
             workspaceName: workspace.workspaceName,
-            workspaceRoot: environment.files.descriptor.displayRoot,
+            workspaceRoot: workspaceDisplayRoot(environment.files),
             workspaceTrust: openedWorkspace.security.trustLevel,
             ...(options.configurationSource
               ? {
@@ -383,7 +382,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
           }
         };
       },
-      workspaceRoot: environment.files.descriptor.displayRoot,
+      workspaceRoot: workspaceDisplayRoot(environment.files),
       fileRoot: environment.files,
       permissions: authority.permissions,
       ...(configuration ? { configuration } : {}),
@@ -415,7 +414,11 @@ function workspaceContext(authority: CodingAuthority): PromptContextItemInput {
     mediaType: 'text/plain; charset=utf-8',
     title: 'Active workspace',
     content: [
-      'Workspace root: /workspace (inside the persistent Sandsurf Linux environment)',
+      authority.mode === 'sandbox'
+        ? 'Workspace root: /workspace in Sandsurf. Edits stay in the guest; they do not appear in the host project.'
+        : authority.mode === 'read_only'
+          ? 'Workspace root: the selected host project. Read-only tools are available; edits and commands are disabled.'
+          : 'Workspace root: the selected host project. Commands run under your host account with access to the rest of the system and network.',
       `Permission mode: ${authority.mode}`,
       `Available workspace tools: ${authority.enabledTools.join(', ') || 'none'}`
     ].join('\n'),
@@ -423,18 +426,70 @@ function workspaceContext(authority: CodingAuthority): PromptContextItemInput {
   });
 }
 
-function admittedTrustLevel(
-  value: OpenCodingWorkspace['security']['trustLevel']
-): 'restricted' | 'trusted' {
-  if (value === 'restricted' || value === 'trusted') return value;
-  throw new Error('Runtime creation requires an admitted workspace.');
+function workspaceDisplayRoot(files: CodingEnvironment['files'] | RootedFileAuthority): string {
+  return isWorkspaceFiles(files) ? files.descriptor.displayRoot : files.displayPath;
 }
 
-function approvalKind(risk: ReturnType<typeof accessRisk>): CodingApprovalKind | undefined {
-  if (risk === 'write') return 'write';
-  if (risk === 'destructive') return 'delete';
-  if (risk === 'execute') return 'command';
-  return undefined;
+async function openHostEnvironment(
+  workspaceRoot: RootedFileAuthority,
+  runtimeDirectory: string,
+  artifacts: LocalArtifactRepository,
+  authority: CodingAuthority,
+  onSettlement: (result: import('@agent-core/tools').CommandExecutionResult) => void
+) {
+  const files = workspaceRoot.derive();
+  const journalDirectory = path.join(runtimeDirectory, 'transactions', 'host-patch');
+  const processDirectory = path.join(runtimeDirectory, 'host-processes');
+  let commands: LocalCommandExecution | undefined;
+  let journal: TextPatchJournal | undefined;
+  let host: ReturnType<typeof createLocalToolHost> | undefined;
+  try {
+    if (authority.mode === 'full_host') {
+      await fs.mkdir(journalDirectory, { recursive: true, mode: 0o700 });
+      await fs.mkdir(processDirectory, { recursive: true, mode: 0o700 });
+      journal = TextPatchJournal.adopt(journalDirectory);
+      commands = new LocalCommandExecution({
+        artifactRepository: artifacts,
+        rootedFileAuthority: files,
+        ledgerDirectory: processDirectory,
+        onSettlement,
+        ...DEFAULT_LOCAL_TOOL_CONFIGURATION.process
+      });
+    }
+    host = createLocalToolHost({
+      rootedFileAuthority: files,
+      artifactRepository: artifacts,
+      ...(commands ? { commandExecution: commands } : {}),
+      ...(journal ? { patchJournal: journal } : {}),
+      enabledTools: authority.enabledTools
+    });
+    await host.ready();
+    const openedCommands = commands;
+    const openedHost = host;
+    return {
+      files,
+      ...(openedCommands ? { commandExecution: openedCommands } : {}),
+      toolHost: openedHost,
+      async close() {
+        try {
+          await openedCommands?.close();
+        } finally {
+          await openedHost.close();
+        }
+      }
+    };
+  } catch (error) {
+    try {
+      await commands?.close();
+    } finally {
+      if (host) await host.close();
+      else {
+        journal?.close();
+        files.close();
+      }
+    }
+    throw error;
+  }
 }
 
 export async function closeCodingSession(runtime: CodingSessionComposition): Promise<void> {

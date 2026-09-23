@@ -24,7 +24,6 @@ export {
 } from './instructions/repository-guidance.js';
 export {
   resolveCodingAuthority,
-  type CodingApprovalKind,
   type CodingAuthority,
   type CodingPermissionMode
 } from './security/permission-mode.js';

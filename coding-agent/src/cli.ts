@@ -179,7 +179,7 @@ export async function main(
 function parseOptions(args: string[]): { options: CliOptions; positionals: string[] } {
   const options: CliOptions = {
     root: process.cwd(),
-    permissionMode: 'review',
+    permissionMode: 'read_only',
     showReasoning: false,
     sessionSelection: { kind: 'new' }
   };
@@ -385,12 +385,11 @@ async function runTrustCommand(args: string[]): Promise<void> {
   const [command, ...optionArgs] = args;
   if (
     command !== 'status' &&
-    command !== 'restricted' &&
     command !== 'trusted' &&
     command !== 'revoke'
   ) {
     throw new Error(
-      'Usage: coding-agent trust <status|restricted|trusted|revoke> [--root <dir>] [--state-root <dir>]'
+      'Usage: coding-agent trust <status|trusted|revoke> [--root <dir>] [--state-root <dir>]'
     );
   }
   const trustOptions = parseTrustOptions(optionArgs);
@@ -943,16 +942,15 @@ Usage:
   coding-agent exec --resume [options]
   coding-agent auth status openai
   coding-agent auth login openai-codex
-  coding-agent trust <status|restricted|trusted|revoke> [--root .]
+  coding-agent trust <status|trusted|revoke> [--root .]
   coding-agent approval <allow|deny> <run-id> <approval-id> <fingerprint> [--root .] [--config coding-agent.config.json]
   coding-agent
 
 Safety defaults:
   New and identity-changed workspaces are untrusted and cannot send provider requests or run effects.
   Private runs, sessions, artifacts, journals, and trust records are stored outside the workspace.
-  review mode exposes root-bound read tools only; edit adds structured mutation; develop adds sandboxed commands.
-  Commands and verification run with no network, no host-process access, no inherited environment, and no ambient fallback.
-  Restricted workspaces require approval before every mutation or command. Repository policy can narrow but never expand the selected mode.
+  read_only inspects the host project; sandbox edits and executes in Sandsurf; full_host uses the host account.
+  A new workspace requires admission before sending its contents to a model or running effects.
 
 Common options:
   --root <dir>           Workspace root. Default: current directory.
@@ -970,7 +968,7 @@ Common options:
   --reasoning-effort <level>
                          Model-supported reasoning effort; none requests disabled reasoning.
   --show-reasoning       Stream separate model reasoning or reasoning summaries to stderr.
-  --permissions <mode>   Authority ceiling: review, edit, or develop. Default: review.
+  --permissions <mode>   read_only, sandbox, or full_host. Default: read_only.
   --resume               Select the latest session; taskless exec drives only its unfinished run.
   --session <id>         Open an existing session by ID.
   --branch <entry-id>    Branch the active session from a prior entry before running.

@@ -15,7 +15,6 @@ export async function createWorkspace({
   checks,
   files = {},
   trustLevel = 'trusted',
-  requireApprovalFor = [],
   limits
 }) {
   const parent = await mkdtemp(path.join(tmpdir(), 'coding-agent-product-'));
@@ -36,7 +35,6 @@ export async function createWorkspace({
         model: 'v0-scripted',
         instructions: [],
         tools: { enabled: tools },
-        permissions: { maximumMode: 'develop', requireApprovalFor },
         verification: { required: checks, advisory: [] },
         ...(limits === undefined ? {} : { limits })
       },
@@ -240,7 +238,8 @@ function cliArguments(fixture, args) {
         '--state-root',
         fixture.stateRoot,
         '--provider-endpoint',
-        fixture.endpoint
+        fixture.endpoint,
+        ...(args.includes('--permissions') ? [] : ['--permissions', 'sandbox'])
       ];
 }
 

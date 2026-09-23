@@ -57,7 +57,7 @@ export interface CodingApplicationOptions {
   configurationSource?: {
     readonly sourceUri: string;
     readonly sha256: string;
-    readonly trustLevel: 'restricted' | 'trusted';
+    readonly trustLevel: 'trusted';
   };
   environmentFactory?: CodingEnvironmentFactory;
 }
@@ -314,8 +314,8 @@ export async function createRuntime(
 
 export function admittedTrustLevel(
   value: OpenCodingWorkspace['security']['trustLevel']
-): 'restricted' | 'trusted' {
-  if (value === 'restricted' || value === 'trusted') return value;
+): 'trusted' {
+  if (value === 'trusted') return value;
   throw new Error('Runtime creation requires an admitted workspace.');
 }
 

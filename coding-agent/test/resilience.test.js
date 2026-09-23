@@ -28,7 +28,7 @@ test('taskless exec resume rejects a session without unfinished work', async () 
   }
 });
 
-test('a review question completes without creating mutable work or opening command execution', async () => {
+test('a question completes without mutating the workspace', async () => {
   const provider = await scriptedOllama([
     finalResponse('The function returns the number of values.')
   ]);
@@ -44,7 +44,7 @@ test('a review question completes without creating mutable work or opening comma
       'exec',
       'What does src/count.js do?',
       '--permissions',
-      'review'
+      'sandbox'
     ]);
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, /returns the number of values/u);
@@ -52,6 +52,57 @@ test('a review question completes without creating mutable work or opening comma
       await readFile(path.join(fixture.root, 'src/count.js'), 'utf8'),
       'export const count = (values) => values.length;\n'
     );
+  } finally {
+    await provider.close();
+    await fixture.close();
+  }
+});
+
+test('read-only mode reads the host project without opening Sandsurf', async () => {
+  const provider = await scriptedOllama([
+    toolResponse('read_files', { files: [{ path: 'source.txt' }] }),
+    finalResponse('Read the host file.')
+  ]);
+  const fixture = await createWorkspace({
+    endpoint: provider.endpoint,
+    tools: ['read_files', 'exec_command'],
+    checks: [],
+    files: { 'source.txt': 'host source\n' }
+  });
+  try {
+    await trust(fixture);
+    const result = await runCli(fixture, [
+      'exec', 'Read source.txt.', '--permissions', 'read_only'
+    ]);
+    assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(JSON.stringify(provider.chatRequests[1]), /host source/u);
+  } finally {
+    await provider.close();
+    await fixture.close();
+  }
+});
+
+test('full host mode can execute outside the selected project', async () => {
+  const provider = await scriptedOllama([]);
+  const fixture = await createWorkspace({
+    endpoint: provider.endpoint,
+    tools: ['exec_command'],
+    checks: []
+  });
+  const outside = path.join(path.dirname(fixture.root), 'host-result.txt');
+  provider.enqueueResponses(toolResponse('exec_command', {
+    command: `printf host > '${outside}'`,
+    workdir: '.',
+    yieldMs: 1000,
+    timeoutMs: 20_000
+  }), finalResponse('Host command finished.'));
+  try {
+    await trust(fixture);
+    const result = await runCli(fixture, [
+      'exec', 'Write the result outside the project.', '--permissions', 'full_host'
+    ]);
+    assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
+    assert.equal(await readFile(outside, 'utf8'), 'host');
   } finally {
     await provider.close();
     await fixture.close();
@@ -93,7 +144,7 @@ test('an authorized patch changes the selected workspace before the final answer
       'exec',
       'Change src/note.txt from alpha to beta.',
       '--permissions',
-      'edit'
+      'sandbox'
     ]);
     assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
     assert.equal(await readFile(path.join(fixture.root, 'src/note.txt'), 'utf8'), 'beta\n');
@@ -128,7 +179,7 @@ test('an explicitly configured failed check reaches the model and remains visibl
       'exec',
       'Run the configured check and report its result.',
       '--permissions',
-      'develop'
+      'sandbox'
     ]);
     assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
     assert.match(result.stdout, /Check explicit: required\/failed \(targeted\)/u);

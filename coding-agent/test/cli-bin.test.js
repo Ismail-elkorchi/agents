@@ -53,68 +53,24 @@ for (const [agent, flag] of [
     }
   );
 
-test('permission modes expose exact tools and authority', () => {
-  const review = resolveCodingAuthority({
-    requestedMode: 'review',
-    trust: 'trusted',
-    hasVerificationChecks: false
-  });
-  assert.deepEqual(review.toolPolicy.allowedRisks, ['read']);
-  assert.equal(review.enabledTools.includes('apply_patch'), false);
-  assert.equal(review.enabledTools.includes('exec_command'), false);
-  const edit = resolveCodingAuthority({
-    requestedMode: 'edit',
-    trust: 'restricted',
-    hasVerificationChecks: false
-  });
-  assert.deepEqual(edit.toolPolicy.allowedRisks, ['read', 'write', 'destructive']);
-  assert.deepEqual(edit.requiredApprovals, ['write', 'delete']);
-  const develop = resolveCodingAuthority({
-    requestedMode: 'develop',
-    trust: 'trusted',
-    hasVerificationChecks: true
-  });
-  assert.deepEqual(develop.toolPolicy.allowedRisks, ['read', 'write', 'destructive', 'execute']);
-  assert.equal(develop.permissions.commandExecution, 'sandboxed');
-  assert.equal(develop.permissions.network, 'denied');
-});
-
-test('permission mode and trust matrix never grants network or host escape', () => {
-  for (const trust of ['restricted', 'trusted']) {
-    for (const mode of ['review', 'edit', 'develop']) {
-      const authority = resolveCodingAuthority({
-        requestedMode: mode,
-        trust,
-        hasVerificationChecks: true
-      });
-      assert.equal(authority.mode, mode);
-      assert.equal(authority.permissions.network, 'denied');
-      assert.equal(authority.permissions.hostEscape, 'denied');
-      assert.equal(authority.enabledTools.includes('apply_patch'), mode !== 'review');
-      assert.equal(authority.enabledTools.includes('exec_command'), mode === 'develop');
-      assert.equal(authority.verificationCommands, mode === 'review' ? 'disabled' : 'sandboxed');
-      assert.equal(
-        authority.permissions.commandExecution,
-        mode === 'review' ? 'denied' : 'sandboxed'
-      );
-      assert.equal(
-        authority.requiredApprovals.includes('command'),
-        trust === 'restricted' && mode !== 'review'
-      );
-    }
-  }
-  const narrowed = resolveCodingAuthority({
-    requestedMode: 'develop',
-    trust: 'trusted',
-    hasVerificationChecks: false,
-    project: {
-      permissions: { maximumMode: 'edit', requireApprovalFor: ['write'] },
-      enabledTools: ['read_files', 'apply_patch', 'exec_command']
-    }
-  });
-  assert.equal(narrowed.mode, 'edit');
-  assert.deepEqual(narrowed.enabledTools, ['read_files', 'apply_patch']);
-  assert.deepEqual(narrowed.requiredApprovals, ['write']);
+test('permission choices expose the same work tools with distinct execution authority', () => {
+  const readOnly = resolveCodingAuthority({ requestedMode: 'read_only', hasVerificationChecks: true });
+  const sandbox = resolveCodingAuthority({ requestedMode: 'sandbox', hasVerificationChecks: true });
+  const host = resolveCodingAuthority({ requestedMode: 'full_host', hasVerificationChecks: true });
+  assert.deepEqual(readOnly.toolPolicy.allowedRisks, ['read']);
+  assert.equal(readOnly.enabledTools.includes('exec_command'), false);
+  assert.equal(readOnly.enabledTools.includes('apply_patch'), false);
+  assert.equal(readOnly.verificationCommands, false);
+  assert.equal(readOnly.permissions.commandExecution, 'denied');
+  assert.deepEqual(sandbox.enabledTools, host.enabledTools);
+  assert.equal(sandbox.enabledTools.includes('exec_command'), true);
+  assert.equal(sandbox.verificationCommands, true);
+  assert.equal(sandbox.permissions.commandExecution, 'sandboxed');
+  assert.equal(sandbox.permissions.network, 'denied');
+  assert.equal(sandbox.permissions.hostEscape, 'denied');
+  assert.equal(host.permissions.commandExecution, 'host');
+  assert.equal(host.permissions.network, 'host');
+  assert.equal(host.permissions.hostEscape, 'allowed');
 });
 
 test('CLI rejects retired presentation flags', async () => {
@@ -149,11 +105,9 @@ test('CLI binary help works through the published executable', async () => {
     output.stdout + output.stderr,
     /approval <allow\|deny> <run-id> <approval-id> <fingerprint>/u
   );
-  assert.match(output.stdout + output.stderr, /review mode exposes root-bound read tools only/iu);
-  assert.match(output.stdout + output.stderr, /Commands and verification run with no network/iu);
   assert.match(
     output.stdout + output.stderr,
-    /--permissions <mode>\s+Authority ceiling: review, edit, or develop/iu
+    /--permissions <mode>\s+read_only, sandbox, or full_host/iu
   );
   assert.match(output.stdout + output.stderr, /--codex-transport <http_sse\|websocket>/u);
 });
@@ -175,7 +129,6 @@ test(
         reasoning: { strategy: 'effort', effort: 'max', mode: 'standard' },
         instructions: [],
         tools: { enabled: [] },
-        permissions: { maximumMode: 'review', requireApprovalFor: [] },
         verification: { required: [], advisory: [] }
       })
     );
@@ -229,24 +182,9 @@ test(
         model: 'gpt-5.6-sol',
         instructions: [],
         tools: { enabled: [] },
-        permissions: { maximumMode: 'review', requireApprovalFor: [] },
         verification: { required: [], advisory: [] }
       })
     );
-    const restricted = await run(
-      path.resolve('coding-agent/dist/cli.js'),
-      ['trust', 'restricted', '--root', root],
-      { env: environment }
-    );
-    assert.equal(restricted.code, 0, restricted.stderr);
-    const noRepositorySelectedProvider = await run(
-      path.resolve('coding-agent/dist/cli.js'),
-      ['exec', 'inspect', '--root', root],
-      { env: { ...environment, CODING_AGENT_PROVIDER: '', CODING_AGENT_MODEL: '' } }
-    );
-    assert.equal(noRepositorySelectedProvider.code, 1);
-    assert.match(noRepositorySelectedProvider.stderr, /requires setup: provider, model/u);
-
     const trusted = await run(
       path.resolve('coding-agent/dist/cli.js'),
       ['trust', 'trusted', '--root', root],

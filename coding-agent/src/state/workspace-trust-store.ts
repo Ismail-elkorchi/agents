@@ -96,7 +96,7 @@ function requireRecord(value: unknown, label: string): Record<string, unknown> {
   return value;
 }
 function trustLevel(value: unknown): value is WorkspaceTrustLevel {
-  return value === 'untrusted' || value === 'restricted' || value === 'trusted';
+  return value === 'untrusted' || value === 'trusted';
 }
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

@@ -1,7 +1,7 @@
 import type { ToolEffects } from '@agent-core/tools';
 import type { CodingWorkspaceIdentity } from './workspace-identity.js';
 
-export type WorkspaceTrustLevel = 'untrusted' | 'restricted' | 'trusted';
+export type WorkspaceTrustLevel = 'untrusted' | 'trusted';
 export type WorkspaceAction =
   | 'inspect_metadata'
   | 'inspect_selected_content'
@@ -16,7 +16,6 @@ export type WorkspaceAction =
 
 export type WorkspaceActionDecision =
   | { readonly kind: 'allowed' }
-  | { readonly kind: 'approval_required'; readonly reason: string }
   | { readonly kind: 'blocked'; readonly reason: string };
 
 export interface WorkspaceTrustDecision {
@@ -37,24 +36,6 @@ export function decideWorkspaceAction(
       kind: 'blocked',
       reason: 'The workspace has not been admitted for model or effectful use.'
     });
-  if (action === 'project_execution_policy' && level !== 'trusted') {
-    return Object.freeze({
-      kind: 'blocked',
-      reason: 'Repository execution policy is inactive until the workspace is trusted.'
-    });
-  }
-  if (
-    level === 'restricted' &&
-    (action === 'workspace_mutation' ||
-      action === 'command_execution' ||
-      action === 'network_access' ||
-      action === 'watcher_activation')
-  ) {
-    return Object.freeze({
-      kind: 'approval_required',
-      reason: `Restricted workspaces require explicit approval for ${action.replaceAll('_', ' ')}.`
-    });
-  }
   return Object.freeze({ kind: 'allowed' });
 }
 
@@ -62,7 +43,6 @@ export function decideToolEffects(
   level: WorkspaceTrustLevel,
   effects: ToolEffects
 ): WorkspaceActionDecision {
-  let result: WorkspaceActionDecision = Object.freeze({ kind: 'allowed' });
   for (const access of effects.accesses) {
     if (access.mode === 'read' && isSensitiveWorkspaceScope(access.scope)) {
       return Object.freeze({
@@ -80,9 +60,8 @@ export function decideToolEffects(
             : 'workspace_mutation';
     const decision = decideWorkspaceAction(level, action);
     if (decision.kind === 'blocked') return decision;
-    if (decision.kind === 'approval_required') result = decision;
   }
-  return result;
+  return Object.freeze({ kind: 'allowed' });
 }
 
 export function isSensitiveWorkspacePath(workspacePath: string): boolean {

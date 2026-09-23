@@ -270,6 +270,7 @@ test(
       root: host.root,
       stateRoot: host.stateRoot,
       providerEndpoint: provider.endpoint,
+      permissionMode: 'sandbox',
       environmentFactory: (options) =>
         createTestCodingEnvironment({ ...options, hostWorkspaceRoot: guest.root })
     });
@@ -308,7 +309,7 @@ test(
       root: fixture.root,
       stateRoot: fixture.stateRoot,
       providerEndpoint: provider.endpoint,
-      permissionMode: 'develop',
+      permissionMode: 'sandbox',
       async environmentFactory(options) {
         settle = options.onSettlement;
         const environment = await createTestCodingEnvironment(options);

@@ -140,15 +140,14 @@ export const INTERACTIVE_COMMAND_REGISTRY = {
   }),
   '/exit': action('/exit', 'Close the terminal interface.', { type: 'application.exit' }),
   '/permissions': command('/permissions', 'Choose authority for new runs.', 'required', [
-    { value: 'review', description: 'Read files inside the selected workspace.' },
-    { value: 'edit', description: 'Also permit structured file changes.' },
-    { value: 'develop', description: 'Also permit sandboxed command execution.' }
+    { value: 'read_only', description: 'Inspect the host project without edits or commands.' },
+    { value: 'sandbox', description: 'Edit and run commands in an isolated Sandsurf guest.' },
+    { value: 'full_host', description: 'Unrestricted commands with host account and network access.' }
   ]),
   '/trust': command('/trust', 'Choose the workspace trust decision.', 'required', [
-    { value: 'restricted', description: 'Request approval for every mutation and command.' },
     {
       value: 'trusted',
-      description: 'Apply the selected permissions without per-operation approvals.'
+      description: 'Admit this workspace for model and tool use.'
     }
   ]),
   '/temperature': command('/temperature', 'Set supported provider temperature.', 'required'),

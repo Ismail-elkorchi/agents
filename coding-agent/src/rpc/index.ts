@@ -86,11 +86,11 @@ export function codingRpcMethods(application: CodingApplication, shutdown: () =>
       }
     ),
     'workspace.trust': rpcMethod(
-      z.strictObject({ level: z.enum(['restricted', 'trusted']) }),
+      z.strictObject({ level: z.literal('trusted') }),
       ({ level }) => application.selectWorkspaceTrust(level)
     ),
     'permissions.select': rpcMethod(
-      z.strictObject({ mode: z.enum(['review', 'edit', 'develop']) }),
+      z.strictObject({ mode: z.enum(['read_only', 'sandbox', 'full_host']) }),
       ({ mode }) => application.selectPermissionMode(mode)
     ),
     'session.branch': rpcMethod(

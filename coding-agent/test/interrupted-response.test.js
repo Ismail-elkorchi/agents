@@ -27,7 +27,7 @@ test(
       provider: 'openai-codex',
       model: 'gpt-5.6-luna',
       reasoning: { strategy: 'effort', effort: 'low' },
-      permissionMode: 'edit'
+      permissionMode: 'sandbox'
     };
     let requests = 0;
     t.mock.method(globalThis, 'fetch', async (url, init) => {

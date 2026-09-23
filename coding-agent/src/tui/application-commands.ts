@@ -18,7 +18,7 @@ export async function executeCodingCommand(
       return { message: `Permission mode: ${state.runtimeDetails.permissions?.mode ?? 'pending setup'}` };
     }
     case '/trust':
-      if (value !== 'restricted' && value !== 'trusted') throw new Error('Choose restricted or trusted.');
+      if (value !== 'trusted') throw new Error('Choose trusted.');
       await application.selectWorkspaceTrust(value);
       return { message: `Workspace trust: ${value}` };
     case '/temperature': {

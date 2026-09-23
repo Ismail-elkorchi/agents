@@ -1,6 +1,6 @@
 # Coding Agent
 
-Coding Agent is a conversational coding application composed from Agent Core. It works in a persistent Linux guest imported from the selected host workspace, keeps durable conversation history, and exposes the same application service through its CLI, TUI, package API, and JSON-RPC adapter. Its contracts are pre-alpha and may change without compatibility layers.
+Coding Agent is a conversational coding application composed from Agent Core. It keeps durable conversation history and exposes the same application service through its CLI, TUI, package API, and JSON-RPC adapter. Its contracts are pre-alpha and may change without compatibility layers.
 
 ## Start the application
 
@@ -39,34 +39,33 @@ A new workspace starts untrusted. Record a decision from the TUI or CLI:
 
 ```bash
 coding-agent trust status --root .
-coding-agent trust restricted --root .
 coding-agent trust trusted --root .
 coding-agent trust revoke --root .
 ```
 
-Repository content cannot grant trust, tools, provider egress, command execution, network access, or approval. Restricted workspaces require approval for mutations and commands. Trusted workspaces use the selected permission mode and any narrower project policy.
+Repository content cannot grant trust or change the selected permission mode. Trust admits workspace content for model and tool use; permissions decide what tools can do. Project configuration can narrow the available tools.
 
 Permission modes are:
 
 | Mode | Workspace capability |
 | --- | --- |
-| `review` | Root-bound reads |
-| `edit` | Reads and structured patches |
-| `develop` | Reads, structured patches, and sandboxed commands |
+| `read_only` (default) | Read the selected host project; no edits or commands |
+| `sandbox` | Read, edit, and run commands in an isolated Sandsurf guest without host credentials or network access |
+| `full_host` | Edit the host project and run commands under the host account, with access to the rest of the system and network |
 
-File tools, attachments, repository guidance, checks, and commands use the same guest `/workspace`. Authorized patches commit through native guest filesystem transactions. A later failure does not roll back an earlier successful edit. The original host directory is an import source: guest edits do not write through, and reopening reconnects the existing guest rather than importing again. Host publication and re-import are not exposed by this application yet. Run change reports describe recorded patches, not publication or a complete inventory of command-created changes.
+In `sandbox` mode, file tools, attachments, guidance, checks, and commands use the same guest `/workspace`. Patches commit in the guest. The host directory is imported when the guest is created; edits do not write through, and reopening reconnects the existing guest rather than importing again. Host publication and re-import are not exposed by this application yet. `read_only` and `full_host` use the selected host project directly. Run change reports describe recorded patches, not a complete inventory of command-created changes.
 
 Runs, sessions, artifacts, journals, trust decisions, and user model settings live in the platform user-state directory. `--state-root` selects another dedicated state directory outside the workspace. Coding Agent does not create private state inside the project.
 
 ## Command execution
 
-Opening a coding session creates or reconnects a persistent Sandsurf Linux environment. The verified image supplies the shell and tools; commands run as the guest `agent` user without inherited host credentials or network grants. The selected permission mode sets host-issued read, write, and spawn capabilities. Missing or incompatible environment state fails explicitly and is never replaced by replaying prior effects.
+Sandbox mode creates or reconnects a persistent Sandsurf Linux environment. The verified image supplies the shell and tools; commands run as the guest `agent` user without inherited host credentials or network grants. Missing or incompatible guest state fails explicitly and is never replaced by replaying prior effects. Read-only mode starts no command executor. Full host mode uses Agent Core's supervised local command executor with the host account's environment and network access.
 
-Commands support pipes and PTYs. `write_stdin` and `stop_process` operate on session-owned processes across model runs. Ordinary jobs own their descendants; an explicitly selected `environment` lifetime can continue beyond a tool call or session connection. Closing the application detaches clients without destroying the guest. Terminal input is acquired only when needed.
+Sandbox commands support pipes and PTYs, and an explicitly selected `environment` lifetime can continue beyond a tool call or session connection. Full host commands use supervised local processes without PTY or environment lifetime. `write_stdin` and `stop_process` operate on session-owned processes across model runs. Closing the application detaches clients without destroying a Sandsurf guest; local processes follow their supervisor's shutdown behavior. Terminal input is acquired only when needed.
 
 Original output is captured independently of bounded model/UI views. Known terminal outcomes remain authoritative after runtime evidence becomes unavailable. Missing logs, unavailable controls, and unknown execution outcomes remain distinct; accepting uncertainty never certifies success or replays a command.
 
-Sandsurf requires a qualified virtualization host and sufficient persistent storage. Current Coding Agent startup still uses Core's Linux host-root authority for trust identity and project-configuration discovery; the application's macOS/Windows startup path is not yet qualified. The pinned Sandsurf build also fails the live file-ownership check: a file replaced through its filesystem API can become unwritable by the normal guest user. Writing Agent has no Sandsurf or virtualization dependency.
+Sandsurf requires a qualified virtualization host and sufficient persistent storage. Current Coding Agent startup still uses Core's Linux host-root authority for trust identity and project-configuration discovery; the application's macOS/Windows startup path is not yet qualified. Writing Agent has no Sandsurf or virtualization dependency.
 
 ## Repository guidance
 
@@ -76,7 +75,7 @@ Coding Agent refreshes root/configured guidance and discovers ancestor `AGENTS.m
 
 Task budgets are optional. Project configuration can set explicit turn, tool, time, token, or cost limits; ordinary sessions have no preset task budget. Runtime capacity and compiled-request limits still apply.
 
-Project configuration may name required and advisory commands. `run_check` binds the complete definition and Sandbox execution before authorization, using the same file/process leases as shared tools. Its historical observation records the command, effective timeout (60 seconds by default), configuration and definition identities, requirement classification, declared coverage, invocation/process identities, and before/after tested state. History adds the committed event receipt. Changing or deleting today's configuration cannot relabel that observation.
+Project configuration may name required and advisory commands. `run_check` binds the complete definition and the selected command executor before authorization, using the same file/process leases as shared tools. It is unavailable in read-only mode. Its historical observation records the command, effective timeout (60 seconds by default), configuration and definition identities, requirement classification, declared coverage, invocation/process identities, and before/after tested state. History adds the committed event receipt. Changing or deleting today's configuration cannot relabel that observation.
 
 Outcomes are `passed`, `failed`, `timed_out`, `cancelled`, `execution_failed`, or `unknown`. A known nonzero exit is failed even with incomplete logs; a zero exit remains an observed pass. Output completeness and applicability are separate. Relevant observed changes make applicability `stale`; otherwise opaque command dependencies and possible external mutations leave it `unknown`. Matching before/after contents do not prove that inputs stayed unchanged during execution. Check-written changes cannot certify the resulting workspace.
 
@@ -92,10 +91,6 @@ Application state, RPC session/history views, CLI and TUI expose the recorded de
   "model": "gpt-5.6-sol",
   "instructions": [],
   "tools": { "enabled": ["read_files", "search_text", "apply_patch", "exec_command"] },
-  "permissions": {
-    "maximumMode": "develop",
-    "requireApprovalFor": ["write", "delete", "command"]
-  },
   "verification": {
     "required": [
       { "id": "test", "command": "npm test", "coverage": "full", "timeoutMs": 120000, "testedPaths": ["package.json", "package-lock.json"] }
@@ -105,7 +100,7 @@ Application state, RPC session/history views, CLI and TUI expose the recorded de
 }
 ```
 
-The optional `limits` object accepts Agent Core's current run limits. Project configuration can narrow the selected tool and permission ceiling. It cannot activate itself in an untrusted workspace.
+The optional `limits` object accepts Agent Core's current run limits. Project configuration can narrow the selected tools. It cannot activate itself in an untrusted workspace.
 
 ## Durable conversation and recovery
 

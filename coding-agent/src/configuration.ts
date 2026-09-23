@@ -2,13 +2,8 @@ import { parseJsonObject } from '@agent-core/json';
 import { parseModelReasoningRequest, type ModelReasoningRequest } from '@agent-core/model';
 import { rootedFileIdentitiesEqual, type RootedFileAuthority } from '@agent-core/tools-local';
 import path from 'node:path';
-import type { ProjectConfigurationProposal } from './config/project-proposal.js';
-import {
-  CODING_AGENT_TOOLS,
-  parseCodingApprovalKinds,
-  parseCodingPermissionMode,
-  type CodingPermissionConfiguration
-} from './security/permission-mode.js';
+import type { WorkspaceContentProvenance } from './security/content-provenance.js';
+import { CODING_AGENT_TOOLS } from './security/permission-mode.js';
 import type { WorkspaceSecurityBoundary } from './security/workspace-security-boundary.js';
 
 export interface CodingAgentInstructionConfiguration {
@@ -42,7 +37,6 @@ export interface CodingAgentConfiguration {
   readonly reasoning?: ModelReasoningRequest;
   readonly instructions: readonly CodingAgentInstructionConfiguration[];
   readonly tools: { readonly enabled: readonly string[] };
-  readonly permissions: CodingPermissionConfiguration;
   readonly verification: {
     readonly required: readonly CodingAgentCheckConfiguration[];
     readonly advisory: readonly CodingAgentCheckConfiguration[];
@@ -54,7 +48,10 @@ export async function loadCodingAgentConfiguration(
   root: RootedFileAuthority,
   security: WorkspaceSecurityBoundary,
   configPath = 'coding-agent.config.json'
-): Promise<ProjectConfigurationProposal<CodingAgentConfiguration>> {
+): Promise<{
+  readonly value: CodingAgentConfiguration;
+  readonly provenance: WorkspaceContentProvenance;
+}> {
   const canonicalPath = root.canonicalPath(configPath);
   const file = await root.openFile(canonicalPath);
   try {
@@ -101,7 +98,6 @@ export function parseCodingAgentConfiguration(input: unknown): CodingAgentConfig
           'reasoning',
           'instructions',
           'tools',
-          'permissions',
           'verification',
           'limits'
         ].includes(key)
@@ -128,14 +124,6 @@ export function parseCodingAgentConfiguration(input: unknown): CodingAgentConfig
   ) {
     throw new Error('Project tools must be unique Coding Agent tool names.');
   }
-  const permissions = value.permissions;
-  if (
-    !isRecord(permissions) ||
-    Object.keys(permissions).some((key) => key !== 'maximumMode' && key !== 'requireApprovalFor')
-  )
-    throw new Error('Project permission configuration is invalid.');
-  const maximumMode = parseCodingPermissionMode(permissions.maximumMode, 'permissions.maximumMode');
-  const approvalKinds = parseCodingApprovalKinds(permissions.requireApprovalFor);
   const verification = value.verification;
   if (
     !isRecord(verification) ||
@@ -169,7 +157,6 @@ export function parseCodingAgentConfiguration(input: unknown): CodingAgentConfig
       value.instructions.map((item) => Object.freeze({ path: item.path }))
     ),
     tools: Object.freeze({ enabled: Object.freeze(value.tools.enabled.map((tool) => tool)) }),
-    permissions: Object.freeze({ maximumMode, requireApprovalFor: approvalKinds }),
     verification: Object.freeze({
       required: Object.freeze(verification.required.map(snapshotCheck)),
       advisory: Object.freeze(verification.advisory.map(snapshotCheck))
