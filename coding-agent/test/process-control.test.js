@@ -53,7 +53,7 @@ for (const action of ['poll', 'stop', 'settle'])
         return poll;
       };
       const provider = await scriptedOllama([
-        toolResponse('exec_command', { command, workdir: '.', yieldMs: 0, timeoutMs: 20_000 }),
+        toolResponse('exec_command', { command, workdir: '.', background: true, timeoutMs: 20_000 }),
         ...Array.from({ length: 8 }, () => next)
       ]);
       const fixture = await createWorkspace({
@@ -115,13 +115,62 @@ for (const action of ['poll', 'stop', 'settle'])
   );
 
 test(
+  'foreground sandbox commands report completion and deadlines without process-control turns',
+  { skip: process.platform !== 'linux', timeout: 45_000 },
+  async (t) => {
+    const provider = await scriptedOllama([
+      toolResponse('exec_command', {
+        command: 'printf first; sleep 1; printf last',
+        timeoutMs: 20_000
+      }),
+      toolResponse('exec_command', { command: 'sleep 2', timeoutMs: 500 }),
+      finalResponse('The command timed out.')
+    ]);
+    const fixture = await createWorkspace({
+      endpoint: provider.endpoint,
+      tools: ['exec_command'],
+      checks: [],
+      files: {}
+    });
+    let application;
+    t.after(async () => {
+      await application?.close();
+      await provider.close();
+      await fixture.close();
+    });
+    await trust(fixture);
+    application = await openCodingApplication(
+      withTestCodingEnvironment({
+        root: fixture.root,
+        stateRoot: fixture.stateRoot,
+        providerEndpoint: provider.endpoint,
+        permissionMode: 'sandbox'
+      })
+    );
+    await application.start();
+    const submitted = await application.submit({ task: 'Run both commands and report their outcomes.' });
+    assert.equal(submitted.kind, 'started');
+    const completed = await submitted.completion;
+    assert.equal(completed.state, 'ended');
+    const { history } = await application.readSession();
+    const commands = history.entries.filter(
+      (entry) => entry.type === 'observation' && entry.toolName === 'exec_command'
+    );
+    assert.equal(commands.length, 2);
+    assert.equal(commands[0].output.status, 'exited');
+    assert.match(commands[0].output.combined.text, /firstlast/u);
+    assert.equal(commands[1].output.status, 'timed_out');
+  }
+);
+
+test(
   'session command controls remain available while idle and after restart before a prompt',
   { skip: process.env.SANDSURF_KVM_TEST !== '1', timeout: 1_200_000 },
   async (t) => {
     const provider = await scriptedOllama([
       toolResponse('exec_command', {
         command: `while IFS= read -r line; do printf '%s\\n' "$line"; done`,
-        yieldMs: 0,
+        background: true,
         timeoutMs: 35000
       }),
       finalResponse('The command is still available.')

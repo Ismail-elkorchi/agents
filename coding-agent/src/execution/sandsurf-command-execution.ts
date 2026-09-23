@@ -169,12 +169,18 @@ export class SandsurfCommandExecution implements CommandExecution {
       acknowledged: false
     });
     if (!created) {
-      return this.query(
+      const recorded = await this.query(
         stored.processId,
         stored.request.outputTokenBudget,
-        stored.request.yieldMs,
+        0,
         0,
         stored.request.owner
+      );
+      if (!options.awaitTerminal || recorded.status !== 'running') return recorded;
+      return this.#startResult(
+        await this.options.sandbox.processes.get(stored.processId),
+        stored,
+        options
       );
     }
     // Once dispatch starts its outcome can be unknown. Preserve the effect lease
@@ -209,14 +215,39 @@ export class SandsurfCommandExecution implements CommandExecution {
         stage: 'process_started',
         message: `Sandsurf process ${planned.processId} started.`
       });
-    return this.#queryProcess(
-      process,
-      stored,
-      planned.request.outputTokenBudget,
-      planned.request.yieldMs,
-      0,
-      options
-    );
+    return this.#startResult(process, stored, options);
+  }
+
+  async #startResult(
+    process: SandboxProcess,
+    stored: StoredProcess,
+    options: StartCommandExecutionOptions
+  ): Promise<CommandExecutionResult> {
+    const budget = stored.request.outputTokenBudget;
+    if (!options.awaitTerminal)
+      return this.#queryProcess(process, stored, budget, stored.request.yieldMs, 0, options);
+    let afterCursor = 0;
+    try {
+      for (;;) {
+        const result = await this.#queryProcess(process, stored, budget, 30_000, afterCursor, options);
+        if (result.status !== 'running')
+          return await this.query(stored.processId, budget, 0, 0, stored.request.owner);
+        afterCursor = result.cursorEnd;
+      }
+    } catch (error) {
+      if (options.signal?.aborted) {
+        try {
+          await this.terminate(stored.processId, stored.request.owner);
+        } catch (terminationError) {
+          throw new AggregateError(
+            [error, terminationError],
+            'Command cancellation and termination failed.',
+            { cause: terminationError }
+          );
+        }
+      }
+      throw error;
+    }
   }
 
   async query(

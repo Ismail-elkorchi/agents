@@ -93,7 +93,6 @@ test('full host mode can execute outside the selected project', async () => {
   provider.enqueueResponses(toolResponse('exec_command', {
     command: `printf host > '${outside}'`,
     workdir: '.',
-    yieldMs: 1000,
     timeoutMs: 20_000
   }), finalResponse('Host command finished.'));
   try {

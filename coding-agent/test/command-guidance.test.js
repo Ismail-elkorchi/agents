@@ -21,8 +21,7 @@ test(
     const command = () =>
       toolResponse('exec_command', {
         command: 'printf inspected',
-        workdir: 'subproject',
-        yieldMs: 1_000
+        workdir: 'subproject'
       });
     const provider = await scriptedOllama([
       command(),
