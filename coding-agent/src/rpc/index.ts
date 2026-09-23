@@ -29,8 +29,6 @@ const processTarget = z
       'stopped',
       'timed_out',
       'failed',
-      'preparing',
-      'prepared',
       'unknown',
       'acknowledged-unknown'
     ]),

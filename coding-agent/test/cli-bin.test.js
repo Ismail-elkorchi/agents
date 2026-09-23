@@ -180,7 +180,7 @@ test(
       })
     );
     const trust = await run(
-      path.resolve('coding-agent/dist/cli.js'),
+      path.resolve('coding-agent/test/fixtures/scripted-cli-entry.js'),
       ['trust', 'trusted', '--root', root],
       {
         env: { ...process.env, HOME: home, USERPROFILE: home, XDG_STATE_HOME: stateHome }
@@ -188,7 +188,7 @@ test(
     );
     assert.equal(trust.code, 0, trust.stderr);
     const output = await run(
-      path.resolve('coding-agent/dist/cli.js'),
+      path.resolve('coding-agent/test/fixtures/scripted-cli-entry.js'),
       ['exec', 'test', '--root', root, '--provider', 'openai-codex', '--model', 'gpt-5.6-luna'],
       {
         env: {

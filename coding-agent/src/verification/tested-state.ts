@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto';
 import { rootedFileIdentitiesEqual, type RootedFileAuthority } from '@agent-core/tools-local';
+import type { WorkspaceFiles } from '@agent-core/tools';
 import * as z from 'zod';
+
+export type TestedStateFiles = RootedFileAuthority | WorkspaceFiles;
 
 export const TESTED_STATE_LIMITS = Object.freeze({
   files: 256,
@@ -52,7 +55,7 @@ export interface CheckApplicability {
 
 /** A bounded list of explicit files, including dirty/untracked and absent paths. No tree or dependency discovery. */
 export async function captureTestedState(
-  root: RootedFileAuthority,
+  root: TestedStateFiles,
   paths: readonly string[] | undefined,
   budget: TestedStateCaptureBudget = testedStateCaptureBudget()
 ): Promise<TestedState> {
@@ -67,7 +70,7 @@ export async function captureTestedState(
   try {
     if (maxOperations < 1) throw new Error('operation_limit');
     operations += 1;
-    rootIdentity = hash(JSON.stringify(root.identity));
+    rootIdentity = hash(JSON.stringify(isGuestFiles(root) ? root.descriptor : root.identity));
   } catch {
     rootIdentity = 'unavailable';
   }
@@ -79,31 +82,39 @@ export async function captureTestedState(
     let file;
     try {
       operations += 1;
-      const path = root.canonicalPath(requested);
-      const status = await root.inspectPath(path);
+      const path = isGuestFiles(root) ? root.normalize(requested) : root.canonicalPath(requested);
+      const status = isGuestFiles(root) ? await root.stat(path) : await root.inspectPath(path);
       if (status.kind === 'absent') {
         files.push({ path, state: 'absent' });
         continue;
       }
       if (status.kind !== 'file') throw new Error('not_regular_file');
       const remaining = Math.min(TESTED_STATE_LIMITS.fileBytes, maxBytes - observedBytes);
-      if (status.size > remaining) throw new Error('byte_limit');
+      const statusBytes = 'revision' in status ? status.revision.size : status.size;
+      if (statusBytes > remaining) throw new Error('byte_limit');
       operations += 1;
-      file = await root.openFile(path);
-      if (file.size > remaining) throw new Error('byte_limit');
-      const bytes = Buffer.alloc(file.size);
-      let offset = 0;
-      while (offset < bytes.length) {
-        if (operations + 2 > maxOperations) throw new Error('operation_limit');
+      let bytes: Uint8Array;
+      if (isGuestFiles(root)) {
+        bytes = (await root.readFile(path, { maximumBytes: remaining })).bytes;
+        observedBytes += bytes.byteLength;
+      } else {
+        file = await root.openFile(path);
+        if (file.size > remaining) throw new Error('byte_limit');
+        const buffer = Buffer.alloc(file.size);
+        let offset = 0;
+        while (offset < buffer.length) {
+          if (operations + 2 > maxOperations) throw new Error('operation_limit');
+          operations += 1;
+          const read = await file.read(buffer, offset, buffer.length - offset, offset);
+          observedBytes += read;
+          if (read === 0) throw new Error('changed_during_read');
+          offset += read;
+        }
         operations += 1;
-        const read = await file.read(bytes, offset, bytes.length - offset, offset);
-        observedBytes += read;
-        if (read === 0) throw new Error('changed_during_read');
-        offset += read;
+        if (!rootedFileIdentitiesEqual(file.identity, await file.identityNow()))
+          throw new Error('changed_during_read');
+        bytes = buffer;
       }
-      operations += 1;
-      if (!rootedFileIdentitiesEqual(file.identity, await file.identityNow()))
-        throw new Error('changed_during_read');
       files.push({
         path,
         state: 'file',
@@ -193,4 +204,8 @@ export function checkApplicability(
 }
 function hash(value: string): string {
   return createHash('sha256').update(value).digest('hex');
+}
+
+function isGuestFiles(root: TestedStateFiles): root is WorkspaceFiles {
+  return 'descriptor' in root;
 }

@@ -47,17 +47,12 @@ jobs:
         run: npm ci && npm run build
       - name: Install stable Rust
         run: rustup toolchain install stable --profile minimal
-      - name: Install Linux native target
-        if: runner.os == 'Linux'
-        run: rustup target add x86_64-unknown-linux-musl
       - name: Build Sandbox package
         working-directory: sandbox
         run: npm ci && npm run build
-      - name: Install the system namespace launcher
+      - name: Install ripgrep
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
       - name: Verify agents
         working-directory: agents
-        env:
-          CODING_AGENT_REQUIRE_NATIVE_CONFORMANCE: ${{ runner.os == 'Linux' && '1' || '0' }}
         run: npm ci && npm run verify:release

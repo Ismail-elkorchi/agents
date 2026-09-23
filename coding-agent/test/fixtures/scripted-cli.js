@@ -5,11 +5,9 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-export { sandboxAvailable } from './sandbox.js';
 
-const cli = path.resolve('coding-agent/dist/cli.js');
+const cli = path.resolve('coding-agent/test/fixtures/scripted-cli-entry.js');
 const runFile = promisify(execFile);
-
 
 export async function createWorkspace({
   endpoint = 'http://127.0.0.1:1',
@@ -64,14 +62,18 @@ export async function trust(fixture, level = fixture.trustLevel) {
 
 export async function initializeGitRepository(fixture) {
   await runFile('git', ['init', '--quiet'], { cwd: fixture.root });
-  await runFile('git', ['config', 'user.email', 'coding-agent@example.invalid'], { cwd: fixture.root });
+  await runFile('git', ['config', 'user.email', 'coding-agent@example.invalid'], {
+    cwd: fixture.root
+  });
   await runFile('git', ['config', 'user.name', 'Coding Agent Test'], { cwd: fixture.root });
   await runFile('git', ['add', '.'], { cwd: fixture.root });
   await runFile('git', ['commit', '--quiet', '-m', 'fixture baseline'], { cwd: fixture.root });
 }
 
 export function spawnCli(fixture, args) {
-  const child = spawn(process.execPath, cliArguments(fixture, args), { stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, cliArguments(fixture, args), {
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
   let stdout = '';
   let stderr = '';
   child.stdout.on('data', (chunk) => {
@@ -167,13 +169,18 @@ export async function scriptedOllama(script) {
         }
         const value = responses.shift();
         if (!value) throw new Error('The scripted provider received an unexpected chat request.');
-        sendNdjson(response, typeof value === 'function' ? await value(chatRequests.at(-1)) : value);
+        sendNdjson(
+          response,
+          typeof value === 'function' ? await value(chatRequests.at(-1)) : value
+        );
         return;
       }
       response.writeHead(404).end();
     } catch (error) {
       if (!response.headersSent) response.writeHead(500, { 'content-type': 'application/json' });
-      response.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      response.end(
+        JSON.stringify({ error: error instanceof Error ? error.message : String(error) })
+      );
     }
   });
   await new Promise((resolve, reject) => {
@@ -215,7 +222,9 @@ export async function scriptedOllama(script) {
       blockedChat = undefined;
     },
     async close() {
-      await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+      await new Promise((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve()))
+      );
     }
   };
 }

@@ -8,7 +8,6 @@ const linuxRootCapabilityTests = new Set(
   [
     'coding-agent/test/project.test.js',
     'coding-agent/test/resilience.test.js',
-    'coding-agent/test/sandbox-command-execution.test.js',
     'coding-agent/test/tool-composition.test.js'
   ].map((value) => path.join(root, value))
 );

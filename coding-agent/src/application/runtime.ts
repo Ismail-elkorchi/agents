@@ -23,7 +23,11 @@ import {
   type CodingAgentProviderId
 } from '../configuration.js';
 import { type CodingPermissionMode } from '../security/permission-mode.js';
-import { createCodingSession, type CodingSessionComposition } from '../session.js';
+import {
+  createCodingSession,
+  type CodingEnvironmentFactory,
+  type CodingSessionComposition
+} from '../session.js';
 import { type CodingAgentModelSelection } from '../state/model-selection-store.js';
 import { readConfiguredCheckResults } from '../verification/configured-check-tool.js';
 import { codingWorkspaceSessionBinding, type OpenCodingWorkspace } from '../workspace.js';
@@ -55,6 +59,7 @@ export interface CodingApplicationOptions {
     readonly sha256: string;
     readonly trustLevel: 'restricted' | 'trusted';
   };
+  environmentFactory?: CodingEnvironmentFactory;
 }
 
 export interface ModelProviderBinding {
@@ -275,6 +280,9 @@ export async function createRuntime(
       ...(settings.reasoning === undefined ? {} : { reasoning: settings.reasoning })
     },
     permissionMode: options.permissionMode,
+    ...(options.environmentFactory === undefined
+      ? {}
+      : { environmentFactory: options.environmentFactory }),
     ...(options.maxOutputTokens === undefined ? {} : { maxOutputTokens: options.maxOutputTokens }),
     ...(options.configuration === undefined ? {} : { configuration: options.configuration }),
     ...(options.configurationSource === undefined

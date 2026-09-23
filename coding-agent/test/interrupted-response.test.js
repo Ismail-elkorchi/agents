@@ -5,6 +5,7 @@ import test from 'node:test';
 import { openCodingApplication } from '@ismail-elkorchi/coding-agent';
 import { offlineCodex } from '../../test-helpers/codex.js';
 import { createWorkspace, trust } from './fixtures/scripted-cli.js';
+import { withTestCodingEnvironment } from './fixtures/test-environment.js';
 
 test(
   'a broken response preserves committed edits and partial text through reopen, reconciliation and stop',
@@ -68,7 +69,8 @@ test(
                 id: 'patch-item',
                 call_id: 'patch-call',
                 name: 'apply_patch',
-                input: '*** Begin Patch\n*** Update File: draft.md\n@@\n-Before.\n+After.\n*** End Patch'
+                input:
+                  '*** Begin Patch\n*** Update File: draft.md\n@@\n-Before.\n+After.\n*** End Patch'
               }
             ]
           : [];
@@ -92,7 +94,7 @@ test(
       await fixture.close();
     });
     await trust(fixture);
-    application = await openCodingApplication(options);
+    application = await openCodingApplication(withTestCodingEnvironment(options));
     const progress = [];
     application.subscribe(
       (event) => {
@@ -110,16 +112,19 @@ test(
     assert.equal(await readFile(path.join(fixture.root, 'draft.md'), 'utf8'), 'After.\n');
     assert(
       progress.some(
-        (event) => event.type === 'assistant.interrupted' && event.content === 'The draft was changed, but'
+        (event) =>
+          event.type === 'assistant.interrupted' && event.content === 'The draft was changed, but'
       )
     );
     const sessionId = application.state().session.sessionId;
     await application.close();
 
-    application = await openCodingApplication({
-      ...options,
-      sessionSelection: { kind: 'existing', id: sessionId }
-    });
+    application = await openCodingApplication(
+      withTestCodingEnvironment({
+        ...options,
+        sessionSelection: { kind: 'existing', id: sessionId }
+      })
+    );
     await application.start();
     const restored = await application.readSession();
     assert(

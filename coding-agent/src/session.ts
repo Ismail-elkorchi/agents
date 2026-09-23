@@ -24,13 +24,15 @@ import {
   JsonlSessionRepository
 } from '@agent-core/runtime/node';
 import { accessRisk, commandExecutionResources } from '@agent-core/tools';
-import { TextPatchJournal, createLocalToolHost } from '@agent-core/tools-local';
-import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { CodingAgentConfiguration } from './configuration.js';
-import { createCodingCommandAuthority } from './execution/coding-command-authority.js';
+import {
+  openCodingEnvironment,
+  type CodingEnvironment
+} from './execution/coding-command-authority.js';
 import { processControls } from './execution/process-controls.js';
+import { createWorkspaceToolHost } from '@agent-core/tools-local';
 import { RepositoryGuidanceSession } from './instructions/repository-guidance.js';
 import {
   resolveCodingAuthority,
@@ -58,7 +60,11 @@ export interface CodingSessionOptions {
     readonly sha256: string;
     readonly trustLevel: 'restricted' | 'trusted';
   };
+  readonly environment?: CodingEnvironment;
+  readonly environmentFactory?: CodingEnvironmentFactory;
 }
+
+export type CodingEnvironmentFactory = typeof openCodingEnvironment;
 
 /** Application composition shared by the CLI, TUI, and RPC surfaces. */
 export type CodingSessionComposition = Awaited<ReturnType<typeof createCodingSession>>;
@@ -97,8 +103,8 @@ export async function createCodingSession(options: CodingSessionOptions) {
       : {}),
     hasVerificationChecks: Boolean(
       configuration &&
-      (configuration.verification.required.length > 0 ||
-        configuration.verification.advisory.length > 0)
+        (configuration.verification.required.length > 0 ||
+          configuration.verification.advisory.length > 0)
     )
   });
 
@@ -123,12 +129,6 @@ export async function createCodingSession(options: CodingSessionOptions) {
     rootDir: path.join(workspace.runtimeDir, 'notes'),
     artifacts
   });
-  const sessionGuidance = RepositoryGuidanceSession.open({
-    root: openedWorkspace.fileRoot,
-    security: openedWorkspace.security,
-    configuredPaths: configuration?.instructions.map((instruction) => instruction.path) ?? []
-  });
-
   const context = new ContextService({
     repository: sessions,
     session,
@@ -153,27 +153,30 @@ export async function createCodingSession(options: CodingSessionOptions) {
   ]);
   const memoryToolNames = new Set(memoryTools.map((tool) => tool.name));
 
-  const openHosts = new Set<ReturnType<typeof createLocalToolHost>>();
-  const commandRoot = openedWorkspace.fileRoot.derive();
-  const commandExecution =
-    authority.permissions.commandExecution === 'sandboxed'
-      ? createCodingCommandAuthority({
-          repositoryDirectory: path.join(workspace.runtimeDir, 'commands', session.id),
-          rootedFileAuthority: commandRoot,
-          state: openedWorkspace.privateState,
-          events,
-          artifacts,
-          onSettlement: ({ result }) => options.onCommandSettlement?.(result)
-        })
-      : undefined;
+  const ownsEnvironment = options.environment === undefined;
+  const environment =
+    options.environment ??
+    (await (options.environmentFactory ?? openCodingEnvironment)({
+      repositoryDirectory: path.join(workspace.runtimeDir, 'sandsurf'),
+      hostWorkspaceRoot: openedWorkspace.fileRoot.identity.canonicalPath,
+      workspaceId: workspace.identity.id,
+      state: openedWorkspace.privateState,
+      events,
+      artifacts,
+      commandExecution: authority.permissions.commandExecution === 'sandboxed',
+      writable: authority.toolPolicy.allowedRisks.includes('write'),
+      onSettlement: ({ result }) => options.onCommandSettlement?.(result)
+    }));
+  const commandExecution = environment.commandExecution;
+  const sessionGuidance = RepositoryGuidanceSession.open({
+    root: environment.files,
+    security: openedWorkspace.security,
+    configuredPaths: configuration?.instructions.map((instruction) => instruction.path) ?? []
+  });
   try {
     await commandExecution?.reconcile();
   } catch (error) {
-    try {
-      await commandExecution?.close();
-    } finally {
-      commandRoot.close();
-    }
+    if (ownsEnvironment) await environment.close();
     throw error;
   }
 
@@ -194,188 +197,146 @@ export async function createCodingSession(options: CodingSessionOptions) {
           ? {}
           : { responseFormat: settings.responseFormat })
       },
-      async createRuntime(runtimeSettings, onProgress, runtimeContext) {
+      async createRuntime(runtimeSettings, onProgress) {
         if (runtimeSettings.provider !== provider.id)
           throw new Error(`Provider ${runtimeSettings.provider} is unavailable in this session.`);
-        const runKey = createHash('sha256').update(runtimeContext.runId).digest('hex');
-        const patchEnabled = authority.enabledTools.includes('apply_patch');
-        const patchJournalDirectory = path.join(
-          workspace.runtimeDir,
-          'run-tools',
-          runKey,
-          'patch-transactions'
-        );
-        if (patchEnabled) await fs.mkdir(patchJournalDirectory, { recursive: true, mode: 0o700 });
-        const root = openedWorkspace.fileRoot.derive();
-        let guidance: RepositoryGuidanceSession;
-        let host: ReturnType<typeof createLocalToolHost>;
-        try {
-          guidance = RepositoryGuidanceSession.open({
-            root,
-            security: openedWorkspace.security,
-            configuredPaths:
-              configuration?.instructions.map((instruction) => instruction.path) ?? []
-          });
-          host = createLocalToolHost({
-            rootedFileAuthority: root,
-            artifactRepository: artifacts,
-            ...(commandExecution ? { commandExecution } : {}),
-            ...(patchEnabled
-              ? { patchJournal: TextPatchJournal.adopt(patchJournalDirectory) }
-              : {}),
-            enabledTools: authority.enabledTools
-          });
-        } catch (error) {
-          root.close();
-          throw error;
-        }
-        openHosts.add(host);
-        try {
-          await host.ready();
-          const checkTools =
-            commandExecution &&
-            configuration &&
-            authority.verificationCommands === 'sandboxed' &&
-            configuration.verification.required.length +
-              configuration.verification.advisory.length >
-              0
-              ? [
-                  createConfiguredCheckTool({
-                    required: configuration.verification.required,
-                    advisory: configuration.verification.advisory,
-                    commandExecution,
-                    root
-                  })
-                ]
-              : [];
-          const tools = Object.freeze([...host.tools, ...checkTools, ...memoryTools]);
-          const release = async () => {
-            openHosts.delete(host);
-            await host.close();
-          };
-          const runtime = new AgentRuntime({
-            provider,
-            inferenceService: inference,
-            context,
-            contextRenewal: { automatic: true },
-            notes,
-            inferenceOwnerId: ownerId,
-            model: runtimeSettings.model,
-            toolBoundary: {
-              authorizationPolicyId: `coding-agent/${authority.mode}/${openedWorkspace.security.trustLevel}@2`,
-              executionTargetId:
-                commandExecution?.descriptor.recoveryIdentity ?? workspace.identity.id
-            },
-            repositories: { events, session: sessionBinding, artifacts },
-            estimator: new CompleteRequestEstimator(),
-            maxOutputTokens:
-              options.maxOutputTokens ??
-              defaultGenerationAllowance(await provider.describeModel(runtimeSettings.model)),
-            tools,
-            toolContext: { services: host.services },
-            ...(commandExecution
-              ? {
-                  resources: commandExecutionResources(commandExecution, { kind: 'owner', ownerId })
-                }
-              : {}),
-            toolPolicy: authority.toolPolicy,
-            toolContextPrerequisite: (request) =>
-              memoryToolNames.has(request.call.name)
-                ? Promise.resolve(undefined)
-                : guidance.contextPrerequisite(request),
-            toolAuthorizer: async (request) => {
-              if (memoryToolNames.has(request.call.name))
-                return {
-                  decision: 'allow',
-                  reason: 'The tool is bound to this session history, notes, or context service.'
+        const guidance = RepositoryGuidanceSession.open({
+          root: environment.files,
+          security: openedWorkspace.security,
+          configuredPaths: configuration?.instructions.map((instruction) => instruction.path) ?? []
+        });
+        const host = createWorkspaceToolHost({
+          files: environment.files,
+          artifacts,
+          ...(commandExecution ? { commandExecution } : {}),
+          enabledTools: authority.enabledTools
+        });
+
+        const checkTools =
+          commandExecution &&
+          configuration &&
+          authority.verificationCommands === 'sandboxed' &&
+          configuration.verification.required.length + configuration.verification.advisory.length >
+            0
+            ? [
+                createConfiguredCheckTool({
+                  required: configuration.verification.required,
+                  advisory: configuration.verification.advisory,
+                  commandExecution,
+                  root: environment.files
+                })
+              ]
+            : [];
+        const tools = Object.freeze([...host.tools, ...checkTools, ...memoryTools]);
+        const runtime = new AgentRuntime({
+          provider,
+          inferenceService: inference,
+          context,
+          contextRenewal: { automatic: true },
+          notes,
+          inferenceOwnerId: ownerId,
+          model: runtimeSettings.model,
+          toolBoundary: {
+            authorizationPolicyId: `coding-agent/${authority.mode}/${openedWorkspace.security.trustLevel}@2`,
+            executionTargetId:
+              commandExecution?.descriptor.recoveryIdentity ?? workspace.identity.id
+          },
+          repositories: { events, session: sessionBinding, artifacts },
+          estimator: new CompleteRequestEstimator(),
+          maxOutputTokens:
+            options.maxOutputTokens ??
+            defaultGenerationAllowance(await provider.describeModel(runtimeSettings.model)),
+          tools,
+          toolContext: { services: host.services },
+          ...(commandExecution
+            ? {
+                resources: commandExecutionResources(commandExecution, { kind: 'owner', ownerId })
+              }
+            : {}),
+          toolPolicy: authority.toolPolicy,
+          toolContextPrerequisite: (request) =>
+            memoryToolNames.has(request.call.name)
+              ? Promise.resolve(undefined)
+              : guidance.contextPrerequisite(request),
+          toolAuthorizer: async (request) => {
+            if (memoryToolNames.has(request.call.name))
+              return {
+                decision: 'allow',
+                reason: 'The tool is bound to this session history, notes, or context service.'
+              };
+            const workspaceDecision = openedWorkspace.security.authorizeTool(request);
+            if (workspaceDecision.decision === 'deny') return workspaceDecision;
+            const guidanceDecision = await guidance.authorize(request);
+            if (guidanceDecision) return guidanceDecision;
+            if (workspaceDecision.decision === 'require_approval') return workspaceDecision;
+            const approvals = request.effects.accesses
+              .map((access) => approvalKind(accessRisk(access.mode)))
+              .filter(
+                (kind): kind is CodingApprovalKind =>
+                  kind !== undefined && authority.requiredApprovals.includes(kind)
+              );
+            return approvals.length === 0
+              ? { decision: 'allow' as const, reason: 'Allowed by workspace policy.' }
+              : {
+                  decision: 'require_approval' as const,
+                  reason: `The permission boundary requires approval for ${[...new Set(approvals)].join(', ')}.`
                 };
-              const workspaceDecision = openedWorkspace.security.authorizeTool(request);
-              if (workspaceDecision.decision === 'deny') return workspaceDecision;
-              const guidanceDecision = await guidance.authorize(request);
-              if (guidanceDecision) return guidanceDecision;
-              if (workspaceDecision.decision === 'require_approval') return workspaceDecision;
-              const approvals = request.effects.accesses
-                .map((access) => approvalKind(accessRisk(access.mode)))
-                .filter(
-                  (kind): kind is CodingApprovalKind =>
-                    kind !== undefined && authority.requiredApprovals.includes(kind)
-                );
-              return approvals.length === 0
-                ? { decision: 'allow' as const, reason: 'Allowed by workspace policy.' }
-                : {
-                    decision: 'require_approval' as const,
-                    reason: `The permission boundary requires approval for ${[...new Set(approvals)].join(', ')}.`
-                  };
-            },
-            instructions: async () => (await guidance.refresh()).instructions,
-            onRequestAdmitted: (admitted) => {
-              guidance.markRequestAdmitted(admitted);
-            },
-            contextProvider: () =>
-              commandExecution
-                ?.recoveredTerminalReports()
-                .slice(-16)
-                .map(({ result }) => ({
-                  id: `command:${result.processId}`,
-                  sourceUri: `command:${result.processId}`,
-                  sourceKind: 'external',
-                  integrity: 'verified',
-                  representation: 'summary',
-                  mediaType: 'application/json',
-                  title: 'Command completion',
-                  purpose:
-                    'Committed result of a command owned by this session; use process controls or the output artifact to retrieve original output.',
-                  content: JSON.stringify({
-                    processId: result.processId,
-                    runId: result.owner.runId,
-                    status: result.status,
-                    exitCode: result.exitCode,
-                    signal: result.signal,
-                    artifact: result.artifact,
-                    originalOutput: result.originalOutput
-                  })
-                })) ?? [],
-            contextItems: [workspaceContext(openedWorkspace, authority)],
-            ...(projectPolicy && configuration?.limits ? { limits: configuration.limits } : {}),
-            metadata: {
-              workspaceId: workspace.identity.id,
-              workspaceName: workspace.workspaceName,
-              workspaceRoot: openedWorkspace.fileRoot.identity.canonicalPath,
-              workspaceTrust: openedWorkspace.security.trustLevel,
-              ...(options.configurationSource
-                ? {
-                    projectConfigurationSource: options.configurationSource.sourceUri,
-                    projectConfigurationSha256: options.configurationSource.sha256,
-                    projectConfigurationTrust: options.configurationSource.trustLevel
-                  }
-                : {})
-            },
-            ...(runtimeSettings.temperature === undefined
-              ? {}
-              : { temperature: runtimeSettings.temperature }),
-            ...(runtimeSettings.reasoning === undefined
-              ? {}
-              : { reasoning: runtimeSettings.reasoning }),
-            ...(runtimeSettings.responseFormat === undefined
-              ? {}
-              : { responseFormat: runtimeSettings.responseFormat }),
-            onProgress,
-            release
-          });
-          return runtime;
-        } catch (error) {
-          openHosts.delete(host);
-          try {
-            await host.close();
-          } catch (cleanup) {
-            throw new AggregateError(
-              [error, cleanup],
-              'Coding runtime construction and cleanup failed.',
-              { cause: cleanup }
-            );
-          }
-          throw error;
-        }
+          },
+          instructions: async () => (await guidance.refresh()).instructions,
+          onRequestAdmitted: (admitted) => {
+            guidance.markRequestAdmitted(admitted);
+          },
+          contextProvider: () =>
+            commandExecution
+              ?.recoveredTerminalReports()
+              .slice(-16)
+              .map(({ result }) => ({
+                id: `command:${result.processId}`,
+                sourceUri: `command:${result.processId}`,
+                sourceKind: 'external',
+                integrity: 'verified',
+                representation: 'summary',
+                mediaType: 'application/json',
+                title: 'Command completion',
+                purpose:
+                  'Committed result of a command owned by this session; use process controls or the output artifact to retrieve original output.',
+                content: JSON.stringify({
+                  processId: result.processId,
+                  runId: result.owner.runId,
+                  status: result.status,
+                  exitCode: result.exitCode,
+                  signal: result.signal,
+                  artifact: result.artifact,
+                  originalOutput: result.originalOutput
+                })
+              })) ?? [],
+          contextItems: [workspaceContext(authority)],
+          ...(projectPolicy && configuration?.limits ? { limits: configuration.limits } : {}),
+          metadata: {
+            workspaceId: workspace.identity.id,
+            workspaceName: workspace.workspaceName,
+            workspaceRoot: environment.files.descriptor.displayRoot,
+            workspaceTrust: openedWorkspace.security.trustLevel,
+            ...(options.configurationSource
+              ? {
+                  projectConfigurationSource: options.configurationSource.sourceUri,
+                  projectConfigurationSha256: options.configurationSource.sha256,
+                  projectConfigurationTrust: options.configurationSource.trustLevel
+                }
+              : {})
+          },
+          ...(runtimeSettings.temperature === undefined
+            ? {}
+            : { temperature: runtimeSettings.temperature }),
+          ...(runtimeSettings.reasoning === undefined
+            ? {}
+            : { reasoning: runtimeSettings.reasoning }),
+          ...(runtimeSettings.responseFormat === undefined
+            ? {}
+            : { responseFormat: runtimeSettings.responseFormat }),
+          onProgress
+        });
+        return runtime;
       }
     };
     const agent = new AgentSession(sessionOptions);
@@ -414,57 +375,44 @@ export async function createCodingSession(options: CodingSessionOptions) {
           },
           available: {
             instructions: (await sessionGuidance.refresh()).instructions,
-            resources: [workspaceContext(openedWorkspace, authority)],
+            resources: [workspaceContext(authority)],
             toolNames: authority.enabledTools
           }
         };
       },
-      workspaceRoot: openedWorkspace.fileRoot.identity.canonicalPath,
-      fileRoot: openedWorkspace.fileRoot,
+      workspaceRoot: environment.files.descriptor.displayRoot,
+      fileRoot: environment.files,
       permissions: authority.permissions,
       ...(configuration ? { configuration } : {}),
       async closeResources() {
-        const results = await Promise.allSettled([...openHosts].map((host) => host.close()));
-        results.push(...(await Promise.allSettled([commandExecution?.close()])));
-        commandRoot.close();
-        openHosts.clear();
-        const failures = results
-          .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
-          .map((result) => result.reason as unknown);
-        if (failures.length > 0)
-          throw new AggregateError(failures, 'Coding Agent resource release failed.');
+        if (ownsEnvironment) await environment.close();
       }
     };
   } catch (error) {
     try {
-      await commandExecution?.close();
+      if (ownsEnvironment) await environment.close();
     } catch (cleanup) {
       throw new AggregateError(
         [error, cleanup],
         'Coding session construction and cleanup failed.',
         { cause: cleanup }
       );
-    } finally {
-      commandRoot.close();
     }
     throw error;
   }
 }
 
-function workspaceContext(
-  workspace: OpenCodingWorkspace,
-  authority: CodingAuthority
-): PromptContextItemInput {
+function workspaceContext(authority: CodingAuthority): PromptContextItemInput {
   return Object.freeze({
     id: 'coding-agent/workspace',
-    sourceUri: `file://${workspace.fileRoot.identity.canonicalPath}`,
+    sourceUri: 'workspace:///',
     sourceKind: 'external',
     integrity: 'verified',
     representation: 'full',
     mediaType: 'text/plain; charset=utf-8',
     title: 'Active workspace',
     content: [
-      `Workspace root: ${workspace.fileRoot.identity.canonicalPath}`,
+      'Workspace root: /workspace (inside the persistent Sandsurf Linux environment)',
       `Permission mode: ${authority.mode}`,
       `Available workspace tools: ${authority.enabledTools.join(', ') || 'none'}`
     ].join('\n'),

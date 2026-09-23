@@ -1,55 +1,29 @@
 import {
-  adoptCommandExecution,
   ResourceLeaseCoordinator,
   type CommandExecution,
   type CommandExecutionDescriptor,
   type CommandExecutionOwner,
-  type CommandExecutionPlanRequest,
-  type CommandExecutionReport,
-  type CommandExecutionReservation,
-  type CommandExecutionResult,
   type CommandExecutionStatus,
-  type CommandReconciliationResult,
-  type StartCommandExecutionOptions
+  type WorkspaceFiles
 } from '@agent-core/tools';
-import type { RootedFileAuthority } from '@agent-core/tools-local';
 import {
-  createSandbox,
-  openSandboxExecutionRepository,
-  SandboxRequirementError,
-  SandboxUnsupportedError,
-  type SandboxDetachedRunOptions,
-  type SandboxPath,
-  type SandboxPolicy
-} from '@ismail-elkorchi/sandbox';
-import { createHash } from 'node:crypto';
-import { promises as fs } from 'node:fs';
+  Sandsurf,
+  type ResourceEnvelope,
+  type Sandbox,
+  type SandboxInspection,
+  type SandsurfCapability
+} from 'sandsurf';
+import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
-import type { CommandObservationsOptions } from './command-observations.js';
+import * as z from 'zod';
+import { withPersistenceFileLock } from '@agent-core/persistence/node';
 import type { PrivateStateDirectory } from '../state/private-state.js';
 import {
-  SandboxCommandExecution,
-  type SandboxCommandAuthorization
-} from './sandbox-command-execution.js';
-import {
-  discoverCodingCommandEnvironment,
-  hostPath,
-  hostPolicy,
-  hostResource,
-  hostRuntimeRoots,
-  isolatedPath,
-  isolatedPolicy,
-  isolatedResource,
-  runtimeAccess,
-  runtimePurposes,
-  WORKSPACE_ACCESS,
-  type CodingCommandEnvironment
-} from './sandbox-policy.js';
-
-export const CODING_COMMAND_ENVIRONMENT_POLICY_ID = 'coding-agent.observed-command-environment@1';
-
-const MAX_RETAINED_OUTPUT_BYTES = 8 * 1024 * 1024;
-const TERMINATION_GRACE_MS = 1_000;
+  SandsurfCommandExecution,
+  type SandsurfCommandExecutionOptions
+} from './sandsurf-command-execution.js';
+import type { SandsurfObservationOptions } from './sandsurf-command-observations.js';
+import { SandsurfWorkspaceFiles } from './sandsurf-workspace.js';
 
 export class CodingCommandUnavailableError extends Error {}
 
@@ -59,410 +33,260 @@ export interface CodingProcess {
   readonly diagnostic?: string;
   readonly processId: string;
   readonly owner: CommandExecutionOwner;
-  readonly status:
-    CommandExecutionStatus | 'preparing' | 'prepared' | 'unknown' | 'acknowledged-unknown';
+  readonly status: CommandExecutionStatus | 'unknown' | 'acknowledged-unknown';
 }
 
 export interface CodingCommandAuthority extends CommandExecution {
   listProcesses(): Promise<readonly CodingProcess[]>;
 }
 
-export function createCodingCommandAuthority(
-  input: CommandObservationsOptions & {
-    readonly repositoryDirectory: string;
-    readonly rootedFileAuthority: RootedFileAuthority;
-    readonly state: PrivateStateDirectory;
-  }
-): CodingCommandAuthority {
-  return new LazySandboxCommandExecution(input);
+export interface CodingEnvironment {
+  readonly host: Sandsurf;
+  readonly sandbox: Sandbox;
+  readonly files: WorkspaceFiles;
+  readonly commandExecution?: CodingCommandAuthority;
+  close(): Promise<void>;
 }
 
-type CodingCommandAuthorityInput = Parameters<typeof createCodingCommandAuthority>[0];
+const bindingSchema = z.strictObject({
+  schemaVersion: z.literal(1),
+  phase: z.enum(['creating', 'ready']),
+  hostId: z.string().min(1),
+  sandboxId: z.string().min(1),
+  createOperationId: z.string().min(1),
+  importOperationId: z.string().min(1),
+  sourceWorkspaceId: z.string().min(1)
+});
+type EnvironmentBinding = z.infer<typeof bindingSchema>;
 
-interface CodingSandboxProfile {
-  readonly kind: 'isolated' | 'host';
-  readonly label: 'isolated workspace' | 'workspace confined';
-  readonly policy: SandboxPolicy;
-  readonly shell: SandboxPath;
-  readonly workspacePath: string;
-  readonly environment: Readonly<Record<string, string>>;
+export interface OpenCodingEnvironmentOptions extends SandsurfObservationOptions {
+  readonly repositoryDirectory: string;
+  readonly hostWorkspaceRoot: string;
+  readonly workspaceId: string;
+  readonly state: PrivateStateDirectory;
+  readonly commandExecution: boolean;
+  readonly writable: boolean;
+  readonly resources?: ResourceEnvelope;
 }
 
-class LazySandboxCommandExecution implements CodingCommandAuthority {
-  readonly descriptor: CommandExecutionDescriptor;
-  readonly resourceLeases = new ResourceLeaseCoordinator();
-  #execution: SandboxCommandExecution | undefined;
-  #opening: Promise<SandboxCommandExecution> | undefined;
-  #closed = false;
-
-  constructor(private readonly input: CodingCommandAuthorityInput) {
-    this.descriptor = Object.freeze({
-      implementationId: 'coding-agent.sandbox-command-execution@1',
-      recoveryIdentity: `coding-agent-command:${createHash('sha256')
-        .update(path.resolve(input.repositoryDirectory))
-        .update('\0')
-        .update(input.rootedFileAuthority.identity.canonicalPath)
-        .digest('hex')}`,
-      capabilities: Object.freeze([
-        'sandbox-process',
-        'caller-process-recovery',
-        'staged-authorization'
-      ]),
-      supportsPty: false
-    });
-    adoptCommandExecution(this);
-  }
-
-  async plan(request: CommandExecutionPlanRequest): Promise<CommandExecutionReservation> {
-    return (await this.open()).plan(request);
-  }
-
-  async listProcesses(): Promise<readonly CodingProcess[]> {
-    return (await this.openExisting())?.listProcesses() ?? [];
-  }
-
-  async start(
-    plan: CommandExecutionReservation,
-    options?: StartCommandExecutionOptions
-  ): Promise<CommandExecutionResult> {
-    return (await this.open()).start(plan, options);
-  }
-
-  async query(
-    processId: string,
-    outputTokenBudget: number,
-    yieldMs?: number,
-    afterCursor?: number,
-    requester?: CommandExecutionOwner
-  ): Promise<CommandExecutionResult> {
-    return (await this.open()).query(processId, outputTokenBudget, yieldMs, afterCursor, requester);
-  }
-
-  async writeInput(
-    processId: string,
-    text: string,
-    requester?: CommandExecutionOwner
-  ): Promise<void> {
-    await (await this.open()).writeInput(processId, text, requester);
-  }
-
-  async closeInput(processId: string, requester?: CommandExecutionOwner): Promise<void> {
-    await (await this.open()).closeInput(processId, requester);
-  }
-
-  async terminate(
-    processId: string,
-    requester?: CommandExecutionOwner
-  ): Promise<CommandExecutionResult> {
-    return (await this.open()).terminate(processId, requester);
-  }
-
-  async disposeOwner(ownerId: string): Promise<readonly CommandExecutionReport[]> {
-    const execution = await this.openExisting();
-    return execution ? execution.disposeOwner(ownerId) : Object.freeze([]);
-  }
-
-  recoveredTerminalReports(): readonly CommandExecutionReport[] {
-    return this.#execution?.recoveredTerminalReports() ?? Object.freeze([]);
-  }
-
-  async acknowledgeTerminalReport(processId: string): Promise<void> {
-    const execution = await this.openExisting();
-    if (execution) await execution.acknowledgeTerminalReport(processId);
-  }
-
-  async reconcile(): Promise<CommandReconciliationResult> {
-    const execution = await this.openExisting();
-    return execution ? execution.reconcile() : emptyReconciliation();
-  }
-
-  async retryReconciliation(): Promise<CommandReconciliationResult> {
-    const execution = await this.openExisting();
-    return execution ? execution.retryReconciliation() : emptyReconciliation();
-  }
-
-  async acknowledgeUnresolved(processIds: readonly string[]): Promise<void> {
-    const execution = await this.openExisting();
-    if (execution) await execution.acknowledgeUnresolved(processIds);
-  }
-
-  async close(): Promise<void> {
-    if (this.#closed) return;
-    this.#closed = true;
-    const execution = this.#execution ?? (await this.#opening);
-    if (execution) await execution.close();
-  }
-
-  private async openExisting(): Promise<SandboxCommandExecution | undefined> {
-    if (this.#execution) return this.#execution;
-    if (this.#opening) return this.#opening;
-    try {
-      await fs.stat(this.input.repositoryDirectory);
-    } catch (error) {
-      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return undefined;
-      throw error;
-    }
-    return this.open();
-  }
-
-  private open(): Promise<SandboxCommandExecution> {
-    if (this.#closed) return Promise.reject(new Error('Command execution is closed.'));
-    this.#opening ??= openCodingCommandAuthority(
-      this.input,
-      this.descriptor,
-      this.resourceLeases
-    ).then((execution) => {
-      this.#execution = execution;
-      return execution;
-    });
-    return this.#opening;
-  }
-}
-
-function emptyReconciliation(): CommandReconciliationResult {
-  return Object.freeze({ resolved: Object.freeze([]), unresolved: Object.freeze([]) });
-}
-
-async function openCodingCommandAuthority(
-  input: CodingCommandAuthorityInput,
-  descriptor: CommandExecutionDescriptor,
-  resourceLeases: ResourceLeaseCoordinator
-): Promise<SandboxCommandExecution> {
-  const environment = await discoverCodingCommandEnvironment();
-  const profile = await selectSandboxProfile(
-    input.rootedFileAuthority.identity.canonicalPath,
-    environment
-  );
-  const repository = await openSandboxExecutionRepository({
-    directory: input.repositoryDirectory,
-    maxRetainedOutputBytes: MAX_RETAINED_OUTPUT_BYTES
-  });
-  return SandboxCommandExecution.create({
-    descriptor,
-    resourceLeases,
-    repository,
-    rootedFileAuthority: input.rootedFileAuthority,
-    state: input.state,
-    events: input.events,
-    artifacts: input.artifacts,
-    ...(input.onSettlement ? { onSettlement: input.onSettlement } : {}),
-    maxRetainedOutputBytes: MAX_RETAINED_OUTPUT_BYTES,
-    createRun: (request) => commandRun(request, profile, environment),
-    validateAuthorization: (authorization) => {
-      validateAuthorization(authorization, profile, environment);
-    }
-  });
-}
-
-async function selectSandboxProfile(
-  workspaceRoot: string,
-  environment: CodingCommandEnvironment
-): Promise<CodingSandboxProfile> {
-  const candidates = [
-    ...(process.platform === 'linux' ? [isolatedProfile(workspaceRoot, environment)] : []),
-    hostProfile(workspaceRoot, environment)
-  ];
-  const unavailable: string[] = [];
-  const sandbox = await createSandbox();
-  try {
-    for (const candidate of candidates) {
+/**
+ * Reconnect one durable Sandsurf environment. Persisted revisions are only
+ * preconditions/observations; every request is evaluated by the Sandsurf host.
+ */
+export async function openCodingEnvironment(
+  options: OpenCodingEnvironmentOptions
+): Promise<CodingEnvironment> {
+  const bindingPath = `sandsurf/environments/${bindingKey(options.workspaceId)}.json`;
+  return withPersistenceFileLock(
+    path.join(options.state.path, bindingPath),
+    30_000,
+    30_000,
+    async (assertOwned) => {
+      const directory = path.resolve(options.repositoryDirectory, 'host');
+      const stored = await options.state.read(bindingPath);
+      const existing = stored === undefined ? undefined : decodeBinding(stored, options);
+      const sandboxId = existing?.sandboxId ?? `coding-${randomUUID()}`;
+      let admittingInitialEnvironment = existing === undefined;
+      const desiredCapabilities: Partial<Record<SandsurfCapability, boolean>> = {
+        'read-files': true,
+        'write-files': options.writable,
+        spawn: options.commandExecution,
+        'release-evidence': options.commandExecution
+      };
+      let configuringGrants = true;
+      const host = await Sandsurf.open({
+        directory,
+        authorizer: (change) =>
+          change.sandboxId === sandboxId &&
+          ((admittingInitialEnvironment &&
+            (change.kind === 'sandbox-create' || change.kind === 'host-import')) ||
+            (configuringGrants &&
+              change.kind === 'grant' &&
+              typeof change.request.capability === 'string' &&
+              (change.request.revoked === true ||
+                desiredCapabilities[change.request.capability as SandsurfCapability] === true ||
+                (admittingInitialEnvironment && change.request.capability === 'write-files'))))
+      });
       try {
-        const qualification = await sandbox.prepareRun(
-          commandRun(qualificationRequest(), candidate, environment)
+        const hostInspection = await host.inspect();
+        let sandbox: Sandbox;
+        if (existing !== undefined) {
+          const binding = existing;
+          if (binding.hostId !== hostInspection.hostId)
+            throw new CodingCommandUnavailableError(
+              'The Coding Agent environment belongs to another Sandsurf host store.'
+            );
+          // Missing/unknown environments are surfaced; they are never recreated by
+          // replaying an old application binding.
+          sandbox = await host.sandboxes.connect(binding.sandboxId);
+        } else {
+          const image = hostInspection.defaultImageDigest;
+          if (image === null)
+            throw new CodingCommandUnavailableError(
+              'This Sandsurf installation has no verified development image for the host architecture.'
+            );
+          const capabilities: Partial<Record<SandsurfCapability, boolean>> = {
+            'read-files': true,
+            'write-files': true, // Initialization imports files before exposing read-only access.
+            ...(options.commandExecution ? { 'release-evidence': true } : {}),
+            ...(options.commandExecution ? { spawn: true } : {})
+          };
+          const binding: EnvironmentBinding = {
+            schemaVersion: 1,
+            phase: 'creating',
+            hostId: hostInspection.hostId,
+            sandboxId,
+            createOperationId: `create-${randomUUID()}`,
+            importOperationId: `import-${randomUUID()}`,
+            sourceWorkspaceId: options.workspaceId
+          };
+          // Persist identity before any effect. Interrupted initialization must be
+          // reconciled explicitly; reopening cannot silently create another guest.
+          await assertOwned();
+          await options.state.write(bindingPath, JSON.stringify(binding));
+          sandbox = await host.sandboxes.create({
+            id: binding.sandboxId,
+            operationId: binding.createOperationId,
+            user: 'agent',
+            image,
+            resources: options.resources ?? {
+              vcpus: 1,
+              memoryMiB: 1024,
+              diskBytes: 2 * 1024 ** 3,
+              outputBytes: 256 * 1024 ** 2,
+              processes: 256
+            },
+            capabilities
+          });
+          await sandbox.workspace.importFromHost({
+            source: path.resolve(options.hostWorkspaceRoot),
+            operationId: binding.importOperationId,
+            exclusions: ['.agent-core', '.coding-agent']
+          });
+          await assertOwned();
+          await options.state.write(bindingPath, JSON.stringify({ ...binding, phase: 'ready' }));
+        }
+        admittingInitialEnvironment = false;
+        // Product permission selection changes host grants explicitly. Existing
+        // clients are fenced by configuration revision rather than cached labels.
+        const activeGrants = [];
+        let after: string | undefined;
+        for (;;) {
+          const page = await sandbox.grants.list({ maximum: 256, ...(after ? { after } : {}) });
+          activeGrants.push(...page.filter((grant) => !grant.revoked));
+          if (page.length < 256) break;
+          after = page.at(-1)?.id;
+        }
+        for (const grant of activeGrants)
+          if (desiredCapabilities[grant.capability] !== true) await sandbox.grants.revoke(grant);
+        for (const [capability, enabled] of Object.entries(desiredCapabilities))
+          if (enabled && !activeGrants.some((grant) => grant.capability === capability))
+            await sandbox.grants.grant(capability as SandsurfCapability);
+        configuringGrants = false;
+
+        const view = await sandbox.inspect();
+        const epoch = currentEpoch(view);
+        const files = new SandsurfWorkspaceFiles(
+          sandbox,
+          epoch,
+          view.configurationRevision,
+          options.writable
         );
-        await qualification.cancel();
-        return candidate;
+        const resourceLeases = new ResourceLeaseCoordinator();
+        const descriptor: CommandExecutionDescriptor = Object.freeze({
+          implementationId: 'coding-agent.sandsurf-command-execution@1',
+          recoveryIdentity: `sandsurf:${hostInspection.hostId}:${sandbox.id}`,
+          capabilities: Object.freeze([
+            'persistent-linux-environment',
+            'durable-output-cursors',
+            'concurrent-process-groups',
+            'pty',
+            'reconnect',
+            'environment-lifetime'
+          ]),
+          supportsPty: true
+        });
+        const commandOptions: SandsurfCommandExecutionOptions = {
+          sandbox,
+          epoch,
+          configurationRevision: view.configurationRevision,
+          state: options.state,
+          resourceLeases,
+          descriptor,
+          events: options.events,
+          artifacts: options.artifacts,
+          ...(options.onSettlement ? { onSettlement: options.onSettlement } : {})
+        };
+        const commandExecution = options.commandExecution
+          ? new SandsurfCommandExecution(commandOptions)
+          : undefined;
+        return Object.freeze({
+          host,
+          sandbox,
+          files,
+          ...(commandExecution ? { commandExecution } : {}),
+          async close() {
+            const errors: unknown[] = [];
+            files.close();
+            try {
+              await commandExecution?.close();
+            } catch (error) {
+              errors.push(error);
+            }
+            try {
+              await host.close();
+            } catch (error) {
+              errors.push(error);
+            }
+            if (errors.length)
+              throw new AggregateError(errors, 'Coding environment cleanup failed.');
+          }
+        });
       } catch (error) {
-        if (!(error instanceof SandboxUnsupportedError || error instanceof SandboxRequirementError))
-          throw error;
-        unavailable.push(`${candidate.label}: ${error.data.message}`);
+        try {
+          await host.close();
+        } catch (cleanup) {
+          throw new AggregateError(
+            [error, cleanup],
+            'Coding environment initialization and cleanup failed.',
+            { cause: cleanup }
+          );
+        }
+        throw error;
       }
     }
-  } finally {
-    await sandbox.dispose();
-  }
-  throw new CodingCommandUnavailableError(
-    `Sandbox command execution is unavailable. ${unavailable.join(' ') || 'No native process implementation satisfies the workspace policy.'}`
   );
 }
 
-function isolatedProfile(
-  workspaceRoot: string,
-  environment: CodingCommandEnvironment
-): CodingSandboxProfile {
-  const identity = createHash('sha256').update(workspaceRoot).digest('hex').slice(0, 16);
-  const home = `/home/sandbox-${identity}`;
-  const temporary = `/tmp/sandbox-${identity}`;
-  const resources = [
-    ...environment.runtimeRoots.map((root, index) =>
-      isolatedResource(
-        `runtime-${String(index)}`,
-        root.sourcePath,
-        root.targetPath,
-        runtimeAccess(root),
-        runtimePurposes(root)
-      )
-    ),
-    isolatedResource(
-      'workspace',
-      workspaceRoot,
-      workspaceRoot,
-      WORKSPACE_ACCESS,
-      ['data'],
-      'reject-if-link'
-    )
-  ];
-  return Object.freeze({
-    kind: 'isolated',
-    label: 'isolated workspace',
-    policy: isolatedPolicy({ resources, home, temporary, graceMs: TERMINATION_GRACE_MS }),
-    shell: isolatedPath(environment.shellPath),
-    workspacePath: workspaceRoot,
-    environment: Object.freeze({
-      [environment.searchPathName]: environment.searchPath,
-      HOME: home,
-      TMPDIR: temporary
-    })
-  });
-}
-
-function hostProfile(
-  workspaceRoot: string,
-  environment: CodingCommandEnvironment
-): CodingSandboxProfile {
-  const resources = [
-    ...hostRuntimeRoots(environment.runtimeRoots).map((root, index) =>
-      hostResource(
-        `runtime-${String(index)}`,
-        root.sourcePath,
-        runtimeAccess(root),
-        runtimePurposes(root)
-      )
-    ),
-    hostResource('workspace', workspaceRoot, WORKSPACE_ACCESS, ['data'], 'reject-if-link')
-  ];
-  return Object.freeze({
-    kind: 'host',
-    label: 'workspace confined',
-    policy: hostPolicy(resources, TERMINATION_GRACE_MS),
-    shell: hostPath(environment.shellPath),
-    workspacePath: workspaceRoot,
-    environment: Object.freeze({ [environment.searchPathName]: environment.searchPath })
-  });
-}
-
-function qualificationRequest(): CommandExecutionPlanRequest {
-  return Object.freeze({
-    command: process.platform === 'win32' ? 'exit /b 0' : ':',
-    rootedDirectory: '.',
-    pty: false,
-    timeoutMs: 10_000,
-    yieldMs: 0,
-    outputTokenBudget: 0,
-    owner: Object.freeze({
-      ownerId: 'sandbox-qualification',
-      runId: 'sandbox-qualification',
-      turnId: 'sandbox-qualification',
-      toolBatchId: 'sandbox-qualification',
-      callIndex: 0
-    })
-  });
-}
-
-function commandRun(
-  request: CommandExecutionPlanRequest,
-  profile: CodingSandboxProfile,
-  environment: CodingCommandEnvironment
-): SandboxDetachedRunOptions {
-  const cwd = rootedDirectory(profile.workspacePath, request.rootedDirectory);
-  return {
-    isolation: { kind: 'process' },
-    policy: profile.policy,
-    requirements: {},
-    resources: {
-      wallTime: { enforcement: 'hard', scope: 'process', value: request.timeoutMs },
-      output: { enforcement: 'hard', scope: 'process', value: MAX_RETAINED_OUTPUT_BYTES }
-    },
-    process: {
-      executable: profile.shell,
-      args: environment.commandArguments(request.command),
-      cwd: profile.kind === 'isolated' ? isolatedPath(cwd) : hostPath(cwd),
-      environment: { set: profile.environment },
-      stdin: 'pipe',
-      stdout: 'pipe',
-      stderr: 'pipe'
-    }
-  };
-}
-
-function validateAuthorization(
-  authorization: SandboxCommandAuthorization,
-  profile: CodingSandboxProfile,
-  environment: CodingCommandEnvironment
-): void {
-  const { summary, enforcement, request } = authorization;
-  if (summary.isolation.kind !== 'process' || enforcement.boundary.kind !== 'os-process')
-    throw new Error('Sandbox command plan did not establish the required process boundary.');
-  if (summary.implementation.stability !== 'stable')
-    throw new Error('Sandbox command plan selected an implementation without stable conformance.');
-  if (summary.network.mode !== 'none')
-    throw new Error('Sandbox command plan unexpectedly permits network access.');
-  if (summary.filesystem.kind !== profile.kind || enforcement.filesystem.kind !== profile.kind)
-    throw new Error('Sandbox command plan changed the selected filesystem layout.');
-  const workspace = summary.filesystem.resources.find((resource) => resource.id === 'workspace');
+function currentEpoch(view: SandboxInspection): number {
   if (
-    workspace?.target.space !== profile.kind ||
-    workspace.target.path !== profile.workspacePath ||
-    workspace.access.content !== 'read-write' ||
-    workspace.access.directoryEntries !== 'read-write' ||
-    workspace.access.metadata !== 'read-write' ||
-    workspace.access.execution !== 'allow'
-  ) {
-    throw new Error('Sandbox command plan does not contain the adopted workspace authority.');
-  }
-  const expectedArguments = environment.commandArguments(request.command);
-  const expectedDirectory = rootedDirectory(profile.workspacePath, request.rootedDirectory);
-  if (
-    summary.execution.executable.space !== profile.kind ||
-    summary.execution.executable.path !== profile.shell.path ||
-    summary.execution.args.length !== expectedArguments.length ||
-    summary.execution.args.some((argument, index) => argument !== expectedArguments[index]) ||
-    summary.execution.cwd.space !== profile.kind ||
-    summary.execution.cwd.path !== expectedDirectory
-  ) {
-    throw new Error('Sandbox command plan does not match the requested command identity.');
-  }
-  const expectedEnvironment = expectedEnvironmentNames(profile);
-  const observedEnvironment = [...summary.execution.environmentNames].sort();
-  if (
-    summary.execution.sensitiveEnvironmentNames.length !== 0 ||
-    expectedEnvironment.length !== observedEnvironment.length ||
-    expectedEnvironment.some((name, index) => name !== observedEnvironment[index])
-  ) {
-    throw new Error('Sandbox command plan has an unexpected environment.');
-  }
-}
-
-function expectedEnvironmentNames(profile: CodingSandboxProfile): readonly string[] {
-  const names = new Set(Object.keys(profile.environment));
-  if (profile.kind === 'host' && process.platform !== 'linux') {
-    names.add('HOME');
-    if (process.platform === 'darwin') names.add('TMPDIR');
-    else for (const name of ['LOCALAPPDATA', 'TEMP', 'TMP', 'SystemRoot']) names.add(name);
-  }
-  return [...names].sort();
-}
-
-function rootedDirectory(workspaceRoot: string, rooted: string): string {
-  if (rooted === '' || rooted === '.') return workspaceRoot;
-  const parts = rooted.split('/');
-  if (
-    parts.some((part) => part.length === 0 || part === '.' || part === '..' || part.includes('\\'))
+    view.machine.kind !== 'current' ||
+    typeof view.machine.value !== 'object' ||
+    view.machine.value === null ||
+    !('epoch' in view.machine.value) ||
+    typeof view.machine.value.epoch !== 'number' ||
+    !Number.isSafeInteger(view.machine.value.epoch) ||
+    view.machine.value.epoch <= 0
   )
-    throw new Error(`Invalid command rooted directory: ${rooted}`);
-  const resolved = path.join(workspaceRoot, ...parts);
-  const relative = path.relative(workspaceRoot, resolved);
-  if (path.isAbsolute(relative) || relative === '..' || relative.startsWith(`..${path.sep}`))
-    throw new Error(`Command rooted directory escapes the workspace: ${rooted}`);
-  return resolved;
+    throw new CodingCommandUnavailableError(
+      `Sandsurf environment ${view.id} has no current machine observation.`
+    );
+  return view.machine.value.epoch;
+}
+
+function bindingKey(workspaceId: string): string {
+  return createHash('sha256').update(workspaceId).digest('hex');
+}
+
+function decodeBinding(source: string, options: OpenCodingEnvironmentOptions): EnvironmentBinding {
+  const result = bindingSchema.safeParse(JSON.parse(source));
+  if (!result.success || result.data.sourceWorkspaceId !== options.workspaceId)
+    throw new CodingCommandUnavailableError(
+      'The persisted Sandsurf environment binding is invalid or incompatible.'
+    );
+  if (result.data.phase === 'creating')
+    throw new CodingCommandUnavailableError(
+      `Sandsurf environment ${result.data.sandboxId} has interrupted initialization. Inspect create operation ${result.data.createOperationId} and import operation ${result.data.importOperationId} before reconnecting; no operation was replayed.`
+    );
+  return result.data;
 }

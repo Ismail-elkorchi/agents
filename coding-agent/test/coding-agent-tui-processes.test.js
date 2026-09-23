@@ -56,7 +56,11 @@ test('process controls inspect first and send exact input only on an explicit ac
   await waitForState(runtime, t.signal, () => !runtime.state().overlay.state.pending);
   assert.equal(actions.length, 0);
   await runtime.dispatch({ type: 'processes.select', processId: target.processId });
-  await waitForState(runtime, t.signal, () => runtime.state().overlay.state.selected.result !== undefined);
+  await waitForState(
+    runtime,
+    t.signal,
+    () => runtime.state().overlay.state.selected.result !== undefined
+  );
   assert.deepEqual(
     actions.map((item) => item.action),
     [{ kind: 'inspect', afterCursor: 0 }]
@@ -68,7 +72,10 @@ test('process controls inspect first and send exact input only on an explicit ac
   });
   await runtime.dispatch({ type: 'processes.action', action: 'input' });
   await waitForState(runtime, t.signal, () => !runtime.state().overlay.state.pending);
-  assert.deepEqual(actions[1], { selected: target, action: { kind: 'input', text: 'Input 文\t\n' } });
+  assert.deepEqual(actions[1], {
+    selected: target,
+    action: { kind: 'input', text: 'Input 文\t\n' }
+  });
   assert.equal(textDocumentText(runtime.state().overlay.state.selected.input.document), '');
   assert.equal(textDocumentText(runtime.state().composer.input.document), 'Preserve draft');
   await runtime.dispatch({ type: 'overlay.close' });
@@ -104,22 +111,39 @@ test('process actions bind the exact session and causal owner, including after t
   await controls.controlProcess(target, { kind: 'input', text: 'x' });
   assert.equal(writes, 1);
   const closed = processControls('session', undefined);
-  await assert.rejects(closed.controlProcess(target, { kind: 'terminate' }), /authority has closed/);
+  await assert.rejects(
+    closed.controlProcess(target, { kind: 'terminate' }),
+    /authority has closed/
+  );
 });
-
 
 test('uncertainty decisions bind the current evidence revision and causal owner before acknowledgement', async () => {
   let acknowledgements = 0;
   let current = { ...target, status: 'unknown', diagnostic: 'Worker connection is unavailable.' };
   const authority = {
-    async listProcesses() { return [current]; },
-    async acknowledgeUnresolved(ids) { assert.deepEqual(ids, ['process']); acknowledgements++; current = { ...current, status: 'acknowledged-unknown', revision: 'accepted' }; },
+    async listProcesses() {
+      return [current];
+    },
+    async acknowledgeUnresolved(ids) {
+      assert.deepEqual(ids, [{ processId: 'process', revision: current.revision }]);
+      acknowledgements++;
+      current = { ...current, status: 'acknowledged-unknown', revision: 'accepted' };
+    },
     async retryReconciliation() {}
   };
   const controls = processControls('session', authority);
-  await assert.rejects(controls.reconcileProcesses({ ...current, sessionId: 'other' }), /another session/);
-  await assert.rejects(controls.reconcileProcesses({ ...current, revision: 'stale' }), /evidence changed/);
-  await assert.rejects(controls.reconcileProcesses({ ...current, owner: { ...current.owner, runId: 'other' } }), /owner/);
+  await assert.rejects(
+    controls.reconcileProcesses({ ...current, sessionId: 'other' }),
+    /another session/
+  );
+  await assert.rejects(
+    controls.reconcileProcesses({ ...current, revision: 'stale' }),
+    /evidence changed/
+  );
+  await assert.rejects(
+    controls.reconcileProcesses({ ...current, owner: { ...current.owner, runId: 'other' } }),
+    /owner/
+  );
   assert.equal(acknowledgements, 0);
   const processes = await controls.reconcileProcesses(current);
   assert.equal(processes[0].status, 'acknowledged-unknown');

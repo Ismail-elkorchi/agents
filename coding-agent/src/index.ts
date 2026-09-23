@@ -33,6 +33,7 @@ export { createTrustDecision } from './security/workspace-trust.js';
 export {
   closeCodingSession,
   createCodingSession,
+  type CodingEnvironmentFactory,
   type CodingSessionComposition,
   type CodingSessionOptions
 } from './session.js';

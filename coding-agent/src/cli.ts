@@ -31,10 +31,18 @@ import {
 import { CodingApplication } from './application/service.js';
 import type { CodingRunVerification } from './verification/configured-check-tool.js';
 import { openCodingWorkspace } from './workspace.js';
+import type { CodingEnvironmentFactory } from './session.js';
 
 type CliAuthProviderId = 'openai' | 'openai-codex';
 
-export async function main(argv: string[]): Promise<void> {
+export interface CodingCliDependencies {
+  readonly environmentFactory?: CodingEnvironmentFactory;
+}
+
+export async function main(
+  argv: string[],
+  dependencies: CodingCliDependencies = {}
+): Promise<void> {
   if (argv.length === 1 && (argv[0] === 'help' || argv[0] === '--help' || argv[0] === '-h')) {
     printHelp();
     return;
@@ -63,6 +71,8 @@ export async function main(argv: string[]): Promise<void> {
     return;
   }
   const parsed = parseOptions(exec || rpc ? argv.slice(1) : argv);
+  if (dependencies.environmentFactory !== undefined)
+    parsed.options.environmentFactory = dependencies.environmentFactory;
   if (
     parsed.options.freshContinuation &&
     (parsed.options.sessionSelection.kind === 'new' ||

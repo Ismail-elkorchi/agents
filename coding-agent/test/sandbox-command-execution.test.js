@@ -6,862 +6,1160 @@ import path from 'node:path';
 import test from 'node:test';
 import { InMemoryArtifactRepository, InMemoryEventRepository } from '@agent-core/persistence';
 import { agentEventCodec } from '@agent-core/runtime';
-import { isCommandExecution, ResourceLeaseCoordinator } from '@agent-core/tools';
-import { RootedFileAuthority } from '@agent-core/tools-local';
-import { SandboxCommandExecution } from '../dist/execution/sandbox-command-execution.js';
+import { ResourceLeaseCoordinator, adoptWorkspaceFiles } from '@agent-core/tools';
 import { PrivateStateDirectory } from '../dist/state/private-state.js';
-import {
-  openSandboxExecutionRepository
-} from '@ismail-elkorchi/sandbox';
+import { SandsurfCommandExecution } from '../dist/execution/sandsurf-command-execution.js';
+import { SandsurfCommandObservations } from '../dist/execution/sandsurf-command-observations.js';
+import { SandsurfWorkspaceFiles } from '../dist/execution/sandsurf-workspace.js';
+import { createWorkspaceToolHost } from '@agent-core/tools-local';
+import { invokeToolCall, jsonToolCall } from './tool-call-helpers.js';
 
-import { sandboxAvailable, commandRun, authorizationSummary, enforcement, isolatedPath } from './fixtures/sandbox.js';
-
-const owner = Object.freeze({
-  ownerId: 'run-1',
-  runId: 'run-1',
-  turnId: 'turn-1',
-  toolBatchId: 'batch-1',
-  callIndex: 0
-});
-
-test('sandbox command adapter authorizes the exact command and preserves cursor output', async () => {
-  const fixture = await createFixture();
-  try {
-    const authorizations = [];
-    const execution = await SandboxCommandExecution.create({
-      resourceLeases: new ResourceLeaseCoordinator(),
-      repository: fixture.repository,
-      rootedFileAuthority: fixture.root,
-      state: fixture.state, ...fixture.evidence,
-      maxRetainedOutputBytes: 1024,
-      createRun: (request) => commandRun(fixture.workspace, request.command),
-      validateAuthorization(value) {
-        authorizations.push(value);
-      }
-    });
-    assert.equal(isCommandExecution(execution), true);
-    const result = await startCommand(execution, request());
-    assert.equal(authorizations.length, 1);
-    assert.deepEqual(authorizations[0].summary.execution.executable, isolatedPath('/bin/sh'));
-    assert.equal(result.status, 'exited');
-    assert.equal(result.exitCode, 0);
-    assert.equal(result.stdout.text, 'sandboxed');
-    assert.equal(result.cursorEnd, 9);
-    assert.equal(fixture.repository.activationCount, 1);
-    await assert.rejects(
-      execution.query(result.processId, 100, 0, 0, {
-        ...owner,
-        ownerId: 'another-work',
-        runId: 'another-run'
-      }),
-      /another resource owner/
-    );
-    await execution.close();
-  } finally {
-    fixture.root.close();
-    await rm(fixture.parent, { recursive: true, force: true });
-  }
-});
-
-test('sandbox activation readiness is independent of the target wall-time limit', async () => {
-  const fixture = await createFixture({ activationDelayMs: 1_100 });
-  try {
-    const execution = await SandboxCommandExecution.create({
-      resourceLeases: new ResourceLeaseCoordinator(),
-      repository: fixture.repository,
-      rootedFileAuthority: fixture.root,
-      state: fixture.state, ...fixture.evidence,
-      maxRetainedOutputBytes: 1024,
-      createRun: (requestValue) => commandRun(fixture.workspace, requestValue.command),
-      validateAuthorization: () => undefined
-    });
-    const result = await startCommand(execution, { ...request(), timeoutMs: 1 });
-    assert.equal(result.status, 'exited');
-    assert.equal(result.stdout.text, 'sandboxed');
-    await execution.close();
-  } finally {
-    fixture.root.close();
-    await rm(fixture.parent, { recursive: true, force: true });
-  }
-});
-
-test('settlement releases the workspace lease without a model poll', { timeout: 5_000 }, async (t) => {
-  const fixture = await createFixture();
-  const execution = await SandboxCommandExecution.create({
-    resourceLeases: new ResourceLeaseCoordinator(),
-    repository: fixture.repository, rootedFileAuthority: fixture.root, state: fixture.state, ...fixture.evidence,
-    maxRetainedOutputBytes: 1024,
-    createRun: (value) => commandRun(fixture.workspace, value.command),
-    validateAuthorization: () => undefined
-  });
-  t.after(async () => {
-    await execution.close();
-    fixture.root.close();
-    await rm(fixture.parent, { recursive: true, force: true });
-  });
-  fixture.repository.activate = async (executionId) => {
-    const { requestDigest, output } = settled(executionId);
-    fixture.repository.observations.set(executionId, {
-      kind: 'running', executionId, requestDigest, output, processId: 'native'
-    });
-  };
-  const effects = { accesses: [{ scope: 'workspace', mode: 'write' }], lockScopes: ['workspace'] };
-  const lease = await execution.resourceLeases.acquire(effects, owner.ownerId);
-  const result = await startCommand(execution, { ...request(), yieldMs: 0 }, { lease });
-  assert.equal(result.status, 'running');
-  assert(lease.transferred);
-  assert(execution.resourceLeases.wouldWait(effects));
-  const waiting = execution.resourceLeases.acquire(effects, 'next-tool', t.signal);
-  fixture.repository.observations.set(result.processId, settled(result.processId));
-  const nextLease = await waiting;
-  nextLease.release();
-  assert.equal(execution.resourceLeases.activeCount(), 0);
-});
-
-test('stop reconciles a process that already exited and preserves unknown control failures', async (t) => {
-  const fixture = await createFixture();
-  const execution = await SandboxCommandExecution.create({
-    resourceLeases: new ResourceLeaseCoordinator(),
-    repository: fixture.repository, rootedFileAuthority: fixture.root, state: fixture.state, ...fixture.evidence,
-    maxRetainedOutputBytes: 1024,
-    createRun: (value) => commandRun(fixture.workspace, value.command),
-    validateAuthorization: () => undefined
-  });
-  t.after(async () => {
-    await execution.close();
-    fixture.root.close();
-    await rm(fixture.parent, { recursive: true, force: true });
-  });
-  const started = await startCommand(execution, request());
-  fixture.repository.terminate = async () => { throw new Error('Control endpoint closed.'); };
-  const result = await execution.terminate(started.processId, owner);
-  assert.equal(result.status, 'exited');
-  assert.equal(result.exitCode, 0);
-  assert.equal(result.stdout.text, 'sandboxed');
-  fixture.repository.observations.set(started.processId, unknown(started.processId));
-  assert.equal((await execution.terminate(started.processId, owner)).exitCode, 0);
-});
-
-test('sandbox command adapter cancels invalid authorization without activation', async () => {
-  const fixture = await createFixture();
-  try {
-    const execution = await SandboxCommandExecution.create({
-      resourceLeases: new ResourceLeaseCoordinator(),
-      repository: fixture.repository,
-      rootedFileAuthority: fixture.root,
-      state: fixture.state, ...fixture.evidence,
-      maxRetainedOutputBytes: 1024,
-      createRun: (request) => commandRun(fixture.workspace, request.command),
-      validateAuthorization: () => {
-        throw new Error('authorization policy rejected');
-      }
-    });
-    await assert.rejects(execution.plan(request()), /authorization policy rejected/);
-    assert.equal(fixture.repository.activationCount, 0);
-    assert.equal(fixture.repository.terminationCount, 1);
-    await execution.close();
-  } finally {
-    fixture.root.close();
-    await rm(fixture.parent, { recursive: true, force: true });
-  }
-});
-
-test('sandbox command adapter blocks new effects until unknown recovery is acknowledged', async () => {
-  const fixture = await createFixture({ initialUnknown: true });
-  try {
-    const execution = await SandboxCommandExecution.create({
-      resourceLeases: new ResourceLeaseCoordinator(),
-      repository: fixture.repository,
-      rootedFileAuthority: fixture.root,
-      state: fixture.state, ...fixture.evidence,
-      maxRetainedOutputBytes: 1024,
-      createRun: (request) => commandRun(fixture.workspace, request.command),
-      validateAuthorization: () => undefined
-    });
-    const reconciliation = await execution.reconcile();
-    assert.equal(reconciliation.unresolved.length, 1);
-    await assert.rejects(execution.plan(request()), /Unresolved sandbox executions/);
-    await assert.rejects(execution.disposeOwner(request().owner.ownerId), /release remains unresolved/);
-    await execution.acknowledgeUnresolved([reconciliation.unresolved[0].processId]);
-    assert.equal((await execution.reconcile()).unresolved.length, 0);
-    await execution.close();
-  } finally {
-    fixture.root.close();
-    await rm(fixture.parent, { recursive: true, force: true });
-  }
-});
-
-test('sandbox command adapter rejects plans that do not bind the adopted workspace root', async () => {
-  const fixture = await createFixture();
-  try {
-    const execution = await SandboxCommandExecution.create({
-      resourceLeases: new ResourceLeaseCoordinator(),
-      repository: fixture.repository,
-      rootedFileAuthority: fixture.root,
-      state: fixture.state, ...fixture.evidence,
-      maxRetainedOutputBytes: 1024,
-      createRun: (request) => commandRun('/different/root', request.command),
-      validateAuthorization: () => undefined
-    });
-    await assert.rejects(
-      execution.plan(request()),
-      /exactly one resource for the adopted physical workspace root/
-    );
-    assert.equal(fixture.repository.prepareCount, 0);
-    await execution.close();
-  } finally {
-    fixture.root.close();
-    await rm(fixture.parent, { recursive: true, force: true });
-  }
-});
-
-test('sandbox command adapter rejects a receipt that conflicts with its durable request binding', async () => {
-  const fixture = await createFixture();
-  try {
-    const execution = await SandboxCommandExecution.create({
-      resourceLeases: new ResourceLeaseCoordinator(),
-      repository: fixture.repository,
-      rootedFileAuthority: fixture.root,
-      state: fixture.state, ...fixture.evidence,
-      maxRetainedOutputBytes: 1024,
-      createRun: (requestValue) => commandRun(fixture.workspace, requestValue.command),
-      validateAuthorization: () => undefined
-    });
-    const result = await startCommand(execution, request());
-    await execution.close();
-    await fixture.state.write(
-      `sandbox-processes/${result.processId}.json`,
-      `${JSON.stringify({ schemaVersion: 1, processId: result.processId, command: request().command, owner, requestDigest: `sha256:${'f'.repeat(64)}`, authorization: {} })}\n`
-    );
-    await assert.rejects(
-      SandboxCommandExecution.create({
-        resourceLeases: new ResourceLeaseCoordinator(),
-        repository: fixture.repository,
-        rootedFileAuthority: fixture.root,
-        state: fixture.state, ...fixture.evidence,
-        maxRetainedOutputBytes: 1024,
-        createRun: (requestValue) => commandRun(fixture.workspace, requestValue.command),
-        validateAuthorization: () => undefined
-      }),
-      /does not match its durable request binding/
-    );
-  } finally {
-    fixture.root.close();
-    await rm(fixture.parent, { recursive: true, force: true });
-  }
-});
-
-test('sandbox command adapter decodes progress across byte-chunk boundaries', async () => {
-  const fixture = await createFixture({ splitUtf8Output: true });
-  try {
-    const progress = [];
-    const execution = await SandboxCommandExecution.create({
-      resourceLeases: new ResourceLeaseCoordinator(),
-      repository: fixture.repository,
-      rootedFileAuthority: fixture.root,
-      state: fixture.state, ...fixture.evidence,
-      maxRetainedOutputBytes: 1024,
-      createRun: (requestValue) => commandRun(fixture.workspace, requestValue.command),
-      validateAuthorization: () => undefined
-    });
-    const result = await startCommand(execution, request(), {
-      onProgress: (event) => progress.push(event)
-    });
-    assert.equal(result.stdout.text, 'A🙂B');
-    assert.equal(progress.map((event) => event.text).join(''), 'A🙂B');
-    assert.equal(progress.at(-1).observedBytes, Buffer.byteLength('A🙂B'));
-    await execution.close();
-  } finally {
-    fixture.root.close();
-    await rm(fixture.parent, { recursive: true, force: true });
-  }
-});
-
-test('sandbox command adapter preserves native runtime failure diagnostics', async () => {
-  const fixture = await createFixture({ runtimeFailure: true });
-  try {
-    const execution = await SandboxCommandExecution.create({
-      resourceLeases: new ResourceLeaseCoordinator(),
-      repository: fixture.repository,
-      rootedFileAuthority: fixture.root,
-      state: fixture.state, ...fixture.evidence,
-      maxRetainedOutputBytes: 1024,
-      createRun: (requestValue) => commandRun(fixture.workspace, requestValue.command),
-      validateAuthorization: () => undefined
-    });
-    const result = await startCommand(execution, request());
-    assert.equal(result.status, 'failed');
-    assert.equal(result.diagnostic, 'launcher exited without structured target status');
-    await execution.close();
-  } finally {
-    fixture.root.close();
-    await rm(fixture.parent, { recursive: true, force: true });
-  }
-});
-
-test(
-  'sandbox adapter satisfies start, output, ownership, terminal receipt, and restart recovery',
-  { skip: !sandboxAvailable, timeout: 30_000 },
-  async (t) => {
-    const parent = await mkdtemp(path.join(tmpdir(), 'coding-agent-sandbox-conformance-'));
-    const workspace = path.join(parent, 'workspace');
-    const repositoryPath = path.join(parent, 'executions');
-    const { mkdir } = await import('node:fs/promises');
-    await mkdir(workspace);
-    const root = RootedFileAuthority.adopt(workspace);
-    const state = await PrivateStateDirectory.create(path.join(parent, 'state'));
-    const evidence = { events: new InMemoryEventRepository(agentEventCodec), artifacts: new InMemoryArtifactRepository() };
-    const createRun = (request) => commandRun(workspace, request.command, request.timeoutMs);
-    try {
-      const firstRepository = await openSandboxExecutionRepository({
-        directory: repositoryPath,
-        maxRetainedOutputBytes: 1024 * 1024
-      });
-      const first = await SandboxCommandExecution.create({
-        resourceLeases: new ResourceLeaseCoordinator(),
-        repository: firstRepository,
-        rootedFileAuthority: root,
-        state, ...evidence,
-        maxRetainedOutputBytes: 1024 * 1024,
-        createRun,
-        validateAuthorization: () => undefined
-      });
-      let result = await startCommand(first, { ...request(), command: 'printf durable-sandbox' });
-      while (result.status === 'running') {
-        t.signal.throwIfAborted();
-        result = await first.query(result.processId, 1024, 100, 0, owner);
-      }
-      assert.equal(result.status, 'exited', result.diagnostic);
-      assert.equal(result.stdout.text, 'durable-sandbox');
-      await assert.rejects(
-        first.query(result.processId, 100, 0, 0, { ...owner, ownerId: 'another-work', turnId: 'wrong' }),
-        /another resource owner/
-      );
-      await first.close();
-
-      const secondRepository = await openSandboxExecutionRepository({
-        directory: repositoryPath,
-        maxRetainedOutputBytes: 1024 * 1024
-      });
-      const second = await SandboxCommandExecution.create({
-        resourceLeases: new ResourceLeaseCoordinator(),
-        repository: secondRepository,
-        rootedFileAuthority: root,
-        state, ...evidence,
-        maxRetainedOutputBytes: 1024 * 1024,
-        createRun,
-        validateAuthorization: () => undefined
-      });
-      const reports = second.recoveredTerminalReports();
-      assert.equal(reports.length, 1);
-      assert.equal(reports[0].result.processId, result.processId);
-      assert.deepEqual(reports[0].result.owner, owner);
-      await second.acknowledgeTerminalReport(result.processId);
-      assert.equal(second.recoveredTerminalReports().length, 1);
-      await second.close();
-    } finally {
-      root.close();
-      await rm(parent, { recursive: true, force: true });
+test('guest workspace authority normalizes paths and delegates one native transaction', async () => {
+  const transactions = [];
+  const content = new TextEncoder().encode('guest bytes');
+  const digest = createHash('sha256').update(content).digest('hex');
+  const filesystem = {
+    async lstat(path) {
+      assert.equal(path, '/workspace/src/file.txt');
+      return { kind: 'stat', value: { kind: 'regular', mode: 0o644 } };
+    },
+    async read(_path, offset, maximum) {
+      return {
+        kind: 'read',
+        range: {
+          offset,
+          bytes: [...content.subarray(offset, offset + maximum)],
+          eof: offset + maximum >= content.length,
+          revision: { size: content.length, digest }
+        }
+      };
+    },
+    async readFile(path) {
+      assert.equal(path, '/workspace/src/file.txt');
+      return content;
+    },
+    async transaction(mutations) {
+      transactions.push(mutations);
     }
-  }
-);
+  };
+  const files = new SandsurfWorkspaceFiles(workspaceSandbox(filesystem, 7), 7, 1, true);
+  assert.equal(files.normalize('./src/../src/file.txt'), 'src/file.txt');
+  await assert.rejects(
+    Promise.resolve().then(() => files.normalize('../host')),
+    /escapes/
+  );
+  assert.deepEqual(await files.stat('src/file.txt'), {
+    kind: 'file',
+    path: 'src/file.txt',
+    mode: 0o644,
+    revision: { size: content.length, digest }
+  });
+  assert.equal(
+    new TextDecoder().decode((await files.readFile('src/file.txt')).bytes),
+    'guest bytes'
+  );
+  await files.transaction([
+    {
+      kind: 'write',
+      path: 'src/file.txt',
+      bytes: content,
+      mode: 0o600,
+      expected: { kind: 'matches', size: content.length, digest }
+    }
+  ]);
+  assert.equal(transactions.length, 1);
+  assert.equal(transactions[0][0].path, '/workspace/src/file.txt');
+  files.close();
+});
 
-function request() {
+test('missing guest files are absent without masking other filesystem failures', async () => {
+  const missing = new SandsurfWorkspaceFiles(
+    workspaceSandbox({
+      async lstat() {
+        throw Object.assign(new Error('not found'), { category: 'filesystem.missing' });
+      }
+    }),
+    1,
+    1,
+    true
+  );
+  assert.deepEqual(await missing.stat('missing.txt'), { kind: 'absent', path: 'missing.txt' });
+  const denied = new SandsurfWorkspaceFiles(
+    workspaceSandbox({
+      async lstat() {
+        throw Object.assign(new Error('denied'), { category: 'filesystem.permission' });
+      }
+    }),
+    1,
+    1,
+    true
+  );
+  await assert.rejects(denied.stat('denied.txt'), /denied/);
+});
+
+test('terminal capture durably stores every original byte and acknowledges without release', async () => {
+  const events = new InMemoryEventRepository(agentEventCodec);
+  const artifacts = new InMemoryArtifactRepository();
+  const sink = new SandsurfCommandObservations({ events, artifacts });
+  const bytes = Buffer.from('complete original output');
+  const chunk = {
+    cursor: 0,
+    stream: 'stdout',
+    bytes,
+    digest: createHash('sha256').update(bytes).digest('hex')
+  };
+  let acknowledged;
+  let releaseCalls = 0;
+  const process = {
+    output: {
+      read: async ({ after }) => ({
+        after,
+        available: bytes.length,
+        chunks: after === 0 ? [chunk] : []
+      })
+    },
+    acknowledge: async (digest) => {
+      acknowledged = digest;
+    },
+    release: async () => {
+      releaseCalls += 1;
+    }
+  };
+  const owner = {
+    ownerId: 'owner',
+    runId: 'run',
+    turnId: 'turn',
+    toolBatchId: 'batch',
+    callIndex: 0
+  };
+  const identity = {
+    processId: 'process',
+    requestDigest: 'a'.repeat(64),
+    owner,
+    sandboxId: 'sandbox',
+    epoch: 1
+  };
+  const receipt = {
+    digest: 'b'.repeat(64),
+    receipt: {
+      sandboxId: 'sandbox',
+      epoch: 1,
+      processId: 'process',
+      operationId: 'spawn',
+      requestDigest: identity.requestDigest,
+      outcome: { kind: 'exit', code: 0 },
+      output: {
+        finalCursor: bytes.length,
+        stdoutBytes: bytes.length,
+        stderrBytes: 0,
+        terminalBytes: 0,
+        omittedBytes: 0
+      },
+      cleanupDigest: 'c'.repeat(64),
+      accountingDigest: 'd'.repeat(64)
+    }
+  };
+  const view = {
+    text: bytes.toString(),
+    observedBytes: bytes.length,
+    capturedBytes: bytes.length,
+    omittedBytes: 0,
+    startsAtOutputStart: true,
+    endsAtOutputEnd: true
+  };
+  const result = {
+    processId: 'process',
+    owner,
+    status: 'exited',
+    cursorStart: 0,
+    cursorEnd: bytes.length,
+    stdout: view,
+    stderr: { ...view, text: '', observedBytes: 0, capturedBytes: 0 },
+    combined: view,
+    exitCode: 0
+  };
+  const report = await sink.settle(identity, process, receipt, result);
+  assert.equal(acknowledged, receipt.digest);
+  assert.equal(releaseCalls, 0);
+  assert.equal(report.result.originalOutput.cursorEnd, bytes.length);
+  assert.equal(report.protectedArtifact.visibility, 'protected');
+  assert.deepEqual((await sink.terminal(identity)).result, report.result);
+});
+
+test('failed application capture leaves Sandsurf originals retained and unacknowledged', async () => {
+  const events = new InMemoryEventRepository(agentEventCodec);
+  const bytes = Buffer.from('must remain available');
+  let acknowledgements = 0;
+  let releases = 0;
+  const process = {
+    output: {
+      async read({ after }) {
+        return {
+          after,
+          available: bytes.length,
+          chunks:
+            after === 0
+              ? [
+                  {
+                    cursor: 0,
+                    stream: 'stdout',
+                    bytes,
+                    digest: createHash('sha256').update(bytes).digest('hex')
+                  }
+                ]
+              : []
+        };
+      }
+    },
+    async acknowledge() {
+      acknowledgements += 1;
+    },
+    async release() {
+      releases += 1;
+    }
+  };
+  const artifacts = {
+    async storeProtected() {
+      throw new Error('protected storage unavailable');
+    }
+  };
+  const sink = new SandsurfCommandObservations({ events, artifacts });
+  const owner = {
+    ownerId: 'owner',
+    runId: 'capture-failure-run',
+    turnId: 'turn',
+    toolBatchId: 'batch',
+    callIndex: 0
+  };
+  const identity = {
+    processId: 'capture-failure',
+    requestDigest: 'a'.repeat(64),
+    owner,
+    sandboxId: 'sandbox',
+    epoch: 1
+  };
+  const receipt = {
+    digest: 'b'.repeat(64),
+    receipt: {
+      sandboxId: 'sandbox',
+      epoch: 1,
+      processId: identity.processId,
+      operationId: 'spawn',
+      requestDigest: identity.requestDigest,
+      outcome: { kind: 'exit', code: 0 },
+      output: {
+        finalCursor: bytes.length,
+        stdoutBytes: bytes.length,
+        stderrBytes: 0,
+        terminalBytes: 0,
+        omittedBytes: 0
+      },
+      cleanupDigest: 'c'.repeat(64),
+      accountingDigest: 'd'.repeat(64)
+    }
+  };
+  const view = {
+    text: bytes.toString(),
+    observedBytes: bytes.length,
+    capturedBytes: bytes.length,
+    omittedBytes: 0,
+    startsAtOutputStart: true,
+    endsAtOutputEnd: true
+  };
+  const result = {
+    processId: identity.processId,
+    owner,
+    status: 'exited',
+    cursorStart: 0,
+    cursorEnd: bytes.length,
+    stdout: view,
+    stderr: { ...view, text: '', observedBytes: 0, capturedBytes: 0 },
+    combined: view,
+    exitCode: 0
+  };
+  await assert.rejects(sink.settle(identity, process, receipt, result), /storage unavailable/u);
+  assert.equal(acknowledgements, 0);
+  assert.equal(releases, 0);
+  const retained = await process.output.read({ after: 0 });
+  assert.equal(
+    Buffer.concat(retained.chunks.map((chunk) => chunk.bytes)).toString(),
+    bytes.toString()
+  );
+});
+
+test('command execution resumes from a persisted Sandsurf event cursor without process polling', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'coding-sandsurf-events-'));
+  const state = await PrivateStateDirectory.create(path.join(root, 'state'));
+  const applicationEvents = new InMemoryEventRepository(agentEventCodec);
+  const artifacts = new InMemoryArtifactRepository();
+  const bytes = Buffer.from('event output');
+  let processId = 'process-event-test';
+  const owner = {
+    ownerId: 'owner',
+    runId: 'run',
+    turnId: 'turn',
+    toolBatchId: 'batch',
+    callIndex: 0
+  };
+  let delivered = false;
+  let inspectionCalls = 0;
+  const receipt = {
+    digest: 'b'.repeat(64),
+    receipt: {
+      sandboxId: 'sandbox-1',
+      epoch: 1,
+      processId,
+      operationId: 'spawn-event-test',
+      requestDigest: 'a'.repeat(64),
+      outcome: { kind: 'exit', code: 0 },
+      output: {
+        finalCursor: bytes.length,
+        stdoutBytes: bytes.length,
+        stderrBytes: 0,
+        terminalBytes: 0,
+        omittedBytes: 0
+      },
+      cleanupDigest: 'c'.repeat(64),
+      accountingDigest: 'd'.repeat(64)
+    }
+  };
+  const process = {
+    id: processId,
+    output: {
+      async read({ after }) {
+        if (!delivered || after >= bytes.length)
+          return { after, available: delivered ? bytes.length : 0, chunks: [] };
+        return {
+          after,
+          available: bytes.length,
+          chunks: [
+            {
+              cursor: 0,
+              stream: 'stdout',
+              bytes,
+              digest: createHash('sha256').update(bytes).digest('hex')
+            }
+          ]
+        };
+      }
+    },
+    async inspect() {
+      inspectionCalls += 1;
+      return {
+        kind: 'current',
+        value: {
+          request: {
+            processId,
+            sandboxId: 'sandbox-1',
+            epoch: 1,
+            operationId: receipt.receipt.operationId
+          },
+          guestPid: 42,
+          lineage: null,
+          state: delivered
+            ? { kind: 'exited', outcome: receipt.receipt.outcome }
+            : { kind: 'running' }
+        }
+      };
+    },
+    async receipt() {
+      return delivered ? receipt : undefined;
+    },
+    async acknowledge() {},
+    async terminate() {},
+    async write() {},
+    async closeInput() {}
+  };
+  const sandbox = {
+    id: 'sandbox-1',
+    events: {
+      async read() {
+        return { cursor: 5, available: 5, events: [] };
+      },
+      async *follow({ after }) {
+        assert.equal(after, 5);
+        delivered = true;
+        yield {
+          cursor: 6,
+          digest: 'e'.repeat(64),
+          value: { kind: 'output', processId, boundary: { finalCursor: bytes.length } }
+        };
+      }
+    },
+    processes: {
+      async spawn(options) {
+        assert.equal(options.processId, processId);
+        const stored = JSON.parse(
+          await state.read(`sandsurf/processes/sandbox-1/${processId}.json`)
+        );
+        assert.equal(stored.eventCursor, 5);
+        return process;
+      },
+      async get() {
+        return process;
+      },
+      async list() {
+        return [];
+      }
+    },
+    terminals: {}
+  };
+  const execution = new SandsurfCommandExecution({
+    sandbox,
+    epoch: 1,
+    configurationRevision: 1,
+    state,
+    resourceLeases: new ResourceLeaseCoordinator(),
+    descriptor: Object.freeze({
+      implementationId: 'test.sandsurf@1',
+      recoveryIdentity: 'test-sandsurf',
+      capabilities: Object.freeze(['reconnect']),
+      supportsPty: true
+    }),
+    events: applicationEvents,
+    artifacts
+  });
+  try {
+    const reservation = await execution.plan({
+      command: 'printf event',
+      rootedDirectory: '.',
+      pty: false,
+      timeoutMs: 10_000,
+      yieldMs: 1_000,
+      outputTokenBudget: 1_000,
+      owner
+    });
+    // Override generated identities only at the fake spawn boundary.
+    const plannedProcessId = reservation.authorization.processId;
+    processId = plannedProcessId;
+    process.id = plannedProcessId;
+    receipt.receipt.processId = plannedProcessId;
+    receipt.receipt.operationId = reservation.authorization.operationId;
+    sandbox.processes.spawn = async (options) => {
+      assert.equal(options.processId, plannedProcessId);
+      const stored = JSON.parse(
+        await state.read(`sandsurf/processes/sandbox-1/${plannedProcessId}.json`)
+      );
+      assert.equal(stored.eventCursor, 5);
+      return process;
+    };
+    const result = await execution.start(reservation);
+    assert.equal(result.status, 'exited');
+    assert.equal(result.eventCursor.position, '6');
+    assert.equal(result.combined.text, 'event output');
+    assert.ok(inspectionCalls >= 2 && inspectionCalls <= 8);
+    const stored = JSON.parse(
+      await state.read(`sandsurf/processes/sandbox-1/${plannedProcessId}.json`)
+    );
+    assert.equal(stored.schemaVersion, 1);
+    assert.equal(stored.eventCursor, 6);
+  } finally {
+    await execution.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('guest file selection applies bounded git-ignore rules from the guest workspace', async () => {
+  const encoder = new TextEncoder();
+  const content = new Map([
+    ['.gitignore', encoder.encode('ignored.txt\nnested/\n')],
+    ['ignored.txt', encoder.encode('ignored')],
+    ['visible.txt', encoder.encode('visible')],
+    ['nested/hidden.txt', encoder.encode('nested')]
+  ]);
+  const directories = new Map([
+    [
+      '.',
+      [
+        { name: '.gitignore', type: 'file' },
+        { name: 'ignored.txt', type: 'file' },
+        { name: 'nested', type: 'directory' },
+        { name: 'visible.txt', type: 'file' }
+      ]
+    ],
+    ['nested', [{ name: 'hidden.txt', type: 'file' }]]
+  ]);
+  const files = {
+    descriptor: Object.freeze({
+      implementationId: 'test.workspace@1',
+      workspaceId: 'guest',
+      displayRoot: '/workspace',
+      capabilities: Object.freeze(['read'])
+    }),
+    normalize(value) {
+      return value === '' ? '.' : value;
+    },
+    async *list(value) {
+      yield* directories.get(value) ?? [];
+    },
+    async readFile(value) {
+      const bytes = content.get(value);
+      if (!bytes) throw new Error(`Missing ${value}`);
+      return {
+        bytes,
+        revision: { size: bytes.length, digest: createHash('sha256').update(bytes).digest('hex') }
+      };
+    },
+    async stat(value) {
+      if (directories.has(value)) return { kind: 'directory', path: value, mode: 0o755 };
+      const bytes = content.get(value);
+      return bytes
+        ? {
+            kind: 'file',
+            path: value,
+            mode: 0o644,
+            revision: {
+              size: bytes.length,
+              digest: createHash('sha256').update(bytes).digest('hex')
+            }
+          }
+        : { kind: 'absent', path: value };
+    },
+    async transaction() {},
+    async mkdir() {},
+    async remove() {},
+    async close() {}
+  };
+  adoptWorkspaceFiles(files);
+  const host = createWorkspaceToolHost({
+    files,
+    artifacts: new InMemoryArtifactRepository(),
+    enabledTools: ['find_files']
+  });
+  const context = {
+    policy: { allowedRisks: ['read'] },
+    services: host.services,
+    invocation: {
+      runId: 'run',
+      turnId: 'turn',
+      requestAttempt: 1,
+      toolBatchId: 'batch',
+      callIndex: 0,
+      toolAttempt: 1
+    }
+  };
+  const ignored = await invokeToolCall(
+    jsonToolCall('find_files', {
+      path: '.',
+      patterns: ['**/*'],
+      type: 'file',
+      respectGitIgnore: true,
+      includeHidden: false,
+      exclude: []
+    }),
+    host.tools,
+    context
+  );
+  assert.deepEqual(ignored.output.entries, [{ path: 'visible.txt', type: 'file' }]);
+  assert.equal(
+    ignored.output.omissions.some((item) => item.cause === 'gitignored'),
+    true
+  );
+
+  const unignored = await invokeToolCall(
+    jsonToolCall('find_files', {
+      path: '.',
+      patterns: ['**/*'],
+      type: 'file',
+      respectGitIgnore: false,
+      includeHidden: false,
+      exclude: []
+    }),
+    host.tools,
+    context
+  );
+  assert.deepEqual(
+    unignored.output.entries.map((entry) => entry.path),
+    ['ignored.txt', 'nested/hidden.txt', 'visible.txt']
+  );
+});
+
+test('owner cleanup terminates transient jobs but leaves environment services running', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'coding-sandsurf-lifetimes-'));
+  const state = await PrivateStateDirectory.create(path.join(root, 'state'));
+  const processes = new Map();
+  const sandbox = {
+    id: 'sandbox-lifetimes',
+    events: {
+      async read() {
+        return { cursor: 0, available: 0, events: [] };
+      },
+      async *follow({ signal }) {
+        await new Promise((resolve) => {
+          if (signal.aborted) resolve();
+          else signal.addEventListener('abort', resolve, { once: true });
+        });
+      }
+    },
+    processes: {
+      async spawn(options) {
+        let running = true;
+        let terminated = false;
+        const inputWrites = [];
+        let inputClosed = false;
+        const receipt = {
+          digest: createHash('sha256').update(`receipt:${options.processId}`).digest('hex'),
+          receipt: {
+            sandboxId: 'sandbox-lifetimes',
+            epoch: 1,
+            processId: options.processId,
+            operationId: options.operationId,
+            requestDigest: 'a'.repeat(64),
+            outcome: { kind: 'signal', signal: 15 },
+            output: {
+              finalCursor: 0,
+              stdoutBytes: 0,
+              stderrBytes: 0,
+              terminalBytes: 0,
+              omittedBytes: 0
+            },
+            cleanupDigest: 'b'.repeat(64),
+            accountingDigest: 'c'.repeat(64)
+          }
+        };
+        const handle = {
+          id: options.processId,
+          lifetime: options.lifetime,
+          deadlineUnixMs: options.elapsedDeadlineUnixMs,
+          get terminated() {
+            return terminated;
+          },
+          get inputWrites() {
+            return inputWrites;
+          },
+          get inputClosed() {
+            return inputClosed;
+          },
+          input: {
+            async write(bytes) {
+              inputWrites.push(Buffer.from(bytes).toString('utf8'));
+            },
+            async close() {
+              inputClosed = true;
+            }
+          },
+          output: {
+            async read({ after }) {
+              return { after, available: 0, chunks: [] };
+            }
+          },
+          async inspect() {
+            return {
+              kind: 'current',
+              value: {
+                request: {
+                  processId: options.processId,
+                  sandboxId: 'sandbox-lifetimes',
+                  epoch: options.expectedEpoch,
+                  operationId: options.operationId
+                },
+                guestPid: 50,
+                lineage: null,
+                state: running
+                  ? { kind: 'running' }
+                  : { kind: 'exited', outcome: receipt.receipt.outcome }
+              }
+            };
+          },
+          async receipt() {
+            return running ? undefined : receipt;
+          },
+          async terminate() {
+            running = false;
+            terminated = true;
+          },
+          async acknowledge() {}
+        };
+        processes.set(options.processId, handle);
+        return handle;
+      },
+      async get(id) {
+        return processes.get(id);
+      },
+      async list() {
+        return [...processes.values()].map((process) => ({
+          kind: 'current',
+          value: {
+            request: { processId: process.id },
+            guestPid: 50,
+            lineage: null,
+            state: process.terminated
+              ? { kind: 'exited', outcome: { kind: 'signal', signal: 15 } }
+              : { kind: 'running' }
+          }
+        }));
+      }
+    },
+    terminals: {}
+  };
+  const execution = new SandsurfCommandExecution({
+    sandbox,
+    epoch: 1,
+    configurationRevision: 1,
+    state,
+    resourceLeases: new ResourceLeaseCoordinator(),
+    descriptor: Object.freeze({
+      implementationId: 'test.sandsurf-lifetimes@1',
+      recoveryIdentity: 'test-sandsurf-lifetimes',
+      capabilities: Object.freeze(['persistent-services']),
+      supportsPty: true
+    }),
+    events: new InMemoryEventRepository(agentEventCodec),
+    artifacts: new InMemoryArtifactRepository()
+  });
+  const owner = {
+    ownerId: 'coding-work',
+    runId: 'run',
+    turnId: 'turn',
+    toolBatchId: 'batch',
+    callIndex: 0
+  };
+  try {
+    const jobPlan = await execution.plan({
+      command: 'job',
+      rootedDirectory: '.',
+      pty: false,
+      lifetime: 'job',
+      timeoutMs: 10_000,
+      yieldMs: 0,
+      outputTokenBudget: 0,
+      owner
+    });
+    const servicePlan = await execution.plan({
+      command: 'service',
+      rootedDirectory: '.',
+      pty: false,
+      lifetime: 'environment',
+      timeoutMs: 10_000,
+      yieldMs: 0,
+      outputTokenBudget: 0,
+      owner: { ...owner, callIndex: 1 }
+    });
+    const job = await execution.start(jobPlan);
+    const service = await execution.start(servicePlan);
+    assert.equal(job.status, 'running');
+    assert.equal(service.status, 'running');
+    assert.equal(Number.isSafeInteger(processes.get(job.processId).deadlineUnixMs), true);
+    await execution.writeInput(job.processId, 'hello', owner);
+    await execution.closeInput(job.processId, owner);
+    assert.deepEqual(processes.get(job.processId).inputWrites, ['hello']);
+    assert.equal(processes.get(job.processId).inputClosed, true);
+    const reports = await execution.disposeOwner(owner.ownerId);
+    assert.equal(reports.length, 1);
+    assert.equal(reports[0].result.processId, job.processId);
+    assert.equal(processes.get(job.processId).terminated, true);
+    assert.equal(processes.get(service.processId).terminated, false);
+  } finally {
+    await execution.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+function workspaceSandbox(fs, epoch = 1) {
   return {
-    command: 'printf sandboxed',
+    id: 'sandbox-1',
+    fs,
+    async inspect() {
+      return { configurationRevision: 1, machine: { kind: 'current', value: { epoch } } };
+    }
+  };
+}
+
+async function commandFixture(t, initialMode = 'exited') {
+  const root = await mkdtemp(path.join(tmpdir(), 'coding-sandsurf-regression-'));
+  const state = await PrivateStateDirectory.create(path.join(root, 'state'));
+  const events = new InMemoryEventRepository(agentEventCodec);
+  const artifacts = new InMemoryArtifactRepository();
+  const leases = new ResourceLeaseCoordinator();
+  const flags = {
+    mode: initialMode,
+    missing: false,
+    outputMissing: false,
+    ackFails: false,
+    spawnFails: false,
+    spawnCount: 0,
+    acknowledgements: 0,
+    epoch: 3
+  };
+  const bytes = Buffer.from('a complete log\n');
+  const owner = {
+    ownerId: 'session',
+    runId: 'run',
+    turnId: 'turn',
+    toolBatchId: 'batch',
+    callIndex: 0
+  };
+  let options;
+  const output = {
+    finalCursor: bytes.length,
+    stdoutBytes: bytes.length,
+    stderrBytes: 0,
+    terminalBytes: 0,
+    omittedBytes: 0
+  };
+  const receipt = () => ({
+    digest: 'd'.repeat(64),
+    receipt: {
+      sandboxId: 'sandbox-test',
+      processId: options.processId,
+      operationId: options.operationId,
+      epoch: 3,
+      requestDigest: 'a'.repeat(64),
+      outcome: { kind: 'exit', code: 0 },
+      output,
+      cleanupDigest: 'b'.repeat(64),
+      accountingDigest: 'c'.repeat(64)
+    }
+  });
+  const process = {
+    get id() {
+      return options.processId;
+    },
+    input: {
+      async write(_bytes, precondition) {
+        assert.deepEqual(precondition, { expectedEpoch: 3, expectedRevision: 4 });
+      },
+      async close() {}
+    },
+    async inspect() {
+      return {
+        kind: 'current',
+        value: {
+          request: {
+            processId: options.processId,
+            operationId: options.operationId,
+            sandboxId: 'sandbox-test',
+            epoch: flags.epoch
+          },
+          state: { kind: flags.mode }
+        }
+      };
+    },
+    async receipt() {
+      return flags.mode === 'exited' ? receipt() : undefined;
+    },
+    async acknowledge() {
+      flags.acknowledgements++;
+      if (flags.ackFails) throw new Error('acknowledgement unavailable');
+    },
+    async terminate(precondition) {
+      assert.equal(precondition.expectedEpoch, 3);
+      flags.mode = 'exited';
+    },
+    output: {
+      async read({ after, maximum }) {
+        if (flags.outputMissing) throw new Error('originals were lost');
+        const chunk = bytes.subarray(after, Math.min(after + maximum, bytes.length));
+        return {
+          after,
+          available: bytes.length,
+          chunks: chunk.length
+            ? [
+                {
+                  cursor: after,
+                  stream: 'stdout',
+                  bytes: chunk,
+                  digest: createHash('sha256').update(chunk).digest('hex')
+                }
+              ]
+            : []
+        };
+      }
+    }
+  };
+  const sandbox = {
+    id: 'sandbox-test',
+    events: {
+      async read() {
+        if (flags.missing) throw new Error('runtime unavailable');
+        return { available: 0 };
+      },
+      async *follow({ signal }) {
+        await new Promise((resolve) => {
+          if (signal.aborted) resolve();
+          else signal.addEventListener('abort', resolve, { once: true });
+        });
+      }
+    },
+    processes: {
+      async spawn(request) {
+        options = request;
+        flags.spawnCount++;
+        if (flags.spawnFails) throw new Error('dispatch delivery unknown');
+        return process;
+      },
+      async get() {
+        if (flags.missing) throw new Error('runtime unavailable');
+        return process;
+      }
+    }
+  };
+  const descriptor = Object.freeze({
+    implementationId: 'test.sandsurf@1',
+    recoveryIdentity: 'test-sandsurf',
+    capabilities: Object.freeze(['environment-lifetime']),
+    supportsPty: false
+  });
+  const adapters = [];
+  const create = () => {
+    const adapter = new SandsurfCommandExecution({
+      sandbox,
+      epoch: 3,
+      configurationRevision: 4,
+      state,
+      resourceLeases: leases,
+      descriptor,
+      events,
+      artifacts
+    });
+    adapters.push(adapter);
+    return adapter;
+  };
+  const execution = create();
+  t.after(async () => {
+    for (const adapter of adapters) await adapter.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  const request = {
+    command: 'work',
     rootedDirectory: '.',
     pty: false,
-    timeoutMs: 1_000,
-    yieldMs: 10,
-    outputTokenBudget: 100,
+    lifetime: 'job',
+    timeoutMs: 10_000,
+    yieldMs: 0,
+    outputTokenBudget: 1000,
     owner
   };
-}
-
-async function startCommand(execution, requestValue, options = {}) {
-  const reservation = await execution.plan(requestValue);
-  return execution.start(reservation, options);
-}
-
-async function createFixture(options = {}) {
-  const parent = await mkdtemp(path.join(tmpdir(), 'coding-agent-sandbox-adapter-'));
-  const workspace = path.join(parent, 'workspace');
-  const { mkdir } = await import('node:fs/promises');
-  await mkdir(workspace);
-  const root = RootedFileAuthority.adopt(workspace);
-  const state = await PrivateStateDirectory.create(path.join(parent, 'state'));
-  const repository = new FakeSandboxExecutionRepository(
-    options.initialUnknown === true,
-    options.splitUtf8Output === true,
-    options.activationDelayMs,
-    options.runtimeFailure === true
-  );
-  if (options.initialUnknown === true) {
-    const recoveryIdentity = `${repository.identity}:${createHash('sha256').update(root.identity.canonicalPath).digest('hex')}`;
-    const processId =
-      'sandbox-' +
-      createHash('sha256')
-        .update(
-          JSON.stringify([
-            recoveryIdentity,
-            owner.ownerId,
-            owner.runId,
-            owner.turnId,
-            owner.toolBatchId,
-            owner.callIndex
-          ])
-        )
-        .digest('hex');
-    await state.write(
-      `sandbox-processes/${processId}.json`,
-      `${JSON.stringify({ schemaVersion: 1, processId, owner, command: 'unknown command' })}\n`
-    );
-    repository.unknownId = processId;
-  }
-  return { parent, workspace, root, state, repository, evidence: { events: new InMemoryEventRepository(agentEventCodec), artifacts: new InMemoryArtifactRepository() } };
-}
-
-class FakeSandboxExecutionRepository {
-  identity = 'fake-sandbox-repository';
-  durability = 'application-process';
-  prepareCount = 0;
-  activationCount = 0;
-  terminationCount = 0;
-  unknownId;
-  observations = new Map();
-
-  constructor(initialUnknown, splitUtf8Output, activationDelayMs = 0, runtimeFailure = false) {
-    if (!initialUnknown) this.unknownId = undefined;
-    this.splitUtf8Output = splitUtf8Output;
-    this.activationDelayMs = activationDelayMs;
-    this.runtimeFailure = runtimeFailure;
-  }
-
-  async prepare(request) {
-    this.prepareCount += 1;
-    // The fake mirrors the upstream sandbox protocol, whose wire state is named `prepared`.
-    const observation = sandboxAuthorizationObservation(request.executionId);
-    this.observations.set(request.executionId, observation);
-    return observation;
-  }
-
-  async activate(executionId) {
-    this.activationCount += 1;
-    const observation = this.runtimeFailure
-      ? settledWithRuntimeFailure(executionId)
-      : this.splitUtf8Output
-        ? settledWithSplitUtf8(executionId)
-        : settled(executionId);
-    if (this.activationDelayMs === 0) this.observations.set(executionId, observation);
-    else setTimeout(() => this.observations.set(executionId, observation), this.activationDelayMs);
-  }
-
-  async inspect(executionId, options = {}) {
-    if (executionId === this.unknownId) return unknown(executionId);
-    const initial = this.observations.get(executionId) ?? unknown(executionId);
-    if (['prepared', 'preparing', 'running'].includes(initial.kind) && options.waitMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, options.waitMs));
-    }
-    const observation = this.observations.get(executionId) ?? unknown(executionId);
-    if (observation.kind === 'settled' || observation.kind === 'rejected') observation.receipt ??= {
-      digest: 'sha256:' + '4'.repeat(64), finalCursor: observation.output.availableCursorEnd,
-      outputHash: '5'.repeat(64), stdoutBytes: observation.output.stdoutBytes, stderrBytes: observation.output.stderrBytes,
-      omittedStdoutBytes: 0, omittedStderrBytes: 0
-    };
-    if (options.maxBytes === 0) return { ...observation, output: { kind: 'not-requested' } };
-    if (observation.output.kind !== 'available') return observation;
-    const start = options.afterCursor ?? 0;
-    const end = Math.min(observation.output.availableCursorEnd, start + (options.maxBytes ?? 65536));
-    return { ...observation, output: { ...observation.output, cursorStart: start, cursorEnd: end,
-      chunks: observation.output.chunks.filter((chunk) => chunk.cursorEnd > start && chunk.cursorStart < end).map((chunk) => ({
-        ...chunk, cursorStart: Math.max(start, chunk.cursorStart), cursorEnd: Math.min(end, chunk.cursorEnd),
-        data: chunk.data.subarray(Math.max(0, start - chunk.cursorStart), Math.min(chunk.data.length, end - chunk.cursorStart))
-      }))
-    } };
-  }
-
-  async writeInput() {}
-  async closeInput() {}
-  async terminate(executionId) {
-    this.terminationCount += 1;
-    const observation = rejected(executionId);
-    this.observations.set(executionId, observation);
-  }
-  async reconcile() {
-    const values = [...this.observations.values()];
-    if (this.unknownId) values.push(unknown(this.unknownId));
-    return { observations: await Promise.all(values.map((value) => this.inspect(value.executionId))) };
-  }
-  async acknowledgeUnknown(executionId) {
-    if (executionId === this.unknownId) this.unknownId = undefined;
-  }
-  async forget(executionId, { receiptDigest }) {
-    const state = this.observations.get(executionId);
-    if (state && ['preparing', 'prepared', 'running'].includes(state.kind))
-      throw new Error('A live or uncertain execution cannot be forgotten.');
-    if (state.kind === 'retired') { assert.equal(state.receiptDigest, receiptDigest); return; }
-    assert.equal(state.receipt.digest, receiptDigest);
-    this.observations.set(executionId, { kind: 'retired', executionId, requestDigest: state.requestDigest,
-      receiptDigest, reason: 'released', cleanupPending: false, output: { kind: 'unavailable', reason: 'released', diagnostic: 'Released' } });
-  }
-  async close() {}
-}
-
-function output(data = '') {
-  const bytes = Buffer.from(data);
   return {
-    kind: 'available',
-    cursorStart: 0,
-    cursorEnd: bytes.byteLength,
-    availableCursorEnd: bytes.byteLength,
-    stdoutBytes: bytes.byteLength,
-    stderrBytes: 0,
-    chunks:
-      bytes.byteLength === 0
-        ? []
-        : [{ cursorStart: 0, cursorEnd: bytes.byteLength, stream: 'stdout', data: bytes }]
-  };
-}
-
-function sandboxAuthorizationObservation(executionId) {
-  return {
-    kind: 'prepared',
-    executionId,
-    requestDigest: 'sha256:' + '1'.repeat(64),
-    policyDigest: '2'.repeat(64),
-    executionDigest: '3'.repeat(64),
-    expiresAtMs: Date.now() + 10_000,
-    summary: authorizationSummary(),
-    enforcement,
-    output: output()
-  };
-}
-
-function settled(executionId) {
-  return {
-    kind: 'settled',
-    executionId,
-    requestDigest: 'sha256:' + '1'.repeat(64),
-    output: output('sandboxed'),
-    result: {
-      processId: 'native',
-      policyDigest: '2'.repeat(64),
-      executionDigest: '3'.repeat(64),
-      termination: { reason: 'exit', code: 0 },
-      enforcement,
-      violations: [],
-      usage: { wallTimeMs: 1, stdoutBytes: 9, stderrBytes: 0 },
-      cleanup: { completed: true, failures: [] }
-    }
-  };
-}
-
-function settledWithSplitUtf8(executionId) {
-  const bytes = Buffer.from('A🙂B');
-  return {
-    ...settled(executionId),
-    output: {
-      kind: 'available',
-      cursorStart: 0,
-      cursorEnd: bytes.byteLength,
-      availableCursorEnd: bytes.byteLength,
-      stdoutBytes: bytes.byteLength,
-      stderrBytes: 0,
-        chunks: [
-        { cursorStart: 0, cursorEnd: 3, stream: 'stdout', data: bytes.subarray(0, 3) },
-        { cursorStart: 3, cursorEnd: bytes.byteLength, stream: 'stdout', data: bytes.subarray(3) }
-      ]
-    }
-  };
-}
-
-function settledWithRuntimeFailure(executionId) {
-  const base = settled(executionId);
-  return {
-    ...base,
-    result: {
-      ...base.result,
-      termination: {
-        reason: 'runtime-failure',
-        error: {
-          code: 'runtime_failed.launcher',
-          message: 'launcher exited without structured target status',
-          phase: 'execute',
-          targetExecuted: true
-        }
-      }
-    }
-  };
-}
-
-function rejected(executionId) {
-  return {
-    kind: 'rejected',
-    executionId,
-    requestDigest: 'sha256:' + '1'.repeat(64),
-    error: {
-      code: 'preparation.cancelled',
-      message: 'cancelled',
-      phase: 'activate',
-      targetExecuted: false
+    execution,
+    create,
+    flags,
+    state,
+    artifacts,
+    events,
+    leases,
+    request,
+    owner,
+    process,
+    get dispatched() {
+      return options;
     },
-    output: output()
+    async start(startOptions) {
+      return execution.start(await execution.plan(request), startOptions);
+    }
   };
 }
 
-function unknown(executionId) {
-  return {
-    kind: 'unknown',
-    executionId,
-    reason: 'execution-host-unreachable',
-    diagnostic: 'unknown outcome',
-    output: output()
-  };
-}
+test('subsequent tool calls in the same session can control processes; other sessions cannot', async (t) => {
+  const fixture = await commandFixture(t, 'running');
+  const process = await fixture.start();
+  const later = { ...fixture.owner, runId: 'next-run', turnId: 'next-turn', callIndex: 9 };
+  const result = await fixture.execution.query(process.processId, 100, 0, 0, later);
+  assert.equal(result.status, 'running');
+  await fixture.execution.writeInput(process.processId, 'input', later);
+  await assert.rejects(
+    fixture.execution.query(process.processId, 0, 0, 0, { ...later, ownerId: 'another-session' }),
+    /another application owner/
+  );
+  assert.equal(fixture.dispatched.expectedEpoch, 3);
+  assert.equal(fixture.dispatched.expectedRevision, 4);
+  assert.equal(fixture.dispatched.user, 'agent');
+});
 
-test('background observation failure reaches queued tools without releasing uncertain resources', { timeout: 5_000 }, async (t) => {
-  const fixture = await createFixture();
-  const execution = await SandboxCommandExecution.create({
-    resourceLeases: new ResourceLeaseCoordinator(), repository: fixture.repository, rootedFileAuthority: fixture.root, state: fixture.state, ...fixture.evidence,
-    maxRetainedOutputBytes: 1024, createRun: (value) => commandRun(fixture.workspace, value.command), validateAuthorization: () => undefined
+test('committed outcomes and bounded logs remain readable after runtime evidence disappears', async (t) => {
+  const fixture = await commandFixture(t);
+  const terminal = await fixture.start();
+  assert.equal(terminal.status, 'exited');
+  fixture.flags.missing = true;
+  fixture.flags.outputMissing = true;
+  await fixture.execution.close();
+  const restarted = fixture.create();
+  const reconciliation = await restarted.reconcile();
+  assert.deepEqual(reconciliation.unresolved, []);
+  const result = await restarted.query(terminal.processId, 2, 0, 2, fixture.owner);
+  assert.equal(result.status, 'exited');
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.combined.text, 'complete');
+  assert.equal(result.cursorStart, 2);
+  assert.equal(result.cursorEnd, 10);
+  assert.ok(result.combined.omittedBytes > 0);
+  assert.equal((await restarted.listProcesses())[0].status, 'exited');
+  const repeated = await restarted.start(await restarted.plan(fixture.request));
+  assert.equal(repeated.status, 'exited');
+  assert.equal(fixture.flags.spawnCount, 1);
+});
+
+test('acknowledgement failure cannot overturn a settlement and reconnect retries the handoff', async (t) => {
+  const fixture = await commandFixture(t);
+  fixture.flags.ackFails = true;
+  const lease = await fixture.leases.acquire(
+    {
+      accesses: [{ mode: 'write', scope: 'files' }],
+      lockScopes: ['files'],
+      recovery: { kind: 'unknown' }
+    },
+    'run'
+  );
+  const result = await fixture.start({
+    lease,
+    onProgress() {
+      throw new Error('subscriber failed');
+    }
   });
-  t.after(async () => { await execution.close(); fixture.root.close(); await rm(fixture.parent, { recursive: true, force: true }); });
-  fixture.repository.activate = async (executionId) => {
-    const { requestDigest, output } = settled(executionId);
-    fixture.repository.observations.set(executionId, { kind: 'running', executionId, requestDigest, output, processId: 'native' });
-  };
-  const effects = { accesses: [{ scope: 'files', mode: 'write' }], lockScopes: ['files'] };
-  const lease = await execution.resourceLeases.acquire(effects, owner.ownerId);
-  const result = await startCommand(execution, { ...request(), yieldMs: 0 }, { lease });
-  assert.equal(result.status, 'running');
-  const waiting = assert.rejects(execution.resourceLeases.acquire(effects, 'next-tool', t.signal), /needs reconciliation: .*unknown outcome/);
-  fixture.repository.observations.set(result.processId, unknown(result.processId));
-  await waiting;
-  assert.equal(execution.resourceLeases.activeCount(), 1);
-  await assert.rejects(execution.plan(request()), /Unresolved sandbox executions/);
-});
-
-async function evidenceFixture(t, overrides = {}) {
-  const fixture = await createFixture();
-  const options = { resourceLeases: new ResourceLeaseCoordinator(), repository: fixture.repository,
-    rootedFileAuthority: fixture.root, state: fixture.state, ...fixture.evidence,
-    maxRetainedOutputBytes: 1024 * 1024, createRun: (value) => commandRun(fixture.workspace, value.command),
-    validateAuthorization: () => undefined, ...overrides };
-  const execution = await SandboxCommandExecution.create(options);
-  t.after(async () => { await execution.close(); fixture.root.close(); await rm(fixture.parent, { recursive: true, force: true }); });
-  return { ...fixture, options, execution };
-}
-
-test('receipt release failure keeps exact settlement and retries without executing again', async (t) => {
-  const fixture = await evidenceFixture(t);
-  const forget = fixture.repository.forget.bind(fixture.repository);
-  fixture.repository.forget = async () => { throw new Error('Injected receipt write failure.'); };
-  const result = await startCommand(fixture.execution, request());
   assert.equal(result.status, 'exited');
-  assert.equal(result.exitCode, 0);
-  assert.equal(result.originalOutput.kind, 'captured');
-  assert.match((await fixture.execution.listProcesses())[0].diagnostic, /receipt.*failed/i);
-  fixture.repository.forget = forget;
-  await fixture.execution.retryReconciliation();
-  assert.equal(fixture.repository.observations.get(result.processId).kind, 'retired');
-  assert.equal(fixture.repository.activationCount, 1);
-  assert.equal((await fixture.execution.query(result.processId, 4000, 0, 0, owner)).stdout.text, 'sandboxed');
+  assert.equal(fixture.leases.activeCount(), 0);
+  const before = fixture.flags.acknowledgements;
+  fixture.flags.ackFails = false;
+  await fixture.execution.reconcile();
+  assert.ok(fixture.flags.acknowledgements > before);
+  assert.equal((await fixture.execution.query(result.processId, 0)).status, 'exited');
 });
 
-test('unavailable original output retains known exit and does not release the receipt', async (t) => {
-  const fixture = await evidenceFixture(t);
-  const inspect = fixture.repository.inspect.bind(fixture.repository);
-  fixture.repository.inspect = async (...args) => {
-    const observation = await inspect(...args);
-    return observation.kind === 'settled' ? { ...observation, output: { kind: 'unavailable', reason: 'missing', diagnostic: 'Injected missing output file.' } } : observation;
-  };
-  const result = await startCommand(fixture.execution, request());
+test('lost original logs are reported separately from a known exit outcome', async (t) => {
+  const fixture = await commandFixture(t);
+  fixture.flags.outputMissing = true;
+  const result = await fixture.start();
   assert.equal(result.status, 'exited');
   assert.equal(result.exitCode, 0);
   assert.equal(result.originalOutput.kind, 'unavailable');
-  assert.equal(result.stdout.observedBytes, 9);
-  assert.equal(result.stdout.omittedBytes, 9);
-  assert.equal(fixture.repository.observations.get(result.processId).kind, 'settled');
+  assert.equal(fixture.flags.acknowledgements, 0);
+  fixture.flags.missing = true;
+  assert.deepEqual((await fixture.execution.reconcile()).unresolved, []);
+});
+
+test('ambiguous dispatch is never replayed and accepted unavailable observations survive restart', async (t) => {
+  const fixture = await commandFixture(t, 'running');
+  fixture.flags.spawnFails = true;
+  await assert.rejects(fixture.start(), /dispatch delivery unknown/);
+  const processId = fixture.dispatched.processId;
+  fixture.flags.missing = true;
+  assert.equal((await fixture.execution.reconcile()).unresolved.length, 1);
+  const [unresolved] = await fixture.execution.listProcesses();
+  await assert.rejects(
+    fixture.execution.acknowledgeUnresolved([{ processId, revision: 'stale' }]),
+    /evidence changed/
+  );
+  await fixture.execution.acknowledgeUnresolved([unresolved]);
   await fixture.execution.close();
-  const reopened = await SandboxCommandExecution.create({ ...fixture.options, resourceLeases: new ResourceLeaseCoordinator() });
-  t.after(() => reopened.close());
-  assert.equal((await reopened.listProcesses())[0].status, 'exited');
-  assert.equal((await reopened.query(result.processId, 4000, 0, 0, owner)).originalOutput.kind, 'unavailable');
+  const restarted = fixture.create();
+  assert.deepEqual((await restarted.reconcile()).unresolved, []);
+  assert.equal((await restarted.listProcesses())[0].status, 'acknowledged-unknown');
+  assert.equal(fixture.leases.activeCount(), 0);
+  await assert.rejects(
+    restarted.start(await restarted.plan(fixture.request)),
+    /runtime unavailable/
+  );
+  assert.equal(fixture.flags.spawnCount, 1);
 });
 
-test('original mixed-stream bytes survive bounded presentation and receipt release', async (t) => {
-  const deliveries = [];
-  const fixture = await evidenceFixture(t, { onSettlement: (report) => deliveries.push(report) });
-  const original = Buffer.from('First 🙂\n' + 'a'.repeat(90000) + '\nlast bytes\n');
-  fixture.repository.activate = async (executionId) => {
-    fixture.repository.activationCount++;
-    const value = settled(executionId);
-    value.output = { ...output(), cursorEnd: original.length, availableCursorEnd: original.length,
-      stdoutBytes: 10, stderrBytes: original.length - 10, chunks: [
-        { cursorStart: 0, cursorEnd: 10, stream: 'stdout', data: original.subarray(0, 10) },
-        { cursorStart: 10, cursorEnd: original.length, stream: 'stderr', data: original.subarray(10) }
-      ] };
-    fixture.repository.observations.set(executionId, value);
-  };
-  const result = await startCommand(fixture.execution, request());
-  assert.equal(result.originalOutput.cursorEnd, original.length);
-  assert.ok(result.cursorEnd < original.length);
-  assert.equal(deliveries.length, 1);
-  assert.deepEqual(Buffer.from(await fixture.evidence.artifacts.readVerified(result.artifact)), original);
-  await fixture.execution.close();
-  const reopened = await SandboxCommandExecution.create({ ...fixture.options, resourceLeases: new ResourceLeaseCoordinator() });
-  t.after(() => reopened.close());
-  const tail = await reopened.query(result.processId, 4000, 0, original.length - 11, owner);
-  assert.equal(tail.cursorStart, original.length - 11);
-  assert.equal(tail.cursorEnd, original.length);
-  assert.equal(tail.stderr.text, 'last bytes\n');
-  assert.equal(tail.combined.observedBytes, original.length);
-  assert.equal(tail.combined.omittedBytes, original.length - 11);
-  const statusOnly = await reopened.query(result.processId, 0, 0, 0, owner);
-  assert.equal(statusOnly.combined.text, '');
-  assert.equal(statusOnly.combined.capturedBytes, 0);
-  assert.equal(statusOnly.combined.omittedBytes, original.length);
-  assert.equal(statusOnly.cursorEnd, 0);
-  assert.equal(statusOnly.exitCode, 0);
-  assert.equal(deliveries.length, 1);
-  assert.equal(fixture.repository.activationCount, 1);
+test('cancellation before dispatch does not persist an execution intent or spawn a command', async (t) => {
+  const fixture = await commandFixture(t);
+  await assert.rejects(
+    fixture.start({ signal: AbortSignal.abort(new Error('cancelled')) }),
+    /cancelled/
+  );
+  assert.equal(fixture.flags.spawnCount, 0);
+  assert.deepEqual(await fixture.execution.listProcesses(), []);
 });
 
-test('failed artifact capture cannot acknowledge a receipt or repeat the command', async (t) => {
-  const fixture = await evidenceFixture(t);
-  const store = fixture.evidence.artifacts.storeProtected.bind(fixture.evidence.artifacts);
-  fixture.evidence.artifacts.storeProtected = async () => { throw new Error('Injected artifact write failure.'); };
-  await assert.rejects(startCommand(fixture.execution, request()), /artifact write failure/);
-  assert.equal([...fixture.repository.observations.values()][0].kind, 'settled');
-  fixture.evidence.artifacts.storeProtected = store;
-  await fixture.execution.retryReconciliation();
-  assert.equal([...fixture.repository.observations.values()][0].kind, 'retired');
-  assert.equal(fixture.repository.activationCount, 1);
+test('stale guest epochs are rejected before an observation can become a command settlement', async (t) => {
+  const fixture = await commandFixture(t);
+  fixture.flags.epoch = 5;
+  await assert.rejects(fixture.start(), /does not match/);
+  assert.equal(fixture.flags.acknowledgements, 0);
 });
 
-for (const eventType of ['resource.observed', 'resource.released']) {
-  for (const committed of [false, true]) {
-    test(`command handoff recovers ${committed ? 'after' : 'before'} ${eventType} append`, async (t) => {
-      const fixture = await evidenceFixture(t);
-      const events = fixture.evidence.events;
-      const append = events.append.bind(events);
-      let injected = false;
-      events.append = async (runId, event, options) => {
-        if (event.type !== eventType || injected) return append(runId, event, options);
-        injected = true;
-        if (committed) await append(runId, event, options);
-        throw new Error('Injected observation append interruption.');
-      };
-      await assert.rejects(startCommand(fixture.execution, request()), /append interruption/);
-      assert.equal([...fixture.repository.observations.values()][0].kind, 'settled');
-      await fixture.execution.close();
-      const reopened = await SandboxCommandExecution.create({ ...fixture.options, resourceLeases: new ResourceLeaseCoordinator() });
-      t.after(() => reopened.close());
-      const [process] = await reopened.listProcesses();
-      const result = await reopened.query(process.processId, 4000, 0, 0, owner);
-      assert.equal(result.exitCode, 0);
-      assert.equal(result.stdout.text, 'sandboxed');
-      assert.equal(fixture.repository.activationCount, 1);
-      assert.equal(fixture.repository.observations.get(process.processId).kind, 'retired');
-      const terminal = [];
-      for await (const record of events.read(owner.runId)) {
-        if (record.event.type === 'resource.released') terminal.push(record);
+test('workspace reads enforce byte bounds before collecting oversized originals and reject changed revisions', async () => {
+  let calls = 0;
+  const files = new SandsurfWorkspaceFiles(
+    workspaceSandbox({
+      async read(_path, offset, maximum) {
+        calls++;
+        assert.ok(maximum <= 64 * 1024);
+        return {
+          kind: 'read',
+          range: {
+            offset,
+            bytes: [],
+            eof: false,
+            revision: { size: 100_000_000, digest: 'a'.repeat(64) }
+          }
+        };
       }
-      assert.equal(terminal.length, 1);
-    });
-  }
-}
-
-test('final output mismatch preserves exit truth and retains the unacknowledged receipt', async (t) => {
-  const fixture = await evidenceFixture(t);
-  const inspect = fixture.repository.inspect.bind(fixture.repository);
-  fixture.repository.inspect = async (...args) => {
-    const observation = await inspect(...args);
-    return observation.kind === 'settled'
-      ? { ...observation, receipt: { ...observation.receipt, finalCursor: observation.receipt.finalCursor + 1 } }
-      : observation;
-  };
-  const result = await startCommand(fixture.execution, request());
-  assert.equal(result.exitCode, 0);
-  assert.equal(result.originalOutput.kind, 'unavailable');
-  assert.match(result.originalOutput.diagnostic, /does not cover/);
-  assert.equal(fixture.repository.observations.get(result.processId).kind, 'settled');
+    }),
+    1,
+    1,
+    true
+  );
+  await assert.rejects(files.readFile('huge', { maximumBytes: 10 }), /read limit/);
+  assert.equal(calls, 1);
+  const bytes = Buffer.from('actual bytes');
+  const changed = new SandsurfWorkspaceFiles(
+    workspaceSandbox({
+      async read() {
+        return {
+          kind: 'read',
+          range: {
+            offset: 0,
+            bytes: [...bytes],
+            eof: true,
+            revision: { size: bytes.length, digest: 'a'.repeat(64) }
+          }
+        };
+      }
+    }),
+    1,
+    1,
+    true
+  );
+  await assert.rejects(changed.readFile('changed'), /do not match their revision/);
 });
 
-test('failed reconciliation closes its repository once and leaves the borrowed root usable', async (t) => {
-  const fixture = await createFixture();
-  t.after(async () => { fixture.root.close(); await rm(fixture.parent, { recursive: true, force: true }); });
-  let closed = 0;
-  fixture.repository.close = async () => { closed++; };
-  fixture.repository.reconcile = async () => { throw new Error('Injected reconciliation failure.'); };
-  await assert.rejects(SandboxCommandExecution.create({ resourceLeases: new ResourceLeaseCoordinator(),
-    repository: fixture.repository, rootedFileAuthority: fixture.root, state: fixture.state, ...fixture.evidence,
-    maxRetainedOutputBytes: 1024, createRun: (value) => commandRun(fixture.workspace, value.command), validateAuthorization: () => undefined
-  }), /reconciliation failure/);
-  assert.equal(closed, 1);
-  const derived = fixture.root.derive();
-  derived.close();
+test('workspace authority rejects read-only mutations and a changed environment epoch', async () => {
+  let calls = 0;
+  const sandbox = workspaceSandbox({
+    async transaction() {
+      calls++;
+    },
+    async lstat() {
+      return { kind: 'stat', value: { kind: 'directory', mode: 0o755 } };
+    }
+  });
+  const files = new SandsurfWorkspaceFiles(sandbox, 1, 1, false);
+  await assert.rejects(
+    files.transaction([{ kind: 'remove', path: 'file', expected: { kind: 'any' } }]),
+    /read-only/
+  );
+  assert.equal(calls, 0);
+  sandbox.inspect = async () => ({
+    configurationRevision: 1,
+    machine: { kind: 'current', value: { epoch: 2 } }
+  });
+  await assert.rejects(files.stat('.'), /authority changed/);
 });
 
-test('a background observer seeing receipt retirement reuses the committed settlement', async (t) => {
-  const fixture = await evidenceFixture(t);
-  let releaseObserver;
-  const gate = new Promise((resolve) => { releaseObserver = resolve; });
-  t.after(() => releaseObserver());
-  const inspect = fixture.repository.inspect.bind(fixture.repository);
-  fixture.repository.inspect = async (id, options = {}) => {
-    if (options.maxBytes === 0 && options.waitMs > 0) await gate;
-    return inspect(id, options);
-  };
-  fixture.repository.activate = async (executionId) => {
-    const { requestDigest, output } = settled(executionId);
-    fixture.repository.observations.set(executionId, { kind: 'running', executionId, requestDigest, output, processId: 'native' });
-  };
-  const running = await startCommand(fixture.execution, request());
-  assert.equal(running.status, 'running');
-  fixture.repository.observations.set(running.processId, settled(running.processId));
-  const completed = await fixture.execution.query(running.processId, 4000, 0, 0, owner);
-  assert.equal(completed.exitCode, 0);
-  releaseObserver();
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  const next = await fixture.execution.plan({ ...request(), owner: { ...owner, callIndex: 1 } });
-  await next.release();
-  assert.equal((await fixture.execution.reconcile()).unresolved.length, 0);
-});
-
-test('a failed settlement subscriber cannot change terminal truth or retain execution authority', async (t) => {
-  const fixture = await evidenceFixture(t, { onSettlement: () => { throw new Error('Injected subscriber failure.'); } });
-  const result = await startCommand(fixture.execution, request());
-  assert.equal(result.exitCode, 0);
+test('terminal commands do not acquire input as a prerequisite for observing completion', async (t) => {
+  const fixture = await commandFixture(t);
+  const result = await fixture.execution.start(
+    await fixture.execution.plan({ ...fixture.request, pty: true })
+  );
+  assert.equal(fixture.dispatched.stdio, 'terminal');
   assert.equal(result.status, 'exited');
-  assert.equal(fixture.repository.observations.get(result.processId).kind, 'retired');
-  assert.equal(fixture.execution.resourceLeases.activeCount(), 0);
-  assert.equal((await fixture.execution.query(result.processId, 4000, 0, 0, owner)).exitCode, 0);
+  assert.equal(result.exitCode, 0);
 });
 
-test('running command presentation redacts secrets without changing original stream bytes', async (t) => {
-  const fixture = await evidenceFixture(t);
-  const original = Buffer.from('API_KEY=private-value\n');
-  const progress = [];
-  fixture.repository.activate = async (executionId) => {
-    const value = settled(executionId);
-    fixture.repository.observations.set(executionId, {
-      kind: 'running', executionId, requestDigest: value.requestDigest, processId: 'native',
-      output: { ...output(), cursorEnd: original.length, availableCursorEnd: original.length,
-        stdoutBytes: original.length, stderrBytes: 0,
-        chunks: [
-          { cursorStart: 0, cursorEnd: 10, stream: 'stdout', data: original.subarray(0, 10) },
-          { cursorStart: 10, cursorEnd: original.length, stream: 'stdout', data: original.subarray(10) }
-        ] }
-    });
-  };
-  const result = await startCommand(fixture.execution, request(), { onProgress: (item) => progress.push(item) });
-  assert.equal(result.status, 'running');
-  assert.doesNotMatch(result.stdout.text, /private-value/);
-  assert.doesNotMatch(result.combined.text, /private-value/);
-  assert.equal(result.cursorEnd, original.length);
-  assert.equal(result.stdout.observedBytes, original.length);
-  assert.ok(progress.length > 0);
-  assert.doesNotMatch(progress.map((item) => item.text).join(''), /private-value/);
-  assert.deepEqual(Buffer.concat(fixture.repository.observations.get(result.processId).output.chunks.map((chunk) => chunk.data)), original);
+test('session observers capture terminal settlement after the tool has returned running', async (t) => {
+  const fixture = await commandFixture(t, 'running');
+  const initial = await fixture.start();
+  assert.equal(initial.status, 'running');
+  fixture.flags.mode = 'exited';
+  await t.waitFor(() => assert.equal(fixture.execution.recoveredTerminalReports().length, 1), {
+    timeout: 5000
+  });
+  const [report] = fixture.execution.recoveredTerminalReports();
+  assert.equal(report.result.processId, initial.processId);
+  assert.equal(report.result.exitCode, 0);
+  assert.equal(report.result.originalOutput.kind, 'captured');
+  assert.equal(initial.status, 'running');
+  assert.equal(fixture.flags.spawnCount, 1);
 });

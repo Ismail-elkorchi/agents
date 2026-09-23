@@ -12,11 +12,11 @@
   ],
   "agentCore": {
     "path": "../agent-core",
-    "commit": "bae0802fe95d7c2aefb681133ade923be1eb29c8"
+    "commit": "f4d744e28455661b3c1f31574194f3f5277681fa"
   },
   "sandbox": {
     "path": "../sandbox",
-    "commit": "9cb67029662537a2fb7c5796806acca4e653ed84"
+    "commit": "8baa103dc04bb0c279d56e04d32b9029588efaf3"
   },
   "scripts": {
     "build": "node scripts/verify-source-dependencies.mjs && tsc -b && node scripts/post-build.mjs",
@@ -45,7 +45,7 @@
     "@agent-core/tools-local": "file:../agent-core/packages/tools-local",
     "@agent-core/tui": "file:../agent-core/packages/tui",
     "@eslint/js": "^10.0.1",
-    "@ismail-elkorchi/sandbox": "file:../sandbox/packages/sandbox",
+    "sandsurf": "file:../sandbox/packages/sandbox",
     "@types/node": "^24.13.2",
     "@types/ws": "^8.18.1",
     "eslint": "^10.5.0",

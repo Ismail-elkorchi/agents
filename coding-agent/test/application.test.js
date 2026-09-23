@@ -4,6 +4,10 @@ import test from 'node:test';
 import { promisify } from 'node:util';
 import { openCodingApplication } from '@ismail-elkorchi/coding-agent';
 import { createWorkspace, finalResponse, scriptedOllama, trust } from './fixtures/scripted-cli.js';
+import {
+  withTestCodingEnvironment,
+  createTestCodingEnvironment
+} from './fixtures/test-environment.js';
 
 test('headless package imports do not load executable or terminal adapters', async () => {
   await promisify(execFile)(process.execPath, [
@@ -31,10 +35,12 @@ test(
   { skip: process.platform !== 'linux' },
   async () => {
     const fixture = await createWorkspace({ tools: ['read_files'], checks: [] });
-    const application = await openCodingApplication({
-      root: fixture.root,
-      stateRoot: fixture.stateRoot
-    });
+    const application = await openCodingApplication(
+      withTestCodingEnvironment({
+        root: fixture.root,
+        stateRoot: fixture.stateRoot
+      })
+    );
     const events = [];
     let failedCalls = 0;
     let observerFailure;
@@ -89,7 +95,7 @@ test(
       stateRoot: fixture.stateRoot,
       providerEndpoint: provider.endpoint
     };
-    const application = await openCodingApplication(options);
+    const application = await openCodingApplication(withTestCodingEnvironment(options));
     const events = [];
     application.subscribe(
       (event) => events.push(event),
@@ -134,10 +140,12 @@ test(
     } finally {
       await application.close();
     }
-    const restored = await openCodingApplication({
-      ...options,
-      sessionSelection: { kind: 'existing', id: sessionId }
-    });
+    const restored = await openCodingApplication(
+      withTestCodingEnvironment({
+        ...options,
+        sessionSelection: { kind: 'existing', id: sessionId }
+      })
+    );
     try {
       await restored.start();
       const view = await restored.readSession();
@@ -158,13 +166,15 @@ test(
     const provider = await offlineCodex(t, 'No changes are necessary.');
     const fixture = await createWorkspace({ tools: ['read_files'], checks: [] });
     await trust(fixture);
-    const app = await openCodingApplication({
-      root: fixture.root,
-      stateRoot: fixture.stateRoot,
-      provider: 'openai-codex',
-      model: 'gpt-5.6-luna',
-      providerEndpoint: provider.endpoint
-    });
+    const app = await openCodingApplication(
+      withTestCodingEnvironment({
+        root: fixture.root,
+        stateRoot: fixture.stateRoot,
+        provider: 'openai-codex',
+        model: 'gpt-5.6-luna',
+        providerEndpoint: provider.endpoint
+      })
+    );
     t.after(async () => {
       await app.close();
       await fixture.close();
@@ -193,13 +203,15 @@ test(
     ]);
     const fixture = await createWorkspace({ endpoint: provider.endpoint, tools: [], checks: [] });
     await trust(fixture);
-    const application = await openCodingApplication({
-      root: fixture.root,
-      stateRoot: fixture.stateRoot,
-      provider: 'ollama',
-      model: 'v0-scripted',
-      providerEndpoint: provider.endpoint
-    });
+    const application = await openCodingApplication(
+      withTestCodingEnvironment({
+        root: fixture.root,
+        stateRoot: fixture.stateRoot,
+        provider: 'ollama',
+        model: 'v0-scripted',
+        providerEndpoint: provider.endpoint
+      })
+    );
     t.after(async () => {
       await application.close();
       await provider.close();
@@ -229,5 +241,46 @@ test(
         (entry) => entry.type === 'input' && entry.task.includes('café')
       )
     );
+  }
+);
+
+test(
+  'file attachments and completion observe the execution workspace, not the import source',
+  { skip: process.platform !== 'linux' },
+  async (t) => {
+    const provider = await scriptedOllama([]);
+    const host = await createWorkspace({
+      endpoint: provider.endpoint,
+      tools: ['read_files'],
+      checks: [],
+      files: { 'source.txt': 'host original' }
+    });
+    const guest = await createWorkspace({
+      tools: ['read_files'],
+      checks: [],
+      files: { 'source.txt': 'guest revision', 'guest-only.txt': 'new' }
+    });
+    t.after(async () => {
+      await provider.close();
+      await host.close();
+      await guest.close();
+    });
+    await trust(host);
+    const application = await openCodingApplication({
+      root: host.root,
+      stateRoot: host.stateRoot,
+      providerEndpoint: provider.endpoint,
+      environmentFactory: (options) =>
+        createTestCodingEnvironment({ ...options, hostWorkspaceRoot: guest.root })
+    });
+    try {
+      await application.start();
+      const snapshot = await application.readContext('source.txt', new AbortController().signal);
+      assert.equal(snapshot.content, 'guest revision');
+      assert.match(snapshot.sourceUri, /^workspace:/);
+      assert.ok((await application.listFiles()).some((entry) => entry.path === 'guest-only.txt'));
+    } finally {
+      await application.close();
+    }
   }
 );

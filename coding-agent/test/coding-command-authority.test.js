@@ -1,98 +1,136 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { InMemoryArtifactRepository, InMemoryEventRepository } from '@agent-core/persistence';
 import { agentEventCodec } from '@agent-core/runtime';
-import { RootedFileAuthority } from '@agent-core/tools-local';
-import { createCodingCommandAuthority } from '../dist/execution/coding-command-authority.js';
+import { Sandsurf } from 'sandsurf';
+import { openCodingEnvironment } from '../dist/execution/coding-command-authority.js';
 import { PrivateStateDirectory } from '../dist/state/private-state.js';
 
 test(
-  'production command authority selects a native sandbox and confines the observed command environment',
-  { skip: process.platform !== 'linux' },
-  async () => {
-    const parent = await mkdtemp(path.join(tmpdir(), 'coding-agent-toolchain-'));
+  'coding environment uses one persistent guest workspace and never writes through implicitly',
+  {
+    skip: process.env.SANDSURF_KVM_TEST !== '1',
+    timeout: 1_200_000
+  },
+  async (t) => {
+    const parent = await mkdtemp(path.join(tmpdir(), 'coding-sandsurf-'));
     const workspace = path.join(parent, 'workspace');
     await mkdir(workspace);
-    await writeFile(path.join(parent, 'host-secret'), 'not admitted');
-    const root = RootedFileAuthority.adopt(workspace);
+    await writeFile(path.join(workspace, 'source.txt'), 'host original');
     const state = await PrivateStateDirectory.create(path.join(parent, 'state'));
-    let execution;
-    try {
-      execution = await createCodingCommandAuthority({
-        repositoryDirectory: path.join(parent, 'executions'),
-        rootedFileAuthority: root,
-        state, events: new InMemoryEventRepository(agentEventCodec), artifacts: new InMemoryArtifactRepository()
+    const events = new InMemoryEventRepository(agentEventCodec);
+    const artifacts = new InMemoryArtifactRepository();
+    let environment;
+    t.after(async () => {
+      await environment?.close();
+      const cleanup = await Sandsurf.open({
+        directory: path.join(parent, 'environment', 'host'),
+        authorizer: (change) => change.kind === 'lifecycle'
       });
-      const script = `
-        const fs = require('node:fs');
-        const assert = require('node:assert/strict');
-        assert.equal(process.env.CI, undefined);
-        assert.equal(fs.existsSync(${JSON.stringify(path.join(parent, 'host-secret'))}), false);
-        fs.writeFileSync('created.txt', 'workspace write');
-        console.log(process.execPath);
-      `;
-      const owner = {
-        ownerId: 'toolchain',
+      try {
+        for (const sandbox of await cleanup.sandboxes.list()) await sandbox.destroy();
+      } finally {
+        await cleanup.close();
+      }
+      await rm(parent, { recursive: true, force: true });
+    });
+    environment = await openCodingEnvironment({
+      repositoryDirectory: path.join(parent, 'environment'),
+      hostWorkspaceRoot: workspace,
+      workspaceId: 'workspace-test',
+      state,
+      events,
+      artifacts,
+      commandExecution: true,
+      writable: true
+    });
+    assert.equal(
+      new TextDecoder().decode((await environment.files.readFile('source.txt')).bytes),
+      'host original'
+    );
+    await environment.files.transaction([
+      {
+        kind: 'write',
+        path: 'source.txt',
+        bytes: new TextEncoder().encode('guest changed'),
+        mode: 0o644,
+        expected: { kind: 'any' }
+      }
+    ]);
+    assert.equal(await readFile(path.join(workspace, 'source.txt'), 'utf8'), 'host original');
+    const execution = environment.commandExecution;
+    for (const [callIndex, pty] of [false, true].entries()) {
+      const request = await execution.plan({
+        command:
+          "printf 'command output\\n' && printf 'created by command\\n' > command-created.txt",
+        rootedDirectory: '.',
+        pty,
+        lifetime: 'job',
+        timeoutMs: 15_000,
+        yieldMs: 1000,
+        outputTokenBudget: 1000,
+        owner: { ownerId: 'session', runId: 'run', turnId: 'turn', toolBatchId: 'batch', callIndex }
+      });
+      let result = await execution.start(request);
+      while (result.status === 'running')
+        result = await execution.query(result.processId, 1000, 1000, 0);
+      assert.equal(result.status, 'exited', result.diagnostic);
+      assert.equal(result.exitCode, 0, result.combined.text);
+      assert.match(result.combined.text, /command output/);
+      assert.equal(result.originalOutput.kind, 'captured');
+    }
+    assert.equal(
+      new TextDecoder().decode((await environment.files.readFile('command-created.txt')).bytes),
+      'created by command\n'
+    );
+    const reconnectedId = environment.sandbox.id;
+    await environment.close();
+    environment = await openCodingEnvironment({
+      repositoryDirectory: path.join(parent, 'environment'),
+      hostWorkspaceRoot: workspace,
+      workspaceId: 'workspace-test',
+      state,
+      events,
+      artifacts,
+      commandExecution: true,
+      writable: true
+    });
+    assert.equal(environment.sandbox.id, reconnectedId);
+    assert.equal(
+      new TextDecoder().decode((await environment.files.readFile('source.txt')).bytes),
+      'guest changed'
+    );
+    const writable = await environment.commandExecution.plan({
+      command: 'test -w source.txt',
+      rootedDirectory: '.',
+      pty: false,
+      lifetime: 'job',
+      timeoutMs: 15_000,
+      yieldMs: 1000,
+      outputTokenBudget: 1000,
+      owner: {
+        ownerId: 'session',
         runId: 'run',
         turnId: 'turn',
         toolBatchId: 'batch',
-        callIndex: 0
-      };
-      const reservation = await execution.plan({
-        command: `node -e '${script.replaceAll("'", "'\\''")}' && npm --version`,
-        rootedDirectory: '.',
-        pty: false,
-        timeoutMs: 10_000,
-        yieldMs: 1_000,
-        outputTokenBudget: 1_000,
-        owner
-      });
-      assert.match(reservation.authorization.confinement, /^(isolated workspace|workspace confined)$/u);
-      assert.equal(
-        reservation.authorization.summary.filesystem.resources.find(
-          (resource) => resource.id === 'workspace'
-        ).target.path,
-        await realpath(workspace)
+        callIndex: 2
+      }
+    });
+    let ownership = await environment.commandExecution.start(writable);
+    while (ownership.status === 'running')
+      ownership = await environment.commandExecution.query(
+        ownership.processId,
+        1000,
+        1000,
+        ownership.cursorEnd
       );
-      let result = await execution.start(reservation);
-      while (result.status === 'running')
-        result = await execution.query(result.processId, 1_000, 1_000, 0, owner);
-      assert.equal(result.status, 'exited', result.diagnostic);
-      assert.equal(result.exitCode, 0, result.stderr.text);
-      const lines = result.stdout.text.trim().split('\n');
-      assert.equal(lines[0], await realpath(process.execPath));
-      assert.match(lines[1], /^\d+\.\d+\.\d+$/u);
-      assert.equal(await readFile(path.join(workspace, 'created.txt'), 'utf8'), 'workspace write');
-      assert.equal(await readFile(path.join(parent, 'host-secret'), 'utf8'), 'not admitted');
-    } finally {
-      await execution?.close();
-      root.close();
-      await rm(parent, { recursive: true, force: true });
-    }
+    assert.equal(
+      ownership.exitCode,
+      0,
+      'Sandbox filesystem replacements must remain writable by the configured workload user.'
+    );
   }
 );
-
-test('command discovery resolves an executable shell and absolute runtime roots', async () => {
-  const { discoverCodingCommandEnvironment } = await import(
-    '../dist/execution/sandbox-policy.js'
-  );
-  const environment = await discoverCodingCommandEnvironment();
-  assert.equal(path.isAbsolute(environment.shellPath), true);
-  assert.equal(environment.runtimeRoots.length > 0, true);
-  assert.equal(
-    environment.runtimeRoots.every(
-      (root) => path.isAbsolute(root.sourcePath) && path.isAbsolute(root.targetPath)
-    ),
-    true
-  );
-  assert.equal(
-    environment.runtimeRoots.some((root) => {
-      const relative = path.relative(root.sourcePath, environment.shellPath);
-      return relative === '' || (!path.isAbsolute(relative) && !relative.startsWith('..'));
-    }),
-    true
-  );
-});

@@ -27,8 +27,6 @@ import {
   readRootedText
 } from '@agent-core/tools-local';
 import { randomUUID } from 'node:crypto';
-import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { readRecordedMutationPatches, readRunChangeReport } from '../changes/run-change-report.js';
 import { resolveCodingAuthority, type CodingPermissionMode } from '../security/permission-mode.js';
 import { createTrustDecision } from '../security/workspace-trust.js';
@@ -73,7 +71,8 @@ export class CodingApplication {
   private runtimeUnsubscribe: (() => void) | undefined;
   private selectedSessionId: string | undefined;
   private modelOverride:
-    { readonly selection: ModelSelection; readonly adapter: ModelProvider } | undefined;
+    | { readonly selection: ModelSelection; readonly adapter: ModelProvider }
+    | undefined;
   private resolvedSettings: RuntimeSettingsSelection = {};
   private configurationLoaded = false;
   private started = false;
@@ -132,10 +131,10 @@ export class CodingApplication {
     this.assertOpen();
     const decision = this.workspace.security.decide('workspace_read');
     if (decision.kind !== 'allowed') throw new Error(decision.reason);
-    const root = this.workspace.fileRoot;
+    const root = this.requireRuntime().fileRoot;
     const snapshot = await readRootedText(
       root,
-      root.canonicalPath(filePath),
+      root.normalize(filePath),
       DEFAULT_LOCAL_TOOL_CONFIGURATION.readFiles.maxBytesPerFile,
       signal
     );
@@ -143,7 +142,7 @@ export class CodingApplication {
       id: `file:${snapshot.sha256}`,
       title: snapshot.path,
       sourceKind: 'user',
-      sourceUri: pathToFileURL(path.join(root.identity.canonicalPath, snapshot.path)).href,
+      sourceUri: `workspace:${root.descriptor.workspaceId}/${snapshot.path}`,
       integrity: 'verified',
       representation: 'full',
       mediaType: 'text/plain',
@@ -158,10 +157,10 @@ export class CodingApplication {
     if (decision.kind !== 'allowed') throw new Error(decision.reason);
     const runtime = this.requireRuntime();
     const profile = await runtime.provider.describeModel(runtime.agent.state().configuration.model);
-    const root = this.workspace.fileRoot;
+    const root = this.requireRuntime().fileRoot;
     if (!profile.modalities.input.includes('image'))
       throw new Error('The selected model does not accept images. Choose an image-capable model.');
-    const canonical = root.canonicalPath(filePath);
+    const canonical = root.normalize(filePath);
     const result = await readRootedImage(
       root,
       canonical,
@@ -227,22 +226,23 @@ export class CodingApplication {
     this.assertOpen();
     const decision = this.workspace.security.decide('workspace_read');
     if (decision.kind !== 'allowed') throw new Error(decision.reason);
-    const canonical = this.workspace.fileRoot.canonicalPath(directory);
-    const handle = await this.workspace.fileRoot.openDirectory(canonical);
-    try {
-      return (await handle.entries())
-        .flatMap((entry) => {
-          const path = canonical === '.' ? entry.name : `${canonical}/${entry.name}`;
-          return entry.name.startsWith(prefix) &&
-            !this.workspace.fileRoot.isReservedPath(path) &&
-            (entry.type === 'file' || entry.type === 'directory')
-            ? [{ path, kind: entry.type }]
-            : [];
-        })
-        .sort((left, right) => left.path.localeCompare(right.path));
-    } finally {
-      await handle.close();
+    const root = this.requireRuntime().fileRoot;
+    const canonical = root.normalize(directory);
+    const entries: { path: string; kind: 'file' | 'directory' }[] = [];
+    let visited = 0;
+    for await (const entry of root.list(canonical)) {
+      if (++visited > 4096 || entries.length >= 256) break;
+      if (!entry.name.startsWith(prefix) || (entry.type !== 'file' && entry.type !== 'directory'))
+        continue;
+      const pathname = canonical === '.' ? entry.name : `${canonical}/${entry.name}`;
+      try {
+        root.normalize(pathname);
+      } catch {
+        continue;
+      }
+      entries.push({ path: pathname, kind: entry.type });
     }
+    return entries.sort((left, right) => left.path.localeCompare(right.path));
   }
 
   close(): Promise<void> {

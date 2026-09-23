@@ -47,7 +47,9 @@ export function processControls(
           );
         if (hashJson(current.owner) !== hashJson(acknowledge.owner))
           throw new Error('Command owner does not match.');
-        await authority.acknowledgeUnresolved([current.processId]);
+        await authority.acknowledgeUnresolved([
+          { processId: current.processId, revision: acknowledge.revision }
+        ]);
       }
       await authority.retryReconciliation();
       return (await authority.listProcesses()).map((item) => ({ ...item, sessionId }));

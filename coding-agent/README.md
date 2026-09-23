@@ -1,6 +1,6 @@
 # Coding Agent
 
-Coding Agent is a conversational coding application composed from Agent Core. It works in the selected workspace, keeps durable conversation history, and exposes the same application service through its CLI, TUI, package API, and JSON-RPC adapter. Its contracts are pre-alpha and may change without compatibility layers.
+Coding Agent is a conversational coding application composed from Agent Core. It works in a persistent Linux guest imported from the selected host workspace, keeps durable conversation history, and exposes the same application service through its CLI, TUI, package API, and JSON-RPC adapter. Its contracts are pre-alpha and may change without compatibility layers.
 
 ## Start the application
 
@@ -54,17 +54,19 @@ Permission modes are:
 | `edit` | Reads and structured patches |
 | `develop` | Reads, structured patches, and sandboxed commands |
 
-Authorized patches change the selected workspace directly and return their committed transaction receipt before the model observes success. Unrelated workspace changes are preserved. A later failure does not roll back an earlier successful edit. Run change reports are derived from authoritative `apply_patch` start and result records; command-created and external changes remain separate workspace facts.
+File tools, attachments, repository guidance, checks, and commands use the same guest `/workspace`. Authorized patches commit through native guest filesystem transactions. A later failure does not roll back an earlier successful edit. The original host directory is an import source: guest edits do not write through, and reopening reconnects the existing guest rather than importing again. Host publication and re-import are not exposed by this application yet. Run change reports describe recorded patches, not publication or a complete inventory of command-created changes.
 
 Runs, sessions, artifacts, journals, trust decisions, and user model settings live in the platform user-state directory. `--state-root` selects another dedicated state directory outside the workspace. Coding Agent does not create private state inside the project.
 
 ## Command execution
 
-Command execution initializes on first use. Coding Agent observes the active platform shell, search path, Node installation, and runtime roots. On Linux it first prepares Sandbox's isolated namespace layout, then prepares the stable host-layout confinement backend when the strict requirements are unavailable. macOS and Windows use their stable native host-layout backends. Selection completes before effect authorization and remains bound for dispatch and recovery.
+Opening a coding session creates or reconnects a persistent Sandsurf Linux environment. The verified image supplies the shell and tools; commands run as the guest `agent` user without inherited host credentials or network grants. The selected permission mode sets host-issued read, write, and spawn capabilities. Missing or incompatible environment state fails explicitly and is never replaced by replaying prior effects.
 
-Both layouts grant workspace writes, grant observed toolchain inputs read-only, pass an explicit environment, deny network access, and own process termination. The authorization report identifies the result as `isolated workspace` or `workspace confined`. If no backend satisfies the policy, command tools report the unmet Sandbox requirement; questions, reads, and structured patches remain available.
+Commands support pipes and PTYs. `write_stdin` and `stop_process` operate on session-owned processes across model runs. Ordinary jobs own their descendants; an explicitly selected `environment` lifetime can continue beyond a tool call or session connection. Closing the application detaches clients without destroying the guest. Terminal input is acquired only when needed.
 
-Sandbox currently exposes no PTY capability, so commands use pipes for stdin, stdout, and stderr. `write_stdin` and `stop_process` operate on recorded live processes.
+Original output is captured independently of bounded model/UI views. Known terminal outcomes remain authoritative after runtime evidence becomes unavailable. Missing logs, unavailable controls, and unknown execution outcomes remain distinct; accepting uncertainty never certifies success or replays a command.
+
+Sandsurf requires a qualified virtualization host and sufficient persistent storage. Current Coding Agent startup still uses Core's Linux host-root authority for trust identity and project-configuration discovery; the application's macOS/Windows startup path is not yet qualified. The pinned Sandsurf build also fails the live file-ownership check: a file replaced through its filesystem API can become unwritable by the normal guest user. Writing Agent has no Sandsurf or virtualization dependency.
 
 ## Repository guidance
 
@@ -130,6 +132,8 @@ The repository pins exact Agent Core, Sandbox, terminal-ui, and markspan revisio
 ```bash
 npm run verify:release
 ```
+
+On a Linux KVM host, exercise real guest import, file transactions, pipe/PTY commands, and reconnect with `SANDSURF_KVM_TEST=1 node --test coding-agent/test/coding-command-authority.test.js`. Test storage must fit the guest disk; select a disk-backed `TMPDIR` if the default temporary filesystem is too small.
 
 When a model cannot use selected native state, the model selector offers **Continue fresh in this session** as an explicit second action. This preserves the session and original history, continuing from selected portable user contributions, answers, complete tool observations and selected notes. Pending or uncertain work must be resolved first; unsupported selected images remain a conflict. Continuing processes retain their original controls.
 

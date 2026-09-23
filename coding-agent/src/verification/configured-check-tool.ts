@@ -8,7 +8,8 @@ import {
   type CommandExecution,
   type CommandExecutionOwner,
   type CommandExecutionResult,
-  type CompiledToolDefinition
+  type CompiledToolDefinition,
+  type WorkspaceFiles
 } from '@agent-core/tools';
 import { fileScope, processScope, type RootedFileAuthority } from '@agent-core/tools-local';
 import type {
@@ -135,7 +136,7 @@ export async function readConfiguredCheckResults(
   events: EventRepository<AgentEvent>,
   runId: string,
   configuration: Pick<CodingAgentConfiguration, 'verification'> | undefined,
-  root?: RootedFileAuthority,
+  root?: RootedFileAuthority | WorkspaceFiles,
   artifacts?: ArtifactRepository
 ): Promise<CodingRunVerification> {
   let queues = refreshQueues.get(events);
@@ -159,7 +160,7 @@ async function readCheckResults(
   events: EventRepository<AgentEvent>,
   runId: string,
   configuration: Pick<CodingAgentConfiguration, 'verification'> | undefined,
-  root?: RootedFileAuthority,
+  root?: RootedFileAuthority | WorkspaceFiles,
   artifacts?: ArtifactRepository
 ): Promise<CodingRunVerification> {
   let runs = indexes.get(events);
@@ -315,7 +316,7 @@ export function createConfiguredCheckTool(input: {
   readonly required: readonly CodingAgentCheckConfiguration[];
   readonly advisory: readonly CodingAgentCheckConfiguration[];
   readonly commandExecution: CommandExecution;
-  readonly root: RootedFileAuthority;
+  readonly root: RootedFileAuthority | WorkspaceFiles;
 }): CompiledToolDefinition {
   const checks = new Map(
     configuredDefinitions(input.required, input.advisory).map((definition) => [
@@ -418,10 +419,18 @@ export function createConfiguredCheckTool(input: {
                   result.processId,
                   8192,
                   1000,
-                  0,
+                  result.cursorEnd,
                   check.owner
                 );
             }
+            if (result.cursorStart > 0)
+              result = await input.commandExecution.query(
+                result.processId,
+                8192,
+                0,
+                0,
+                check.owner
+              );
           } catch (error) {
             executionError = error instanceof Error ? error.message : String(error);
           }
@@ -433,9 +442,7 @@ export function createConfiguredCheckTool(input: {
             result.combined.endsAtOutputEnd &&
             result.combined.omittedBytes === 0;
           const processStatus =
-            executionError !== undefined || !result || result.status === 'running'
-              ? ('unknown' as const)
-              : result.status;
+            !result || result.status === 'running' ? ('unknown' as const) : result.status;
           const status = checkOutcome(processStatus, result?.exitCode);
           return {
             kind: 'result' as const,
