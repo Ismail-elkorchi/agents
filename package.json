@@ -12,7 +12,7 @@
   ],
   "agentCore": {
     "path": "../agent-core",
-    "commit": "2b6132fe2d7b6feace5d2f4936d025769cf7e88b"
+    "commit": "12a822c6b71285d892b2e2a1f22e3b43f00faf9f"
   },
   "sandbox": {
     "path": "../sandbox",
