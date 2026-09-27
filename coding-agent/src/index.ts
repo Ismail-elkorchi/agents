@@ -27,7 +27,6 @@ export {
   type CodingAuthority,
   type CodingPermissionMode
 } from './security/permission-mode.js';
-export { protectProviderEgress, redactSensitiveText } from './security/provider-egress.js';
 export { createTrustDecision } from './security/workspace-trust.js';
 export {
   closeCodingSession,

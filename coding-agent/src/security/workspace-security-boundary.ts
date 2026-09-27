@@ -1,11 +1,11 @@
-import type { ModelProvider } from '@agent-core/model';
+import type { CompiledModelRequest } from '@agent-core/model';
 import type { ToolAuthorizationDecision, ToolAuthorizationRequest } from '@agent-core/tools';
 import {
   adoptWorkspaceContent,
   type ProvenancedWorkspaceContent,
   type WorkspaceContentKind
 } from './content-provenance.js';
-import { protectProviderEgress, type ProviderEgressPolicy } from './provider-egress.js';
+import { admitProviderEgress } from './provider-egress.js';
 import type { CodingWorkspaceIdentity } from './workspace-identity.js';
 import {
   decideToolEffects,
@@ -35,13 +35,8 @@ export class WorkspaceSecurityBoundary {
     return Object.freeze({ decision: 'deny', reason: decision.reason });
   }
 
-  protectProvider(provider: ModelProvider, policy?: ProviderEgressPolicy): ModelProvider {
-    return protectProviderEgress({
-      provider,
-      workspace: this.workspace,
-      trustLevel: this.trustLevel,
-      ...(policy ? { policy } : {})
-    });
+  admitProviderRequest(request: CompiledModelRequest): void {
+    admitProviderEgress(request, this.trustLevel);
   }
 
   adoptContent(input: {

@@ -171,12 +171,44 @@ try {
         stateRoot: path.join(root, '..', 'state'),
         sessionSelection: { kind: 'new' }
       });
+      const measured = new Map();
+      const measurementErrors = [];
+      const unsubscribe = app.subscribe(event => {
+        if (event.type === 'delivery.gap') {
+          measurementErrors.push('Application event delivery lost events; metrics are incomplete.');
+          return;
+        }
+        if (event.type !== 'run.progress') return;
+        let metrics = measured.get(event.runId);
+        if (!metrics) {
+          metrics = {
+            generationRequests: 0,
+            estimatedGenerationPromptTokens: 0,
+            estimatedGenerationToolSchemaTokens: 0,
+            toolCalls: [], toolFailures: 0, timedOutToolResults: 0,
+            contextRenewals: 0, modelInterruptions: 0
+          };
+          measured.set(event.runId, metrics);
+        }
+        const progress = event.event;
+        if (progress.type === 'model.requested') {
+          metrics.generationRequests++;
+          metrics.estimatedGenerationPromptTokens += progress.estimate.totalPromptTokens;
+          metrics.estimatedGenerationToolSchemaTokens += progress.estimate.toolSchemaTokens;
+        } else if (progress.type === 'tool.started') metrics.toolCalls.push(progress.toolName);
+        else if (progress.type === 'tool.ended') {
+          if (progress.observation.kind === 'failure') metrics.toolFailures++;
+          if (progress.observation.output?.status === 'timed_out') metrics.timedOutToolResults++;
+        } else if (progress.type === 'context.transitioned') metrics.contextRenewals++;
+        else if (progress.type === 'assistant.interrupted') metrics.modelInterruptions++;
+      }, error => { measurementErrors.push(error.message); });
       const steps = [];
-      report.trials.push({ scenario: scenario.id, trial, steps });
+      report.trials.push({ scenario: scenario.id, trial, steps, measurementErrors });
       try {
         await app.start();
         await app.selectWorkspaceTrust('trusted');
         for (const step of scenario.steps) {
+          const startedAt = performance.now();
           const accepted = await app.submit({ task: step.task });
           if (accepted.kind !== 'started')
             throw new Error(`Submission was ${accepted.kind}.`);
@@ -201,7 +233,6 @@ try {
           }
           const terminal =
             result.state === 'ended' ? result.terminal : undefined;
-          const history = await app.readSession();
           const record = {
             task: step.task,
             runId: accepted.runId,
@@ -209,12 +240,8 @@ try {
             response: terminal?.modelOutput.message,
             budget: terminal?.budget,
             terminationReason: terminal?.terminationReason,
-            tools: history.history.entries
-              .filter(
-                (entry) =>
-                  entry.runId === accepted.runId && entry.type === 'tool_call'
-              )
-              .map((entry) => entry.call.name),
+            elapsedMs: performance.now() - startedAt,
+            metrics: measured.get(accepted.runId),
             checks,
             passed:
               terminal?.executionStatus === 'completed' &&
@@ -232,6 +259,7 @@ try {
           error: error instanceof Error ? error.message : String(error)
         });
       } finally {
+        unsubscribe();
         await app.close();
       }
       await saveReport();

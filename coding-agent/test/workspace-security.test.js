@@ -7,7 +7,9 @@ import { RootedFileAuthority } from '@agent-core/tools-local';
 import { createSessionBinding } from '@agent-core/runtime';
 import { adoptWorkspaceContent } from '../dist/security/content-provenance.js';
 import { classifyImplicitExecution, implicitExecutionSurfaces } from '../dist/security/implicit-execution.js';
-import { protectProviderEgress, redactSensitiveText } from '../dist/security/provider-egress.js';
+import { admitProviderEgress } from '../dist/security/provider-egress.js';
+import { InferenceService } from '@agent-core/runtime';
+import { redactJson } from '@agent-core/persistence';
 import { identifyCodingWorkspace } from '../dist/security/workspace-identity.js';
 import { createTrustDecision, decideToolEffects, decideWorkspaceAction, isSensitiveWorkspacePath } from '../dist/security/workspace-trust.js';
 import { WorkspaceSecurityBoundary } from '../dist/security/workspace-security-boundary.js';
@@ -132,31 +134,30 @@ test('workspace content preserves provenance while making deceptive controls vis
   assert.equal(bounded.provenance.truncated, true);
 });
 
-test('provider egress blocks untrusted workspaces, secrets, and oversized requests before I/O', async () => {
-  const workspace = Object.freeze({ id: 'workspace-' + 'c'.repeat(64), platform: process.platform, canonicalPath: '/workspace', device: '1', inode: '2', mountId: '3' });
+test('provider admission rejects credentials before I/O and accepts redacted source code', async () => {
   let calls = 0;
   const provider = {
     id: 'scripted',
     implementationId: 'agents.tests.workspace-security-provider@1',
     describe: () => ({ id: 'scripted', displayName: 'Scripted', defaultModel: 'test' }),
-    describeModel: async () => ({ id: 'test', provider: 'scripted', capabilities: { streaming: false, toolCalling: false, supportedToolInputs: [], jsonMode: false, jsonSchema: false, logprobs: false, temperature: false, topP: false }, modalities: { input: ['text'], output: ['text'] }, limits: {}, supportedParameters: [] }),
-    requestRecovery: () => ({ kind: 'unknown' }),
+    describeModel: async () => ({ id: 'test', provider: 'scripted', capabilities: { streaming: false, toolCalling: false, supportedToolInputs: [], jsonMode: false, jsonSchema: false, logprobs: false, temperature: false, topP: false }, modalities: { input: ['text'], output: ['text'] }, limits: { contextTokens: 32000, outputTokens: 512 }, supportedParameters: ['maxOutputTokens'] }),
     async complete() { calls += 1; return { content: 'done', model: 'test', provider: 'scripted', terminationReason: 'stop' }; }
   };
-  const request = { model: 'test', messages: [{ role: 'user', content: 'hello' }] };
-  await assert.rejects(protectProviderEgress({ provider, workspace, trustLevel: 'untrusted' }).complete(request), /not been admitted/u);
-  await assert.rejects(protectProviderEgress({ provider, workspace, trustLevel: 'trusted' }).complete({ ...request, messages: [{ role: 'user', content: 'api_key=abcdefghijk' }] }), /sensitive-data/u);
-  await assert.rejects(protectProviderEgress({ provider, workspace, trustLevel: 'trusted', policy: { maxRequestBytes: 4 } }).complete(request), /egress limit/u);
+  const invoke = (content, trustLevel = 'trusted') => InferenceService.inMemory({
+    provider,
+    admitRequest: request => admitProviderEgress(request, trustLevel)
+  }).invoke({ invocationId: 'test', ownerId: 'workspace', purpose: 'test', outputReservation: 100,
+    request: { model: 'test', messages: [{ role: 'user', content }] }
+  });
+  await assert.rejects(invoke('hello', 'untrusted'), /not been admitted/u);
+  await assert.rejects(invoke('sk-' + 'x'.repeat(24)), /unredacted credentials/u);
   assert.equal(calls, 0);
-  const receipts = [];
-  const protectedProvider = protectProviderEgress({ provider, workspace, trustLevel: 'trusted', policy: { onAdmitted: receipt => receipts.push(receipt) } });
-  assert.deepEqual(protectedProvider.requestRecovery(request), { kind: 'unknown' });
-  const response = await protectedProvider.complete(request);
-  assert.equal(response.content, 'done');
-  assert.equal(calls, 1);
-  assert.equal(receipts.length, 1);
-  assert.equal(receipts[0].workspaceId, workspace.id);
-  assert.doesNotMatch(redactSensitiveText('password=abcdefghijk\u001b[2J'), /abcdefghijk|\u001b/u);
+  const source = "new OpenAIProvider({ apiKey: 'test' });";
+  assert.equal(redactJson(source).value, source);
+  assert.equal((await invoke(source)).response.content, 'done');
+  await invoke('apiKey: [REDACTED]');
+  await invoke(redactJson('API_TOKEN=private-value').value);
+  assert.equal(calls, 3);
 });
 
 test('every implicit repository execution surface is classified as a sandboxed effect', () => {

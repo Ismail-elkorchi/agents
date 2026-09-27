@@ -7,7 +7,6 @@ const sourceRoot = path.resolve(import.meta.dirname, '..', 'src');
 const sources = readdirSync(sourceRoot, { recursive: true, withFileTypes: true })
   .filter((entry) => entry.isFile() && entry.name.endsWith('.ts'))
   .map((entry) => path.join(entry.parentPath, entry.name));
-const providerBoundaryAdapters = new Set([path.join(sourceRoot, 'security', 'provider-egress.ts')]);
 
 test('Coding Agent public and persisted contracts use the shared glossary', () => {
   const violations = [];
@@ -22,7 +21,7 @@ test('Coding Agent public and persisted contracts use the shared glossary', () =
     }
     for (const match of source.matchAll(prohibitedPersistedTag)) violations.push(`${file}: ${match[0]}`);
 
-    if (!providerBoundaryAdapters.has(file) && /\bprovider\.(?:complete|stream)\s*\(/u.test(source)) {
+    if (/\bprovider\.(?:complete|stream)\s*\(/u.test(source)) {
       violations.push(`${file}: provider invocation bypasses InferenceGateway`);
     }
   }

@@ -108,7 +108,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
 
   await fs.mkdir(workspace.artifactsDir, { recursive: true, mode: 0o700 });
   const artifacts = new LocalArtifactRepository({ rootDir: workspace.artifactsDir });
-  let provider = openedWorkspace.security.protectProvider(options.provider);
+  let provider = options.provider;
   const ownerId = `coding-session:${session.id}`;
   const inferenceRepository = new JsonlInferenceRepository({
     rootDir: path.join(workspace.runtimeDir, 'inference')
@@ -118,6 +118,9 @@ export async function createCodingSession(options: CodingSessionOptions) {
       provider,
       repository: inferenceRepository,
       artifacts,
+      admitRequest: (request) => {
+        openedWorkspace.security.admitProviderRequest(request);
+      },
       ...(options.inferenceBudget === undefined ? {} : { budget: options.inferenceBudget })
     });
   let inference = createInference();
@@ -312,7 +315,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
                   originalOutput: result.originalOutput
                 })
               })) ?? [],
-          contextItems: [workspaceContext(authority)],
+          contextItems: [workspaceContext(authority, workspaceDisplayRoot(environment.files))],
           ...(projectPolicy && configuration?.limits ? { limits: configuration.limits } : {}),
           metadata: {
             workspaceId: workspace.identity.id,
@@ -353,7 +356,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
         return provider;
       },
       setProvider(next: ModelProvider) {
-        provider = openedWorkspace.security.protectProvider(next);
+        provider = next;
         inference = createInference();
       },
       history,
@@ -377,7 +380,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
           },
           available: {
             instructions: (await sessionGuidance.refresh()).instructions,
-            resources: [workspaceContext(authority)],
+            resources: [workspaceContext(authority, workspaceDisplayRoot(environment.files))],
             toolNames: authority.enabledTools
           }
         };
@@ -404,7 +407,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
   }
 }
 
-function workspaceContext(authority: CodingAuthority): PromptContextItemInput {
+function workspaceContext(authority: CodingAuthority, displayRoot: string): PromptContextItemInput {
   return Object.freeze({
     id: 'coding-agent/workspace',
     sourceUri: 'workspace:///',
@@ -414,11 +417,13 @@ function workspaceContext(authority: CodingAuthority): PromptContextItemInput {
     mediaType: 'text/plain; charset=utf-8',
     title: 'Active workspace',
     content: [
+      `Workspace root: ${JSON.stringify(displayRoot)}`,
+      'File-tool paths and command workdir are relative to this root; "." means this root.',
       authority.mode === 'sandbox'
-        ? 'Workspace root: /workspace in Sandsurf. Edits stay in the guest; they do not appear in the host project.'
+        ? 'Sandsurf guest workspace. Edits stay in the guest; they do not appear in the host project.'
         : authority.mode === 'read_only'
-          ? 'Workspace root: the selected host project. Read-only tools are available; edits and commands are disabled.'
-          : 'Workspace root: the selected host project. Commands run under your host account with access to the rest of the system and network.',
+          ? 'Read-only host workspace. Edits and commands are disabled.'
+          : 'Host workspace. Commands run under your host account with access to the rest of the system and network.',
       `Permission mode: ${authority.mode}`,
       `Available workspace tools: ${authority.enabledTools.join(', ') || 'none'}`
     ].join('\n'),
