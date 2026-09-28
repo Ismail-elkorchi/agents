@@ -16,7 +16,7 @@ const target = {
   owner: { ownerId: 'owner', runId: 'run', turnId: 'turn', toolBatchId: 'batch', callIndex: 0 }
 };
 const output = {
-  text: 'Ready\n',
+  segments: ['Ready\n'],
   observedBytes: 6,
   capturedBytes: 6,
   omittedBytes: 0,
@@ -30,7 +30,7 @@ const result = {
   cursorStart: 0,
   cursorEnd: 6,
   stdout: output,
-  stderr: { ...output, text: '' },
+  stderr: { ...output, segments: [], observedBytes: 0, capturedBytes: 0 },
   combined: output
 };
 

@@ -5,6 +5,9 @@ import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 import * as z from 'zod';
 import {
+  createCommandOutputView,
+  ownCommandExecutionRequest,
+  renderCommandOutput,
   adoptCommandExecution,
   createCommandExecutionReservation,
   type CommandExecution,
@@ -98,6 +101,7 @@ export class SandsurfCommandExecution implements CommandExecution {
 
   plan(request: CommandExecutionPlanRequest): Promise<CommandExecutionReservation> {
     this.#ensureOpen();
+    request = ownCommandExecutionRequest(request);
     const identity = hashJson({
       authority: this.descriptor.recoveryIdentity,
       epoch: this.options.epoch,
@@ -114,7 +118,7 @@ export class SandsurfCommandExecution implements CommandExecution {
       request
     });
     const planned: PlannedCommand = {
-      request: ownRequest(request),
+      request,
       processId,
       operationId,
       requestDigest,
@@ -556,12 +560,12 @@ export class SandsurfCommandExecution implements CommandExecution {
         ? [['terminal', presented.terminal] as const]
         : [['stdout', presented.stdout] as const, ['stderr', presented.stderr] as const];
       for (const [index, [stream, view]] of views.entries())
-        if (view.text.length > 0)
+        if (view.segments.length > 0)
           await deliverProgress(options.onProgress, {
             type: 'output',
             stream,
             sequence: index,
-            text: view.text,
+            text: renderCommandOutput({ ...view, startsAtOutputStart: afterCursor > 0 || view.startsAtOutputStart, endsAtOutputEnd: true }),
             observedBytes: view.observedBytes
           });
     }
@@ -613,17 +617,21 @@ export class SandsurfCommandExecution implements CommandExecution {
       'stdout',
       afterCursor,
       cursorEnd,
-      boundary?.stdoutBytes
+      boundary?.stdoutBytes,
+      page.available,
+      boundary ? counter(boundary.omittedBytes) : 0
     );
     const stderr = outputView(
       presentationChunks,
       'stderr',
       afterCursor,
       cursorEnd,
-      boundary?.stderrBytes
+      boundary?.stderrBytes,
+      page.available,
+      boundary ? counter(boundary.omittedBytes) : 0
     );
     const terminal = stored.request.pty
-      ? outputView(presentationChunks, 'terminal', afterCursor, cursorEnd, boundary?.terminalBytes)
+      ? outputView(presentationChunks, 'terminal', afterCursor, cursorEnd, boundary?.terminalBytes, page.available, boundary ? counter(boundary.omittedBytes) : 0)
       : undefined;
     const combinedObserved = boundary
       ? counter(boundary.finalCursor) + counter(boundary.omittedBytes)
@@ -633,7 +641,9 @@ export class SandsurfCommandExecution implements CommandExecution {
       undefined,
       afterCursor,
       cursorEnd,
-      combinedObserved
+      combinedObserved,
+      page.available,
+      boundary ? counter(boundary.omittedBytes) : 0
     );
     const outcome = receipt?.receipt.outcome;
     return {
@@ -926,10 +936,6 @@ export class SandsurfCommandExecution implements CommandExecution {
   }
 }
 
-function ownRequest(request: CommandExecutionPlanRequest): CommandExecutionPlanRequest {
-  return Object.freeze({ ...request, owner: Object.freeze({ ...request.owner }) });
-}
-
 function ownerPath(sandboxId: string, processId: string): string {
   return `sandsurf/processes/${sandboxId}/${processId}.json`;
 }
@@ -977,22 +983,28 @@ function outputView(
   stream: OutputChunk['stream'] | undefined,
   start: number,
   end: number,
-  observedValue: unknown
+  observedValue: unknown,
+  available: number,
+  omitted: number
 ): CommandOutputView {
-  const selected = chunks.filter((chunk) => stream === undefined || chunk.stream === stream);
-  const bytes = Buffer.concat(selected.map((chunk) => Buffer.from(chunk.bytes)));
-  const observed =
-    typeof observedValue === 'number' && Number.isSafeInteger(observedValue)
-      ? observedValue
-      : bytes.byteLength;
-  return {
-    text: redactTextPreservingLength(bytes.toString('utf8')).text,
-    observedBytes: observed,
-    capturedBytes: bytes.byteLength,
-    omittedBytes: Math.max(0, observed - bytes.byteLength),
-    startsAtOutputStart: start === 0,
-    endsAtOutputEnd: end >= observed
-  };
+  const passages: Buffer[][] = [];
+  let previousEnd: number | undefined;
+  for (const chunk of chunks) {
+    if (chunk.cursor !== previousEnd || passages.length === 0) passages.push([]);
+    previousEnd = chunk.cursor + chunk.bytes.length;
+    if (stream === undefined || chunk.stream === stream)
+      passages[passages.length - 1]?.push(Buffer.from(chunk.bytes));
+  }
+  const selected = passages.map((chunks) => Buffer.concat(chunks));
+  const capturedBytes = selected.reduce((total, bytes) => total + bytes.length, 0);
+  const observedBytes = typeof observedValue === 'number' ? observedValue : capturedBytes;
+  return createCommandOutputView({
+    segments: selected.map((bytes) => bytes.toString('utf8')),
+    observedBytes,
+    capturedBytes,
+    startsAtOutputStart: start === 0 && (chunks[0]?.cursor ?? 0) === 0,
+    endsAtOutputEnd: end === available && omitted === 0
+  });
 }
 
 function assertRequester(owner: CommandExecutionOwner, requester?: CommandExecutionOwner): void {

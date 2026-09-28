@@ -83,7 +83,7 @@ test(
     assert.equal(observations.length, 2);
     assert.equal(observations[0].output.effectStarted, false);
     assert(['running', 'exited'].includes(observations[1].output.status));
-    assert.match(observations[1].output.combined.text, /inspected/);
+    assert.match(observations[1].output.combined.segments.join(''), /inspected/);
   }
 );
 

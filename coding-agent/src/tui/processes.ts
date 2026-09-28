@@ -1,4 +1,4 @@
-import type { CommandExecutionResult } from '@agent-core/tools';
+import { renderCommandOutput, type CommandExecutionResult } from '@agent-core/tools';
 import { diagnosticMessage, panel } from '@agent-core/tui';
 import {
   createSearchPickerIndex,
@@ -260,7 +260,7 @@ export function updateProcesses(
             ...state.selected,
             target: { ...state.selected.target, status: message.result.status },
             result: message.result,
-            output: createTextAreaState({ value: message.result.combined.text }),
+            output: createTextAreaState({ value: renderCommandOutput(message.result.combined) }),
             input:
               message.sentInput === state.selected.input
                 ? createTextAreaState({ value: '' })

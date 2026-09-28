@@ -62,6 +62,7 @@ export async function readRunChangeReport(
           ? `${file.path}\0${file.destinationPath}`
           : file.path;
       const previous = changes.get(key);
+      const beforeSha256 = previous?.beforeSha256 ?? file.oldSha256;
       changes.set(
         key,
         Object.freeze({
@@ -79,9 +80,7 @@ export async function readRunChangeReport(
           ...(file.destinationPath === undefined
             ? {}
             : { destinationAbsolutePath: workspacePath(workspaceRoot, file.destinationPath) }),
-          ...((previous?.beforeSha256 ?? file.oldSha256)
-            ? { beforeSha256: previous?.beforeSha256 ?? file.oldSha256 }
-            : {}),
+          ...(beforeSha256 === undefined ? {} : { beforeSha256 }),
           ...(file.newSha256 === undefined ? {} : { afterSha256: file.newSha256 }),
           beforeBytes: previous?.beforeBytes ?? file.oldBytes,
           afterBytes: file.newBytes,

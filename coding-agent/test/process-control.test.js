@@ -158,7 +158,7 @@ test(
     );
     assert.equal(commands.length, 2);
     assert.equal(commands[0].output.status, 'exited');
-    assert.match(commands[0].output.combined.text, /firstlast/u);
+    assert.match(commands[0].output.combined.segments.join(''), /firstlast/u);
     assert.equal(commands[1].output.status, 'timed_out');
   }
 );
@@ -240,7 +240,7 @@ test(
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     assert.equal(result.status, 'exited');
-    assert.match(result.stdout.text, /before restart\nafter restart\n/);
+    assert.match(result.stdout.segments.join(''), /before restart\nafter restart\n/);
     assert.equal(provider.chatRequests.length, 2);
   }
 );

@@ -128,6 +128,7 @@ test(
     assert.equal(result.scope.coverage, 'partial');
     assert.equal(result.output.nextOffset, 10);
     assert.equal(result.output.originalText, '# Heading\n');
+    assert.equal(Object.hasOwn(result.output, 'expectedText'), false);
     const content = tool.buildModelContent({ input, observation: result });
     assert(content[0].text.endsWith('\n\n# Heading\n'));
     assert.equal(result.content, undefined);

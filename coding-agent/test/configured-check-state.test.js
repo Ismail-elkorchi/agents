@@ -42,10 +42,10 @@ async function fixture(t) {
   });
   return { root, directory };
 }
-function executor({ exitCode = 0, status = 'exited', incomplete = false, effect, query } = {}) {
+function executor({ exitCode = 0, status = 'exited', incomplete = false, effect } = {}) {
   const calls = [];
   const output = {
-    text: 'diagnostic',
+    segments: ['diagnostic'],
     observedBytes: 10,
     capturedBytes: 10,
     omittedBytes: incomplete ? 5 : 0,
@@ -67,7 +67,8 @@ function executor({ exitCode = 0, status = 'exited', incomplete = false, effect,
         () => calls.push(['release'])
       );
     },
-    async start(reservation) {
+    async start(reservation, options) {
+      assert.equal(options.awaitTerminal, true, 'execution authority owns completion');
       calls.push(['start', reservation.authorization]);
       await effect?.();
       return {
@@ -82,9 +83,8 @@ function executor({ exitCode = 0, status = 'exited', incomplete = false, effect,
         combined: output
       };
     },
-    async query(...args) {
-      if (!query) throw new Error('unexpected query');
-      return query(...args);
+    async query() {
+      throw new Error('unexpected query');
     },
     async terminate() {
       throw new Error('unexpected terminate');
@@ -522,42 +522,11 @@ test(
   }
 );
 
-test(
-  'checks advance the observation cursor and preserve terminal facts when final presentation is unavailable',
-  { skip: process.platform !== 'linux' },
-  async (t) => {
-    const { root } = await fixture(t);
-    const cursors = [];
-    const execution = executor({
-      status: 'running',
-      async query(processId, _budget, _yieldMs, afterCursor) {
-        cursors.push(afterCursor);
-        if (afterCursor === 0) throw new Error('presentation unavailable');
-        assert.equal(afterCursor, 10, 'poll after the previously delivered output');
-        const view = {
-          text: '',
-          observedBytes: 10,
-          capturedBytes: 0,
-          omittedBytes: 10,
-          startsAtOutputStart: false,
-          endsAtOutputEnd: true
-        };
-        return {
-          processId,
-          owner,
-          status: 'exited',
-          exitCode: 0,
-          cursorStart: 10,
-          cursorEnd: 10,
-          stdout: view,
-          stderr: view,
-          combined: view
-        };
-      }
-    });
-    const { observation } = await run(root, execution);
-    assert.deepEqual(cursors, [10, 0]);
-    assert.equal(observation.output.status, 'passed');
-    assert.equal(observation.output.outputComplete, false);
-  }
-);
+test('checks preserve terminal facts and incomplete output returned by the execution authority', { skip: process.platform !== 'linux' }, async (t) => {
+  const { root } = await fixture(t);
+  const execution = executor({ incomplete: true });
+  const { observation } = await run(root, execution);
+  assert.equal(observation.output.status, 'passed');
+  assert.equal(observation.output.outputComplete, false);
+  assert.match(observation.output.output, /Earlier output not included/);
+});

@@ -5,6 +5,7 @@ import {
   planCommandExecution,
   releaseCommandExecutionPlan,
   startCommandExecutionPlan,
+  renderCommandOutput,
   type CommandExecution,
   type CommandExecutionOwner,
   type CommandExecutionResult,
@@ -409,28 +410,9 @@ export function createConfiguredCheckTool(input: {
             result = await startCommandExecutionPlan(input.commandExecution, reservation, {
               ...(executionContext.signal ? { signal: executionContext.signal } : {}),
               ...(executionContext.resourceLease ? { lease: executionContext.resourceLease } : {}),
-              onProgress: (progress) => executionContext.emitProgress?.(progress)
+              onProgress: (progress) => executionContext.emitProgress?.(progress),
+              awaitTerminal: true
             });
-            while (result.status === 'running') {
-              if (executionContext.signal?.aborted)
-                result = await input.commandExecution.terminate(result.processId, check.owner);
-              else
-                result = await input.commandExecution.query(
-                  result.processId,
-                  8192,
-                  1000,
-                  result.cursorEnd,
-                  check.owner
-                );
-            }
-            if (result.cursorStart > 0)
-              result = await input.commandExecution.query(
-                result.processId,
-                8192,
-                0,
-                0,
-                check.owner
-              );
           } catch (error) {
             executionError = error instanceof Error ? error.message : String(error);
           }
@@ -470,7 +452,7 @@ export function createConfiguredCheckTool(input: {
               ...((executionError ?? result?.diagnostic) === undefined
                 ? {}
                 : { diagnostic: executionError ?? result?.diagnostic }),
-              output: result?.combined.text ?? '',
+              output: result ? renderCommandOutput(result.combined) : '',
               outputComplete,
               testedState: { before, after }
             }

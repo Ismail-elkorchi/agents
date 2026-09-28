@@ -101,7 +101,7 @@ test('terminal capture durably stores every original byte and acknowledges witho
   const events = new InMemoryEventRepository(agentEventCodec);
   const artifacts = new InMemoryArtifactRepository();
   const sink = new SandsurfCommandObservations({ events, artifacts });
-  const bytes = Buffer.from('complete original output');
+  const bytes = Buffer.from('a🙂 café original output');
   const chunk = {
     cursor: 0,
     stream: 'stdout',
@@ -160,7 +160,7 @@ test('terminal capture durably stores every original byte and acknowledges witho
     }
   };
   const view = {
-    text: bytes.toString(),
+    segments: [bytes.toString()],
     observedBytes: bytes.length,
     capturedBytes: bytes.length,
     omittedBytes: 0,
@@ -174,7 +174,7 @@ test('terminal capture durably stores every original byte and acknowledges witho
     cursorStart: 0,
     cursorEnd: bytes.length,
     stdout: view,
-    stderr: { ...view, text: '', observedBytes: 0, capturedBytes: 0 },
+    stderr: { ...view, segments: [], observedBytes: 0, capturedBytes: 0 },
     combined: view,
     exitCode: 0
   };
@@ -184,6 +184,14 @@ test('terminal capture durably stores every original byte and acknowledges witho
   assert.equal(report.result.originalOutput.cursorEnd, bytes.length);
   assert.equal(report.protectedArtifact.visibility, 'protected');
   assert.deepEqual((await sink.terminal(identity)).result, report.result);
+  const page = await sink.present(identity, report.result, 0, 1);
+  assert.equal(page.cursorEnd, 1);
+  assert.deepEqual(page.combined.segments, ['a']);
+  const nextPage = await sink.present(identity, report.result, page.cursorEnd, 1);
+  assert.deepEqual(nextPage.combined.segments, ['🙂']);
+  assert.equal(nextPage.cursorEnd, 5);
+  assert.equal(page.combined.capturedBytes, page.cursorEnd);
+
 });
 
 test('failed application capture leaves Sandsurf originals retained and unacknowledged', async () => {
@@ -259,7 +267,7 @@ test('failed application capture leaves Sandsurf originals retained and unacknow
     }
   };
   const view = {
-    text: bytes.toString(),
+    segments: [bytes.toString()],
     observedBytes: bytes.length,
     capturedBytes: bytes.length,
     omittedBytes: 0,
@@ -273,7 +281,7 @@ test('failed application capture leaves Sandsurf originals retained and unacknow
     cursorStart: 0,
     cursorEnd: bytes.length,
     stdout: view,
-    stderr: { ...view, text: '', observedBytes: 0, capturedBytes: 0 },
+    stderr: { ...view, segments: [], observedBytes: 0, capturedBytes: 0 },
     combined: view,
     exitCode: 0
   };
@@ -446,7 +454,7 @@ test('command execution resumes from a persisted Sandsurf event cursor without p
     const result = await execution.start(reservation);
     assert.equal(result.status, 'exited');
     assert.equal(result.eventCursor.position, '6');
-    assert.equal(result.combined.text, 'event output');
+    assert.equal(result.combined.segments.join(''), 'event output');
     assert.ok(inspectionCalls >= 2 && inspectionCalls <= 8);
     const stored = JSON.parse(
       await state.read(`sandsurf/processes/sandbox-1/${plannedProcessId}.json`)
@@ -983,7 +991,7 @@ test('committed outcomes and bounded logs remain readable after runtime evidence
   const result = await restarted.query(terminal.processId, 2, 0, 2, fixture.owner);
   assert.equal(result.status, 'exited');
   assert.equal(result.exitCode, 0);
-  assert.equal(result.combined.text, 'complete');
+  assert.equal(result.combined.segments.join(''), 'complete');
   assert.equal(result.cursorStart, 2);
   assert.equal(result.cursorEnd, 10);
   assert.ok(result.combined.omittedBytes > 0);

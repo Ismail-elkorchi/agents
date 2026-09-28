@@ -421,7 +421,6 @@ function excerpt(doc: WritingDocument, span: DocumentSpan) {
       end: Buffer.byteLength(doc.content.slice(0, span.end))
     },
     range,
-    originalText: doc.content.slice(span.start, span.end),
-    expectedText: doc.content.slice(span.start, span.end)
+    originalText: doc.content.slice(span.start, span.end)
   };
 }

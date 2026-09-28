@@ -325,7 +325,7 @@ test(
     await application.start();
     const ownerId = `coding-session:${application.state().session.sessionId}`;
     const empty = {
-      text: '',
+      segments: [],
       observedBytes: 0,
       capturedBytes: 0,
       omittedBytes: 0,

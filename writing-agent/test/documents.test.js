@@ -43,7 +43,7 @@ test(
     assert.equal(passage.originalText, '😀 العربية');
     assert.equal(
       source.slice(passage.sourceRange.start, passage.sourceRange.end),
-      passage.expectedText
+      passage.originalText
     );
     assert.equal(
       Buffer.from(source).subarray(passage.byteRange.start, passage.byteRange.end).toString(),
@@ -228,7 +228,7 @@ test(
           path: passage.path,
           expectedSha256: passage.expectedSha256,
           edits: [
-            { range: passage.range, expectedText: passage.expectedText, replacementText: 'revised' }
+            { range: passage.range, expectedText: passage.originalText, replacementText: 'revised' }
           ]
         }
       ]

@@ -10,10 +10,11 @@ import {
   type ProtectedArtifactRef
 } from '@agent-core/persistence';
 import type { AgentEvent } from '@agent-core/runtime';
-import type {
-  CommandExecutionOwner,
-  CommandExecutionReport,
-  CommandExecutionResult
+import {
+  createCommandOutputView,
+  type CommandExecutionOwner,
+  type CommandExecutionReport,
+  type CommandExecutionResult
 } from '@agent-core/tools';
 import { processOutputSchema } from '@agent-core/tools-local';
 import type { ReceiptView, SandboxProcess } from 'sandsurf';
@@ -152,7 +153,7 @@ export class SandsurfCommandObservations {
       return this.#commit(identity, receipt, {
         result: {
           ...result,
-          originalOutput: { kind: 'unavailable', cursorEnd: 0, diagnostic: error.message }
+          originalOutput: { kind: 'unavailable', cursorEnd: finalCursor, diagnostic: error.message }
         },
         protectedArtifact
       });
@@ -191,7 +192,9 @@ export class SandsurfCommandObservations {
       mediaType: isUtf8(publicBytes) ? 'text/plain; charset=utf-8' : 'application/octet-stream',
       content: publicBytes,
       description:
-        'Complete command output presentation with sensitive values redacted; originals remain retained by Sandsurf and in protected segments.'
+        omittedBytes === 0
+          ? 'Complete retained command output, with sensitive values redacted.'
+          : 'Retained command output, with sensitive values redacted. The execution receipt records omitted output.'
     });
     result = {
       ...result,
@@ -209,8 +212,7 @@ export class SandsurfCommandObservations {
         JSON.stringify({
           identity,
           receipt,
-          segments: capture.segments,
-          originalsRetainedBy: 'sandsurf'
+          segments: capture.segments
         })
       )
     });
@@ -275,7 +277,7 @@ export class SandsurfCommandObservations {
       result.originalOutput.omittedBytes === 0;
     const empty = (view: CommandExecutionResult['stdout']) => ({
       ...view,
-      text: '',
+      segments: [],
       capturedBytes: 0,
       omittedBytes: view.observedBytes,
       startsAtOutputStart: after === 0,
@@ -291,10 +293,29 @@ export class SandsurfCommandObservations {
         combined: empty(result.combined),
         ...(result.terminal ? { terminal: empty(result.terminal) } : {})
       };
-    const range = await this.options.artifacts.readVerifiedRange(result.artifact, {
+    const maximum = Math.min(256 * 1024, tokens * 4);
+    const suppliedRange = await this.options.artifacts.readVerifiedRange(result.artifact, {
       offset: after,
-      length: Math.min(256 * 1024, tokens * 4)
+      length: maximum + 3
     });
+    let start = 0;
+    let end = Math.min(maximum, suppliedRange.bytes.length);
+    // Public UTF-8 artifacts are validated when stored. Page on scalar boundaries
+    // so successive reads reproduce their source without replacement characters.
+    if (result.artifact.mediaType === 'text/plain; charset=utf-8') {
+      const continuation = (offset: number) => {
+        const byte = suppliedRange.bytes[offset];
+        return byte !== undefined && (byte & 0xc0) === 0x80;
+      };
+      while (start < end && continuation(start)) start++;
+      while (end > start && continuation(end)) end--;
+    }
+    const range = {
+      ...suppliedRange,
+      offset: suppliedRange.offset + start,
+      end: suppliedRange.offset + end,
+      bytes: suppliedRange.bytes.subarray(start, end)
+    };
     const streams: Record<'stdout' | 'stderr' | 'terminal', Uint8Array[]> = {
       stdout: [],
       stderr: [],
@@ -322,12 +343,11 @@ export class SandsurfCommandObservations {
           );
       }
     }
-    const view = (bytes: Uint8Array, original: CommandExecutionResult['stdout']) => ({
-      text: Buffer.from(bytes).toString('utf8'),
+    const view = (bytes: Uint8Array, original: CommandExecutionResult['stdout']) => createCommandOutputView({
+      segments: [Buffer.from(bytes).toString('utf8')],
       observedBytes: original.observedBytes,
       capturedBytes: bytes.length,
-      omittedBytes: Math.max(0, original.observedBytes - bytes.length),
-      startsAtOutputStart: after === 0,
+      startsAtOutputStart: range.offset === 0,
       endsAtOutputEnd:
         range.end === range.fullSize &&
         result.originalOutput?.kind === 'captured' &&

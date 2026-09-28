@@ -78,8 +78,8 @@ test(
       while (result.status === 'running')
         result = await execution.query(result.processId, 1000, 1000, 0);
       assert.equal(result.status, 'exited', result.diagnostic);
-      assert.equal(result.exitCode, 0, result.combined.text);
-      assert.match(result.combined.text, /command output/);
+      assert.equal(result.exitCode, 0, result.combined.segments.join(''));
+      assert.match(result.combined.segments.join(''), /command output/);
       assert.equal(result.originalOutput.kind, 'captured');
     }
     assert.equal(

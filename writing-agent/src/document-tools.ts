@@ -117,7 +117,6 @@ function documentContent(value: unknown): string {
   if ('before' in value && 'after' in value)
     return `${String(value.comparison)}\nEqual: ${String(value.equal)}\nBefore:\n${documentContent(value.before)}\nAfter:\n${documentContent(value.after)}`;
   const { originalText, ...details } = value;
-  delete details.expectedText;
   return typeof originalText === 'string'
     ? `${JSON.stringify(details)}\n\n${originalText}`
     : JSON.stringify(value);
