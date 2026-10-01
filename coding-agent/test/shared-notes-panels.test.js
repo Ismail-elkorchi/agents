@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { parseModelProfile } from '@agent-core/model';
+import { textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
 import { InMemorySessionRepository } from '@agent-core/runtime';
 import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import { createTuiRuntime } from '@ismail-elkorchi/terminal-ui/tui';
@@ -187,7 +189,7 @@ for (const agent of ['coding', 'writing'])
         );
       } else {
         await waitFor(() => recovered.length === 1);
-        assert.equal(recovered[0].draft.input.document !== undefined, true);
+        assert.equal(textDocumentText(recovered[0].draft.input.document), submission.input.task);
         assert.deepEqual(mutations[0], [
           'queued',
           { kind: 'cancel', expectedInput: submission.input }
@@ -365,4 +367,141 @@ for (const agent of ['coding', 'writing'])
     assert.equal(runtime.state().overlay.state.generation, second.generation);
     assert.equal(runtime.state().overlay.state.state.notice, undefined);
     assert.equal(runtime.state().overlay.state.state.selected.entry.kind, 'reference');
+  });
+
+async function panelTestRuntime(agent, { configuration, navigation, application: extra = {} } = {}) {
+  const repository = new InMemorySessionRepository();
+  const session = await repository.create({
+    binding: { schemaId: 'panel-lifecycle-test', schemaVersion: 1, subject: {} }
+  });
+  let historyReads = 0;
+  const application = {
+    state: () => ({ workspace: '/workspace', mode: 'edit', sessionId: session.id, status: 'ready' }),
+    start: async () => {},
+    readHistory: () => { historyReads++; return repository.readBranchPage(session); },
+    readSession: async () => ({
+      session: {
+        sessionId: session.id, phase: 'idle', queuedInputs: 0,
+        configuration: { provider: 'fixture', model: 'fixture' }
+      },
+      runs: []
+    }),
+    ...extra
+  };
+  const runtime = createTuiRuntime({
+    host: createMemoryTerminalHost({ terminalSize: { columns: 80, rows: 24 } }),
+    app: agent === 'coding'
+      ? createCodingAgentTuiApp('', { configuration, navigation })
+      : createWritingAgentTuiApp(application)
+  });
+  await runtime.start();
+  if (agent === 'writing') await waitFor(() => runtime.state().history.length > 0);
+  return { runtime, historyReads: () => historyReads };
+}
+
+for (const agent of ['coding', 'writing'])
+  for (const action of ['save', 'cancel'])
+    test(`${agent} hidden queue ${action} finishes once without replacing a newer overlay`, async (t) => {
+      const submission = {
+        submissionId: 'queued', runId: 'run', state: 'queued', input: { task: 'Original input' }
+      };
+      const mutations = [];
+      let complete;
+      const operations = {
+        readPendingSubmissions: async () => mutations.length === 0 ? [submission] : [],
+        updateQueuedSubmission: (...args) => {
+          mutations.push(args);
+          return new Promise((resolve) => { complete = resolve; });
+        }
+      };
+      const { runtime } = await panelTestRuntime(agent, { navigation: operations, application: operations });
+      t.after(async () => { complete?.(); await runtime.dispose(); });
+      await runtime.dispatch({ type: 'queue.open' });
+      await waitFor(() => runtime.state().queuePanel?.state.stage === 'list');
+      const child = runtime.state().queuePanel;
+      const dispatch = (message) => runtime.dispatch({
+        type: 'queue.child', child: { id: child.id, generation: child.generation, message }
+      });
+      await dispatch({ type: 'queue.select', submissionId: submission.submissionId });
+      await dispatch({ type: 'queue.edit', transition: { kind: 'edit', operation: { kind: 'insert', text: ' edited' } } });
+      await dispatch({ type: `queue.${action}` });
+      await waitFor(() => mutations.length === 1);
+      await runtime.dispatch({ type: 'overlay.close' });
+      assert.equal(runtime.state().queuePanel.state.stage, 'saving');
+      await runtime.dispatch({ type: 'queue.open' });
+      assert.equal(runtime.state().queuePanel.generation, child.generation);
+      await dispatch({ type: `queue.${action}` });
+      await runtime.dispatch({ type: 'preferences.open' });
+      complete();
+      await waitFor(() => runtime.state().queuePanel === undefined);
+      assert.equal(runtime.state().overlay.kind, 'preferences');
+      assert.deepEqual(mutations, [[submission.submissionId,
+        action === 'save'
+          ? { kind: 'replace', expectedInput: submission.input, input: { task: 'Original input edited' } }
+          : { kind: 'cancel', expectedInput: submission.input }
+      ]]);
+      await runtime.dispatch({ type: 'queue.open' });
+      await waitFor(() => runtime.state().queuePanel?.state.stage === 'list');
+      assert.notEqual(runtime.state().queuePanel.generation, child.generation);
+      await dispatch({ type: 'queue.failed', id: child.state.id, operation: 'change', error: 'Stale mutation' });
+      assert.equal(runtime.state().queuePanel.state.stage, 'list');
+      assert.equal(runtime.state().queuePanel.state.error, undefined);
+      assert.equal(mutations.length, 1);
+    });
+
+for (const agent of ['coding', 'writing'])
+  test(`${agent} configuration save and its completion are consumed exactly once`, async (t) => {
+    const profile = parseModelProfile({
+      id: 'model', provider: 'openai', limits: { contextTokens: 10000 },
+      modalities: { input: ['text'], output: ['text'] }, supportedParameters: [],
+      capabilities: {
+        streaming: true, toolCalling: false, supportedToolInputs: [], jsonMode: false,
+        jsonSchema: false, logprobs: false, temperature: false, topP: false
+      }
+    });
+    const adapter = { describeModel: async () => profile, listModels: async () => [{ id: 'model' }] };
+    const saved = [];
+    let complete;
+    const selection = { provider: 'openai', model: '' };
+    const operations = {
+      providers: [{ id: 'openai', label: 'OpenAI' }], current: () => selection,
+      connect: async () => adapter,
+      save: (...args) => {
+        saved.push(args);
+        return new Promise((resolve) => { complete = resolve; });
+      }
+    };
+    const { runtime, historyReads } = await panelTestRuntime(agent, {
+      configuration: operations,
+      application: {
+        modelSelection: operations.current, connectProvider: operations.connect,
+        configureModel: operations.save
+      }
+    });
+    t.after(async () => { complete?.(); await runtime.dispose(); });
+    const readsBefore = historyReads();
+    await runtime.dispatch({ type: 'configuration.open' });
+    const child = runtime.state().overlay.state;
+    const dispatch = (message) => runtime.dispatch({
+      type: 'configuration.child', child: { id: child.id, generation: child.generation, message }
+    });
+    await dispatch({ type: 'configuration.pick', value: 'openai' });
+    await waitFor(() => runtime.state().overlay.state.state.models.length === 1);
+    await dispatch({ type: 'configuration.pick', value: 'model' });
+    await waitFor(() => runtime.state().overlay.state.state.stage === 'review');
+    await dispatch({ type: 'configuration.save' });
+    await waitFor(() => saved.length === 1);
+    await dispatch({ type: 'configuration.save' });
+    assert.equal(saved.length, 1);
+    complete();
+    await waitFor(() => runtime.state().overlay.kind === 'none');
+    if (agent === 'writing') await waitFor(() => historyReads() === readsBefore + 1);
+    await dispatch({ type: 'configuration.saved', id: child.state.id });
+    await runtime.dispatch({ type: 'configuration.open' });
+    const reopened = runtime.state().overlay.state;
+    await dispatch({ type: 'configuration.saved', id: child.state.id });
+    assert.equal(runtime.state().overlay.state.generation, reopened.generation);
+    assert.notEqual(reopened.generation, child.generation);
+    assert.equal(saved.length, 1);
+    assert.equal(historyReads(), readsBefore + (agent === 'writing' ? 1 : 0));
   });

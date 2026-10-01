@@ -3,6 +3,9 @@ import type { AgentApprovalRequest, AgentApprovalSuspension } from '@agent-core/
 import type { ConversationActivityEntry, ConversationEntry } from '@agent-core/tui';
 import {
   acceptResource,
+  applyPanelResult,
+  cancelRemovedPanels,
+  mountPanel,
   activityDetails,
   appendRecalledDrafts,
   attachmentsView,
@@ -211,29 +214,17 @@ export function createCodingAgentTuiApp(
         message,
         options
       );
-      const previousPanel = mountedPanel(state.overlay);
-      const nextPanel = mountedPanel(result.state.overlay);
-      if (
-        previousPanel !== undefined &&
-        (previousPanel.id !== nextPanel?.id || previousPanel.generation !== nextPanel.generation)
-      ) {
-        result = {
-          ...result,
-          cancelEffects: [...(result.cancelEffects ?? []), ...previousPanel.effectIds]
-        };
-      }
+      // A hidden queue keeps its mutation alive until its outcome has been handled.
       if (
         result.state.queuePanel !== undefined &&
         result.state.overlay.kind !== 'queue' &&
         result.state.queuePanel.state.stage !== 'saving'
       ) {
-        const { queuePanel: completed, ...next } = result.state;
-        result = {
-          ...result,
-          state: next,
-          cancelEffects: [...(result.cancelEffects ?? []), ...completed.effectIds]
-        };
+        const next = { ...result.state };
+        delete next.queuePanel;
+        result = { ...result, state: next };
       }
+      result = cancelRemovedPanels(result, mountedPanels(state), mountedPanels(result.state));
       if (
         message.type === 'result' &&
         options.historyReader !== undefined &&
@@ -539,9 +530,22 @@ export function createCodingAgentTuiApp(
         failed: (message) => ({ type: 'preferences.capture-failed', message })
       }
     ),
-    ...(eventSource === undefined
-      ? {}
-      : { subscriptions: (): readonly TuiEventSource<CodingAgentTuiMessage>[] => [eventSource] }),
+    subscriptions: (state, context) => [
+      ...(eventSource === undefined ? [] : [eventSource]),
+      ...(state.overlay.kind === 'notes'
+        ? (notes?.subscriptions(state.overlay.state, context) ?? [])
+        : state.overlay.kind === 'configuration'
+          ? (configuration?.subscriptions(state.overlay.state, context) ?? [])
+          : state.overlay.kind === 'inspector'
+            ? inspector.subscriptions(state.overlay.state, context)
+            : []),
+      ...(state.queuePanel === undefined || options.navigation === undefined
+        ? []
+        : codingQueue(options.navigation, state.queuePanel.state.sessionId).subscriptions(
+            state.queuePanel,
+            context
+          ))
+    ],
     resizeMessage: (): CodingAgentTuiMessage => ({ type: 'terminal.resized' }),
     view: (state, context) => {
       const hints = shortcutHelp(
@@ -754,21 +758,12 @@ function updateCodingAgentTui(
         message.reference.boundary.sessionId !== state.debug.sessionId
       )
         return { state };
-      const generation = state.panelGeneration + 1;
       const inspector = codingInspector(
         options.historyEntryReader,
         message.type === 'history.inspect' ? [message.reference] : state.conversation.items,
         message.type === 'history.inspect' ? message.reference.id : undefined
       );
-      const result = inspector.init({ id: 'inspector', generation }, context);
-      return {
-        ...result,
-        state: {
-          ...state,
-          panelGeneration: generation,
-          overlay: { kind: 'inspector', state: result.state }
-        }
-      };
+      return mountPanel(state, 'inspector', inspector, context);
     }
     case 'inspector.child': {
       if (state.overlay.kind !== 'inspector') return { state };
@@ -777,15 +772,7 @@ function updateCodingAgentTui(
         message.child,
         context
       );
-      return {
-        ...result,
-        state: {
-          ...state,
-          overlay: result.outputs?.includes('close')
-            ? { kind: 'none' }
-            : { kind: 'inspector', state: result.state }
-        }
-      };
+      return applyPanelResult(state, 'inspector', result, result.outputs?.includes('close'));
     }
     case 'draft.failed':
       return {
@@ -811,19 +798,12 @@ function updateCodingAgentTui(
             ? `${attachment.item.sourceUri}\n${attachment.item.representation} · ${attachment.item.mediaType}\n\n${attachment.item.content}`
             : `${attachment.label}\n${JSON.stringify(attachment.image, null, 2)}`
       };
-      const generation = state.panelGeneration + 1;
-      const result = codingInspector(options.historyEntryReader, [entry], entry.id).init(
-        { id: 'inspector', generation },
+      return mountPanel(
+        state,
+        'inspector',
+        codingInspector(options.historyEntryReader, [entry], entry.id),
         context
       );
-      return {
-        ...result,
-        state: {
-          ...state,
-          panelGeneration: generation,
-          overlay: { kind: 'inspector', state: result.state }
-        }
-      };
     }
     case 'attachments.remove':
       return {
@@ -1017,31 +997,20 @@ function updateCodingAgentTui(
       };
     case 'configuration.open':
     case 'configuration.child': {
-      if (
-        options.configuration === undefined ||
-        (message.type === 'configuration.child' && state.overlay.kind !== 'configuration')
-      )
-        return { state };
+      if (options.configuration === undefined) return { state };
       const configuration = codingConfiguration(options.configuration);
-      const generation = state.panelGeneration + (message.type === 'configuration.open' ? 1 : 0);
-      const result =
-        message.type === 'configuration.open'
-          ? configuration.init({ id: 'configuration', generation }, context)
-          : state.overlay.kind === 'configuration'
-            ? configuration.update(state.overlay.state, message.child, context)
-            : undefined;
-      if (result === undefined) return { state };
-      return {
-        ...result,
-        state: {
-          ...state,
-          panelGeneration: generation,
-          overlay: result.outputs?.length
-            ? { kind: 'none' }
-            : { kind: 'configuration', state: result.state }
-        }
-      };
+      if (message.type === 'configuration.open')
+        return mountPanel(state, 'configuration', configuration, context);
+      if (state.overlay.kind !== 'configuration') return { state };
+      const result = configuration.update(state.overlay.state, message.child, context);
+      return applyPanelResult(
+        state,
+        'configuration',
+        result,
+        (result.outputs?.length ?? 0) > 0
+      );
     }
+
     case 'application.exit':
       return { state, exit: { reason: 'requested' } };
     case 'preferences.scroll':
@@ -1140,30 +1109,12 @@ function updateCodingAgentTui(
     }
     case 'notes.open':
     case 'notes.child': {
-      if (
-        options.navigation === undefined ||
-        (message.type === 'notes.child' && state.overlay.kind !== 'notes')
-      )
-        return { state };
+      if (options.navigation === undefined) return { state };
       const notes = codingNotes(options.navigation);
-      const generation = state.panelGeneration + (message.type === 'notes.open' ? 1 : 0);
-      const result =
-        message.type === 'notes.open'
-          ? notes.init({ id: 'notes', generation }, context)
-          : state.overlay.kind === 'notes'
-            ? notes.update(state.overlay.state, message.child, context)
-            : undefined;
-      if (result === undefined) return { state };
-      return {
-        ...result,
-        state: {
-          ...state,
-          panelGeneration: generation,
-          overlay: result.outputs?.includes('close')
-            ? { kind: 'none' }
-            : { kind: 'notes', state: result.state }
-        }
-      };
+      if (message.type === 'notes.open') return mountPanel(state, 'notes', notes, context);
+      if (state.overlay.kind !== 'notes') return { state };
+      const result = notes.update(state.overlay.state, message.child, context);
+      return applyPanelResult(state, 'notes', result, result.outputs?.includes('close'));
     }
 
     case 'progress':
@@ -2737,10 +2688,12 @@ function codingInspector(
   );
 }
 
-function mountedPanel(overlay: CodingAgentTuiState['overlay']) {
-  return overlay.kind === 'notes' ||
-    overlay.kind === 'configuration' ||
-    overlay.kind === 'inspector'
-    ? overlay.state
-    : undefined;
+function mountedPanels(state: CodingAgentTuiState) {
+  const overlay = state.overlay;
+  return [
+    ...(overlay.kind === 'notes' || overlay.kind === 'configuration' || overlay.kind === 'inspector'
+      ? [overlay.state]
+      : []),
+    ...(state.queuePanel === undefined ? [] : [state.queuePanel])
+  ];
 }

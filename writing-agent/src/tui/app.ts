@@ -4,6 +4,9 @@ import type { ConversationEntry } from '@agent-core/tui';
 import {
   MarkdownDocument,
   acceptResource,
+  applyPanelResult,
+  cancelRemovedPanels,
+  mountPanel,
   appendRecalledDrafts,
   completeCommand,
   completeResource,
@@ -118,29 +121,21 @@ export function createWritingAgentTuiApp(
       init: (context) => {
         const initial = initialWritingState(application.state(), options.presentation?.preferences);
         const sessionId = initial.application.sessionId ?? ':new';
+        const result: Update =
+          application.state().status === 'configuration_required'
+            ? mountPanel(initial, 'configuration', configuration, context)
+            : { state: initial };
         return {
-          state: {
-            ...initial,
-            draftRestoreSession: sessionId,
-            ...(application.state().status === 'configuration_required'
-              ? {
-                  overlay: {
-                    kind: 'configuration' as const,
-                    state: configuration.init(
-                      { id: 'configuration', generation: initial.panelGeneration },
-                      context
-                    ).state
-                  }
-                }
-              : {})
-          },
+          ...result,
+          state: { ...result.state, draftRestoreSession: sessionId },
           effects: [
+            ...(result.effects ?? []),
             ...(events === undefined ? [refresh(application)] : []),
             ...(options.drafts === undefined
               ? []
               : [loadDraft(options.drafts, sessionId, initial.composer)])
           ],
-          focus: { kind: 'element', elementId: 'writing-composer' }
+          focus: result.focus ?? { kind: 'element', elementId: 'writing-composer' }
         };
       },
       update: (state, message, context) => {
@@ -149,29 +144,17 @@ export function createWritingAgentTuiApp(
           message,
           options
         );
-        const previousPanel = mountedPanel(state.overlay);
-        const nextPanel = mountedPanel(result.state.overlay);
-        if (
-          previousPanel !== undefined &&
-          (previousPanel.id !== nextPanel?.id || previousPanel.generation !== nextPanel.generation)
-        ) {
-          result = {
-            ...result,
-            cancelEffects: [...(result.cancelEffects ?? []), ...previousPanel.effectIds]
-          };
-        }
+        // A hidden queue keeps its mutation alive until its outcome has been handled.
         if (
           result.state.queuePanel !== undefined &&
           result.state.overlay.kind !== 'queue' &&
           result.state.queuePanel.state.stage !== 'saving'
         ) {
-          const { queuePanel: completed, ...next } = result.state;
-          result = {
-            ...result,
-            state: next,
-            cancelEffects: [...(result.cancelEffects ?? []), ...completed.effectIds]
-          };
+          const next = { ...result.state };
+          delete next.queuePanel;
+          result = { ...result, state: next };
         }
+        result = cancelRemovedPanels(result, mountedPanels(state), mountedPanels(result.state));
         return context.terminalSize.rows < 12
           ? {
               ...result,
@@ -180,7 +163,22 @@ export function createWritingAgentTuiApp(
           : result;
       },
       resizeMessage: () => ({ type: 'terminal.resized' }),
-      ...(events === undefined ? {} : { subscriptions: () => [events] }),
+      subscriptions: (state, context) => [
+        ...(events === undefined ? [] : [events]),
+        ...(state.overlay.kind === 'notes'
+          ? notes.subscriptions(state.overlay.state, context)
+          : state.overlay.kind === 'configuration'
+            ? configuration.subscriptions(state.overlay.state, context)
+            : state.overlay.kind === 'inspector'
+              ? inspector.subscriptions(state.overlay.state, context)
+              : []),
+        ...(state.queuePanel === undefined
+          ? []
+          : writingQueue(application, state.queuePanel.state.sessionId).subscriptions(
+              state.queuePanel,
+              context
+            ))
+      ],
       inputBindings: shortcutBindings<WritingTuiState, WritingTuiMessage>(
         [
           ...[true, false].map((focused) => ({
@@ -578,36 +576,19 @@ function update(
         message.reference.boundary.sessionId !== state.application.sessionId
       )
         return { state };
-      const generation = state.panelGeneration + 1;
       const inspector = writingInspector(
         (boundary, entryId) => app.readHistoryEntry(boundary, entryId),
         message.type === 'history.inspect' ? [message.reference] : historyMessages(state),
         message.type === 'history.inspect' ? message.reference.id : undefined
       );
-      const result = inspector.init({ id: 'inspector', generation }, context);
-      return {
-        ...result,
-        state: {
-          ...state,
-          panelGeneration: generation,
-          overlay: { kind: 'inspector', state: result.state }
-        }
-      };
+      return mountPanel(state, 'inspector', inspector, context);
     }
     case 'inspector.child': {
       if (state.overlay.kind !== 'inspector') return { state };
       const result = writingInspector((boundary, entryId) =>
         app.readHistoryEntry(boundary, entryId)
       ).update(state.overlay.state, message.child, context);
-      return {
-        ...result,
-        state: {
-          ...state,
-          overlay: result.outputs?.includes('close')
-            ? { kind: 'none' }
-            : { kind: 'inspector', state: result.state }
-        }
-      };
+      return applyPanelResult(state, 'inspector', result, result.outputs?.includes('close'));
     }
     case 'draft.failed':
       return { state: { ...state, notice: `Draft restoration failed: ${message.message}` } };
@@ -631,20 +612,16 @@ function update(
             ? `${attachment.item.sourceUri}\n${attachment.item.representation} · ${attachment.item.mediaType}\n\n${attachment.item.content}`
             : `${attachment.label}\n${JSON.stringify(attachment.image, null, 2)}`
       };
-      const generation = state.panelGeneration + 1;
-      const result = writingInspector(
-        (boundary, entryId) => app.readHistoryEntry(boundary, entryId),
-        [entry],
-        entry.id
-      ).init({ id: 'inspector', generation }, context);
-      return {
-        ...result,
-        state: {
-          ...state,
-          panelGeneration: generation,
-          overlay: { kind: 'inspector', state: result.state }
-        }
-      };
+      return mountPanel(
+        state,
+        'inspector',
+        writingInspector(
+          (boundary, entryId) => app.readHistoryEntry(boundary, entryId),
+          [entry],
+          entry.id
+        ),
+        context
+      );
     }
     case 'attachments.remove':
       return {
@@ -927,26 +904,11 @@ function update(
       };
     case 'notes.open':
     case 'notes.child': {
-      if (message.type === 'notes.child' && state.overlay.kind !== 'notes') return { state };
       const notes = writingNotes(app);
-      const generation = state.panelGeneration + (message.type === 'notes.open' ? 1 : 0);
-      const result =
-        message.type === 'notes.open'
-          ? notes.init({ id: 'notes', generation }, context)
-          : state.overlay.kind === 'notes'
-            ? notes.update(state.overlay.state, message.child, context)
-            : undefined;
-      if (result === undefined) return { state };
-      return {
-        ...result,
-        state: {
-          ...state,
-          panelGeneration: generation,
-          overlay: result.outputs?.includes('close')
-            ? { kind: 'none' }
-            : { kind: 'notes', state: result.state }
-        }
-      };
+      if (message.type === 'notes.open') return mountPanel(state, 'notes', notes, context);
+      if (state.overlay.kind !== 'notes') return { state };
+      const result = notes.update(state.overlay.state, message.child, context);
+      return applyPanelResult(state, 'notes', result, result.outputs?.includes('close'));
     }
 
     case 'search.open':
@@ -1527,32 +1489,25 @@ function update(
       };
     case 'configuration.open':
     case 'configuration.child': {
-      if (message.type === 'configuration.child' && state.overlay.kind !== 'configuration')
-        return { state };
       const configuration = writingConfiguration(app);
-      const generation = state.panelGeneration + (message.type === 'configuration.open' ? 1 : 0);
-      const result =
-        message.type === 'configuration.open'
-          ? configuration.init({ id: 'configuration', generation }, context)
-          : state.overlay.kind === 'configuration'
-            ? configuration.update(state.overlay.state, message.child, context)
-            : undefined;
-      if (result === undefined) return { state };
+      if (message.type === 'configuration.open')
+        return mountPanel(state, 'configuration', configuration, context);
+      if (state.overlay.kind !== 'configuration') return { state };
+      const result = configuration.update(state.overlay.state, message.child, context);
       return {
-        ...result,
-        state: {
-          ...state,
-          panelGeneration: generation,
-          overlay: result.outputs?.length
-            ? { kind: 'none' }
-            : { kind: 'configuration', state: result.state }
-        },
+        ...applyPanelResult(
+          state,
+          'configuration',
+          result,
+          (result.outputs?.length ?? 0) > 0
+        ),
         effects: [
           ...(result.effects ?? []),
           ...(result.outputs?.includes('saved') ? [refresh(app, state.document?.value.path)] : [])
         ]
       };
     }
+
     case 'history.load': {
       const cursor =
         message.direction === 'older' ? state.history[0]?.older : state.history.at(-1)?.newer;
@@ -2139,10 +2094,12 @@ function writingInspector(
   );
 }
 
-function mountedPanel(overlay: WritingTuiState['overlay']) {
-  return overlay.kind === 'notes' ||
-    overlay.kind === 'configuration' ||
-    overlay.kind === 'inspector'
-    ? overlay.state
-    : undefined;
+function mountedPanels(state: WritingTuiState) {
+  const overlay = state.overlay;
+  return [
+    ...(overlay.kind === 'notes' || overlay.kind === 'configuration' || overlay.kind === 'inspector'
+      ? [overlay.state]
+      : []),
+    ...(state.queuePanel === undefined ? [] : [state.queuePanel])
+  ];
 }
