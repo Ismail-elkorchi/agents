@@ -51,6 +51,7 @@ import {
   updateAttachments,
   updatePreferences,
   updatePromptRecall,
+  receivePromptRecallQuery,
   updateResourceCompletion,
   updateSessionName,
   type ComposerDraft,
@@ -63,7 +64,7 @@ import {
   createSearchPickerIndex,
   createSearchPickerState,
   scrollReducer,
-  searchPickerReducer,
+  querySearchPickerIndex,
   searchPickerView
 } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { Element, InlineContent } from '@ismail-elkorchi/terminal-ui/components';
@@ -127,7 +128,6 @@ import { openPanel, panelView, updatePanel, type CodingNavigationOperations } fr
 import { createProcessPanel, processesView, updateProcesses } from './processes.js';
 import { recoveryDialog, recoveryEffect, type RecoveryHandler } from './recovery.js';
 import {
-  historySearchIndex,
   jumpToAdjacentMatch,
   jumpToSearchResult,
   openHistorySearch,
@@ -224,6 +224,23 @@ export function createCodingAgentTuiApp(
         delete next.queuePanel;
         result = { ...result, state: next };
       }
+      const removedQueryEffects: string[] = [];
+      if (
+        state.overlay.kind === 'recall' &&
+        (result.state.overlay.kind !== 'recall' ||
+          result.state.overlay.state.id !== state.overlay.state.id)
+      )
+        removedQueryEffects.push('prompt-recall-query', 'recovered-drafts');
+      if (
+        state.overlay.kind === 'panel' &&
+        (result.state.overlay.kind !== 'panel' || result.state.overlay.id !== state.overlay.id)
+      )
+        removedQueryEffects.push('navigation-query');
+      if (removedQueryEffects.length > 0)
+        result = {
+          ...result,
+          cancelEffects: [...new Set([...(result.cancelEffects ?? []), ...removedQueryEffects])]
+        };
       result = cancelRemovedPanels(result, mountedPanels(state), mountedPanels(result.state));
       if (
         message.type === 'result' &&
@@ -849,34 +866,36 @@ function updateCodingAgentTui(
         ]
       });
       return {
-        state: { ...state, overlay: { kind: 'recall', state: recall } },
-        ...(options.drafts === undefined
-          ? {}
-          : {
-              effects: [
-                loadRecoveredPrompts(options.drafts, state.debug.sessionId ?? ':new', recall.id)
-              ]
-            })
+        state: { ...state, overlay: { kind: 'recall', state: recall.state } },
+        effects: [
+          ...(recall.effects ?? []),
+          ...(options.drafts === undefined
+            ? []
+            : [
+                loadRecoveredPrompts(
+                  options.drafts,
+                  state.debug.sessionId ?? ':new',
+                  recall.state.id
+                )
+              ])
+        ]
       };
     }
     case 'recall.loaded': {
       if (state.overlay.kind !== 'recall' || state.overlay.state.id !== message.id)
         return { state };
       const recall = appendRecalledDrafts(state.overlay.state, message.drafts);
-      return { state: { ...state, overlay: { kind: 'recall', state: recall } } };
+      return { ...recall, state: { ...state, overlay: { kind: 'recall', state: recall.state } } };
     }
     case 'recall.transition':
-      return state.overlay.kind !== 'recall'
-        ? { state }
-        : {
-            state: {
-              ...state,
-              overlay: {
-                kind: 'recall',
-                state: updatePromptRecall(state.overlay.state, message.transition)
-              }
-            }
-          };
+    case 'recall.query': {
+      if (state.overlay.kind !== 'recall') return { state };
+      const recall =
+        message.type === 'recall.transition'
+          ? updatePromptRecall(state.overlay.state, message.transition)
+          : receivePromptRecallQuery(state.overlay.state, message);
+      return { ...recall, state: { ...state, overlay: { kind: 'recall', state: recall.state } } };
+    }
     case 'recall.accept': {
       if (state.overlay.kind !== 'recall') return { state };
       const draft = state.overlay.state.entries[Number(message.id)];
@@ -887,6 +906,7 @@ function updateCodingAgentTui(
           overlay: { kind: 'none' },
           composer: composerWithDraft(state.composer, draft)
         },
+        cancelEffects: ['prompt-recall-query', 'recovered-drafts'],
         focus: { kind: 'element', elementId: 'composer' }
       };
     }
@@ -1003,12 +1023,7 @@ function updateCodingAgentTui(
         return mountPanel(state, 'configuration', configuration, context);
       if (state.overlay.kind !== 'configuration') return { state };
       const result = configuration.update(state.overlay.state, message.child, context);
-      return applyPanelResult(
-        state,
-        'configuration',
-        result,
-        (result.outputs?.length ?? 0) > 0
-      );
+      return applyPanelResult(state, 'configuration', result, (result.outputs?.length ?? 0) > 0);
     }
 
     case 'application.exit':
@@ -1126,6 +1141,7 @@ function updateCodingAgentTui(
     case 'panel.source-loaded':
     case 'panel.loaded':
     case 'panel.failed':
+    case 'panel.query':
     case 'panel.transition':
     case 'panel.accept':
     case 'panel.text':
@@ -1309,7 +1325,13 @@ function updateCodingAgentTui(
         completion: undefined,
         overlay: {
           kind: 'commands' as const,
-          picker: createSearchPickerState({ query: { text: '', mode: 'fuzzy' } }, COMMAND_INDEX)
+          picker: createSearchPickerState(
+            {
+              query: { text: '', mode: 'fuzzy' },
+              queryResult: querySearchPickerIndex(COMMAND_INDEX)
+            },
+            COMMAND_INDEX
+          )
         }
       };
       return updateCodingAgentTui(
@@ -1549,10 +1571,14 @@ function updateCodingAgentTui(
       return {
         state: { ...state, overlay: { kind: 'none' } },
         cancelEffects: [
+          'prompt-recall-query',
+          'recovered-drafts',
           'context-inspection',
           'history-jump',
           'attachment-read',
           'session-name-load',
+          'navigation-query',
+          'navigation-panel',
           'process-list'
         ]
       };
@@ -1732,7 +1758,10 @@ function acceptCommand(
     );
   if (command.choices !== undefined) {
     const picker = createSearchPickerState(
-      { query: { text: '', mode: 'fuzzy' } },
+      {
+        query: { text: '', mode: 'fuzzy' },
+        queryResult: querySearchPickerIndex(commandValueIndex(command))
+      },
       commandValueIndex(command)
     );
     return updated(
@@ -1783,9 +1812,12 @@ function transitionCommandValues(
       ...state,
       overlay: {
         ...commandOverlay,
-        picker: searchPickerReducer(commandOverlay.picker, transition, {
-          searchPickerIndex: commandValueIndex(commandEntry)
-        })
+        picker: transitionCommandPicker(
+          commandOverlay.picker,
+          transition,
+          commandValueIndex(commandEntry),
+          []
+        )
       }
     }
   };
@@ -1812,16 +1844,33 @@ function acceptCommandValue(
   };
 }
 
+const EMPTY_COMMAND_VALUE_INDEX = createSearchPickerIndex<string>([]);
+const COMMAND_VALUE_INDEXES = new Map(
+  INTERACTIVE_COMMANDS.map((command) => [
+    command.name,
+    createSearchPickerIndex(
+      (command.choices ?? []).map((choice) => ({
+        id: choice.value,
+        label: choice.value,
+        value: choice.value,
+        description: choice.description,
+        keywords: [choice.value, choice.description]
+      }))
+    )
+  ])
+);
 function commandValueIndex(commandEntry: (typeof INTERACTIVE_COMMANDS)[number]): SearchPickerIndex {
-  return createSearchPickerIndex(
-    (commandEntry.choices ?? []).map((choice) => ({
-      id: choice.value,
-      label: choice.value,
-      value: choice.value,
-      description: choice.description,
-      keywords: [choice.value, choice.description]
-    }))
-  );
+  return COMMAND_VALUE_INDEXES.get(commandEntry.name) ?? EMPTY_COMMAND_VALUE_INDEX;
+}
+function commandPickerQuery(
+  picker: import('./state.js').CodingAgentTuiPickerState,
+  index: SearchPickerIndex
+) {
+  return querySearchPickerIndex(index, {
+    text: picker.editor.input.text,
+    mode: picker.mode,
+    caseSensitive: picker.caseSensitive
+  });
 }
 
 function openOverlay(
@@ -1839,7 +1888,10 @@ function openOverlay(
     ...state,
     overlay: {
       kind: 'commands',
-      picker: createSearchPickerState({ query: { text: '', mode: 'fuzzy' } }, COMMAND_INDEX)
+      picker: createSearchPickerState(
+        { query: { text: '', mode: 'fuzzy' }, queryResult: querySearchPickerIndex(COMMAND_INDEX) },
+        COMMAND_INDEX
+      )
     },
     modalOffsetRow: 0
   });
@@ -2119,6 +2171,7 @@ function overlayView(
             title: 'Commands',
             view: searchPickerView(state.overlay.picker),
             searchPickerIndex: COMMAND_INDEX,
+            queryResult: commandPickerQuery(state.overlay.picker, COMMAND_INDEX),
             maxVisible: Math.max(3, height - 5),
             helpText: 'Enter choose · Esc close',
             onTransition: (transition): CodingAgentTuiMessage => ({
@@ -2135,7 +2188,7 @@ function overlayView(
         (candidate) => candidate.name === commandOverlay.command
       );
       const index: SearchPickerIndex =
-        commandEntry === undefined ? createSearchPickerIndex([]) : commandValueIndex(commandEntry);
+        commandEntry === undefined ? EMPTY_COMMAND_VALUE_INDEX : commandValueIndex(commandEntry);
       return panel({
         ...modalOptions(
           'command-value-dialog',
@@ -2150,6 +2203,7 @@ function overlayView(
             title: commandEntry?.description ?? 'Choose a value',
             view: searchPickerView(commandOverlay.picker),
             searchPickerIndex: index,
+            queryResult: commandPickerQuery(commandOverlay.picker, index),
             maxVisible: Math.max(3, height - 5),
             helpText: 'Enter choose · Esc close',
             onTransition: (transition): CodingAgentTuiMessage => ({
@@ -2174,7 +2228,8 @@ function overlayView(
                   ? 'Find · more history remains'
                   : 'Find in stored history',
             view: searchPickerView(state.overlay.picker),
-            searchPickerIndex: historySearchIndex(state.overlay),
+            searchPickerIndex: state.overlay.searchPickerIndex,
+            queryResult: state.overlay.queryResult,
             maxVisible: Math.max(3, height - 5),
             emptyText:
               state.overlay.error ??

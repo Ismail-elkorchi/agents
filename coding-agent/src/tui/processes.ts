@@ -4,10 +4,13 @@ import {
   createSearchPickerIndex,
   createSearchPickerState,
   createTextAreaState,
+  querySearchPickerIndex,
   searchPickerReducer,
   searchPickerView,
   textAreaReducer,
   type SearchPickerControlTransition,
+  type SearchPickerIndex,
+  type SearchPickerQueryResult,
   type TextAreaState,
   type TextAreaTransition,
   type UnscrolledSearchPickerState
@@ -32,6 +35,8 @@ export interface ProcessPanel {
   readonly id: string;
   readonly processes: readonly CodingProcessTarget[];
   readonly picker: UnscrolledSearchPickerState;
+  readonly pickerIndex: SearchPickerIndex;
+  readonly pickerQueryResult: SearchPickerQueryResult;
   readonly pending: boolean;
   readonly selected?: {
     readonly target: CodingProcessTarget;
@@ -83,10 +88,14 @@ const processIndex = (processes: readonly CodingProcessTarget[]) =>
   }));
 
 export function createProcessPanel(): ProcessPanel {
+  const pickerIndex = processIndex([]);
+  const pickerQueryResult = querySearchPickerIndex(pickerIndex);
   return {
     id: crypto.randomUUID(),
     processes: [],
-    picker: createSearchPickerState({}, processIndex([])),
+    pickerIndex,
+    pickerQueryResult,
+    picker: createSearchPickerState({ queryResult: pickerQueryResult }, pickerIndex),
     pending: false
   };
 }
@@ -164,40 +173,44 @@ export function updateProcesses(
         ]
       };
     }
-    case 'processes.listed':
-      return message.id !== state.id
-        ? { state }
-        : {
-            state: {
-              ...state,
-              pending: false,
-              processes: message.processes,
-              ...(state.selected
-                ? {
-                    selected: {
-                      ...state.selected,
-                      target:
-                        message.processes.find(
-                          (item) => item.processId === state.selected?.target.processId
-                        ) ?? state.selected.target
-                    }
-                  }
-                : {})
-            }
-          };
+    case 'processes.listed': {
+      if (message.id !== state.id) return { state };
+      const pickerIndex = message.processes === state.processes ? state.pickerIndex : processIndex(message.processes);
+      const pickerQueryResult = querySearchPickerIndex(pickerIndex, {
+        text: state.picker.editor.input.text, mode: state.picker.mode, caseSensitive: state.picker.caseSensitive
+      });
+      const active = pickerQueryResult.entries.find((entry) => entry.id === state.picker.editor.activeId)
+        ?? pickerQueryResult.entries[0];
+      const picker = searchPickerReducer(state.picker, { kind: 'setActive', ...(active === undefined ? {} : { id: active.id }) },
+        { searchPickerIndex: pickerIndex, queryResult: pickerQueryResult });
+      return { state: {
+        ...state,
+        pending: false,
+        processes: message.processes,
+        pickerIndex,
+        pickerQueryResult,
+        picker,
+        ...(state.selected ? { selected: {
+          ...state.selected,
+          target: message.processes.find((item) => item.processId === state.selected?.target.processId) ?? state.selected.target
+        } } : {})
+      } };
+    }
     case 'processes.failed':
       return message.id !== state.id
         ? { state }
         : { state: { ...state, pending: false, error: message.message } };
-    case 'processes.transition':
-      return {
-        state: {
-          ...state,
-          picker: searchPickerReducer(state.picker, message.transition, {
-            searchPickerIndex: processIndex(state.processes)
-          })
-        }
-      };
+    case 'processes.transition': {
+      const next = searchPickerReducer(state.picker, message.transition, {
+        searchPickerIndex: state.pickerIndex, queryResult: state.pickerQueryResult
+      });
+      const pickerQueryResult = querySearchPickerIndex(state.pickerIndex, {
+        text: next.editor.input.text, mode: next.mode, caseSensitive: next.caseSensitive
+      });
+      const picker = pickerQueryResult === state.pickerQueryResult ? next
+        : searchPickerReducer(next, { kind: 'firstActive' }, { searchPickerIndex: state.pickerIndex, queryResult: pickerQueryResult });
+      return { state: { ...state, picker, pickerQueryResult } };
+    }
     case 'processes.select': {
       const target = state.processes.find((process) => process.processId === message.processId);
       if (target?.status === 'unknown' || target?.status === 'acknowledged-unknown')
@@ -334,7 +347,8 @@ export function processesView(
           id: 'process-picker',
           title: 'Processes from open command authority',
           view: searchPickerView(state.picker),
-          searchPickerIndex: processIndex(state.processes),
+          searchPickerIndex: state.pickerIndex,
+          queryResult: state.pickerQueryResult,
           maxVisible: Math.max(1, height - 7),
           onTransition: (transition): Message => ({ type: 'processes.transition', transition }),
           onAccept: (event): Message => ({ type: 'processes.select', processId: event.id })

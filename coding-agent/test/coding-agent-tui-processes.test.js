@@ -177,3 +177,32 @@ test('process controls cannot relabel another session owner as the current sessi
     /evidence changed/
   );
 });
+
+test('process picker retains its index while editing and replaces query ownership only with a new list', async (t) => {
+  let processes = [target, { ...target, processId: 'worker', command: 'node worker.js' }];
+  const runtime = createTuiRuntime({
+    host: createMemoryTerminalHost({ terminalSize: { columns: 80, rows: 24 } }),
+    app: createCodingAgentTuiApp('', {
+      processes: { listProcesses: async () => processes, controlProcess: async () => result }
+    })
+  });
+  t.after(() => runtime.dispose());
+  await runtime.start();
+  await runtime.dispatch({ type: 'processes.open' });
+  await waitForState(runtime, t.signal, () => !runtime.state().overlay.state.pending);
+  const source = runtime.state().overlay.state.pickerIndex;
+  await runtime.resize({ columns: 60, rows: 20 });
+  assert.equal(runtime.state().overlay.state.pickerIndex, source);
+  await runtime.dispatch({ type: 'processes.transition', transition: { kind: 'setQuery', query: { text: 'worker', mode: 'fuzzy' } } });
+  const filtered = runtime.state().overlay.state;
+  assert.equal(filtered.pickerIndex, source);
+  assert.deepEqual(filtered.pickerQueryResult.entries.map((entry) => entry.id), ['worker']);
+  assert.equal(filtered.picker.editor.activeId, 'worker');
+  processes = [target];
+  await runtime.dispatch({ type: 'processes.refresh' });
+  await waitForState(runtime, t.signal, () => !runtime.state().overlay.state.pending);
+  const replaced = runtime.state().overlay.state;
+  assert.notEqual(replaced.pickerIndex, source);
+  assert.equal(replaced.pickerQueryResult.entries.length, 0);
+  assert.equal(replaced.picker.editor.activeId, undefined, 'removed query result cannot remain actionable');
+});

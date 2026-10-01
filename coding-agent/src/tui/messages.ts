@@ -27,6 +27,7 @@ import type {
 import type { PanelItem, PanelKind } from './panels.js';
 
 export type CodingAgentTuiMessage =
+  | import('./panels.js').PanelQueryMessage
   | import('@agent-core/tui').ContextMessage
   | { readonly type: 'search.adjacent'; readonly direction: 'previous' | 'next' }
   | { readonly type: 'conversation.message'; readonly direction: 'previous' | 'next' }

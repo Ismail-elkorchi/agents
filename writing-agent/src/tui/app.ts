@@ -46,23 +46,18 @@ import {
   shortcutBindings,
   shortcutHelp,
   suspensionPresentation,
-  transitionCommandPicker,
   updateAttachments,
   notesPanel,
   updatePreferences,
   updatePromptRecall,
+  receivePromptRecallQuery,
   updateResourceCompletion,
   updateSessionName,
   type ComposerDraft,
   type ConfigurationOperations
 } from '@agent-core/tui';
 import { editTextExternally, openBrowser } from '@agent-core/tui/node';
-import {
-  createSearchPickerState,
-  createTextAreaState,
-  searchPickerReducer,
-  textAreaReducer
-} from '@ismail-elkorchi/terminal-ui/behavior';
+import { createTextAreaState, textAreaReducer } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { InputTrigger } from '@ismail-elkorchi/terminal-ui/input';
 import { formatKeyboardBinding, ignoreMessage } from '@ismail-elkorchi/terminal-ui/interaction';
 import { textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
@@ -77,7 +72,11 @@ import type { WritingApplication, WritingDocument } from '../application/service
 import { WRITING_PROVIDER_IDS } from '../provider.js';
 import { WRITING_COMMANDS, WRITING_SHORTCUTS } from './commands.js';
 import { historyMessages } from './history.js';
-import { pickerIndex } from './picker.js';
+import {
+  createWritingPicker,
+  transitionWritingPicker,
+  receiveWritingPickerQuery
+} from './picker.js';
 import { updateHistorySearch } from './search.js';
 import { initialWritingState, type WritingTuiMessage, type WritingTuiState } from './state.js';
 import { writingView } from './view.js';
@@ -154,6 +153,23 @@ export function createWritingAgentTuiApp(
           delete next.queuePanel;
           result = { ...result, state: next };
         }
+        const removedQueryEffects: string[] = [];
+        if (
+          state.overlay.kind === 'recall' &&
+          (result.state.overlay.kind !== 'recall' ||
+            result.state.overlay.state.id !== state.overlay.state.id)
+        )
+          removedQueryEffects.push('prompt-recall-query', 'recovered-drafts');
+        if (
+          state.overlay.kind === 'picker' &&
+          (result.state.overlay.kind !== 'picker' || result.state.overlay.id !== state.overlay.id)
+        )
+          removedQueryEffects.push('writing-picker-query');
+        if (removedQueryEffects.length > 0)
+          result = {
+            ...result,
+            cancelEffects: [...new Set([...(result.cancelEffects ?? []), ...removedQueryEffects])]
+          };
         result = cancelRemovedPanels(result, mountedPanels(state), mountedPanels(result.state));
         return context.terminalSize.rows < 12
           ? {
@@ -667,44 +683,43 @@ function update(
         ]
       });
       return {
-        state: { ...state, overlay: { kind: 'recall', state: recall } },
-        ...(options.drafts === undefined
-          ? {}
-          : {
-              effects: [
+        state: { ...state, overlay: { kind: 'recall', state: recall.state } },
+        effects: [
+          ...(recall.effects ?? []),
+          ...(options.drafts === undefined
+            ? []
+            : [
                 loadRecoveredPrompts(
                   options.drafts,
                   state.application.sessionId ?? ':new',
-                  recall.id
+                  recall.state.id
                 )
-              ]
-            })
+              ])
+        ]
       };
     }
     case 'recall.loaded': {
       if (state.overlay.kind !== 'recall' || state.overlay.state.id !== message.id)
         return { state };
       const recall = appendRecalledDrafts(state.overlay.state, message.drafts);
-      return { state: { ...state, overlay: { kind: 'recall', state: recall } } };
+      return { ...recall, state: { ...state, overlay: { kind: 'recall', state: recall.state } } };
     }
     case 'recall.transition':
-      return state.overlay.kind !== 'recall'
-        ? { state }
-        : {
-            state: {
-              ...state,
-              overlay: {
-                kind: 'recall',
-                state: updatePromptRecall(state.overlay.state, message.transition)
-              }
-            }
-          };
+    case 'recall.query': {
+      if (state.overlay.kind !== 'recall') return { state };
+      const recall =
+        message.type === 'recall.transition'
+          ? updatePromptRecall(state.overlay.state, message.transition)
+          : receivePromptRecallQuery(state.overlay.state, message);
+      return { ...recall, state: { ...state, overlay: { kind: 'recall', state: recall.state } } };
+    }
     case 'recall.accept': {
       if (state.overlay.kind !== 'recall') return { state };
       const draft = state.overlay.state.entries[Number(message.id)];
       if (draft === undefined) return { state };
       return {
         state: { ...state, overlay: { kind: 'none' }, composer: draft },
+        cancelEffects: ['prompt-recall-query', 'recovered-drafts'],
         focus: { kind: 'element', elementId: 'writing-composer' }
       };
     }
@@ -781,24 +796,14 @@ function update(
     case 'terminal.focus':
       return { state: { ...state, attention: { ...state.attention, focused: message.focused } } };
     case 'commands.open': {
-      const entries = WRITING_COMMANDS.map((command) => ({
-        id: command.name,
-        label: `${command.name}  ${command.description}`
-      }));
-      return {
-        state: {
-          ...state,
-          overlay: {
-            kind: 'picker',
-            subject: 'commands',
-            entries,
-            picker: createSearchPickerState(
-              { query: { text: '', mode: 'fuzzy' } },
-              pickerIndex(entries)
-            )
-          }
-        }
-      };
+      const picker = createWritingPicker(
+        'commands',
+        WRITING_COMMANDS.map((command) => ({
+          id: command.name,
+          label: `${command.name}  ${command.description}`
+        }))
+      );
+      return { ...picker, state: { ...state, overlay: picker.state } };
     }
     case 'preferences.scroll':
       return { state: { ...state, offsets: { ...state.offsets, preferences: message.offset } } };
@@ -1435,46 +1440,25 @@ function update(
     }
     case 'picker.open':
       return openPicker(state, message.subject, app, options.sessionNames);
-    case 'picker.loaded':
+    case 'picker.loaded': {
       if (state.overlay.kind !== 'loading' || state.overlay.requestId !== message.requestId)
         return { state };
+      const picker = createWritingPicker(message.subject, message.entries);
       return {
-        state: {
-          ...state,
-          overlay: {
-            kind: 'picker',
-            subject: message.subject,
-            entries: message.entries,
-            picker: createSearchPickerState(
-              { query: { text: '', mode: 'fuzzy' } },
-              pickerIndex(message.entries)
-            )
-          }
-        },
+        ...picker,
+        state: { ...state, overlay: picker.state },
         focus: { kind: 'element', elementId: 'writing-picker' }
       };
+    }
     case 'picker.transition':
-      return state.overlay.kind !== 'picker'
-        ? { state }
-        : {
-            state: {
-              ...state,
-              overlay: {
-                ...state.overlay,
-                picker:
-                  state.overlay.subject === 'commands'
-                    ? transitionCommandPicker(
-                        state.overlay.picker,
-                        message.transition,
-                        pickerIndex(state.overlay.entries),
-                        WRITING_COMMANDS
-                      )
-                    : searchPickerReducer(state.overlay.picker, message.transition, {
-                        searchPickerIndex: pickerIndex(state.overlay.entries)
-                      })
-              }
-            }
-          };
+    case 'picker.query': {
+      if (state.overlay.kind !== 'picker') return { state };
+      const picker =
+        message.type === 'picker.transition'
+          ? transitionWritingPicker(state.overlay, message.transition)
+          : receiveWritingPickerQuery(state.overlay, message);
+      return { ...picker, state: { ...state, overlay: picker.state } };
+    }
     case 'picker.accept':
       return acceptPicker(state, message.id, app, options, context);
     case 'document.loaded':
@@ -1495,12 +1479,7 @@ function update(
       if (state.overlay.kind !== 'configuration') return { state };
       const result = configuration.update(state.overlay.state, message.child, context);
       return {
-        ...applyPanelResult(
-          state,
-          'configuration',
-          result,
-          (result.outputs?.length ?? 0) > 0
-        ),
+        ...applyPanelResult(state, 'configuration', result, (result.outputs?.length ?? 0) > 0),
         effects: [
           ...(result.effects ?? []),
           ...(result.outputs?.includes('saved') ? [refresh(app, state.document?.value.path)] : [])
@@ -1661,7 +1640,10 @@ function update(
       return {
         state: { ...state, overlay: { kind: 'none' } },
         cancelEffects: [
+          'prompt-recall-query',
+          'recovered-drafts',
           'writing-picker',
+          'writing-picker-query',
           'writing-context',
           'writing-search-jump',
           'attachment-read',

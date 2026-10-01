@@ -11,6 +11,9 @@ import {
   createSearchPickerIndex,
   createSearchPickerState,
   searchPickerReducer,
+  querySearchPickerIndex,
+  type SearchPickerIndex,
+  type SearchPickerQueryResult,
   searchPickerView
 } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { TuiUpdateResult } from '@ismail-elkorchi/terminal-ui/tui';
@@ -23,6 +26,8 @@ import type { CodingAgentTuiPickerState, CodingAgentTuiState } from './state.js'
 
 export interface HistorySearch {
   readonly kind: 'search';
+  readonly searchPickerIndex: SearchPickerIndex;
+  readonly queryResult: SearchPickerQueryResult | null;
   readonly picker: CodingAgentTuiPickerState;
   readonly result?: SessionBranchSearchResult;
   readonly loading?: string;
@@ -33,10 +38,11 @@ export type HistorySearcher = (
 ) => Promise<SessionBranchSearchResult>;
 type Update = TuiUpdateResult<CodingAgentTuiState, CodingAgentTuiMessage>;
 
-export function historySearchIndex(search: HistorySearch) {
-  const reference = search.result?.oversizedEntry;
+const EMPTY_SEARCH_INDEX = createSearchPickerIndex<string>([]);
+function historySearchIndex(result: SessionBranchSearchResult | undefined) {
+  const reference = result?.oversizedEntry;
   return createSearchPickerIndex([
-    ...(search.result?.matches.map((match) => ({
+    ...(result?.matches.map((match) => ({
       id: match.entryId,
       label: match.excerpt,
       value: match.entryId
@@ -54,21 +60,22 @@ export function historySearchIndex(search: HistorySearch) {
 }
 
 export function openHistorySearch(state: CodingAgentTuiState): Update {
-  const index = createSearchPickerIndex([], () => ({ id: '', label: '', value: '' }));
   const previous =
     state.historyMatch?.result.boundary.sessionId === state.debug.sessionId
       ? state.historyMatch
       : undefined;
+  const index = historySearchIndex(previous?.result);
+  const query = { text: previous?.query ?? '', mode: 'contains' as const, caseSensitive: true };
+  const queryResult = querySearchPickerIndex(index, query);
   return {
     state: {
       ...state,
       overlay: {
         kind: 'search',
+        searchPickerIndex: index,
+        queryResult,
         ...(previous === undefined ? {} : { result: previous.result }),
-        picker: createSearchPickerState(
-          { query: { text: previous?.query ?? '', mode: 'contains', caseSensitive: true } },
-          index
-        )
+        picker: createSearchPickerState({ query, queryResult }, index)
       }
     }
   };
@@ -82,10 +89,13 @@ export function transitionHistorySearch(
   if (state.overlay.kind !== 'search') return { state };
   const previous = searchPickerView(state.overlay.picker).input.text;
   const picker = searchPickerReducer(state.overlay.picker, transition, {
-    searchPickerIndex: historySearchIndex(state.overlay)
+    searchPickerIndex: state.overlay.searchPickerIndex,
+    queryResult: state.overlay.queryResult
   });
   const next = { ...state, overlay: { ...state.overlay, picker } };
-  return previous === searchPickerView(picker).input.text
+  return previous === searchPickerView(picker).input.text &&
+    picker.mode === state.overlay.picker.mode &&
+    picker.caseSensitive === state.overlay.picker.caseSensitive
     ? { state: next }
     : searchHistory(next, search);
 }
@@ -100,7 +110,12 @@ export function searchHistory(
   const cursor = more ? state.overlay.result?.older : undefined;
   if (more && cursor === undefined) return { state };
   const id = `search:${String(state.nextLocalId)}`;
-  const overlay: HistorySearch = { kind: 'search', picker: state.overlay.picker };
+  const overlay: HistorySearch = {
+    kind: 'search',
+    picker: state.overlay.picker,
+    searchPickerIndex: EMPTY_SEARCH_INDEX,
+    queryResult: null
+  };
   if (!query.length) return { state: { ...state, overlay } };
   return {
     state: { ...state, nextLocalId: state.nextLocalId + 1, overlay: { ...overlay, loading: id } },
@@ -133,12 +148,27 @@ export function receiveSearch(
   if (state.overlay.kind !== 'search' || state.overlay.loading !== message.requestId) return state;
   const overlay = { ...state.overlay };
   delete overlay.loading;
+  if (message.type === 'search.failed')
+    return { ...state, overlay: { ...overlay, error: message.message } };
+  const searchPickerIndex = historySearchIndex(message.result);
+  const queryResult = querySearchPickerIndex(searchPickerIndex, {
+    text: overlay.picker.editor.input.text,
+    mode: overlay.picker.mode,
+    caseSensitive: overlay.picker.caseSensitive
+  });
   return {
     ...state,
-    overlay:
-      message.type === 'search.loaded'
-        ? { ...overlay, result: message.result }
-        : { ...overlay, error: message.message }
+    overlay: {
+      ...overlay,
+      result: message.result,
+      searchPickerIndex,
+      queryResult,
+      picker: searchPickerReducer(
+        overlay.picker,
+        { kind: 'firstActive' },
+        { searchPickerIndex, queryResult }
+      )
+    }
   };
 }
 

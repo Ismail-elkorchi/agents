@@ -5,13 +5,21 @@ import {
   createSearchPickerState,
   createTextAreaState,
   searchPickerReducer,
+  prepareSearchPickerQuery,
+  type SearchPickerIndex,
+  type SearchPickerQueryResult,
   searchPickerView,
   textAreaReducer
 } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { Element } from '@ismail-elkorchi/terminal-ui/components';
 import { button, searchPicker, text, textArea } from '@ismail-elkorchi/terminal-ui/components';
 import { column } from '@ismail-elkorchi/terminal-ui/layout';
-import type { TuiUpdateResult } from '@ismail-elkorchi/terminal-ui/tui';
+import {
+  createTuiPreparedQuery,
+  type TuiUpdateResult,
+  type TuiPreparedQueryMessage,
+  type TuiPreparedQueryState
+} from '@ismail-elkorchi/terminal-ui/tui';
 import type { CodingApplication } from '../application/service.js';
 import type { WorkspaceChange } from '../changes/run-change-report.js';
 import { appendNotice } from './conversation.js';
@@ -40,6 +48,9 @@ export type CodingPanel =
   | { readonly kind: 'panel_loading'; readonly id: string; readonly panel: PanelKind }
   | {
       readonly kind: 'panel';
+      readonly id: string;
+      readonly searchPickerIndex: SearchPickerIndex<PanelItem>;
+      readonly query: TuiPreparedQueryState<SearchPickerQueryResult<PanelItem>>;
       readonly panel: PanelKind;
       readonly items: readonly PanelItem[];
       readonly picker: CodingAgentTuiPickerState;
@@ -58,8 +69,39 @@ const panelTitles: Record<PanelKind, string> = {
   branches: 'Branch from history',
   changes: 'Workspace changes'
 };
-const index = (items: readonly PanelItem[]) =>
-  createSearchPickerIndex(items, (item) => ({ id: item.id, label: item.label, value: item }));
+export interface PanelQueryMessage {
+  readonly type: 'panel.query';
+  readonly id: string;
+  readonly message: TuiPreparedQueryMessage<SearchPickerQueryResult<PanelItem>>;
+}
+function preparedPanel(id: string) {
+  return createTuiPreparedQuery({
+    id: 'navigation-query',
+    prepare: (input: Extract<CodingPanel, { kind: 'panel' }>, context) =>
+      prepareSearchPickerQuery(
+        input.searchPickerIndex,
+        {
+          text: input.picker.editor.input.text,
+          mode: input.picker.mode,
+          caseSensitive: input.picker.caseSensitive
+        },
+        {
+          signal: context.signal,
+          yield: async () => {
+            await context.clock.sleep(0, context.signal);
+          }
+        }
+      ),
+    toMessage: (message): CodingAgentTuiMessage => ({ type: 'panel.query', id, message })
+  });
+}
+function requestPanelQuery(
+  state: CodingAgentTuiState,
+  overlay: Extract<CodingPanel, { kind: 'panel' }>
+): Update {
+  const result = preparedPanel(overlay.id).request(overlay.query, overlay);
+  return { ...result, state: { ...state, overlay: { ...overlay, query: result.state } } };
+}
 
 export function openPanel(
   state: CodingAgentTuiState,
@@ -69,7 +111,11 @@ export function openPanel(
 ): Update {
   const id = `panel:${String(state.nextLocalId)}`;
   return {
-    state: { ...state, nextLocalId: state.nextLocalId + 1, overlay: { kind: 'panel_loading', id, panel } },
+    state: {
+      ...state,
+      nextLocalId: state.nextLocalId + 1,
+      overlay: { kind: 'panel_loading', id, panel }
+    },
     effects: [
       {
         id: 'navigation-panel',
@@ -96,17 +142,18 @@ export function openPanel(
           else {
             if (operations === undefined) throw new Error('Session operations are unavailable.');
             items = await Promise.all(
-              (await operations.listSessions()).map(
-                async (session): Promise<PanelItem> => ({
-                  kind: 'session',
-                  id: session.id,
-                  sessionId: session.id,
-                  label: `${session.id === state.debug.sessionId ? '✓ ' : ''}${(await names?.read(session.id)) ?? session.preview ?? session.id} · ${session.updatedAt}`
-                })
-              )
+              (await operations.listSessions()).map(async (session): Promise<PanelItem> => ({
+                kind: 'session',
+                id: session.id,
+                sessionId: session.id,
+                label: `${session.id === state.debug.sessionId ? '✓ ' : ''}${(await names?.read(session.id)) ?? session.preview ?? session.id} · ${session.updatedAt}`
+              }))
             );
           }
-          return { kind: 'message', message: { type: 'panel.loaded', requestId: id, panel, items } };
+          return {
+            kind: 'message',
+            message: { type: 'panel.loaded', requestId: id, panel, items }
+          };
         },
         onError: ({ diagnostic }) => ({
           kind: 'message',
@@ -119,43 +166,79 @@ export function openPanel(
 
 export function updatePanel(
   state: CodingAgentTuiState,
-  message: Exclude<Extract<CodingAgentTuiMessage, { type: `panel.${string}` }>, { type: 'panel.open' }>,
+  message: Exclude<
+    Extract<CodingAgentTuiMessage, { type: `panel.${string}` }>,
+    { type: 'panel.open' }
+  >,
   operations: CodingNavigationOperations | undefined
 ): Update {
   switch (message.type) {
-    case 'panel.loaded':
+    case 'panel.loaded': {
       if (state.overlay.kind !== 'panel_loading' || state.overlay.id !== message.requestId)
         return { state };
+      const searchPickerIndex = createSearchPickerIndex(
+        message.items.map((item) => ({ id: item.id, label: item.label, value: item }))
+      );
       return {
-        state: {
-          ...state,
-          overlay: {
-            kind: 'panel',
-            panel: message.panel,
-            items: message.items,
-            picker: createSearchPickerState({ query: { text: '', mode: 'fuzzy' } }, index(message.items))
-          }
-        },
+        ...requestPanelQuery(state, {
+          kind: 'panel',
+          id: message.requestId,
+          panel: message.panel,
+          items: message.items,
+          searchPickerIndex,
+          query: preparedPanel(message.requestId).init(),
+          picker: createSearchPickerState({ queryResult: null }, searchPickerIndex)
+        }),
         focus: { kind: 'element', elementId: 'navigation-picker' }
       };
+    }
     case 'panel.failed':
       return state.overlay.kind !== 'panel_loading' || state.overlay.id !== message.requestId
         ? { state }
-        : { state: appendNotice({ ...state, overlay: { kind: 'none' } }, message.message, 'error') };
-    case 'panel.transition':
-      return state.overlay.kind !== 'panel'
-        ? { state }
         : {
-            state: {
-              ...state,
-              overlay: {
-                ...state.overlay,
-                picker: searchPickerReducer(state.overlay.picker, message.transition, {
-                  searchPickerIndex: index(state.overlay.items)
-                })
-              }
-            }
+            state: appendNotice({ ...state, overlay: { kind: 'none' } }, message.message, 'error')
           };
+    case 'panel.transition': {
+      if (state.overlay.kind !== 'panel') return { state };
+      const overlay = state.overlay;
+      const picker = searchPickerReducer(overlay.picker, message.transition, {
+        searchPickerIndex: overlay.searchPickerIndex,
+        queryResult: overlay.query.result
+      });
+      const next = { ...overlay, picker };
+      return picker.editor.input.text === overlay.picker.editor.input.text &&
+        picker.mode === overlay.picker.mode &&
+        picker.caseSensitive === overlay.picker.caseSensitive
+        ? { state: { ...state, overlay: next } }
+        : requestPanelQuery(state, next);
+    }
+    case 'panel.query': {
+      if (state.overlay.kind !== 'panel' || state.overlay.id !== message.id) return { state };
+      const overlay = state.overlay;
+      const result = preparedPanel(overlay.id).update(overlay.query, message.message);
+      if (result.state === overlay.query) return { state };
+      const activeId = overlay.picker.editor.activeId;
+      return {
+        ...result,
+        state: {
+          ...state,
+          overlay: {
+            ...overlay,
+            query: result.state,
+            picker: searchPickerReducer(
+              overlay.picker,
+              activeId === undefined
+                ? { kind: 'firstActive' }
+                : { kind: 'setActive', id: activeId },
+              {
+                searchPickerIndex: overlay.searchPickerIndex,
+                queryResult: result.state.result
+              }
+            )
+          }
+        }
+      };
+    }
     case 'panel.accept': {
       if (state.overlay.kind !== 'panel') return { state };
       const item = state.overlay.items.find((item) => item.id === message.id);
@@ -202,7 +285,10 @@ function sourcePanel(state: CodingAgentTuiState, title: string, value: string): 
       overlay: {
         kind: 'source',
         title,
-        input: createTextAreaState({ value, caret: { position: { offset: 0, affinity: 'downstream' } } })
+        input: createTextAreaState({
+          value,
+          caret: { position: { offset: 0, affinity: 'downstream' } }
+        })
       }
     }
   };
@@ -244,16 +330,26 @@ export function panelView(
       case 'panel_loading':
         return text({ id: 'panel-loading-text', content: 'Loading…' });
       case 'panel':
-        return searchPicker({
-          id: 'navigation-picker',
-          title: panelTitles[panel.panel],
-          view: searchPickerView(panel.picker),
-          searchPickerIndex: index(panel.items),
-          maxVisible: Math.max(1, height - 5),
-          emptyText: 'No entries available',
-          onTransition: (transition) => ({ type: 'panel.transition', transition }),
-          onAccept: (event) => ({ type: 'panel.accept', id: event.id })
-        });
+        return column([
+          searchPicker({
+            id: 'navigation-picker',
+            title: panelTitles[panel.panel],
+            view: searchPickerView(panel.picker),
+            searchPickerIndex: panel.searchPickerIndex,
+            queryResult: panel.query.result,
+            maxVisible: Math.max(1, height - 5 - (panel.query.error === null ? 0 : 1)),
+            emptyText: 'No entries available',
+            onTransition: (transition) => ({ type: 'panel.transition', transition }),
+            onAccept: (event) => ({ type: 'panel.accept', id: event.id })
+          }),
+          ...(panel.query.error === null
+            ? []
+            : [
+                text({
+                  content: `Search failed. Edit the query to retry: ${diagnosticMessage(panel.query.error)}`
+                })
+              ])
+        ]);
       case 'source':
         return column(
           [
@@ -366,7 +462,11 @@ function acceptPanelItem(
             },
             onError: ({ diagnostic }) => ({
               kind: 'message',
-              message: { type: 'interactive.notice', tone: 'error', message: diagnosticMessage(diagnostic) }
+              message: {
+                type: 'interactive.notice',
+                tone: 'error',
+                message: diagnosticMessage(diagnostic)
+              }
             })
           }
         ]

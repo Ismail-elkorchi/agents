@@ -1,6 +1,7 @@
 import { contextView } from '@agent-core/tui';
 import {
   attachmentsView,
+  diagnosticMessage,
   commandSuggestions,
   composerControls,
   conversationFrame,
@@ -29,7 +30,6 @@ import { column, overlay, row, viewport } from '@ismail-elkorchi/terminal-ui/lay
 import type { TuiContext } from '@ismail-elkorchi/terminal-ui/tui';
 import { WRITING_COMMANDS, WRITING_SHORTCUTS } from './commands.js';
 import { historyViewport } from './history.js';
-import { pickerIndex } from './picker.js';
 import { recoveryView } from './recovery.js';
 import { historySearchView } from './search.js';
 import type { WritingTuiMessage, WritingTuiState } from './state.js';
@@ -335,19 +335,29 @@ function modalView(
     case 'picker':
       title = modal.subject;
       focusId = 'writing-picker';
-      content = searchPicker({
-        id: focusId,
-        title,
-        view: searchPickerView(modal.picker),
-        searchPickerIndex: pickerIndex(modal.entries),
-        maxVisible: Math.max(1, height - 5),
-        emptyText: 'No entries available.',
-        onTransition: (transition) => ({
-          type: 'picker.transition',
-          transition
+      content = column([
+        searchPicker({
+          id: focusId,
+          title,
+          view: searchPickerView(modal.picker),
+          searchPickerIndex: modal.searchPickerIndex,
+          queryResult: modal.query.result,
+          maxVisible: Math.max(1, height - 5 - (modal.query.error === null ? 0 : 1)),
+          emptyText: 'No entries available.',
+          onTransition: (transition) => ({
+            type: 'picker.transition',
+            transition
+          }),
+          onAccept: (event) => ({ type: 'picker.accept', id: event.id })
         }),
-        onAccept: (event) => ({ type: 'picker.accept', id: event.id })
-      });
+        ...(modal.query.error === null
+          ? []
+          : [
+              text({
+                content: `Search failed. Edit the query to retry: ${diagnosticMessage(modal.query.error)}`
+              })
+            ])
+      ]);
       break;
     case 'configuration':
       return childPanel;

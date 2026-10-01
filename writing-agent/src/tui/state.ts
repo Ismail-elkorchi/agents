@@ -14,8 +14,7 @@ import {
 import type {
   SearchPickerControlTransition,
   TextAreaState,
-  TextAreaTransition,
-  UnscrolledSearchPickerState
+  TextAreaTransition
 } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { MeasuredViewportAnchor } from '@ismail-elkorchi/terminal-ui/interaction';
 import type { ScrollRequest } from '@ismail-elkorchi/terminal-ui/interaction';
@@ -59,15 +58,7 @@ export type WritingTuiOverlay =
       readonly requestId?: string;
       readonly error?: string;
     }
-  | {
-      readonly kind: 'picker';
-      readonly subject: 'resources' | 'outline' | 'sessions' | 'commands';
-      readonly entries: readonly {
-        readonly id: string;
-        readonly label: string;
-      }[];
-      readonly picker: UnscrolledSearchPickerState;
-    }
+  | import('./picker.js').WritingPicker
   | {
       readonly kind: 'configuration';
       readonly state: import('@ismail-elkorchi/terminal-ui/tui').TuiChildState<
@@ -167,6 +158,7 @@ export function initialWritingState(
 }
 
 export type WritingTuiMessage =
+  | import('./picker.js').WritingPickerQueryMessage
   | { readonly type: 'submission.failed'; readonly sessionId: string; readonly message: string }
   | import('@agent-core/tui').ContextMessage
   | { readonly type: 'search.adjacent'; readonly direction: 'previous' | 'next' }
