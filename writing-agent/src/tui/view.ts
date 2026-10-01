@@ -3,20 +3,15 @@ import {
   attachmentsView,
   commandSuggestions,
   composerControls,
-  configurationView,
   conversationFrame,
-  notesView,
   preferencesView,
   progressStatusFields,
   promptRecallView,
-  queueView,
   reasoningLabel,
   resourceCompletionRows,
   resourceSuggestions,
   sessionNameView,
-  sourceInspectorView,
   statusline,
-  type ConfigurationOperations,
   type StatusField
 } from '@agent-core/tui';
 import type { TextAreaTransition } from '@ismail-elkorchi/terminal-ui/behavior';
@@ -48,7 +43,7 @@ export function writingView(
   state: WritingTuiState,
   context: TuiContext,
   composerHeight: number,
-  configuration?: ConfigurationOperations
+  childPanel?: View
 ): View {
   const { columns, rows } = context.terminalSize;
   composerHeight += (rows >= 8 ? 1 : 0) + resourceCompletionRows(state.resourceCompletion);
@@ -171,7 +166,7 @@ export function writingView(
     state,
     Math.max(12, Math.min(84, columns - 4)),
     Math.max(6, Math.min(24, rows - 4)),
-    configuration
+    childPanel
   );
   return overlay(modal === undefined ? [main] : [main, modal]);
 }
@@ -265,7 +260,7 @@ function modalView(
   state: WritingTuiState,
   width: number,
   height: number,
-  configuration?: ConfigurationOperations
+  childPanel?: View
 ): View | undefined {
   const modal = state.overlay;
   const close = action('writing-modal-close', 'Close', {
@@ -276,13 +271,13 @@ function modalView(
     case 'session-name':
       return sessionNameView(modal.state, width, height);
     case 'inspector':
-      return sourceInspectorView(modal.state, width, height);
+      return childPanel;
     case 'attachments':
       return attachmentsView(modal.state, state.composer.attachments, width, height);
     case 'recall':
       return promptRecallView(modal.state, width, height);
     case 'queue':
-      return queueView(modal.state, width, height);
+      return childPanel;
     case 'preferences':
       return preferencesView(
         modal.preferences,
@@ -304,7 +299,7 @@ function modalView(
     case 'context':
       return contextView(modal.state, width, height);
     case 'notes':
-      return notesView(modal.state, width, height, (message) => message);
+      return childPanel;
     case 'none':
       return undefined;
     case 'search':
@@ -355,9 +350,7 @@ function modalView(
       });
       break;
     case 'configuration':
-      return configuration === undefined
-        ? undefined
-        : configurationView(modal.state, configuration, width, height);
+      return childPanel;
   }
   return dialog({
     id: 'writing-modal',

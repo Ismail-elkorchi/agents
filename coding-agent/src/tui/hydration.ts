@@ -99,7 +99,11 @@ function restoreSessionRunState(
   }
   if (session.phase === 'running') {
     if (run === undefined) throw new Error('Restored running session has no durable run.');
-    return { ...state, run: { kind: 'working', label: runLabel(run.state) } };
+    return {
+      ...state,
+      run: { kind: 'working' },
+      progress: { ...state.progress, label: runLabel(run.state) }
+    };
   }
   if (session.queuedInputs > 0) {
     const recovering = hydration.pendingSubmissions.some(
@@ -107,8 +111,9 @@ function restoreSessionRunState(
     );
     return {
       ...state,
-      run: {
-        kind: 'working',
+      run: { kind: 'working' },
+      progress: {
+        ...state.progress,
         label: recovering ? 'Recovered run queued' : `${String(session.queuedInputs)} queued`
       }
     };

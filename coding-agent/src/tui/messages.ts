@@ -38,21 +38,45 @@ export type CodingAgentTuiMessage =
   | import('@agent-core/tui').SessionNameMessage
   | import('@agent-core/tui').ResourceCompletionMessage
   | { readonly type: 'conversation.export' }
-  | import('@agent-core/tui').SourceInspectorMessage
+  | { readonly type: 'inspector.open' }
+  | {
+      readonly type: 'inspector.child';
+      readonly child: import('@ismail-elkorchi/terminal-ui/tui').TuiChildMessage<
+        import('@agent-core/tui').SourceInspectorMessage
+      >;
+    }
   | import('@agent-core/tui').DraftMessage
   | import('@agent-core/tui').AttachmentMessage
   | import('@agent-core/tui').PromptRecallMessage
-  | import('@agent-core/tui').QueueMessage
+  | Extract<import('@agent-core/tui').QueueMessage, { readonly type: 'queue.withdrawn' }>
+  | {
+      readonly type: 'queue.child';
+      readonly child: import('@ismail-elkorchi/terminal-ui/tui').TuiChildMessage<
+        import('@agent-core/tui').QueueMessage
+      >;
+    }
   | { readonly type: 'queue.open' }
   | { readonly type: 'terminal.focus'; readonly focused: boolean }
   | import('@agent-core/tui').PreferencesMessage
   | { readonly type: 'preferences.open' }
-  | import('@agent-core/tui').NotesMessage
-  | import('@agent-core/tui').ConfigurationMessage
+  | { readonly type: 'notes.open' }
+  | {
+      readonly type: 'notes.child';
+      readonly child: import('@ismail-elkorchi/terminal-ui/tui').TuiChildMessage<
+        import('@agent-core/tui').NotesMessage
+      >;
+    }
+  | {
+      readonly type: 'configuration.child';
+      readonly child: import('@ismail-elkorchi/terminal-ui/tui').TuiChildMessage<
+        import('@agent-core/tui').ConfigurationMessage
+      >;
+    }
   | { readonly type: 'completion.move'; readonly delta: number }
   | { readonly type: 'completion.accept'; readonly open: boolean; readonly name?: string }
   | { readonly type: 'completion.close' }
-  | { readonly type: 'configuration.open' | 'recovery.open' | 'session.new' | 'setup.open' }
+  | { readonly type: 'configuration.open' }
+  | { readonly type: 'recovery.open' | 'session.new' | 'setup.open' }
   | { readonly type: 'tools.toggle' | 'reasoning.toggle' | 'application.exit' }
   | { readonly type: 'source.copy' }
   | {

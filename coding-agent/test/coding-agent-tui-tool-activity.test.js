@@ -1,3 +1,4 @@
+import { createTestEventSource } from './helpers/event-source.js';
 import { InMemorySessionRepository } from '@agent-core/runtime';
 import { activityDetails } from '@agent-core/tui';
 import assert from 'node:assert/strict';
@@ -5,14 +6,13 @@ import test from 'node:test';
 import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import { createTuiRuntime, runTui } from '@ismail-elkorchi/terminal-ui/tui';
 import {
-  createCodingTuiEventSource,
   createCodingAgentTuiApp
 } from '@ismail-elkorchi/coding-agent/tui';
 import { waitFor } from './coding-agent-tui-test-helpers.js';
 
 test('tool activity collapses success, expands failure, and keeps bounded observed facts', async () => {
   const host = createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 20 } });
-  const events = createCodingTuiEventSource();
+  const events = createTestEventSource();
   const app = createCodingAgentTuiApp('', {
     eventSource: events,
     commandHandler: { execute: () => ({ message: 'Exiting.', exit: true }) }

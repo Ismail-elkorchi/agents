@@ -2,11 +2,9 @@ import type { SessionBranchSearchRequest, SessionBranchSearchResult } from '@age
 import { findBranchMatches } from '@agent-core/runtime';
 import {
   adjacentHistoryMatch,
-  createSourceInspector,
   diagnosticMessage,
   oversizedHistoryEntry,
-  selectHistoryMatch,
-  updateSourceInspector
+  selectHistoryMatch
 } from '@agent-core/tui';
 import type { SearchPickerControlTransition } from '@ismail-elkorchi/terminal-ui/behavior';
 import {
@@ -30,7 +28,9 @@ export interface HistorySearch {
   readonly loading?: string;
   readonly error?: string;
 }
-export type HistorySearcher = (request: SessionBranchSearchRequest) => Promise<SessionBranchSearchResult>;
+export type HistorySearcher = (
+  request: SessionBranchSearchRequest
+) => Promise<SessionBranchSearchResult>;
 type Update = TuiUpdateResult<CodingAgentTuiState, CodingAgentTuiMessage>;
 
 export function historySearchIndex(search: HistorySearch) {
@@ -85,7 +85,9 @@ export function transitionHistorySearch(
     searchPickerIndex: historySearchIndex(state.overlay)
   });
   const next = { ...state, overlay: { ...state.overlay, picker } };
-  return previous === searchPickerView(picker).input.text ? { state: next } : searchHistory(next, search);
+  return previous === searchPickerView(picker).input.text
+    ? { state: next }
+    : searchHistory(next, search);
 }
 
 export function searchHistory(
@@ -144,6 +146,10 @@ export function jumpToSearchResult(
   state: CodingAgentTuiState,
   entryId: string,
   read: CodingHistoryReader | undefined,
+  openSource: (
+    state: CodingAgentTuiState,
+    reference: import('@agent-core/tui').ConversationReferenceEntry
+  ) => TuiUpdateResult<CodingAgentTuiState, CodingAgentTuiMessage>,
   result = state.overlay.kind === 'search' ? state.overlay.result : undefined
 ): Update {
   if (result === undefined) return { state };
@@ -159,19 +165,7 @@ export function jumpToSearchResult(
       oversizedEntry: result.oversizedEntry
     })[0];
     if (reference === undefined) return { state };
-    return {
-      state: {
-        ...state,
-        historyMatch: { result, index: -1, query },
-        overlay: {
-          kind: 'inspector',
-          state: updateSourceInspector(createSourceInspector([reference]), {
-            type: 'inspector.pick',
-            id: reference.id
-          })
-        }
-      }
-    };
+    return openSource({ ...state, historyMatch: { result, query, index: -1 } }, reference);
   }
   const historyMatch = selectHistoryMatch(result, entryId, query);
   if (historyMatch === undefined) return { state };
@@ -189,7 +183,11 @@ export function jumpToSearchResult(
         },
         onError: ({ diagnostic }) => ({
           kind: 'message',
-          message: { type: 'interactive.notice', tone: 'error', message: diagnosticMessage(diagnostic) }
+          message: {
+            type: 'interactive.notice',
+            tone: 'error',
+            message: diagnosticMessage(diagnostic)
+          }
         })
       }
     ]
@@ -199,15 +197,21 @@ export function jumpToSearchResult(
 export function jumpToAdjacentMatch(
   state: CodingAgentTuiState,
   direction: 'previous' | 'next',
-  read: CodingHistoryReader | undefined
+  read: CodingHistoryReader | undefined,
+  openSource: (
+    state: CodingAgentTuiState,
+    reference: import('@agent-core/tui').ConversationReferenceEntry
+  ) => TuiUpdateResult<CodingAgentTuiState, CodingAgentTuiMessage>
 ): Update {
   const position = state.historyMatch;
   if (position === undefined || position.result.boundary.sessionId !== state.debug.sessionId)
     return { state };
   const entryId = adjacentHistoryMatch(position, direction);
   return entryId === undefined
-    ? { state: appendNotice(state, 'End of this match batch. Open search to search another batch.') }
-    : jumpToSearchResult(state, entryId, read, position.result);
+    ? {
+        state: appendNotice(state, 'End of this match batch. Open search to search another batch.')
+      }
+    : jumpToSearchResult(state, entryId, read, openSource, position.result);
 }
 
 export function receiveSearchJump(
@@ -219,8 +223,10 @@ export function receiveSearchJump(
   if (entry === undefined)
     return appendNotice(state, 'The selected entry is no longer in this history page.', 'error');
   const presented = presentHistoryPages(state, [message.page], false);
-  const itemId = applyBranchEntry({ ...state, conversation: { ...state.conversation, items: [] } }, entry)
-    .conversation.items[0]?.id;
+  const itemId = applyBranchEntry(
+    { ...state, conversation: { ...state.conversation, items: [] } },
+    entry
+  ).conversation.items[0]?.id;
   return {
     ...presented,
     overlay: { kind: 'none' },

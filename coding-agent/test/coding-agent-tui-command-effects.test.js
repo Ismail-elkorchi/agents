@@ -1,13 +1,14 @@
+import { createTestEventSource } from './helpers/event-source.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import { runTui } from '@ismail-elkorchi/terminal-ui/tui';
-import { createCodingTuiEventSource, createCodingAgentTuiApp } from '@ismail-elkorchi/coding-agent/tui';
+import { createCodingAgentTuiApp } from '@ismail-elkorchi/coding-agent/tui';
 import { waitFor } from './coding-agent-tui-test-helpers.js';
 
 test('delayed admission preserves progress received while the effect is running', async (t) => {
   const host = createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 18 } });
-  const events = createCodingTuiEventSource();
+  const events = createTestEventSource();
   let resolveCommand;
   const commandResult = new Promise((resolve) => {
     resolveCommand = resolve;

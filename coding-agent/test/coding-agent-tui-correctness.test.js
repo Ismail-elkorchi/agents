@@ -1,3 +1,5 @@
+import { renderFramePlain } from '@ismail-elkorchi/terminal-ui/renderer';
+import { createTestEventSource } from './helpers/event-source.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';import assert from 'node:assert/strict';
@@ -6,7 +8,6 @@ import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import { textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
 import { createTuiRuntime, runTui } from '@ismail-elkorchi/terminal-ui/tui';
 import {
-  createCodingTuiEventSource,
   createCodingAgentTuiApp,
   runCodingAgentTuiApp
 } from '@ismail-elkorchi/coding-agent/tui';
@@ -14,7 +15,7 @@ import { waitFor } from './coding-agent-tui-test-helpers.js';
 
 test('durable restore precedes live append and stable identities prevent duplicates', async () => {
   const host = createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 20 } });
-  const events = createCodingTuiEventSource();
+  const events = createTestEventSource();
   const hydration = runningHydration();
   const running = runTui(
     createCodingAgentTuiApp('', {
@@ -62,6 +63,8 @@ test('durable restore precedes live append and stable identities prevent duplica
       modelOutput: { status: 'complete', message: 'Partial restored', source: 'content', turnIndex: 1 }
     }
   });
+  // Source emission acknowledges admission; exit is requested after the frame commits.
+  await waitFor(() => renderFramePlain(host.frames().at(-1)).includes('Partial restored'));
   host.input('/exit\r');
   const exit = await running;
   await events.close();
@@ -131,7 +134,7 @@ test('recovered queued runs surface queue and driver control', async () => {
   });
   await runtime.start();
   assert.equal(runtime.state().run.kind, 'working');
-  assert.equal(runtime.state().run.label, 'Recovered run queued');
+  assert.equal(runtime.state().progress.label, 'Recovered run queued');
   assert.match(host.output(), /1 queued/u);
   assert.doesNotMatch(host.output(), /driver detached/u);
   assert.equal(runtime.state().debug.runs[0].state.control.status, 'detached');
@@ -157,7 +160,7 @@ test('hydration retains concurrent work and selects the exact per-call approval 
     host: createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 18 } })
   });
   await runtime.start();
-  assert.match(runtime.state().run.label, /1 provider request · 1 pending tool/u);
+  assert.match(runtime.state().progress.label, /1 provider request · 1 pending tool/u);
   assert.equal(runtime.state().debug.runs[0].state.toolBatches[0].source, source);
   await runtime.dispose();
 
@@ -226,7 +229,7 @@ test('completed hydration restores conversation and persisted workspace changes'
 
 test('long stream pressure retains every reliable boundary and the latest stream value', async () => {
   const host = createMemoryTerminalHost({ terminalSize: { columns: 80, rows: 12 } });
-  const events = createCodingTuiEventSource();
+  const events = createTestEventSource();
   const running = runTui(
     createCodingAgentTuiApp('', {
       eventSource: events,
@@ -276,6 +279,7 @@ test('long stream pressure retains every reliable boundary and the latest stream
       modelOutput: { status: 'complete', message: 'final-value', source: 'content', turnIndex: 1 }
     }
   });
+  await waitFor(() => renderFramePlain(host.frames().at(-1)).includes('final-value'));
   host.input('/exit\r');
   const exit = await running;
   await events.close();
@@ -323,7 +327,7 @@ test('composer history restores the draft and tiny resizes preserve focus', asyn
 });
 
 test('event source cancellation and dispatch failure terminate explicitly', async () => {
-  const cancelled = createCodingTuiEventSource();
+  const cancelled = createTestEventSource();
   const controller = new AbortController();
   const cancellation = cancelled.run(sourceContext(controller.signal), { emit: async () => {} });
   await cancelled.enqueue({ type: 'app.exit', reason: 'before-cancel' });
@@ -332,7 +336,7 @@ test('event source cancellation and dispatch failure terminate explicitly', asyn
   await cancelled.close();
   await assert.rejects(cancelled.enqueue({ type: 'app.exit' }), /closed/u);
 
-  const failed = createCodingTuiEventSource();
+  const failed = createTestEventSource();
   const sourceRun = failed.run(sourceContext(new AbortController().signal), {
     emit: async () => {
       throw new Error('dispatch exploded');
@@ -350,9 +354,9 @@ test('event source cancellation and dispatch failure terminate explicitly', asyn
   await assert.rejects(failed.close(), /dispatch exploded/u);
 });
 
-test('normal shutdown drains admitted messages without source diagnostics', async () => {
+test('normal shutdown preserves committed messages without source diagnostics', async () => {
   const host = createMemoryTerminalHost({ terminalSize: { columns: 60, rows: 10 } });
-  const events = createCodingTuiEventSource();
+  const events = createTestEventSource();
   const running = runTui(
     createCodingAgentTuiApp('', {
       eventSource: events,
@@ -362,6 +366,7 @@ test('normal shutdown drains admitted messages without source diagnostics', asyn
   );
   await waitFor(() => host.frames().length > 0);
   await events.enqueue({ type: 'failure', message: 'visible before shutdown' });
+  await waitFor(() => renderFramePlain(host.frames().at(-1)).includes('visible before shutdown'));
   host.input('/exit\r');
   const exit = await running;
   await events.close();

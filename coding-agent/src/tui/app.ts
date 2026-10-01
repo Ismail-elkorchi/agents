@@ -11,32 +11,28 @@ import {
   completeResource,
   composerControls,
   composerRows,
-  configurationState,
-  configurationView,
+  configurationPanel,
   conversationFrame,
   copySource,
   createAttachments,
   createDraft,
   createPromptRecall,
-  createQueue,
+  queuePanel,
   createSessionName,
-  createSourceInspector,
+  sourceInspectorPanel,
   diagnosticMessage,
   draftFromSubmission,
   insertCommand,
-  inspectedSource,
   loadDraft,
   loadRecoveredPrompts,
   loadSessionName,
   moveCommand,
-  notesView,
+  notesPanel,
   observeAttention,
   panel,
   preferencesView,
   promptRecallView,
   promptsFromHistory,
-  queueView,
-  readSourceEntry,
   recoverDraft,
   rememberPrompt,
   resourceCompletionRows,
@@ -48,17 +44,12 @@ import {
   sessionNameView,
   shortcutBindings,
   shortcutHelp,
-  sourceInspectorView,
   transitionCommandPicker,
   updateAttachments,
-  updateConfiguration,
-  updateNotes,
   updatePreferences,
   updatePromptRecall,
-  updateQueue,
   updateResourceCompletion,
   updateSessionName,
-  updateSourceInspector,
   type ComposerDraft,
   type ConfigurationOperations
 } from '@agent-core/tui';
@@ -98,7 +89,7 @@ import type {
   TuiInputBindingContext,
   TuiUpdateResult
 } from '@ismail-elkorchi/terminal-ui/tui';
-import { defineTui, tuiBindingHelp } from '@ismail-elkorchi/terminal-ui/tui';
+import { createTuiChild, defineTui, tuiBindingHelp } from '@ismail-elkorchi/terminal-ui/tui';
 import type {
   CodingApplicationState,
   CodingRuntimeDetails,
@@ -185,6 +176,10 @@ export function createCodingAgentTuiApp(
   options: CodingAgentTuiAppOptions = {}
 ) {
   const eventSource = options.eventSource;
+  const inspector = codingInspector(options.historyEntryReader);
+  const configuration =
+    options.configuration === undefined ? undefined : codingConfiguration(options.configuration);
+  const notes = options.navigation === undefined ? undefined : codingNotes(options.navigation);
   const app: import('@ismail-elkorchi/terminal-ui/tui').TuiApp<
     CodingAgentTuiState,
     CodingAgentTuiMessage
@@ -211,11 +206,34 @@ export function createCodingAgentTuiApp(
       };
     },
     update: (state, message, context) => {
-      const result = withAttention(
+      let result = withAttention(
         updateCodingAgentTui(state, message, context, options),
         message,
         options
       );
+      const previousPanel = mountedPanel(state.overlay);
+      const nextPanel = mountedPanel(result.state.overlay);
+      if (
+        previousPanel !== undefined &&
+        (previousPanel.id !== nextPanel?.id || previousPanel.generation !== nextPanel.generation)
+      ) {
+        result = {
+          ...result,
+          cancelEffects: [...(result.cancelEffects ?? []), ...previousPanel.effectIds]
+        };
+      }
+      if (
+        result.state.queuePanel !== undefined &&
+        result.state.overlay.kind !== 'queue' &&
+        result.state.queuePanel.state.stage !== 'saving'
+      ) {
+        const { queuePanel: completed, ...next } = result.state;
+        result = {
+          ...result,
+          state: next,
+          cancelEffects: [...(result.cancelEffects ?? []), ...completed.effectIds]
+        };
+      }
       if (
         message.type === 'result' &&
         options.historyReader !== undefined &&
@@ -539,7 +557,20 @@ export function createCodingAgentTuiApp(
         context,
         hints.map((item) => `${item.keys}  ${item.label}`).join('\n'),
         hints,
-        options.configuration
+        state.overlay.kind === 'configuration'
+          ? configuration?.view(state.overlay.state, context)
+          : state.overlay.kind === 'notes'
+            ? notes?.view(state.overlay.state, context)
+            : state.overlay.kind === 'queue' &&
+                state.queuePanel !== undefined &&
+                options.navigation !== undefined
+              ? codingQueue(options.navigation, state.queuePanel.state.sessionId).view(
+                  state.queuePanel,
+                  context
+                )
+              : state.overlay.kind === 'inspector'
+                ? inspector.view(state.overlay.state, context)
+                : undefined
       );
     }
   });
@@ -666,16 +697,7 @@ function updateCodingAgentTui(
         state: { ...state, overlay: { kind: 'session-name', state: result.state } }
       };
     }
-    case 'queue.failed': {
-      if (state.overlay.kind !== 'queue' || state.overlay.state.id !== message.id)
-        return {
-          state:
-            message.operation === 'change' ? appendNotice(state, message.error, 'error') : state
-        };
-      if (options.navigation === undefined) return { state };
-      const result = updateQueue(state.overlay.state, message, options.navigation);
-      return { ...result, state: { ...state, overlay: { kind: 'queue', state: result.state } } };
-    }
+
     case 'resource.accept': {
       const completion = state.resourceCompletion;
       if (completion === undefined) return { state };
@@ -726,68 +748,45 @@ function updateCodingAgentTui(
         ]
       };
     case 'inspector.open':
-      return {
-        state: {
-          ...state,
-          overlay: { kind: 'inspector', state: createSourceInspector(state.conversation.items) }
-        }
-      };
-    case 'inspector.copy': {
-      if (state.overlay.kind !== 'inspector') return { state };
-      const source = inspectedSource(state.overlay.state);
-      return source === undefined
-        ? { state }
-        : {
-            state,
-            effects: [copySource(source, (message) => ({ type: 'inspector.notice', message }))]
-          };
-    }
     case 'history.inspect': {
-      if (message.reference.boundary.sessionId !== state.debug.sessionId) return { state };
-      const inspector = updateSourceInspector(createSourceInspector([message.reference]), {
-        type: 'inspector.pick',
-        id: message.reference.id
-      });
-      return { state: { ...state, overlay: { kind: 'inspector', state: inspector } } };
-    }
-    case 'inspector.read': {
       if (
-        state.overlay.kind !== 'inspector' ||
-        state.overlay.state.selected?.entry.kind !== 'reference'
+        message.type === 'history.inspect' &&
+        message.reference.boundary.sessionId !== state.debug.sessionId
       )
         return { state };
-      if (options.historyEntryReader === undefined)
-        return { state: appendNotice(state, 'Explicit history reads are unavailable.', 'error') };
+      const generation = state.panelGeneration + 1;
+      const inspector = codingInspector(
+        options.historyEntryReader,
+        message.type === 'history.inspect' ? [message.reference] : state.conversation.items,
+        message.type === 'history.inspect' ? message.reference.id : undefined
+      );
+      const result = inspector.init({ id: 'inspector', generation }, context);
       return {
-        state,
-        effects: [
-          readSourceEntry(
-            state.overlay.state,
-            state.overlay.state.selected.entry,
-            options.historyEntryReader
-          )
-        ]
+        ...result,
+        state: {
+          ...state,
+          panelGeneration: generation,
+          overlay: { kind: 'inspector', state: result.state }
+        }
       };
     }
-    case 'inspector.loaded':
-    case 'inspector.read-failed':
-    case 'inspector.pick':
-    case 'inspector.transition':
-    case 'inspector.edit':
-    case 'inspector.format':
-    case 'inspector.back':
-    case 'inspector.notice':
-      return state.overlay.kind !== 'inspector'
-        ? { state }
-        : {
-            state: {
-              ...state,
-              overlay: {
-                kind: 'inspector',
-                state: updateSourceInspector(state.overlay.state, message)
-              }
-            }
-          };
+    case 'inspector.child': {
+      if (state.overlay.kind !== 'inspector') return { state };
+      const result = codingInspector(options.historyEntryReader).update(
+        state.overlay.state,
+        message.child,
+        context
+      );
+      return {
+        ...result,
+        state: {
+          ...state,
+          overlay: result.outputs?.includes('close')
+            ? { kind: 'none' }
+            : { kind: 'inspector', state: result.state }
+        }
+      };
+    }
     case 'draft.failed':
       return {
         state: appendNotice(state, `Draft restoration failed: ${message.message}`, 'error')
@@ -812,11 +811,19 @@ function updateCodingAgentTui(
             ? `${attachment.item.sourceUri}\n${attachment.item.representation} · ${attachment.item.mediaType}\n\n${attachment.item.content}`
             : `${attachment.label}\n${JSON.stringify(attachment.image, null, 2)}`
       };
-      const inspector = updateSourceInspector(createSourceInspector([entry]), {
-        type: 'inspector.pick',
-        id: entry.id
-      });
-      return { state: { ...state, overlay: { kind: 'inspector', state: inspector } } };
+      const generation = state.panelGeneration + 1;
+      const result = codingInspector(options.historyEntryReader, [entry], entry.id).init(
+        { id: 'inspector', generation },
+        context
+      );
+      return {
+        ...result,
+        state: {
+          ...state,
+          panelGeneration: generation,
+          overlay: { kind: 'inspector', state: result.state }
+        }
+      };
     }
     case 'attachments.remove':
       return {
@@ -906,8 +913,49 @@ function updateCodingAgentTui(
     case 'queue.open': {
       if (options.navigation === undefined)
         return { state: appendNotice(state, 'Queue operations are unavailable.', 'error') };
-      const result = createQueue(options.navigation, state.debug.sessionId ?? ':new');
-      return { ...result, state: { ...state, overlay: { kind: 'queue', state: result.state } } };
+      if (state.queuePanel !== undefined) {
+        if (state.queuePanel.state.sessionId !== (state.debug.sessionId ?? ':new'))
+          return {
+            state: appendNotice(
+              state,
+              'A queue update from the previous session is still settling.'
+            )
+          };
+        return { state: { ...state, overlay: { kind: 'queue' } } };
+      }
+      const generation = state.panelGeneration + 1;
+      const queue = codingQueue(options.navigation, state.debug.sessionId ?? ':new');
+      const result = queue.init({ id: 'queue', generation }, context);
+      return {
+        ...result,
+        state: {
+          ...state,
+          panelGeneration: generation,
+          queuePanel: result.state,
+          overlay: { kind: 'queue' }
+        }
+      };
+    }
+    case 'queue.child': {
+      if (state.queuePanel === undefined || options.navigation === undefined) return { state };
+      const queue = codingQueue(options.navigation, state.queuePanel.state.sessionId);
+      const result = queue.update(state.queuePanel, message.child, context);
+      let next: CodingAgentTuiState = { ...state, queuePanel: result.state };
+      for (const output of result.outputs ?? []) {
+        if (output.kind === 'close' && next.overlay.kind === 'queue')
+          next = { ...next, overlay: { kind: 'none' } };
+        if (output.kind === 'failed' && next.overlay.kind !== 'queue')
+          next = appendNotice(next, output.error, 'error');
+        if (output.kind === 'withdrawn') {
+          const recovered = updateCodingAgentTui(next, output.message, context, options);
+          return {
+            ...result,
+            ...recovered,
+            effects: [...(result.effects ?? []), ...(recovered.effects ?? [])]
+          };
+        }
+      }
+      return { ...result, state: next };
     }
     case 'queue.withdrawn': {
       const draft = draftFromSubmission(message.input);
@@ -915,7 +963,7 @@ function updateCodingAgentTui(
         state: {
           ...state,
           overlay:
-            state.overlay.kind === 'queue' && state.overlay.state.id === message.id
+            state.overlay.kind === 'queue' && state.queuePanel?.state.id === message.id
               ? { kind: 'none' }
               : state.overlay,
           composer: {
@@ -940,18 +988,6 @@ function updateCodingAgentTui(
           )
         ]
       };
-    }
-    case 'queue.refresh':
-    case 'queue.loaded':
-    case 'queue.select':
-    case 'queue.edit':
-    case 'queue.save':
-    case 'queue.cancel':
-    case 'queue.withdraw':
-    case 'queue.scroll': {
-      if (state.overlay.kind !== 'queue' || options.navigation === undefined) return { state };
-      const result = updateQueue(state.overlay.state, message, options.navigation);
-      return { ...result, state: { ...state, overlay: { kind: 'queue', state: result.state } } };
     }
     case 'terminal.focus':
       return { state: { ...state, attention: { ...state.attention, focused: message.focused } } };
@@ -980,50 +1016,30 @@ function updateCodingAgentTui(
         ]
       };
     case 'configuration.open':
-      return options.configuration === undefined
-        ? { state }
-        : {
-            state: {
-              ...state,
-              overlay: {
-                kind: 'configuration',
-                state: configurationState(
-                  options.configuration.current(),
-                  options.configuration.providers
-                )
-              }
-            }
-          };
-    case 'configuration.saved':
-      return state.overlay.kind === 'configuration' && state.overlay.state.id === message.id
-        ? { state: { ...state, overlay: { kind: 'none' } } }
-        : { state };
-    case 'configuration.connected':
-    case 'configuration.secret':
-    case 'configuration.scroll':
-    case 'configuration.open-browser':
-    case 'configuration.copy':
-    case 'configuration.notice':
-    case 'configuration.login':
-    case 'configuration.logout':
-    case 'configuration.challenge':
-    case 'configuration.authenticated':
-    case 'configuration.stage':
-    case 'configuration.pick':
-    case 'configuration.transition':
-    case 'configuration.edit':
-    case 'configuration.input':
-    case 'configuration.refresh':
-    case 'configuration.save':
-    case 'configuration.catalog':
-    case 'configuration.profile':
-    case 'configuration.failed': {
-      if (state.overlay.kind !== 'configuration' || options.configuration === undefined)
+    case 'configuration.child': {
+      if (
+        options.configuration === undefined ||
+        (message.type === 'configuration.child' && state.overlay.kind !== 'configuration')
+      )
         return { state };
-      const result = updateConfiguration(state.overlay.state, message, options.configuration);
+      const configuration = codingConfiguration(options.configuration);
+      const generation = state.panelGeneration + (message.type === 'configuration.open' ? 1 : 0);
+      const result =
+        message.type === 'configuration.open'
+          ? configuration.init({ id: 'configuration', generation }, context)
+          : state.overlay.kind === 'configuration'
+            ? configuration.update(state.overlay.state, message.child, context)
+            : undefined;
+      if (result === undefined) return { state };
       return {
         ...result,
-        state: { ...state, overlay: { kind: 'configuration', state: result.state } }
+        state: {
+          ...state,
+          panelGeneration: generation,
+          overlay: result.outputs?.length
+            ? { kind: 'none' }
+            : { kind: 'configuration', state: result.state }
+        }
       };
     }
     case 'application.exit':
@@ -1123,25 +1139,30 @@ function updateCodingAgentTui(
           };
     }
     case 'notes.open':
-    case 'notes.listed':
-    case 'notes.read':
-    case 'notes.loaded':
-    case 'notes.failed':
-    case 'notes.edit':
-    case 'notes.scroll': {
+    case 'notes.child': {
       if (
         options.navigation === undefined ||
-        (message.type !== 'notes.open' && state.overlay.kind !== 'notes')
+        (message.type === 'notes.child' && state.overlay.kind !== 'notes')
       )
         return { state };
-      const result = updateNotes(
-        state.overlay.kind === 'notes' ? state.overlay.state : { offset: 0 },
-        message,
-        options.navigation
-      );
+      const notes = codingNotes(options.navigation);
+      const generation = state.panelGeneration + (message.type === 'notes.open' ? 1 : 0);
+      const result =
+        message.type === 'notes.open'
+          ? notes.init({ id: 'notes', generation }, context)
+          : state.overlay.kind === 'notes'
+            ? notes.update(state.overlay.state, message.child, context)
+            : undefined;
+      if (result === undefined) return { state };
       return {
-        state: { ...state, overlay: { kind: 'notes', state: result.state } },
-        ...(result.effects === undefined ? {} : { effects: result.effects })
+        ...result,
+        state: {
+          ...state,
+          panelGeneration: generation,
+          overlay: result.outputs?.includes('close')
+            ? { kind: 'none' }
+            : { kind: 'notes', state: result.state }
+        }
       };
     }
 
@@ -1232,7 +1253,13 @@ function updateCodingAgentTui(
         return {
           state: {
             ...state,
-            overlay: { ...state.overlay, state: { ...state.overlay.state, error: message.message } }
+            overlay: {
+              ...state.overlay,
+              state: {
+                ...state.overlay.state,
+                state: { ...state.overlay.state.state, error: message.message }
+              }
+            }
           }
         };
       return updated(appendNotice(state, message.message, message.tone ?? 'info'));
@@ -1506,7 +1533,13 @@ function updateCodingAgentTui(
     case 'command.failed':
       return updated(applyCommandFailure(state, message.message, message.request));
     case 'search.adjacent':
-      return jumpToAdjacentMatch(state, message.direction, options.historyReader);
+      return jumpToAdjacentMatch(
+        state,
+        message.direction,
+        options.historyReader,
+        (next, reference) =>
+          updateCodingAgentTui(next, { type: 'history.inspect', reference }, context, options)
+      );
     case 'conversation.message': {
       const layout = state.presentation.layout;
       const anchor = state.presentation.adjacentMessage(layout.scroll.offsetRow, message.direction);
@@ -1565,12 +1598,8 @@ function updateCodingAgentTui(
       return {
         state: { ...state, overlay: { kind: 'none' } },
         cancelEffects: [
-          'model-configuration',
-          'configuration-browser',
-          'model-notes-read',
           'context-inspection',
           'history-jump',
-          'source-entry-read',
           'attachment-read',
           'session-name-load',
           'process-list'
@@ -1599,7 +1628,9 @@ function updateCodingAgentTui(
     case 'search.transition':
       return transitionHistorySearch(state, message.transition, options.historySearcher);
     case 'search.accept':
-      return jumpToSearchResult(state, message.event.id, options.historyReader);
+      return jumpToSearchResult(state, message.event.id, options.historyReader, (next, reference) =>
+        updateCodingAgentTui(next, { type: 'history.inspect', reference }, context, options)
+      );
     case 'terminal.resized':
       return updated(state);
     case 'app.exit':
@@ -1878,7 +1909,7 @@ function agentTuiView(
   context: TuiContext,
   helpText: string,
   hints: readonly { readonly label: string; readonly keys: string }[],
-  configuration?: ConfigurationOperations
+  childPanel?: Element<CodingAgentTuiMessage>
 ): Element<CodingAgentTuiMessage> {
   const workspace = conversationFrame({
     id: 'coding-agent-tui',
@@ -1961,7 +1992,7 @@ function agentTuiView(
       id: 'coding-agent-overlay'
     });
   }
-  const modal = overlayView(state, context, helpText, configuration);
+  const modal = overlayView(state, context, helpText, childPanel);
   return modal === undefined
     ? overlay([workspace], { id: 'coding-agent-overlay' })
     : overlay([workspace, modal], { id: 'coding-agent-overlay' });
@@ -1987,31 +2018,29 @@ function composerView(state: CodingAgentTuiState): Element<CodingAgentTuiMessage
       transition: Extract<CodingAgentTuiMessage, { type: 'composer.edit' }>['transition']
     ): CodingAgentTuiMessage => ({ type: 'composer.edit', transition })
   });
-  if (state.resourceCompletion !== undefined)
-    return column([resourceSuggestions(state.resourceCompletion), input], {
-      sizes: [
-        { kind: 'fixed', cells: resourceCompletionRows(state.resourceCompletion) },
-        { kind: 'fill' }
-      ]
-    });
-  return state.completion === undefined
-    ? input
-    : column(
-        [
-          commandSuggestions(
+  const suggestions =
+    state.resourceCompletion !== undefined
+      ? resourceSuggestions(state.resourceCompletion)
+      : state.completion === undefined
+        ? undefined
+        : commandSuggestions(
             state.completion,
             INTERACTIVE_COMMANDS,
             (name): CodingAgentTuiMessage => ({ type: 'completion.accept', open: true, name })
-          ),
-          input
-        ],
-        {
-          sizes: [
-            { kind: 'fixed', cells: Math.min(5, state.completion.names.length) + 1 },
-            { kind: 'fill' }
-          ]
-        }
-      );
+          );
+  const suggestionRows =
+    state.resourceCompletion !== undefined
+      ? resourceCompletionRows(state.resourceCompletion)
+      : state.completion === undefined
+        ? 0
+        : Math.min(5, state.completion.names.length) + 1;
+  return column(suggestions === undefined ? [input] : [suggestions, input], {
+    id: 'composer-field',
+    sizes: [
+      ...(suggestions === undefined ? [] : [{ kind: 'fixed' as const, cells: suggestionRows }]),
+      { kind: 'fill' }
+    ]
+  });
 }
 
 function conversationView(
@@ -2085,7 +2114,7 @@ function overlayView(
   state: CodingAgentTuiState,
   context: TuiContext,
   helpText: string,
-  configuration?: ConfigurationOperations
+  childPanel?: Element<CodingAgentTuiMessage>
 ): Element<CodingAgentTuiMessage> | undefined {
   const width = Math.max(5, Math.min(84, context.terminalSize.columns - 4));
   const height = Math.max(4, Math.min(20, context.terminalSize.rows - 4));
@@ -2095,7 +2124,7 @@ function overlayView(
     case 'session-name':
       return sessionNameView(state.overlay.state, width, height);
     case 'inspector':
-      return sourceInspectorView(state.overlay.state, width, height);
+      return childPanel;
     case 'decision':
       return undefined;
     case 'preferences':
@@ -2112,11 +2141,9 @@ function overlayView(
         }
       );
     case 'configuration':
-      return configuration === undefined
-        ? undefined
-        : configurationView(state.overlay.state, configuration, width, height);
+      return childPanel;
     case 'notes':
-      return notesView(state.overlay.state, width, height, (message) => message);
+      return childPanel;
     case 'none':
       return undefined;
     case 'attachments':
@@ -2124,7 +2151,7 @@ function overlayView(
     case 'recall':
       return promptRecallView(state.overlay.state, width, height);
     case 'queue':
-      return queueView(state.overlay.state, width, height);
+      return childPanel;
     case 'context':
       return contextView(state.overlay.state, width, height);
     case 'panel_loading':
@@ -2609,11 +2636,11 @@ function livePresentation(
 function copyInput(state: CodingAgentTuiState) {
   const overlay = state.overlay;
   if (overlay.kind === 'processes') return overlay.state.selected?.output;
-  if (overlay.kind === 'inspector') return overlay.state.selected?.input;
+  if (overlay.kind === 'inspector') return overlay.state.state.selected?.input;
   return overlay.kind === 'source'
     ? overlay.input
     : overlay.kind === 'notes'
-      ? overlay.state.source?.input
+      ? overlay.state.state.source?.input
       : overlay.kind === 'none'
         ? state.composer.input
         : undefined;
@@ -2676,4 +2703,44 @@ function withoutConversationAnchor(
   const next = { ...conversation };
   delete next.anchor;
   return next;
+}
+
+function codingNotes(reader: import('@agent-core/tui').NoteReader) {
+  return createTuiChild(notesPanel(reader), (child): CodingAgentTuiMessage => ({
+    type: 'notes.child',
+    child
+  }));
+}
+
+function codingConfiguration(operations: NonNullable<CodingAgentTuiAppOptions['configuration']>) {
+  return createTuiChild(
+    configurationPanel(() => operations.current(), operations),
+    (child): CodingAgentTuiMessage => ({ type: 'configuration.child', child })
+  );
+}
+
+function codingQueue(operations: import('@agent-core/tui').QueueOperations, sessionId: string) {
+  return createTuiChild(queuePanel(operations, sessionId), (child): CodingAgentTuiMessage => ({
+    type: 'queue.child',
+    child
+  }));
+}
+
+function codingInspector(
+  reader?: import('@agent-core/tui').HistoryEntryReader,
+  entries: readonly import('@agent-core/tui').ConversationEntry[] = [],
+  selectedId?: string
+) {
+  return createTuiChild(
+    sourceInspectorPanel(entries, reader, selectedId),
+    (child): CodingAgentTuiMessage => ({ type: 'inspector.child', child })
+  );
+}
+
+function mountedPanel(overlay: CodingAgentTuiState['overlay']) {
+  return overlay.kind === 'notes' ||
+    overlay.kind === 'configuration' ||
+    overlay.kind === 'inspector'
+    ? overlay.state
+    : undefined;
 }

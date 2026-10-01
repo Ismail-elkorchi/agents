@@ -1,5 +1,5 @@
 import { progressReplacementKey } from '@agent-core/runtime';
-import { preferencesTheme, ringTerminalBell, TuiEventChannel } from '@agent-core/tui';
+import { applicationEventSource, preferencesTheme, ringTerminalBell } from '@agent-core/tui';
 import {
   exportConversation,
   FileDraftStorage,
@@ -20,44 +20,47 @@ export async function runWritingAgentTuiApp(
   application: WritingApplication,
   options: { readonly host?: TerminalHost } = {}
 ) {
-  const events = new TuiEventChannel<WritingTuiMessage>('writing-agent-events', {
+  const events = applicationEventSource<WritingTuiMessage>('writing-agent-events', {
     replacementKey: (message) =>
       message.type === 'progress'
         ? progressReplacementKey(message.event)
         : message.type === 'refresh'
           ? 'session-refresh'
           : undefined,
-    failureMessage: (message) => ({ type: 'notice', message })
-  });
-  const unsubscribe = application.subscribe(
-    async (event) => {
-      switch (event.type) {
-        case 'application.state.changed':
-          return events.enqueue({ type: 'application', state: application.state() });
-        case 'run.progress':
-          return events.enqueue({ type: 'progress', runId: event.runId, event: event.event });
-        case 'run.completed':
-          return events.enqueue({ type: 'result', result: event.result });
-        case 'run.failed':
-          return events.enqueue({ type: 'notice', message: event.error.message });
-        case 'delivery.gap':
-        case 'configuration.changed':
-        case 'input.queued':
-        case 'input.revised':
-        case 'input.cancelled':
-        case 'context.transitioned':
-          return events.enqueue({ type: 'refresh' });
-      }
+    failureMessage: (message) => ({ type: 'notice', message }),
+    subscribe: (emit, failed) => {
+      return application.subscribe(async (event) => {
+        switch (event.type) {
+          case 'application.state.changed':
+            return emit({ type: 'application', state: application.state() });
+          case 'run.progress':
+            return emit({ type: 'progress', runId: event.runId, event: event.event });
+          case 'run.completed':
+            return emit({ type: 'result', result: event.result });
+          case 'run.failed':
+            return emit({ type: 'notice', message: event.error.message });
+          case 'delivery.gap':
+          case 'configuration.changed':
+          case 'input.queued':
+          case 'input.revised':
+          case 'input.cancelled':
+          case 'context.transitioned':
+            return emit({ type: 'refresh' });
+        }
+      }, failed);
     },
-    (error) => {
-      events.fail(error);
+    start: async (emit) => {
+      await emit({ type: 'refresh' });
     }
-  );
+  });
   return runTerminalApplication({
     ...(options.host === undefined ? {} : { host: options.host }),
-    cleanup: [unsubscribe, () => application.close(), () => events.close()],
+    cleanup: [() => application.close()],
     async run(host) {
-      const preferences = await readTuiPreferences(application.presentationPath(), WRITING_SHORTCUTS);
+      const preferences = await readTuiPreferences(
+        application.presentationPath(),
+        WRITING_SHORTCUTS
+      );
       return runTui(
         createWritingAgentTuiApp(application, {
           events,

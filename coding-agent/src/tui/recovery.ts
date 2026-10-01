@@ -7,7 +7,10 @@ import type { CodingAgentTuiMessage } from './messages.js';
 import type { CodingAgentTuiRunState } from './state.js';
 
 export type RecoveryAction = 'stop' | 'resume';
-export type RecoveryHandler = (suspension: AgentRunSuspension, action: RecoveryAction) => Promise<string>;
+export type RecoveryHandler = (
+  suspension: AgentRunSuspension,
+  action: RecoveryAction
+) => Promise<string>;
 
 export function recoveryEffect(
   suspension: AgentRunSuspension,
@@ -18,7 +21,8 @@ export function recoveryEffect(
     id: 'run-recovery',
     concurrency: 'keep-first',
     async run() {
-      if (handler === undefined) throw new Error('Recovery actions are unavailable in this interface.');
+      if (handler === undefined)
+        throw new Error('Recovery actions are unavailable in this interface.');
       return {
         kind: 'message',
         message: {
@@ -52,30 +56,38 @@ export function recoveryDialog(
       id: 'recovery-stop',
       label: 'Stop this run',
       tone: 'destructive',
-      ...(run.operation === undefined
-        ? { onPress: (): CodingAgentTuiMessage => ({ type: 'recovery.act', action: 'stop' }) }
-        : { disabled: true })
+      disabled: run.operation !== undefined,
+      onPress: (): CodingAgentTuiMessage => ({ type: 'recovery.act', action: 'stop' })
     })
   ];
   if (suspension.reason !== 'user_decision')
     actions.push(
       button({
         id: 'recovery-resume',
-        label: suspension.reason === 'missing_implementation' ? 'Continue' : 'Check for a recorded result',
-        ...(run.operation === undefined
-          ? { onPress: (): CodingAgentTuiMessage => ({ type: 'recovery.act', action: 'resume' }) }
-          : { disabled: true })
+        label:
+          suspension.reason === 'missing_implementation'
+            ? 'Continue'
+            : 'Check for a recorded result',
+        disabled: run.operation !== undefined,
+        onPress: (): CodingAgentTuiMessage => ({ type: 'recovery.act', action: 'resume' })
       })
     );
   const message =
-    run.operation === 'stop' ? 'Stopping…' : run.operation === 'resume' ? 'Checking…' : (run.message ?? '');
+    run.operation === 'stop'
+      ? 'Stopping…'
+      : run.operation === 'resume'
+        ? 'Checking…'
+        : (run.message ?? '');
   return dialog({
     id: 'recovery-dialog',
     title: presentation.title,
     modal: true,
     dismissal: { dismissOnEscape: true, dismissOnOutsidePress: false },
     onDismiss: () => ({ type: 'overlay.close' }),
-    focusPolicy: { initialFocus: { kind: 'element', elementId: 'recovery-close' }, returnFocus: 'restore' },
+    focusPolicy: {
+      initialFocus: { kind: 'element', elementId: 'recovery-close' },
+      returnFocus: 'restore'
+    },
     slots: {
       content: viewport(
         paragraph(

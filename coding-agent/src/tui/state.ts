@@ -59,7 +59,7 @@ export interface CodingAgentTuiDebugState {
 
 export type CodingAgentTuiRunState =
   | { readonly kind: 'idle' }
-  | { readonly kind: 'working'; readonly label: string; readonly phase?: AgentRunPhase }
+  | { readonly kind: 'working'; readonly phase?: AgentRunPhase }
   | { readonly kind: 'waiting_for_approval'; readonly suspension: AgentApprovalSuspension }
   | {
       readonly kind: 'waiting_for_recovery';
@@ -73,21 +73,34 @@ export type CodingAgentTuiRunState =
 export type CodingAgentTuiOverlay =
   | { readonly kind: 'processes'; readonly state: import('./processes.js').ProcessPanel }
   | { readonly kind: 'session-name'; readonly state: import('@agent-core/tui').SessionNameState }
-  | { readonly kind: 'inspector'; readonly state: import('@agent-core/tui').SourceInspector }
+  | {
+      readonly kind: 'inspector';
+      readonly state: import('@ismail-elkorchi/terminal-ui/tui').TuiChildState<
+        import('@agent-core/tui').SourceInspector
+      >;
+    }
   | { readonly kind: 'attachments'; readonly state: import('@agent-core/tui').AttachmentState }
   | { readonly kind: 'recall'; readonly state: import('@agent-core/tui').PromptRecallState }
-  | { readonly kind: 'queue'; readonly state: import('@agent-core/tui').QueueState }
+  | { readonly kind: 'queue' }
   | {
       readonly kind: 'preferences';
       readonly capture?: string;
       readonly error?: string;
       readonly preferences: import('@agent-core/tui').TuiPreferences;
     }
-  | { readonly kind: 'configuration'; readonly state: import('@agent-core/tui').ConfigurationState }
+  | {
+      readonly kind: 'configuration';
+      readonly state: import('@ismail-elkorchi/terminal-ui/tui').TuiChildState<
+        import('@agent-core/tui').ConfigurationState
+      >;
+    }
   | { readonly kind: 'context'; readonly state: import('@agent-core/tui').ContextState }
   | { readonly kind: 'none' }
   | { readonly kind: 'decision' }
-  | { readonly kind: 'notes'; readonly state: NotesState }
+  | {
+      readonly kind: 'notes';
+      readonly state: import('@ismail-elkorchi/terminal-ui/tui').TuiChildState<NotesState>;
+    }
   | { readonly kind: 'commands'; readonly picker: CodingAgentTuiPickerState }
   | {
       readonly kind: 'command_values';
@@ -123,6 +136,10 @@ export interface CodingAgentTuiComposerState extends ComposerDraft {
 }
 
 export interface CodingAgentTuiState {
+  readonly queuePanel?: import('@ismail-elkorchi/terminal-ui/tui').TuiChildState<
+    import('@agent-core/tui').QueueState
+  >;
+  readonly panelGeneration: number;
   readonly historyMatch?: import('@agent-core/tui').HistoryMatchPosition;
   readonly draftRestoreSession?: string;
   readonly progress: import('@agent-core/tui').ProgressPresentation;
@@ -159,6 +176,7 @@ export function createInitialCodingAgentTuiState(
   return {
     sessionViews: {},
     attention: { focused: true },
+    panelGeneration: 0,
     progress: { label: 'Idle' },
     presentation: new RetainedListPresentation<ConversationEntry, CodingAgentTuiMessage>(),
     preferences,

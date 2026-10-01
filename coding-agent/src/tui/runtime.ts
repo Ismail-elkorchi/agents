@@ -1,5 +1,5 @@
-import type { AgentRunResult } from '@agent-core/runtime';
-import { preferencesTheme, ringTerminalBell } from '@agent-core/tui';
+import { progressReplacementKey, type AgentRunResult } from '@agent-core/runtime';
+import { applicationEventSource, preferencesTheme, ringTerminalBell } from '@agent-core/tui';
 import {
   exportConversation,
   FileDraftStorage,
@@ -17,7 +17,6 @@ import type { CodingApplicationEvent } from '../application/contracts.js';
 import type { CodingApplication } from '../application/service.js';
 import { createCodingAgentTuiApp } from './app.js';
 import { executeCodingCommand, submissionPresentation } from './application-commands.js';
-import { createCodingTuiEventSource } from './event-source.js';
 import { CODING_SHORTCUTS } from './interactive-commands.js';
 import type { CodingAgentTuiMessage } from './messages.js';
 import type { CodingAgentTuiState } from './state.js';
@@ -36,13 +35,54 @@ export async function runCodingAgentTuiApp(
   controller: CodingApplication,
   options: CodingAgentTuiAppRunOptions = {}
 ): Promise<CodingAgentTuiAppRunResult> {
-  const events = createCodingTuiEventSource();
   const initialTask = options.initialTask ?? '';
   let result: AgentRunResult | undefined;
-  let unsubscribe: (() => void) | undefined;
+  const events = applicationEventSource<CodingAgentTuiMessage>('coding-agent-events', {
+    replacementKey: (message) =>
+      message.type === 'progress' ? progressReplacementKey(message.event) : undefined,
+    failureMessage: (message) => ({ type: 'delivery.failed', message }),
+    subscribe: (emit, failed) => {
+      return controller.subscribe(async (event) => {
+        if (event.type === 'delivery.gap') {
+          await emit({
+            type: 'interactive.notice',
+            message: 'Display delivery skipped updates; refreshing recorded state.',
+            tone: 'warning'
+          });
+          await emit({
+            type: 'session.hydrated',
+            hydration: await controller.readSession()
+          });
+          return;
+        }
+        result = await presentControllerEvent(event, emit, result);
+        if (
+          event.type === 'input.queued' ||
+          event.type === 'input.revised' ||
+          event.type === 'input.cancelled'
+        )
+          await emit({
+            type: 'submissions.changed',
+            pending: await controller.readPendingSubmissions(),
+            ...(event.type === 'input.cancelled' ? { cancelledRunId: event.runId } : {})
+          });
+      }, failed);
+    },
+    start: async (emit) => {
+      try {
+        await controller.start();
+      } catch (error) {
+        await emit({ type: 'failure', message: errorMessage(error) });
+      }
+      if (initialTask.length > 0) {
+        await emit({ type: 'composer.restore', text: initialTask });
+        if (controller.state().status === 'ready') await emit({ type: 'composer.submit' });
+      }
+    }
+  });
   return runTerminalApplication({
     ...(options.host === undefined ? {} : { host: options.host }),
-    cleanup: [() => unsubscribe?.(), () => controller.close(), () => events.close()],
+    cleanup: [() => controller.close()],
     async run(host) {
       const preferences = await readTuiPreferences(controller.presentationPath(), CODING_SHORTCUTS);
       const initial = controller.state();
@@ -143,46 +183,6 @@ export async function runCodingAgentTuiApp(
             state.overlay.kind === 'preferences' ? state.overlay.preferences : state.preferences
           )
       });
-      unsubscribe = controller.subscribe(
-        async (event) => {
-          if (event.type === 'delivery.gap') {
-            await events.enqueue({
-              type: 'interactive.notice',
-              message: 'Display delivery skipped updates; refreshing recorded state.',
-              tone: 'warning'
-            });
-            await events.enqueue({
-              type: 'session.hydrated',
-              hydration: await controller.readSession()
-            });
-            return;
-          }
-          result = await presentControllerEvent(event, events, result);
-          if (
-            event.type === 'input.queued' ||
-            event.type === 'input.revised' ||
-            event.type === 'input.cancelled'
-          )
-            await events.enqueue({
-              type: 'submissions.changed',
-              pending: await controller.readPendingSubmissions(),
-              ...(event.type === 'input.cancelled' ? { cancelledRunId: event.runId } : {})
-            });
-        },
-        (error) => {
-          events.fail(error);
-        }
-      );
-      try {
-        await controller.start();
-      } catch (error) {
-        await events.enqueue({ type: 'failure', message: errorMessage(error) });
-      }
-      if (initialTask.length > 0) {
-        await events.enqueue({ type: 'composer.restore', text: initialTask });
-        if (controller.state().status === 'ready')
-          await events.enqueue({ type: 'composer.submit' });
-      }
       const exitResult = await exit;
       return result === undefined ? { exit: exitResult } : { exit: exitResult, result };
     }
@@ -191,7 +191,7 @@ export async function runCodingAgentTuiApp(
 
 async function presentControllerEvent(
   event: CodingApplicationEvent,
-  events: ReturnType<typeof createCodingTuiEventSource>,
+  emit: (message: CodingAgentTuiMessage) => Promise<void>,
   currentResult: AgentRunResult | undefined
 ): Promise<AgentRunResult | undefined> {
   let message: CodingAgentTuiMessage;
@@ -239,7 +239,7 @@ async function presentControllerEvent(
       break;
     }
   }
-  await events.enqueue(message);
+  await emit(message);
   return currentResult;
 }
 

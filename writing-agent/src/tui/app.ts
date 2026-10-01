@@ -8,21 +8,20 @@ import {
   completeCommand,
   completeResource,
   composerRows,
-  configurationState,
+  configurationPanel,
   copySource,
   createAttachments,
   createDraft,
   createPromptRecall,
-  createQueue,
+  queuePanel,
   createSessionName,
-  createSourceInspector,
+  sourceInspectorPanel,
   diagnosticMessage,
   draftFromSubmission,
   draftSubmission,
   historyBookmark,
   insertAcceptedInput,
   insertCommand,
-  inspectedSource,
   loadDraft,
   loadRecoveredPrompts,
   loadSessionName,
@@ -34,7 +33,6 @@ import {
   projectProgress,
   promptsFromHistory,
   providerFailureText,
-  readSourceEntry,
   recoverDraft,
   rememberPrompt,
   sameDraft,
@@ -47,14 +45,11 @@ import {
   suspensionPresentation,
   transitionCommandPicker,
   updateAttachments,
-  updateConfiguration,
-  updateNotes,
+  notesPanel,
   updatePreferences,
   updatePromptRecall,
-  updateQueue,
   updateResourceCompletion,
   updateSessionName,
-  updateSourceInspector,
   type ComposerDraft,
   type ConfigurationOperations
 } from '@agent-core/tui';
@@ -74,7 +69,7 @@ import type {
   TuiInputBindingContext,
   TuiUpdateResult
 } from '@ismail-elkorchi/terminal-ui/tui';
-import { defineTui, tuiBindingHelp } from '@ismail-elkorchi/terminal-ui/tui';
+import { createTuiChild, defineTui, tuiBindingHelp } from '@ismail-elkorchi/terminal-ui/tui';
 import type { WritingApplication, WritingDocument } from '../application/service.js';
 import { WRITING_PROVIDER_IDS } from '../provider.js';
 import { WRITING_COMMANDS, WRITING_SHORTCUTS } from './commands.js';
@@ -103,6 +98,11 @@ export function createWritingAgentTuiApp(
   options: WritingTuiOptions = {}
 ) {
   const events = options.events;
+  const inspector = writingInspector((boundary, entryId) =>
+    application.readHistoryEntry(boundary, entryId)
+  );
+  const notes = writingNotes(application);
+  const configuration = writingConfiguration(application);
   const app: import('@ismail-elkorchi/terminal-ui/tui').TuiApp<WritingTuiState, WritingTuiMessage> =
     defineTui<WritingTuiState, WritingTuiMessage>({
       id: 'writing-agent',
@@ -115,7 +115,7 @@ export function createWritingAgentTuiApp(
         for (const [sessionId, draft] of drafts) await options.drafts.write(sessionId, draft);
       },
 
-      init: () => {
+      init: (context) => {
         const initial = initialWritingState(application.state(), options.presentation?.preferences);
         const sessionId = initial.application.sessionId ?? ':new';
         return {
@@ -126,16 +126,16 @@ export function createWritingAgentTuiApp(
               ? {
                   overlay: {
                     kind: 'configuration' as const,
-                    state: configurationState(
-                      application.modelSelection(),
-                      writingConfigurationOperations(application).providers
-                    )
+                    state: configuration.init(
+                      { id: 'configuration', generation: initial.panelGeneration },
+                      context
+                    ).state
                   }
                 }
               : {})
           },
           effects: [
-            refresh(application),
+            ...(events === undefined ? [refresh(application)] : []),
             ...(options.drafts === undefined
               ? []
               : [loadDraft(options.drafts, sessionId, initial.composer)])
@@ -144,11 +144,34 @@ export function createWritingAgentTuiApp(
         };
       },
       update: (state, message, context) => {
-        const result = withAttention(
-          update(state, message, application, options),
+        let result = withAttention(
+          update(state, message, application, options, context),
           message,
           options
         );
+        const previousPanel = mountedPanel(state.overlay);
+        const nextPanel = mountedPanel(result.state.overlay);
+        if (
+          previousPanel !== undefined &&
+          (previousPanel.id !== nextPanel?.id || previousPanel.generation !== nextPanel.generation)
+        ) {
+          result = {
+            ...result,
+            cancelEffects: [...(result.cancelEffects ?? []), ...previousPanel.effectIds]
+          };
+        }
+        if (
+          result.state.queuePanel !== undefined &&
+          result.state.overlay.kind !== 'queue' &&
+          result.state.queuePanel.state.stage !== 'saving'
+        ) {
+          const { queuePanel: completed, ...next } = result.state;
+          result = {
+            ...result,
+            state: next,
+            cancelEffects: [...(result.cancelEffects ?? []), ...completed.effectIds]
+          };
+        }
         return context.terminalSize.rows < 12
           ? {
               ...result,
@@ -390,7 +413,18 @@ export function createWritingAgentTuiApp(
             context.terminalSize.columns,
             context.terminalSize.rows
           ),
-          writingConfigurationOperations(application)
+          state.overlay.kind === 'configuration'
+            ? configuration.view(state.overlay.state, context)
+            : state.overlay.kind === 'notes'
+              ? notes.view(state.overlay.state, context)
+              : state.overlay.kind === 'queue' && state.queuePanel !== undefined
+                ? writingQueue(application, state.queuePanel.state.sessionId).view(
+                    state.queuePanel,
+                    context
+                  )
+                : state.overlay.kind === 'inspector'
+                  ? inspector.view(state.overlay.state, context)
+                  : undefined
         )
     });
   return app;
@@ -400,7 +434,8 @@ function update(
   state: WritingTuiState,
   message: WritingTuiMessage,
   app: WritingApplication,
-  options: WritingTuiOptions
+  options: WritingTuiOptions,
+  context: import('@ismail-elkorchi/terminal-ui/tui').TuiContext
 ): Update {
   switch (message.type) {
     case 'terminal.resized':
@@ -446,14 +481,7 @@ function update(
         state: { ...state, overlay: { kind: 'session-name', state: result.state } }
       };
     }
-    case 'queue.failed': {
-      if (state.overlay.kind !== 'queue' || state.overlay.state.id !== message.id)
-        return {
-          state: message.operation === 'change' ? { ...state, notice: message.error } : state
-        };
-      const result = updateQueue(state.overlay.state, message, app);
-      return { ...result, state: { ...state, overlay: { kind: 'queue', state: result.state } } };
-    }
+
     case 'resource.accept': {
       if (state.resourceCompletion === undefined) return { state };
       return {
@@ -497,7 +525,8 @@ function update(
           )
         },
         app,
-        options
+        options,
+        context
       );
     case 'context.open':
     case 'context.renew':
@@ -543,66 +572,43 @@ function update(
         ]
       };
     case 'inspector.open':
-      return {
-        state: {
-          ...state,
-          overlay: { kind: 'inspector', state: createSourceInspector(historyMessages(state)) }
-        }
-      };
-    case 'inspector.copy': {
-      if (state.overlay.kind !== 'inspector') return { state };
-      const source = inspectedSource(state.overlay.state);
-      return source === undefined
-        ? { state }
-        : {
-            state,
-            effects: [copySource(source, (message) => ({ type: 'inspector.notice', message }))]
-          };
-    }
     case 'history.inspect': {
-      if (message.reference.boundary.sessionId !== state.application.sessionId) return { state };
-      const inspector = updateSourceInspector(createSourceInspector([message.reference]), {
-        type: 'inspector.pick',
-        id: message.reference.id
-      });
-      return { state: { ...state, overlay: { kind: 'inspector', state: inspector } } };
-    }
-    case 'inspector.read': {
       if (
-        state.overlay.kind !== 'inspector' ||
-        state.overlay.state.selected?.entry.kind !== 'reference'
+        message.type === 'history.inspect' &&
+        message.reference.boundary.sessionId !== state.application.sessionId
       )
         return { state };
+      const generation = state.panelGeneration + 1;
+      const inspector = writingInspector(
+        (boundary, entryId) => app.readHistoryEntry(boundary, entryId),
+        message.type === 'history.inspect' ? [message.reference] : historyMessages(state),
+        message.type === 'history.inspect' ? message.reference.id : undefined
+      );
+      const result = inspector.init({ id: 'inspector', generation }, context);
       return {
-        state,
-        effects: [
-          readSourceEntry(
-            state.overlay.state,
-            state.overlay.state.selected.entry,
-            (boundary, entryId) => app.readHistoryEntry(boundary, entryId)
-          )
-        ]
+        ...result,
+        state: {
+          ...state,
+          panelGeneration: generation,
+          overlay: { kind: 'inspector', state: result.state }
+        }
       };
     }
-    case 'inspector.loaded':
-    case 'inspector.read-failed':
-    case 'inspector.pick':
-    case 'inspector.transition':
-    case 'inspector.edit':
-    case 'inspector.format':
-    case 'inspector.back':
-    case 'inspector.notice':
-      return state.overlay.kind !== 'inspector'
-        ? { state }
-        : {
-            state: {
-              ...state,
-              overlay: {
-                kind: 'inspector',
-                state: updateSourceInspector(state.overlay.state, message)
-              }
-            }
-          };
+    case 'inspector.child': {
+      if (state.overlay.kind !== 'inspector') return { state };
+      const result = writingInspector((boundary, entryId) =>
+        app.readHistoryEntry(boundary, entryId)
+      ).update(state.overlay.state, message.child, context);
+      return {
+        ...result,
+        state: {
+          ...state,
+          overlay: result.outputs?.includes('close')
+            ? { kind: 'none' }
+            : { kind: 'inspector', state: result.state }
+        }
+      };
+    }
     case 'draft.failed':
       return { state: { ...state, notice: `Draft restoration failed: ${message.message}` } };
     case 'draft.loaded': {
@@ -625,11 +631,20 @@ function update(
             ? `${attachment.item.sourceUri}\n${attachment.item.representation} · ${attachment.item.mediaType}\n\n${attachment.item.content}`
             : `${attachment.label}\n${JSON.stringify(attachment.image, null, 2)}`
       };
-      const inspector = updateSourceInspector(createSourceInspector([entry]), {
-        type: 'inspector.pick',
-        id: entry.id
-      });
-      return { state: { ...state, overlay: { kind: 'inspector', state: inspector } } };
+      const generation = state.panelGeneration + 1;
+      const result = writingInspector(
+        (boundary, entryId) => app.readHistoryEntry(boundary, entryId),
+        [entry],
+        entry.id
+      ).init({ id: 'inspector', generation }, context);
+      return {
+        ...result,
+        state: {
+          ...state,
+          panelGeneration: generation,
+          overlay: { kind: 'inspector', state: result.state }
+        }
+      };
     }
     case 'attachments.remove':
       return {
@@ -717,8 +732,49 @@ function update(
       };
     }
     case 'queue.open': {
-      const result = createQueue(app, state.application.sessionId ?? ':new');
-      return { ...result, state: { ...state, overlay: { kind: 'queue', state: result.state } } };
+      if (state.queuePanel !== undefined) {
+        if (state.queuePanel.state.sessionId !== (state.application.sessionId ?? ':new'))
+          return {
+            state: {
+              ...state,
+              notice: 'A queue update from the previous session is still settling.'
+            }
+          };
+        return { state: { ...state, overlay: { kind: 'queue' } } };
+      }
+      const generation = state.panelGeneration + 1;
+      const queue = writingQueue(app, state.application.sessionId ?? ':new');
+      const result = queue.init({ id: 'queue', generation }, context);
+      return {
+        ...result,
+        state: {
+          ...state,
+          panelGeneration: generation,
+          queuePanel: result.state,
+          overlay: { kind: 'queue' }
+        }
+      };
+    }
+    case 'queue.child': {
+      if (state.queuePanel === undefined) return { state };
+      const queue = writingQueue(app, state.queuePanel.state.sessionId);
+      const result = queue.update(state.queuePanel, message.child, context);
+      let next: WritingTuiState = { ...state, queuePanel: result.state };
+      for (const output of result.outputs ?? []) {
+        if (output.kind === 'close' && next.overlay.kind === 'queue')
+          next = { ...next, overlay: { kind: 'none' } };
+        if (output.kind === 'failed' && next.overlay.kind !== 'queue')
+          next = { ...next, notice: output.error };
+        if (output.kind === 'withdrawn') {
+          const recovered = update(next, output.message, app, options, context);
+          return {
+            ...result,
+            ...recovered,
+            effects: [...(result.effects ?? []), ...(recovered.effects ?? [])]
+          };
+        }
+      }
+      return { ...result, state: next };
     }
     case 'queue.withdrawn': {
       const draft = draftFromSubmission(message.input);
@@ -727,7 +783,7 @@ function update(
           ...state,
           promptHistory: rememberPrompt(state.promptHistory, draft),
           overlay:
-            state.overlay.kind === 'queue' && state.overlay.state.id === message.id
+            state.overlay.kind === 'queue' && state.queuePanel?.state.id === message.id
               ? { kind: 'none' }
               : state.overlay,
           ...(message.sessionId === state.application.sessionId &&
@@ -744,18 +800,6 @@ function update(
           }))
         ]
       };
-    }
-    case 'queue.refresh':
-    case 'queue.loaded':
-    case 'queue.select':
-    case 'queue.edit':
-    case 'queue.save':
-    case 'queue.cancel':
-    case 'queue.withdraw':
-    case 'queue.scroll': {
-      if (state.overlay.kind !== 'queue') return { state };
-      const result = updateQueue(state.overlay.state, message, app);
-      return { ...result, state: { ...state, overlay: { kind: 'queue', state: result.state } } };
     }
     case 'terminal.focus':
       return { state: { ...state, attention: { ...state.attention, focused: message.focused } } };
@@ -874,7 +918,7 @@ function update(
         },
         completion: undefined
       };
-      return message.open ? update(next, command.message, app, options) : { state: next };
+      return message.open ? update(next, command.message, app, options, context) : { state: next };
     }
     case 'source.copy':
       return {
@@ -882,21 +926,26 @@ function update(
         effects: [copySource(message.text, (message) => ({ type: 'notice', message }))]
       };
     case 'notes.open':
-    case 'notes.listed':
-    case 'notes.read':
-    case 'notes.loaded':
-    case 'notes.failed':
-    case 'notes.edit':
-    case 'notes.scroll': {
-      if (message.type !== 'notes.open' && state.overlay.kind !== 'notes') return { state };
-      const result = updateNotes(
-        state.overlay.kind === 'notes' ? state.overlay.state : { offset: 0 },
-        message,
-        app
-      );
+    case 'notes.child': {
+      if (message.type === 'notes.child' && state.overlay.kind !== 'notes') return { state };
+      const notes = writingNotes(app);
+      const generation = state.panelGeneration + (message.type === 'notes.open' ? 1 : 0);
+      const result =
+        message.type === 'notes.open'
+          ? notes.init({ id: 'notes', generation }, context)
+          : state.overlay.kind === 'notes'
+            ? notes.update(state.overlay.state, message.child, context)
+            : undefined;
+      if (result === undefined) return { state };
       return {
-        state: { ...state, overlay: { kind: 'notes', state: result.state } },
-        ...(result.effects === undefined ? {} : { effects: result.effects })
+        ...result,
+        state: {
+          ...state,
+          panelGeneration: generation,
+          overlay: result.outputs?.includes('close')
+            ? { kind: 'none' }
+            : { kind: 'notes', state: result.state }
+        }
       };
     }
 
@@ -908,7 +957,9 @@ function update(
     case 'search.failed':
     case 'search.jump':
     case 'search.jumped':
-      return updateHistorySearch(state, message, app);
+      return updateHistorySearch(state, message, app, (next, reference) =>
+        update(next, { type: 'history.inspect', reference }, app, options, context)
+      );
     case 'recovery.open':
       return {
         state,
@@ -975,14 +1026,6 @@ function update(
             };
           })
         ]
-      };
-    case 'configuration.saved':
-      if (state.overlay.kind !== 'configuration' || state.overlay.state.id !== message.id)
-        return { state };
-
-      return {
-        state: { ...state, overlay: { kind: 'none' } },
-        effects: [refresh(app, state.document?.value.path)]
       };
     case 'section.scroll':
       return {
@@ -1194,7 +1237,7 @@ function update(
       const sessionId = state.application.sessionId ?? ':new';
       if (state.submitting || !original.trim()) return { state };
       if (state.application.status === 'configuration_required')
-        return update(state, { type: 'configuration.open' }, app, options);
+        return update(state, { type: 'configuration.open' }, app, options, context);
       const command = !original.includes('\n')
         ? WRITING_COMMANDS.find((entry) => entry.name === original.trim())
         : undefined;
@@ -1207,7 +1250,8 @@ function update(
           },
           command.message,
           app,
-          options
+          options,
+          context
         );
       if (state.sessionView?.session.suspension !== undefined)
         return { state: { ...state, overlay: { kind: 'recovery' } } };
@@ -1409,7 +1453,8 @@ function update(
               direction: message.direction === 'previous' ? 'older' : 'newer'
             },
             app,
-            options
+            options,
+            context
           )
         : {
             state: { ...state, view: 'conversation', followTail: false, conversationAnchor: anchor }
@@ -1469,7 +1514,7 @@ function update(
             }
           };
     case 'picker.accept':
-      return acceptPicker(state, message.id, app, options);
+      return acceptPicker(state, message.id, app, options, context);
     case 'document.loaded':
       return {
         state: {
@@ -1481,47 +1526,31 @@ function update(
         }
       };
     case 'configuration.open':
-      return {
-        state: {
-          ...state,
-          overlay: {
-            kind: 'configuration',
-            state: configurationState(
-              app.modelSelection(),
-              writingConfigurationOperations(app).providers
-            )
-          }
-        }
-      };
-    case 'configuration.connected':
-    case 'configuration.secret':
-    case 'configuration.scroll':
-    case 'configuration.open-browser':
-    case 'configuration.copy':
-    case 'configuration.notice':
-    case 'configuration.login':
-    case 'configuration.logout':
-    case 'configuration.challenge':
-    case 'configuration.authenticated':
-    case 'configuration.stage':
-    case 'configuration.pick':
-    case 'configuration.transition':
-    case 'configuration.edit':
-    case 'configuration.input':
-    case 'configuration.refresh':
-    case 'configuration.save':
-    case 'configuration.catalog':
-    case 'configuration.profile':
-    case 'configuration.failed': {
-      if (state.overlay.kind !== 'configuration') return { state };
-      const result = updateConfiguration(
-        state.overlay.state,
-        message,
-        writingConfigurationOperations(app)
-      );
+    case 'configuration.child': {
+      if (message.type === 'configuration.child' && state.overlay.kind !== 'configuration')
+        return { state };
+      const configuration = writingConfiguration(app);
+      const generation = state.panelGeneration + (message.type === 'configuration.open' ? 1 : 0);
+      const result =
+        message.type === 'configuration.open'
+          ? configuration.init({ id: 'configuration', generation }, context)
+          : state.overlay.kind === 'configuration'
+            ? configuration.update(state.overlay.state, message.child, context)
+            : undefined;
+      if (result === undefined) return { state };
       return {
         ...result,
-        state: { ...state, overlay: { kind: 'configuration', state: result.state } }
+        state: {
+          ...state,
+          panelGeneration: generation,
+          overlay: result.outputs?.length
+            ? { kind: 'none' }
+            : { kind: 'configuration', state: result.state }
+        },
+        effects: [
+          ...(result.effects ?? []),
+          ...(result.outputs?.includes('saved') ? [refresh(app, state.document?.value.path)] : [])
+        ]
       };
     }
     case 'history.load': {
@@ -1677,13 +1706,9 @@ function update(
       return {
         state: { ...state, overlay: { kind: 'none' } },
         cancelEffects: [
-          'model-configuration',
-          'configuration-browser',
-          'model-notes-read',
           'writing-picker',
           'writing-context',
           'writing-search-jump',
-          'source-entry-read',
           'attachment-read',
           'session-name-load'
         ]
@@ -1816,7 +1841,8 @@ function acceptPicker(
   state: WritingTuiState,
   id: string,
   app: WritingApplication,
-  options: WritingTuiOptions
+  options: WritingTuiOptions,
+  context: import('@ismail-elkorchi/terminal-ui/tui').TuiContext
 ): Update {
   if (state.overlay.kind !== 'picker' || !state.overlay.entries.some((entry) => entry.id === id))
     return { state };
@@ -1825,7 +1851,7 @@ function acceptPicker(
       const command = WRITING_COMMANDS.find((entry) => entry.name === id);
       return command === undefined
         ? { state }
-        : update({ ...state, overlay: { kind: 'none' } }, command.message, app, options);
+        : update({ ...state, overlay: { kind: 'none' } }, command.message, app, options, context);
     }
     case 'outline':
       return state.document === undefined
@@ -2014,11 +2040,11 @@ function loadView(
 }
 
 function copyInput(state: WritingTuiState, focusPath?: readonly string[]) {
-  if (state.overlay.kind === 'inspector') return state.overlay.state.selected?.input;
+  if (state.overlay.kind === 'inspector') return state.overlay.state.state.selected?.input;
   return state.overlay.kind === 'source'
     ? state.source?.input
     : state.overlay.kind === 'notes'
-      ? state.overlay.state.source?.input
+      ? state.overlay.state.state.source?.input
       : state.overlay.kind !== 'none'
         ? undefined
         : focusPath?.includes('writing-composer')
@@ -2079,4 +2105,44 @@ function withAttention(
         }
       : {})
   };
+}
+
+function writingNotes(reader: import('@agent-core/tui').NoteReader) {
+  return createTuiChild(notesPanel(reader), (child): WritingTuiMessage => ({
+    type: 'notes.child',
+    child
+  }));
+}
+
+function writingConfiguration(app: WritingApplication) {
+  return createTuiChild(
+    configurationPanel(() => app.modelSelection(), writingConfigurationOperations(app)),
+    (child): WritingTuiMessage => ({ type: 'configuration.child', child })
+  );
+}
+
+function writingQueue(operations: import('@agent-core/tui').QueueOperations, sessionId: string) {
+  return createTuiChild(queuePanel(operations, sessionId), (child): WritingTuiMessage => ({
+    type: 'queue.child',
+    child
+  }));
+}
+
+function writingInspector(
+  reader?: import('@agent-core/tui').HistoryEntryReader,
+  entries: readonly import('@agent-core/tui').ConversationEntry[] = [],
+  selectedId?: string
+) {
+  return createTuiChild(
+    sourceInspectorPanel(entries, reader, selectedId),
+    (child): WritingTuiMessage => ({ type: 'inspector.child', child })
+  );
+}
+
+function mountedPanel(overlay: WritingTuiState['overlay']) {
+  return overlay.kind === 'notes' ||
+    overlay.kind === 'configuration' ||
+    overlay.kind === 'inspector'
+    ? overlay.state
+    : undefined;
 }

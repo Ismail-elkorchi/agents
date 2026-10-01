@@ -29,10 +29,15 @@ export type WritingView = 'document' | 'conversation';
 export type WritingTuiOverlay =
   | { readonly kind: 'context'; readonly state: import('@agent-core/tui').ContextState }
   | { readonly kind: 'session-name'; readonly state: import('@agent-core/tui').SessionNameState }
-  | { readonly kind: 'inspector'; readonly state: import('@agent-core/tui').SourceInspector }
+  | {
+      readonly kind: 'inspector';
+      readonly state: import('@ismail-elkorchi/terminal-ui/tui').TuiChildState<
+        import('@agent-core/tui').SourceInspector
+      >;
+    }
   | { readonly kind: 'attachments'; readonly state: import('@agent-core/tui').AttachmentState }
   | { readonly kind: 'recall'; readonly state: import('@agent-core/tui').PromptRecallState }
-  | { readonly kind: 'queue'; readonly state: import('@agent-core/tui').QueueState }
+  | { readonly kind: 'queue' }
   | {
       readonly kind: 'preferences';
       readonly capture?: string;
@@ -40,7 +45,10 @@ export type WritingTuiOverlay =
       readonly preferences: import('@agent-core/tui').TuiPreferences;
     }
   | { readonly kind: 'none' }
-  | { readonly kind: 'notes'; readonly state: NotesState }
+  | {
+      readonly kind: 'notes';
+      readonly state: import('@ismail-elkorchi/terminal-ui/tui').TuiChildState<NotesState>;
+    }
   | { readonly kind: 'loading'; readonly requestId: string }
   | { readonly kind: 'source' }
   | { readonly kind: 'recovery' }
@@ -62,10 +70,16 @@ export type WritingTuiOverlay =
     }
   | {
       readonly kind: 'configuration';
-      readonly state: import('@agent-core/tui').ConfigurationState;
+      readonly state: import('@ismail-elkorchi/terminal-ui/tui').TuiChildState<
+        import('@agent-core/tui').ConfigurationState
+      >;
     };
 
 export interface WritingTuiState {
+  readonly queuePanel?: import('@ismail-elkorchi/terminal-ui/tui').TuiChildState<
+    import('@agent-core/tui').QueueState
+  >;
+  readonly panelGeneration: number;
   readonly historyMatch?: import('@agent-core/tui').HistoryMatchPosition;
   readonly draftRestoreSession?: string;
   readonly progress: import('@agent-core/tui').ProgressPresentation;
@@ -130,6 +144,7 @@ export function initialWritingState(
     application,
     sessionViews: {},
     attention: { focused: true },
+    panelGeneration: 0,
     progress: { label: 'Idle' },
     preferences,
     liveConversation: [],
@@ -164,17 +179,35 @@ export type WritingTuiMessage =
   | import('@agent-core/tui').SessionNameMessage
   | import('@agent-core/tui').ResourceCompletionMessage
   | { readonly type: 'conversation.export' }
-  | import('@agent-core/tui').SourceInspectorMessage
+  | { readonly type: 'inspector.open' }
+  | {
+      readonly type: 'inspector.child';
+      readonly child: import('@ismail-elkorchi/terminal-ui/tui').TuiChildMessage<
+        import('@agent-core/tui').SourceInspectorMessage
+      >;
+    }
   | import('@agent-core/tui').DraftMessage
   | import('@agent-core/tui').AttachmentMessage
   | import('@agent-core/tui').PromptRecallMessage
-  | import('@agent-core/tui').QueueMessage
+  | Extract<import('@agent-core/tui').QueueMessage, { readonly type: 'queue.withdrawn' }>
+  | {
+      readonly type: 'queue.child';
+      readonly child: import('@ismail-elkorchi/terminal-ui/tui').TuiChildMessage<
+        import('@agent-core/tui').QueueMessage
+      >;
+    }
   | { readonly type: 'queue.open' | 'status.open' }
   | { readonly type: 'prompt.navigate'; readonly direction: 'older' | 'newer' }
   | { readonly type: 'terminal.focus'; readonly focused: boolean }
   | import('@agent-core/tui').PreferencesMessage
   | { readonly type: 'preferences.open' }
-  | import('@agent-core/tui').NotesMessage
+  | { readonly type: 'notes.open' }
+  | {
+      readonly type: 'notes.child';
+      readonly child: import('@ismail-elkorchi/terminal-ui/tui').TuiChildMessage<
+        import('@agent-core/tui').NotesMessage
+      >;
+    }
   | { readonly type: 'commands.open' | 'tools.toggle' | 'reasoning.toggle' | 'completion.close' }
   | { readonly type: 'completion.move'; readonly delta: number }
   | { readonly type: 'completion.accept'; readonly open: boolean; readonly name?: string }
@@ -311,7 +344,12 @@ export type WritingTuiMessage =
       readonly sessionId: string | undefined;
       readonly item: import('@agent-core/runtime').PromptContextItemInput;
     }
-  | import('@agent-core/tui').ConfigurationMessage
+  | {
+      readonly type: 'configuration.child';
+      readonly child: import('@ismail-elkorchi/terminal-ui/tui').TuiChildMessage<
+        import('@agent-core/tui').ConfigurationMessage
+      >;
+    }
   | { readonly type: 'configuration.open' }
   | {
       readonly type: 'history.failed';

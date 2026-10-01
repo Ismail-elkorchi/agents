@@ -2,7 +2,6 @@ import { renderLocalToolObservation } from '@agent-core/tools-local';
 import type {
   AgentEndedRunResult,
   AgentProgressEvent,
-  AgentRunPhase,
   AgentSessionState
 } from '@agent-core/runtime';
 import { presentProgress, projectProgress, providerFailureText } from '@agent-core/tui';
@@ -52,29 +51,21 @@ export function applyProgress(
     case 'run.phase.changed':
       return reducePhaseChanged(state, event);
     case 'assistant.started':
-      return withWorking(state, 'Preparing request');
     case 'model.requested':
-      return withWorking(state, 'Requesting response');
     case 'assistant.delta':
-      return withWorking(state, 'Responding');
     case 'assistant.reasoning':
-      return withWorking(state, 'Reasoning');
     case 'assistant.status':
-      return withWorking(state, compact(event.message));
     case 'tool.call.received':
-      return withWorking(state, 'Preparing tool');
     case 'assistant.ended':
-      return withWorking(state, 'Working');
+      return withWorking(state);
     case 'assistant.interrupted':
       return reduceAssistantInterrupted(state, event);
     case 'model.failed':
       return reduceModelFailed(state, event);
     case 'tool.started':
-      return withWorking(state, 'Running tool');
     case 'tool.updated':
-      return withWorking(state, 'Running tool');
     case 'tool.ended':
-      return withWorking(state, event.observation.kind === 'failure' ? 'Tool failed' : 'Working');
+      return withWorking(state);
     case 'run.ended':
       return applyTerminal(state, event.terminal, event.deliveryDiagnostics);
   }
@@ -86,7 +77,7 @@ function reduceTurnStarted(
   event: ProgressEvent<'turn.started'>
 ): CodingAgentTuiState {
   return {
-    ...withWorking(state, 'Initializing'),
+    ...withWorking(state),
     debug: {
       ...state.debug,
       runId: event.runId,
@@ -148,7 +139,7 @@ function reducePhaseChanged(
 ): CodingAgentTuiState {
   return {
     ...state,
-    run: { kind: 'working', phase: event.phase, label: phaseLabel(event.phase) },
+    run: { kind: 'working', phase: event.phase },
     debug: { ...state.debug, phase: event.phase, budget: event.budget }
   };
 }
@@ -157,7 +148,7 @@ function reduceAssistantInterrupted(
   state: CodingAgentTuiState,
   event: ProgressEvent<'assistant.interrupted'>
 ): CodingAgentTuiState {
-  let next = withWorking(state, 'Recovering');
+  let next = withWorking(state);
   if (event.diagnostic !== undefined) {
     next = appendNotice(next, providerFailureText(event.diagnostic), 'error');
   }
@@ -168,11 +159,7 @@ function reduceModelFailed(
   state: CodingAgentTuiState,
   event: ProgressEvent<'model.failed'>
 ): CodingAgentTuiState {
-  return appendNotice(
-    withWorking(state, 'Provider failed'),
-    providerFailureText(event.diagnostic),
-    'error'
-  );
+  return appendNotice(withWorking(state), providerFailureText(event.diagnostic), 'error');
 }
 
 export function applySessionState(
@@ -319,29 +306,7 @@ function hasVisibleMessage(state: CodingAgentTuiState, message: string): boolean
   );
 }
 
-function withWorking(state: CodingAgentTuiState, label: string): CodingAgentTuiState {
+function withWorking(state: CodingAgentTuiState): CodingAgentTuiState {
   const phase = state.run.kind === 'working' ? state.run.phase : state.debug.phase;
-  return { ...state, run: { kind: 'working', label, ...(phase === undefined ? {} : { phase }) } };
-}
-
-function phaseLabel(phase: AgentRunPhase): string {
-  switch (phase) {
-    case 'initializing':
-      return 'Initializing';
-    case 'requesting_model':
-      return 'Thinking';
-    case 'executing_tools':
-      return 'Using tools';
-    case 'waiting_for_approval':
-      return 'Approval required';
-    case 'finalizing':
-      return 'Finishing';
-    case 'ended':
-      return 'Completed';
-  }
-}
-
-function compact(value: string): string {
-  const normalized = value.trim().replaceAll(/\s+/g, ' ');
-  return normalized.length <= 240 ? normalized : `${normalized.slice(0, 239)}…`;
+  return { ...state, run: { kind: 'working', ...(phase === undefined ? {} : { phase }) } };
 }

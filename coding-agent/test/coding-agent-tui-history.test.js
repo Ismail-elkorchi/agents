@@ -214,24 +214,25 @@ test(
     await waitForState(
       runtime,
       t.signal,
-      () => runtime.state().overlay.kind === 'queue' && runtime.state().overlay.state.stage === 'list'
+      () => runtime.state().overlay.kind === 'queue' && runtime.state().queuePanel.state.stage === 'list'
     );
-    await runtime.dispatch({ type: 'queue.select', submissionId: submission.submissionId });
-    await runtime.dispatch({
+    const dispatchQueue = (message) => { const { id, generation } = runtime.state().queuePanel; return runtime.dispatch({ type: 'queue.child', child: { id, generation, message } }); };
+    await dispatchQueue({ type: 'queue.select', submissionId: submission.submissionId });
+    await dispatchQueue({
       type: 'queue.edit',
       transition: { kind: 'edit', operation: { kind: 'insert', text: ' revised' } }
     });
-    await runtime.dispatch({ type: 'queue.save' });
+    await dispatchQueue({ type: 'queue.save' });
     await waitForState(
       runtime,
       t.signal,
-      () => runtime.state().overlay.kind === 'queue' && runtime.state().overlay.state.stage === 'editing'
+      () => runtime.state().overlay.kind === 'queue' && runtime.state().queuePanel.state.stage === 'editing'
     );
     assert.deepEqual(calls[0], [
       'queued',
       { kind: 'replace', expectedInput: submission.input, input: { task: 'Old instruction revised' } }
     ]);
-    assert.equal(textDocumentText(runtime.state().overlay.state.input.document), 'Old instruction revised');
+    assert.equal(textDocumentText(runtime.state().queuePanel.state.input.document), 'Old instruction revised');
     assert.equal(textDocumentText(runtime.state().composer.input.document), 'Unsent draft');
   }
 );

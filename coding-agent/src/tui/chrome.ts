@@ -82,7 +82,7 @@ function runPresentation(state: CodingAgentTuiState): {
     case 'idle':
       return { text: 'Idle', status: 'idle' };
     case 'working':
-      return { text: state.run.label, status: 'running' };
+      return { text: state.progress.label, status: 'running' };
     case 'waiting_for_approval':
       return { text: 'Approval required', status: 'warning' };
     case 'waiting_for_recovery':

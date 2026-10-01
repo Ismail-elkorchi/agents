@@ -325,7 +325,8 @@ export function processesView(
     button<Message>({
       id,
       label,
-      ...(state.pending || disabled ? { disabled: true } : { onPress: () => message })
+      disabled: state.pending || disabled,
+      onPress: () => message
     });
   const body =
     selected === undefined

@@ -1,6 +1,5 @@
 export { createCodingAgentTuiApp } from './app.js';
 export type { CodingAgentTuiAppOptions } from './app.js';
-export { createCodingTuiEventSource } from './event-source.js';
 export { hydrateCodingAgentTuiState } from './hydration.js';
 export {
   INTERACTIVE_COMMANDS,

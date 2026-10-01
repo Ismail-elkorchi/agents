@@ -1,12 +1,10 @@
 import { findBranchMatches } from '@agent-core/runtime';
 import {
   adjacentHistoryMatch,
-  createSourceInspector,
   diagnosticMessage,
   oversizedHistoryEntry,
   selectHistoryMatch,
-  sessionConversationId,
-  updateSourceInspector
+  sessionConversationId
 } from '@agent-core/tui';
 import { createTextAreaState, textAreaReducer } from '@ismail-elkorchi/terminal-ui/behavior';
 import { button, text, textArea, type Element } from '@ismail-elkorchi/terminal-ui/components';
@@ -20,7 +18,11 @@ type Message = Extract<WritingTuiMessage, { type: `search.${string}` }>;
 export function updateHistorySearch(
   state: WritingTuiState,
   message: Message,
-  application: WritingApplication
+  application: WritingApplication,
+  openSource: (
+    state: WritingTuiState,
+    reference: import('@agent-core/tui').ConversationReferenceEntry
+  ) => TuiUpdateResult<WritingTuiState, WritingTuiMessage>
 ): TuiUpdateResult<WritingTuiState, WritingTuiMessage> {
   if (message.type === 'search.open') {
     const previous =
@@ -40,12 +42,15 @@ export function updateHistorySearch(
   }
   if (message.type === 'search.adjacent') {
     const position = state.historyMatch;
-    if (position === undefined || position.result.boundary.sessionId !== state.application.sessionId)
+    if (
+      position === undefined ||
+      position.result.boundary.sessionId !== state.application.sessionId
+    )
       return { state };
     const entryId = adjacentHistoryMatch(position, message.direction);
     return entryId === undefined
       ? { state: { ...state, notice: 'End of this match batch. Open search for the next batch.' } }
-      : jumpToMatch(state, position.result, entryId, position.query, application);
+      : jumpToMatch(state, position.result, entryId, position.query, application, openSource);
   }
   if (message.type === 'search.jumped') {
     if (message.page.boundary.sessionId !== state.history[0]?.boundary.sessionId) return { state };
@@ -76,16 +81,33 @@ export function updateHistorySearch(
   if (message.type === 'search.loaded')
     return overlay.requestId !== message.requestId
       ? { state }
-      : { state: { ...state, overlay: { kind: 'search', input: overlay.input, result: message.result } } };
+      : {
+          state: {
+            ...state,
+            overlay: { kind: 'search', input: overlay.input, result: message.result }
+          }
+        };
   if (message.type === 'search.failed')
     return overlay.requestId !== message.requestId
       ? { state }
-      : { state: { ...state, overlay: { kind: 'search', input: overlay.input, error: message.message } } };
+      : {
+          state: {
+            ...state,
+            overlay: { kind: 'search', input: overlay.input, error: message.message }
+          }
+        };
   if (message.type === 'search.jump') {
     const result = overlay.result;
     return result === undefined
       ? { state }
-      : jumpToMatch(state, result, message.entryId, textDocumentText(overlay.input.document), application);
+      : jumpToMatch(
+          state,
+          result,
+          message.entryId,
+          textDocumentText(overlay.input.document),
+          application,
+          openSource
+        );
   }
   const query = textDocumentText(overlay.input.document);
   if (!query) return { state };
@@ -119,7 +141,11 @@ function jumpToMatch(
   result: import('@agent-core/runtime').SessionBranchSearchResult,
   entryId: string,
   query: string,
-  application: WritingApplication
+  application: WritingApplication,
+  openSource: (
+    state: WritingTuiState,
+    reference: import('@agent-core/tui').ConversationReferenceEntry
+  ) => TuiUpdateResult<WritingTuiState, WritingTuiMessage>
 ): TuiUpdateResult<WritingTuiState, WritingTuiMessage> {
   if (result.oversizedEntry?.entryId === entryId) {
     const reference = oversizedHistoryEntry({
@@ -128,19 +154,7 @@ function jumpToMatch(
       oversizedEntry: result.oversizedEntry
     })[0];
     if (reference === undefined) return { state };
-    return {
-      state: {
-        ...state,
-        historyMatch: { result, query, index: -1 },
-        overlay: {
-          kind: 'inspector',
-          state: updateSourceInspector(createSourceInspector([reference]), {
-            type: 'inspector.pick',
-            id: reference.id
-          })
-        }
-      }
-    };
+    return openSource({ ...state, historyMatch: { result, query, index: -1 } }, reference);
   }
   const historyMatch = selectHistoryMatch(result, entryId, query);
   if (historyMatch === undefined) return { state };
@@ -210,7 +224,10 @@ export function historySearchView(state: WritingTuiState): Element<WritingTuiMes
           button<WritingTuiMessage>({
             id: 'writing-search-oversized',
             label: 'Inspect unsearched entry',
-            onPress: () => ({ type: 'search.jump', entryId: search.result?.oversizedEntry?.entryId ?? '' })
+            onPress: () => ({
+              type: 'search.jump',
+              entryId: search.result?.oversizedEntry?.entryId ?? ''
+            })
           })
         ]),
     button({

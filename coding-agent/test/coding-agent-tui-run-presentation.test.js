@@ -1,9 +1,10 @@
+import { createTestEventSource } from './helpers/event-source.js';
 import { testResult } from './helpers/results.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import { runTui } from '@ismail-elkorchi/terminal-ui/tui';
-import { createCodingTuiEventSource, createCodingAgentTuiApp } from '@ismail-elkorchi/coding-agent/tui';
+import { createCodingAgentTuiApp } from '@ismail-elkorchi/coding-agent/tui';
 import { decodeAgentTerminalSnapshot } from '@agent-core/runtime';
 import { waitFor } from './coding-agent-tui-test-helpers.js';
 
@@ -46,7 +47,7 @@ test('TUI preserves terminal truth and does not duplicate the final answer', asy
 
 function runPresentationApp() {
   const host = createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 20 } });
-  const events = createCodingTuiEventSource();
+  const events = createTestEventSource();
   const app = createCodingAgentTuiApp('', {
     eventSource: events,
     commandHandler: { execute: () => ({ message: 'Exiting.', exit: true }) }
