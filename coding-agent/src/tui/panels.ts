@@ -16,6 +16,7 @@ import { button, searchPicker, text, textArea } from '@ismail-elkorchi/terminal-
 import { column } from '@ismail-elkorchi/terminal-ui/layout';
 import {
   createTuiPreparedQuery,
+  liftTuiResult,
   type TuiUpdateResult,
   type TuiPreparedQueryMessage,
   type TuiPreparedQueryState
@@ -100,7 +101,7 @@ function requestPanelQuery(
   overlay: Extract<CodingPanel, { kind: 'panel' }>
 ): Update {
   const result = preparedPanel(overlay.id).request(overlay.query, overlay);
-  return { ...result, state: { ...state, overlay: { ...overlay, query: result.state } } };
+  return liftTuiResult(state, 'overlay', liftTuiResult(overlay, 'query', result));
 }
 
 export function openPanel(

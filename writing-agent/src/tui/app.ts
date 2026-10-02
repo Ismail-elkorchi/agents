@@ -168,7 +168,7 @@ export function createWritingAgentTuiApp(
         if (removedQueryEffects.length > 0)
           result = {
             ...result,
-            cancelEffects: [...new Set([...(result.cancelEffects ?? []), ...removedQueryEffects])]
+            cancel: [...(result.cancel ?? []), ...removedQueryEffects.map((id) => ({ kind: 'effect' as const, id }))]
           };
         result = cancelRemovedPanels(result, mountedPanels(state), mountedPanels(result.state));
         return context.terminalSize.rows < 12
@@ -520,7 +520,7 @@ function update(
               ...state,
               resourceCompletion: updateResourceCompletion(state.resourceCompletion, message)
             },
-            ...(message.type === 'resource.close' ? { cancelEffects: ['resource-search'] } : {})
+            ...(message.type === 'resource.close' ? { cancel: [{ kind: 'effect', id: 'resource-search' }] } : {})
           };
     case 'status.open':
       return update(
@@ -719,7 +719,7 @@ function update(
       if (draft === undefined) return { state };
       return {
         state: { ...state, overlay: { kind: 'none' }, composer: draft },
-        cancelEffects: ['prompt-recall-query', 'recovered-drafts'],
+        cancel: [{ kind: 'effect', id: 'prompt-recall-query' }, { kind: 'effect', id: 'recovered-drafts' }],
         focus: { kind: 'element', elementId: 'writing-composer' }
       };
     }
@@ -1152,7 +1152,7 @@ function update(
           completion: completeCommand(composer, message.transition, WRITING_COMMANDS)
         },
         ...(resourceCompletion === undefined
-          ? { cancelEffects: ['resource-search'] }
+          ? { cancel: [{ kind: 'effect', id: 'resource-search' }] }
           : {
               effects: [
                 searchResources(resourceCompletion, {
@@ -1639,15 +1639,15 @@ function update(
     case 'overlay.close':
       return {
         state: { ...state, overlay: { kind: 'none' } },
-        cancelEffects: [
-          'prompt-recall-query',
-          'recovered-drafts',
-          'writing-picker',
-          'writing-picker-query',
-          'writing-context',
-          'writing-search-jump',
-          'attachment-read',
-          'session-name-load'
+        cancel: [
+          { kind: 'effect', id: 'prompt-recall-query' },
+          { kind: 'effect', id: 'recovered-drafts' },
+          { kind: 'effect', id: 'writing-picker' },
+          { kind: 'effect', id: 'writing-picker-query' },
+          { kind: 'effect', id: 'writing-context' },
+          { kind: 'effect', id: 'writing-search-jump' },
+          { kind: 'effect', id: 'attachment-read' },
+          { kind: 'effect', id: 'session-name-load' }
         ]
       };
     case 'exit':

@@ -239,7 +239,7 @@ export function createCodingAgentTuiApp(
       if (removedQueryEffects.length > 0)
         result = {
           ...result,
-          cancelEffects: [...new Set([...(result.cancelEffects ?? []), ...removedQueryEffects])]
+          cancel: [...(result.cancel ?? []), ...removedQueryEffects.map((id) => ({ kind: 'effect' as const, id }))]
         };
       result = cancelRemovedPanels(result, mountedPanels(state), mountedPanels(result.state));
       if (
@@ -742,7 +742,7 @@ function updateCodingAgentTui(
               ...state,
               resourceCompletion: updateResourceCompletion(state.resourceCompletion, message)
             }),
-            ...(message.type === 'resource.close' ? { cancelEffects: ['resource-search'] } : {})
+            ...(message.type === 'resource.close' ? { cancel: [{ kind: 'effect', id: 'resource-search' }] } : {})
           };
     case 'conversation.export':
       return {
@@ -906,7 +906,7 @@ function updateCodingAgentTui(
           overlay: { kind: 'none' },
           composer: composerWithDraft(state.composer, draft)
         },
-        cancelEffects: ['prompt-recall-query', 'recovered-drafts'],
+        cancel: [{ kind: 'effect', id: 'prompt-recall-query' }, { kind: 'effect', id: 'recovered-drafts' }],
         focus: { kind: 'element', elementId: 'composer' }
       };
     }
@@ -1354,7 +1354,7 @@ function updateCodingAgentTui(
           completion: completeCommand(next.composer.input, message.transition, INTERACTIVE_COMMANDS)
         }),
         ...(resourceCompletion === undefined || options.resources === undefined
-          ? { cancelEffects: ['resource-search'] }
+          ? { cancel: [{ kind: 'effect', id: 'resource-search' }] }
           : { effects: [searchResources(resourceCompletion, options.resources)] })
       };
     }
@@ -1570,16 +1570,16 @@ function updateCodingAgentTui(
     case 'overlay.close':
       return {
         state: { ...state, overlay: { kind: 'none' } },
-        cancelEffects: [
-          'prompt-recall-query',
-          'recovered-drafts',
-          'context-inspection',
-          'history-jump',
-          'attachment-read',
-          'session-name-load',
-          'navigation-query',
-          'navigation-panel',
-          'process-list'
+        cancel: [
+          { kind: 'effect', id: 'prompt-recall-query' },
+          { kind: 'effect', id: 'recovered-drafts' },
+          { kind: 'effect', id: 'context-inspection' },
+          { kind: 'effect', id: 'history-jump' },
+          { kind: 'effect', id: 'attachment-read' },
+          { kind: 'effect', id: 'session-name-load' },
+          { kind: 'effect', id: 'navigation-query' },
+          { kind: 'effect', id: 'navigation-panel' },
+          { kind: 'effect', id: 'process-list' }
         ]
       };
     case 'modal.scrolled':
