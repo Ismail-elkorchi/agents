@@ -196,13 +196,13 @@ test('process picker retains its index while editing and replaces query ownershi
   await runtime.dispatch({ type: 'processes.transition', transition: { kind: 'setQuery', query: { text: 'worker', mode: 'fuzzy' } } });
   const filtered = runtime.state().overlay.state;
   assert.equal(filtered.pickerIndex, source);
-  assert.deepEqual(filtered.pickerQueryResult.entries.map((entry) => entry.id), ['worker']);
+  assert.deepEqual(filtered.pickerQueryResult.window(0, filtered.pickerQueryResult.count).map((entry) => entry.id), ['worker']);
   assert.equal(filtered.picker.editor.activeId, 'worker');
   processes = [target];
   await runtime.dispatch({ type: 'processes.refresh' });
   await waitForState(runtime, t.signal, () => !runtime.state().overlay.state.pending);
   const replaced = runtime.state().overlay.state;
   assert.notEqual(replaced.pickerIndex, source);
-  assert.equal(replaced.pickerQueryResult.entries.length, 0);
+  assert.equal(replaced.pickerQueryResult.count, 0);
   assert.equal(replaced.picker.editor.activeId, undefined, 'removed query result cannot remain actionable');
 });

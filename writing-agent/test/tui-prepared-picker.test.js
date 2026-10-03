@@ -49,10 +49,16 @@ test(
     const runtime = createTuiRuntime({ host, app: createWritingAgentTuiApp(application) });
     t.after(() => runtime.dispose());
     await runtime.start();
-    failQuery = true;
     await runtime.dispatch({ type: 'picker.open', subject: 'resources' });
     await settle(host, () => runtime.state().overlay.kind === 'picker', t.signal);
     const index = runtime.state().overlay.searchPickerIndex;
+    await settle(host, () => !runtime.state().overlay.query.pending, t.signal);
+    assert.equal(runtime.state().overlay.query.error, null, 'empty queries use retained source order');
+    failQuery = true;
+    await runtime.dispatch({
+      type: 'picker.transition',
+      transition: { kind: 'setQuery', query: { text: 'document' } }
+    });
     await settle(host, () => runtime.state().overlay.query.error !== null, t.signal);
     failQuery = false;
     assert.match(renderFramePlain(runtime.frame()), /Fixture query failure/);
@@ -66,7 +72,7 @@ test(
     const ready = runtime.state().overlay;
     assert.equal(ready.searchPickerIndex, index);
     assert.equal(ready.query.result.searchPickerIndex, index);
-    assert.equal(ready.picker.editor.activeId, ready.query.result.entries[0].id);
+    assert.equal(ready.picker.editor.activeId, ready.query.result.entryAt(0).id);
     assert.equal(ready.query.result.query.text, 'document-2');
     await runtime.dispatch({ type: 'overlay.close' });
     await runtime.dispatch({ type: 'picker.open', subject: 'resources' });

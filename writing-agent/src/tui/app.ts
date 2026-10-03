@@ -5,7 +5,6 @@ import {
   MarkdownDocument,
   acceptResource,
   applyPanelResult,
-  cancelRemovedPanels,
   mountPanel,
   appendRecalledDrafts,
   completeCommand,
@@ -67,7 +66,13 @@ import type {
   TuiInputBindingContext,
   TuiUpdateResult
 } from '@ismail-elkorchi/terminal-ui/tui';
-import { createTuiChild, defineTui, tuiBindingHelp } from '@ismail-elkorchi/terminal-ui/tui';
+import {
+  combineTuiResults,
+  createTuiChild,
+  defineTui,
+  reconcileTuiChildren,
+  tuiBindingHelp
+} from '@ismail-elkorchi/terminal-ui/tui';
 import type { WritingApplication, WritingDocument } from '../application/service.js';
 import { WRITING_PROVIDER_IDS } from '../provider.js';
 import { WRITING_COMMANDS, WRITING_SHORTCUTS } from './commands.js';
@@ -124,18 +129,20 @@ export function createWritingAgentTuiApp(
           application.state().status === 'configuration_required'
             ? mountPanel(initial, 'configuration', configuration, context)
             : { state: initial };
-        return {
-          ...result,
-          state: { ...result.state, draftRestoreSession: sessionId },
-          effects: [
-            ...(result.effects ?? []),
-            ...(events === undefined ? [refresh(application)] : []),
-            ...(options.drafts === undefined
-              ? []
-              : [loadDraft(options.drafts, sessionId, initial.composer)])
-          ],
-          focus: result.focus ?? { kind: 'element', elementId: 'writing-composer' }
-        };
+        return combineTuiResults(
+          { ...result.state, draftRestoreSession: sessionId },
+          { state: initial, focus: { kind: 'element', elementId: 'writing-composer' } },
+          result,
+          {
+            state: result.state,
+            effects: [
+              ...(events === undefined ? [refresh(application)] : []),
+              ...(options.drafts === undefined
+                ? []
+                : [loadDraft(options.drafts, sessionId, initial.composer)])
+            ]
+          }
+        );
       },
       update: (state, message, context) => {
         let result = withAttention(
@@ -166,11 +173,15 @@ export function createWritingAgentTuiApp(
         )
           removedQueryEffects.push('writing-picker-query');
         if (removedQueryEffects.length > 0)
-          result = {
-            ...result,
-            cancel: [...(result.cancel ?? []), ...removedQueryEffects.map((id) => ({ kind: 'effect' as const, id }))]
-          };
-        result = cancelRemovedPanels(result, mountedPanels(state), mountedPanels(result.state));
+          result = combineTuiResults(result.state, result, {
+            state: result.state,
+            cancel: removedQueryEffects.map((id) => ({ kind: 'effect' as const, id }))
+          });
+        result = combineTuiResults(
+          result.state,
+          result,
+          reconcileTuiChildren(mountedPanels(state), mountedPanels(result.state), (child) => child)
+        );
         return context.terminalSize.rows < 12
           ? {
               ...result,
@@ -559,10 +570,10 @@ function update(
         return { state };
       const current = state.overlay.kind === 'context' ? state.overlay.state : createContextState();
       const result = updateContext(current, message, app);
-      return {
-        state: { ...state, overlay: { kind: 'context', state: result.state } },
-        ...(result.effects ? { effects: result.effects } : {})
-      };
+      return combineTuiResults(
+        { ...state, overlay: { kind: 'context', state: result.state } },
+        result
+      );
     }
     case 'conversation.export':
       return {
@@ -682,21 +693,16 @@ function update(
           ...state.promptHistory.entries
         ]
       });
-      return {
-        state: { ...state, overlay: { kind: 'recall', state: recall.state } },
-        effects: [
-          ...(recall.effects ?? []),
-          ...(options.drafts === undefined
+      return combineTuiResults(
+        { ...state, overlay: { kind: 'recall', state: recall.state } },
+        recall,
+        {
+          state: recall.state,
+          effects: options.drafts === undefined
             ? []
-            : [
-                loadRecoveredPrompts(
-                  options.drafts,
-                  state.application.sessionId ?? ':new',
-                  recall.state.id
-                )
-              ])
-        ]
-      };
+            : [loadRecoveredPrompts(options.drafts, state.application.sessionId ?? ':new', recall.state.id)]
+        }
+      );
     }
     case 'recall.loaded': {
       if (state.overlay.kind !== 'recall' || state.overlay.state.id !== message.id)
@@ -759,11 +765,7 @@ function update(
           next = { ...next, notice: output.error };
         if (output.kind === 'withdrawn') {
           const recovered = update(next, output.message, app, options, context);
-          return {
-            ...result,
-            ...recovered,
-            effects: [...(result.effects ?? []), ...(recovered.effects ?? [])]
-          };
+          return combineTuiResults(recovered.state, result, recovered);
         }
       }
       return { ...result, state: next };
@@ -1041,11 +1043,11 @@ function update(
       const draft = result.state.composer;
       if (textDocumentText(draft.input.document).length > 0 || draft.attachments.length > 0)
         return result;
-      return {
-        ...result,
-        state: { ...result.state, draftRestoreSession: sessionId },
-        effects: [...(result.effects ?? []), loadDraft(options.drafts, sessionId, draft)]
-      };
+      return combineTuiResults(
+        { ...result.state, draftRestoreSession: sessionId },
+        result,
+        { state: result.state, effects: [loadDraft(options.drafts, sessionId, draft)] }
+      );
     }
     case 'application':
       return { state: { ...state, application: message.state } };
@@ -1478,13 +1480,11 @@ function update(
         return mountPanel(state, 'configuration', configuration, context);
       if (state.overlay.kind !== 'configuration') return { state };
       const result = configuration.update(state.overlay.state, message.child, context);
-      return {
-        ...applyPanelResult(state, 'configuration', result, (result.outputs?.length ?? 0) > 0),
-        effects: [
-          ...(result.effects ?? []),
-          ...(result.outputs?.includes('saved') ? [refresh(app, state.document?.value.path)] : [])
-        ]
-      };
+      const panel = applyPanelResult(state, 'configuration', result, (result.outputs?.length ?? 0) > 0);
+      return combineTuiResults(panel.state, panel, {
+        state: panel.state,
+        effects: result.outputs?.includes('saved') ? [refresh(app, state.document?.value.path)] : []
+      });
     }
 
     case 'history.load': {
@@ -2019,13 +2019,11 @@ function withAttention(
     result.state.preferences.notify
   );
   const notify = options.notify;
-  return {
-    ...result,
-    state: { ...result.state, attention: attention.state },
+  return combineTuiResults({ ...result.state, attention: attention.state }, result, {
+    state: result.state,
     ...(attention.notify && notify !== undefined
       ? {
           effects: [
-            ...(result.effects ?? []),
             {
               id: 'terminal-attention',
               concurrency: 'enqueue',
@@ -2041,7 +2039,7 @@ function withAttention(
           ]
         }
       : {})
-  };
+  });
 }
 
 function writingNotes(reader: import('@agent-core/tui').NoteReader) {
@@ -2076,7 +2074,7 @@ function writingInspector(
   );
 }
 
-function mountedPanels(state: WritingTuiState) {
+function mountedPanels(state: WritingTuiState): readonly import('@ismail-elkorchi/terminal-ui/tui').TuiChildState<unknown>[] {
   const overlay = state.overlay;
   return [
     ...(overlay.kind === 'notes' || overlay.kind === 'configuration' || overlay.kind === 'inspector'

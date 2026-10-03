@@ -42,10 +42,16 @@ test(
     });
     t.after(() => runtime.dispose());
     await runtime.start();
-    failQuery = true;
     await runtime.dispatch({ type: 'panel.open', panel: 'sessions' });
     await settle(host, () => runtime.state().overlay.kind === 'panel', t.signal);
     const index = runtime.state().overlay.searchPickerIndex;
+    await settle(host, () => !runtime.state().overlay.query.pending, t.signal);
+    assert.equal(runtime.state().overlay.query.error, null, 'empty queries use retained source order');
+    failQuery = true;
+    await runtime.dispatch({
+      type: 'panel.transition',
+      transition: { kind: 'setQuery', query: { text: 'Session' } }
+    });
     await settle(host, () => runtime.state().overlay.query.error !== null, t.signal);
     failQuery = false;
     assert.match(renderFramePlain(runtime.frame()), /Fixture query failure/);
@@ -59,7 +65,7 @@ test(
     const ready = runtime.state().overlay;
     assert.equal(ready.searchPickerIndex, index);
     assert.equal(ready.query.result.searchPickerIndex, index);
-    assert.equal(ready.picker.editor.activeId, ready.query.result.entries[0].id);
+    assert.equal(ready.picker.editor.activeId, ready.query.result.entryAt(0).id);
     assert.equal(ready.query.result.query.text, 'Session 2');
     await runtime.dispatch({ type: 'overlay.close' });
     await runtime.dispatch({ type: 'panel.open', panel: 'sessions' });

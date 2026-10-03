@@ -4,7 +4,6 @@ import type { ConversationActivityEntry, ConversationEntry } from '@agent-core/t
 import {
   acceptResource,
   applyPanelResult,
-  cancelRemovedPanels,
   mountPanel,
   activityDetails,
   appendRecalledDrafts,
@@ -93,7 +92,13 @@ import type {
   TuiInputBindingContext,
   TuiUpdateResult
 } from '@ismail-elkorchi/terminal-ui/tui';
-import { createTuiChild, defineTui, tuiBindingHelp } from '@ismail-elkorchi/terminal-ui/tui';
+import {
+  combineTuiResults,
+  createTuiChild,
+  defineTui,
+  reconcileTuiChildren,
+  tuiBindingHelp
+} from '@ismail-elkorchi/terminal-ui/tui';
 import type {
   CodingApplicationState,
   CodingRuntimeDetails,
@@ -237,22 +242,22 @@ export function createCodingAgentTuiApp(
       )
         removedQueryEffects.push('navigation-query');
       if (removedQueryEffects.length > 0)
-        result = {
-          ...result,
-          cancel: [...(result.cancel ?? []), ...removedQueryEffects.map((id) => ({ kind: 'effect' as const, id }))]
-        };
-      result = cancelRemovedPanels(result, mountedPanels(state), mountedPanels(result.state));
+        result = combineTuiResults(result.state, result, {
+          state: result.state,
+          cancel: removedQueryEffects.map((id) => ({ kind: 'effect' as const, id }))
+        });
+      result = combineTuiResults(
+        result.state,
+        result,
+        reconcileTuiChildren(mountedPanels(state), mountedPanels(result.state), (child) => child)
+      );
       if (
         message.type === 'result' &&
         options.historyReader !== undefined &&
         result.state.conversation.scroll.followTail
       ) {
         const history = loadHistory(result.state, 'tail', options.historyReader);
-        return {
-          ...result,
-          ...history,
-          effects: [...(result.effects ?? []), ...(history.effects ?? [])]
-        };
+        return combineTuiResults(history.state, result, history);
       }
       return context.terminalSize.rows < 12
         ? {
@@ -640,10 +645,10 @@ function updateCodingAgentTui(
         return { state };
       const current = state.overlay.kind === 'context' ? state.overlay.state : createContextState();
       const result = updateContext(current, message, options.context);
-      return {
-        state: { ...state, overlay: { kind: 'context', state: result.state } },
-        ...(result.effects ? { effects: result.effects } : {})
-      };
+      return combineTuiResults(
+        { ...state, overlay: { kind: 'context', state: result.state } },
+        result
+      );
     }
     case 'processes.open':
     case 'processes.refresh':
@@ -865,21 +870,16 @@ function updateCodingAgentTui(
           ...state.composer.history.entries
         ]
       });
-      return {
-        state: { ...state, overlay: { kind: 'recall', state: recall.state } },
-        effects: [
-          ...(recall.effects ?? []),
-          ...(options.drafts === undefined
+      return combineTuiResults(
+        { ...state, overlay: { kind: 'recall', state: recall.state } },
+        recall,
+        {
+          state: recall.state,
+          effects: options.drafts === undefined
             ? []
-            : [
-                loadRecoveredPrompts(
-                  options.drafts,
-                  state.debug.sessionId ?? ':new',
-                  recall.state.id
-                )
-              ])
-        ]
-      };
+            : [loadRecoveredPrompts(options.drafts, state.debug.sessionId ?? ':new', recall.state.id)]
+        }
+      );
     }
     case 'recall.loaded': {
       if (state.overlay.kind !== 'recall' || state.overlay.state.id !== message.id)
@@ -948,11 +948,7 @@ function updateCodingAgentTui(
           next = appendNotice(next, output.error, 'error');
         if (output.kind === 'withdrawn') {
           const recovered = updateCodingAgentTui(next, output.message, context, options);
-          return {
-            ...result,
-            ...recovered,
-            effects: [...(result.effects ?? []), ...(recovered.effects ?? [])]
-          };
+          return combineTuiResults(recovered.state, result, recovered);
         }
       }
       return { ...result, state: next };
@@ -1179,10 +1175,7 @@ function updateCodingAgentTui(
       const received = receiveHistory(state, message.requestId, message.pages);
       if (!refreshTail) return updated(received);
       const refresh = loadHistory(received, 'tail', options.historyReader);
-      return {
-        ...updated(refresh.state),
-        ...(refresh.effects === undefined ? {} : { effects: refresh.effects })
-      };
+      return combineTuiResults(refresh.state, refresh, updated(refresh.state));
     }
     case 'history.failed':
       return updated(failHistory(state, message.requestId, message.message));
@@ -1242,11 +1235,11 @@ function updateCodingAgentTui(
       const draft = result.state.composer;
       if (textDocumentText(draft.input.document).length > 0 || draft.attachments.length > 0)
         return result;
-      return {
-        ...result,
-        state: { ...result.state, draftRestoreSession: sessionId },
-        effects: [...(result.effects ?? []), loadDraft(options.drafts, sessionId, draft)]
-      };
+      return combineTuiResults(
+        { ...result.state, draftRestoreSession: sessionId },
+        result,
+        { state: result.state, effects: [loadDraft(options.drafts, sessionId, draft)] }
+      );
     }
     case 'approval.required':
       return updated({
@@ -2674,13 +2667,11 @@ function withAttention(
     result.state.preferences.notify
   );
   const notify = options.notify;
-  return {
-    ...result,
-    state: { ...result.state, attention: attention.state },
+  return combineTuiResults({ ...result.state, attention: attention.state }, result, {
+    state: result.state,
     ...(attention.notify && notify !== undefined
       ? {
           effects: [
-            ...(result.effects ?? []),
             {
               id: 'terminal-attention',
               concurrency: 'enqueue',
@@ -2700,7 +2691,7 @@ function withAttention(
           ]
         }
       : {})
-  };
+  });
 }
 
 function withoutConversationAnchor(
@@ -2743,7 +2734,7 @@ function codingInspector(
   );
 }
 
-function mountedPanels(state: CodingAgentTuiState) {
+function mountedPanels(state: CodingAgentTuiState): readonly import('@ismail-elkorchi/terminal-ui/tui').TuiChildState<unknown>[] {
   const overlay = state.overlay;
   return [
     ...(overlay.kind === 'notes' || overlay.kind === 'configuration' || overlay.kind === 'inspector'

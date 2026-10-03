@@ -6,6 +6,7 @@ import {
   createTextAreaState,
   querySearchPickerIndex,
   searchPickerReducer,
+  searchPickerQueryPosition,
   searchPickerView,
   textAreaReducer,
   type SearchPickerControlTransition,
@@ -179,8 +180,10 @@ export function updateProcesses(
       const pickerQueryResult = querySearchPickerIndex(pickerIndex, {
         text: state.picker.editor.input.text, mode: state.picker.mode, caseSensitive: state.picker.caseSensitive
       });
-      const active = pickerQueryResult.entries.find((entry) => entry.id === state.picker.editor.activeId)
-        ?? pickerQueryResult.entries[0];
+      const position = state.picker.editor.activeId === undefined
+        ? undefined
+        : searchPickerQueryPosition(pickerQueryResult, state.picker.editor.activeId);
+      const active = pickerQueryResult.entryAt(position ?? 0);
       const picker = searchPickerReducer(state.picker, { kind: 'setActive', ...(active === undefined ? {} : { id: active.id }) },
         { searchPickerIndex: pickerIndex, queryResult: pickerQueryResult });
       return { state: {
