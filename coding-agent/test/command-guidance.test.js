@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readdir } from 'node:fs/promises';
 import { openCodingApplication } from '@ismail-elkorchi/coding-agent';
+import { offlineCodex } from '../../test-helpers/codex.js';
 import {
   createWorkspace,
   finalResponse,
@@ -9,6 +10,109 @@ import {
   toolResponse,
   trust
 } from './fixtures/scripted-cli.js';
+
+test(
+  'Codex reasoning survives newly discovered guidance without starting the deferred command',
+  { skip: process.platform !== 'linux', timeout: 30_000 },
+  async (t) => {
+    const reasoning = ['original', 'reconsidered'].map((id) => ({
+      type: 'reasoning',
+      id: `reasoning-${id}`,
+      encrypted_content: `${id}-opaque+/=`,
+      summary: []
+    }));
+    let requests = 0;
+    const command = (id, state) => [
+      state,
+      {
+        type: 'function_call',
+        call_id: id,
+        name: 'exec_command',
+        arguments: JSON.stringify({ command: 'printf inspected', workdir: 'subproject' })
+      }
+    ];
+    const provider = await offlineCodex(t, async (request) => {
+      try {
+        requests++;
+        if (requests === 1) return command('discover-guidance', reasoning[0]);
+        assert.deepEqual(
+          request.input.filter((item) => item.type === 'reasoning'),
+          requests === 2 ? [reasoning[0]] : reasoning
+        );
+        if (requests === 2 || requests === 3) {
+          assert.match(
+            JSON.stringify(request.input.filter((item) => item.role === 'developer')),
+            /GUIDANCE-BEFORE-DISPATCH/
+          );
+        }
+        if (requests === 2) {
+          const result = request.input.find((item) => item.type === 'function_call_output');
+          assert.equal(result.call_id, 'discover-guidance');
+          assert.match(result.output, /context_required/);
+          assert.match(result.output, /GUIDANCE-BEFORE-DISPATCH/);
+          const files = await readdir(fixture.stateRoot, { recursive: true });
+          assert.equal(
+            files.filter((file) => file.includes('/commands/') && file.endsWith('/state.json')).length,
+            0
+          );
+          return command('execute-after-guidance', reasoning[1]);
+        }
+        if (requests === 3) {
+          const result = request.input.find(
+            (item) => item.type === 'function_call_output' && item.call_id === 'execute-after-guidance'
+          );
+          assert.match(result.output, /inspected/);
+        }
+        return 'Inspection complete.';
+      } catch (error) {
+        t.diagnostic(error.stack);
+        throw error;
+      }
+    });
+    const fixture = await createWorkspace({
+      tools: ['exec_command'],
+      checks: [],
+      files: { 'subproject/AGENTS.md': 'GUIDANCE-BEFORE-DISPATCH: preserve unrelated files.\n' }
+    });
+    let application;
+    t.after(async () => {
+      await application?.close();
+      await fixture.close();
+    });
+    await trust(fixture);
+    const options = {
+      root: fixture.root,
+      stateRoot: fixture.stateRoot,
+      providerEndpoint: provider.endpoint,
+      provider: 'openai-codex',
+      model: 'gpt-6-astra',
+      permissionMode: 'full_host'
+    };
+    application = await openCodingApplication(options);
+    await application.start();
+    const sessionId = application.state().session.sessionId;
+    const submitted = await application.submit({ task: 'Inspect the subproject.' });
+    assert.equal(submitted.kind, 'started');
+    const completed = await submitted.completion;
+    assert.equal(completed.terminal?.executionStatus, 'completed', JSON.stringify(completed));
+    assert.equal(requests, 3);
+    const observations = (await application.readSession()).history.entries.filter(
+      (entry) => entry.type === 'observation'
+    );
+    assert.equal(observations.length, 2);
+    assert.equal(observations[0].output.effectStarted, false);
+    await application.close();
+    application = await openCodingApplication({
+      ...options,
+      sessionSelection: { kind: 'existing', id: sessionId }
+    });
+    await application.start();
+    assert.equal(application.state().session.sessionId, sessionId);
+    const followup = await application.submit({ task: 'Explain the result.' });
+    assert.equal((await followup.completion).terminal?.executionStatus, 'completed');
+    assert.equal(requests, 4);
+  }
+);
 
 test(
   'nested repository guidance precedes command dispatch and the reconsidered command completes',

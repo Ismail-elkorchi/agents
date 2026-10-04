@@ -22,11 +22,21 @@ export async function offlineCodex(t, output = 'Hello from the provider.') {
   await new FileCredentialStore().write('openai-codex', { token, expiresAt: Date.now() + 3_600_000 });
   const requests = [];
   t.mock.method(globalThis, 'fetch', async (url, init) => {
+    if (new URL(url).pathname.endsWith('/models')) {
+      return Response.json({ models: [{
+        slug: 'gpt-6-astra', display_name: 'Astra', input_modalities: ['text'],
+        context_window: 272_000, default_reasoning_level: 'medium',
+        supported_reasoning_levels: ['low', 'medium', 'high', 'xhigh'].map((effort) => ({ effort, description: effort }))
+      }] });
+    }
     assert.equal(String(url), 'https://offline-codex.invalid/codex/responses');
     const body = JSON.parse(init.body);
     requests.push(body);
     assert.equal('max_output_tokens' in body, false);
-    const content = typeof output === 'function' ? output(body) : output;
+    const content = typeof output === 'function' ? await output(body) : output;
+    const items = typeof content === 'string'
+      ? [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: content }] }]
+      : content;
     return new Response(
       `data: ${JSON.stringify({
         type: 'response.completed',
@@ -34,8 +44,7 @@ export async function offlineCodex(t, output = 'Hello from the provider.') {
           id: `response-${requests.length}`,
           model: body.model,
           status: 'completed',
-          output_text: content,
-          output: []
+          output: items
         }
       })}\n\n`,
       { headers: { 'Content-Type': 'text/event-stream' } }
