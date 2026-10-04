@@ -26,7 +26,7 @@ test(
     const application = {
       state: () => state,
       start: async () => {},
-      readSession: async () => ({
+      readSession: async () => ({ toolDiagnostics: [],
         session: {
           sessionId: session.id,
           phase: 'idle',

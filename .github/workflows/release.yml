@@ -23,17 +23,12 @@ jobs:
         id: revisions
         shell: bash
         working-directory: agents
-        run: node -e "const fs = require('node:fs'); const packageManifest = require('./package.json'); fs.appendFileSync(process.env.GITHUB_OUTPUT, 'agent-core=' + packageManifest.agentCore.commit + '\\nsandbox=' + packageManifest.sandbox.commit + '\\n')"
+        run: node -e "const fs = require('node:fs'); const packageManifest = require('./package.json'); fs.appendFileSync(process.env.GITHUB_OUTPUT, 'agent-core=' + packageManifest.agentCore.commit + '\\n')"
       - uses: actions/checkout@v4
         with:
           repository: Ismail-elkorchi/agent-core
           ref: ${{ steps.revisions.outputs.agent-core }}
           path: agent-core
-      - uses: actions/checkout@v4
-        with:
-          repository: Ismail-elkorchi/sandbox
-          ref: ${{ steps.revisions.outputs.sandbox }}
-          path: sandbox
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
@@ -41,14 +36,8 @@ jobs:
           cache-dependency-path: |
             agents/package-lock.json
             agent-core/package-lock.json
-            sandbox/package-lock.json
       - name: Build Agent Core
         working-directory: agent-core
-        run: npm ci && npm run build
-      - name: Install stable Rust
-        run: rustup toolchain install stable --profile minimal
-      - name: Build Sandbox package
-        working-directory: sandbox
         run: npm ci && npm run build
       - name: Install ripgrep
         if: runner.os == 'Linux'

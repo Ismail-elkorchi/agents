@@ -2,14 +2,14 @@
 
 Runnable applications composed from [Agent Core](https://github.com/Ismail-elkorchi/agent-core):
 
-- `@ismail-elkorchi/coding-agent` is a conversational coding application with workspace tools, explicit permissions, Sandbox command execution, durable sessions, a TUI, and a JSON-RPC adapter.
+- `@ismail-elkorchi/coding-agent` is a conversational coding application with workspace tools, explicit permissions, supervised host command execution, durable sessions, a TUI, and a JSON-RPC adapter.
 - `@ismail-elkorchi/writing-agent` is a workspace writing application with direct editing, read-only review, conversation history, a TUI, and a JSON-RPC adapter.
 
 Agent Core owns provider-neutral inference, conversation history, model-managed context and notes, durable effects, resource accounting, recovery, and session branches. Each application owns its domain tools, permission choices, verification meaning, and presentation.
 
 Shared delivery and session navigation belong to Agent Core runtime services. Optional `@agent-core/rpc` and `@agent-core/tui` provide the common protocol and terminal components; applications supply authorized capabilities and domain actions. Headless application imports do not initialize either adapter.
 
-Development uses adjacent `agents`, `agent-core`, and `sandbox` checkouts. Exact upstream commits are recorded in the root `package.json`. Build the upstream repositories, then run:
+Development uses adjacent `agents` and `agent-core` checkouts. Exact upstream commits are recorded in the root `package.json`. Build the upstream repositories, then run:
 
 ```bash
 npm ci

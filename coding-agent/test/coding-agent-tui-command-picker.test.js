@@ -100,10 +100,10 @@ test('commands with finite domain values open a second picker and submit the exa
   await runtime.handleInput(key('enter'));
   assert.equal(runtime.state().overlay.kind, 'command_values');
   assert.equal(runtime.state().overlay.command, '/permissions');
-  await runtime.handleInput({ kind: 'text', text: 'sandbox', paste: false });
+  await runtime.handleInput({ kind: 'text', text: 'full_host', paste: false });
   await runtime.handleInput(key('enter'));
   await waitFor(() => submitted.length === 1);
-  assert.deepEqual(submitted, ['/permissions sandbox']);
+  assert.deepEqual(submitted, ['/permissions full_host']);
   await runtime.dispose();
 });
 
@@ -144,12 +144,12 @@ test('permission details remain inspectable without crowding the default status 
     fakeController({
       modelId: 'test-model',
       permissions: {
-        mode: 'sandbox',
+        mode: 'full_host',
         workspaceRead: 'root_bound',
         workspaceWrite: 'structured',
-        commandExecution: 'sandboxed',
-        network: 'denied',
-        hostEscape: 'denied',
+        commandExecution: 'host',
+        network: 'host',
+        hostEscape: 'allowed',
         tools: ['read_files', 'apply_patch', 'exec_command']
       }
     }),
@@ -157,7 +157,7 @@ test('permission details remain inspectable without crowding the default status 
   );
   await waitFor(() => host.frames().length > 0);
   const output = latestFramePlain(host);
-  assert.match(output, /sandbox/u);
+  assert.match(output, /full_host/u);
   assert.doesNotMatch(output, /driver|net\/escape|3 tools/u);
   host.input('/status\r');
   await waitFor(() => /Application status/u.test(latestFramePlain(host)));

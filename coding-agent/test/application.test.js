@@ -4,10 +4,6 @@ import test from 'node:test';
 import { promisify } from 'node:util';
 import { openCodingApplication } from '@ismail-elkorchi/coding-agent';
 import { createWorkspace, finalResponse, scriptedOllama, trust } from './fixtures/scripted-cli.js';
-import {
-  withTestCodingEnvironment,
-  createTestCodingEnvironment
-} from './fixtures/test-environment.js';
 
 test('headless package imports do not load executable or terminal adapters', async () => {
   await promisify(execFile)(process.execPath, [
@@ -36,10 +32,10 @@ test(
   async () => {
     const fixture = await createWorkspace({ tools: ['read_files'], checks: [] });
     const application = await openCodingApplication(
-      withTestCodingEnvironment({
+      { permissionMode: 'full_host',
         root: fixture.root,
         stateRoot: fixture.stateRoot
-      })
+      }
     );
     const events = [];
     let failedCalls = 0;
@@ -95,7 +91,7 @@ test(
       stateRoot: fixture.stateRoot,
       providerEndpoint: provider.endpoint
     };
-    const application = await openCodingApplication(withTestCodingEnvironment(options));
+    const application = await openCodingApplication({ permissionMode: 'full_host', ...options });
     const events = [];
     application.subscribe(
       (event) => events.push(event),
@@ -141,10 +137,10 @@ test(
       await application.close();
     }
     const restored = await openCodingApplication(
-      withTestCodingEnvironment({
+      { permissionMode: 'full_host',
         ...options,
         sessionSelection: { kind: 'existing', id: sessionId }
-      })
+      }
     );
     try {
       await restored.start();
@@ -167,13 +163,13 @@ test(
     const fixture = await createWorkspace({ tools: ['read_files'], checks: [] });
     await trust(fixture);
     const app = await openCodingApplication(
-      withTestCodingEnvironment({
+      { permissionMode: 'full_host',
         root: fixture.root,
         stateRoot: fixture.stateRoot,
         provider: 'openai-codex',
         model: 'gpt-5.6-luna',
         providerEndpoint: provider.endpoint
-      })
+      }
     );
     t.after(async () => {
       await app.close();
@@ -204,13 +200,13 @@ test(
     const fixture = await createWorkspace({ endpoint: provider.endpoint, tools: [], checks: [] });
     await trust(fixture);
     const application = await openCodingApplication(
-      withTestCodingEnvironment({
+      { permissionMode: 'full_host',
         root: fixture.root,
         stateRoot: fixture.stateRoot,
         provider: 'ollama',
         model: 'v0-scripted',
         providerEndpoint: provider.endpoint
-      })
+      }
     );
     t.after(async () => {
       await application.close();
@@ -241,133 +237,5 @@ test(
         (entry) => entry.type === 'input' && entry.task.includes('café')
       )
     );
-  }
-);
-
-test(
-  'file attachments and completion observe the execution workspace, not the import source',
-  { skip: process.platform !== 'linux' },
-  async (t) => {
-    const provider = await scriptedOllama([]);
-    const host = await createWorkspace({
-      endpoint: provider.endpoint,
-      tools: ['read_files'],
-      checks: [],
-      files: { 'source.txt': 'host original' }
-    });
-    const guest = await createWorkspace({
-      tools: ['read_files'],
-      checks: [],
-      files: { 'source.txt': 'guest revision', 'guest-only.txt': 'new' }
-    });
-    t.after(async () => {
-      await provider.close();
-      await host.close();
-      await guest.close();
-    });
-    await trust(host);
-    const application = await openCodingApplication({
-      root: host.root,
-      stateRoot: host.stateRoot,
-      providerEndpoint: provider.endpoint,
-      permissionMode: 'sandbox',
-      environmentFactory: (options) =>
-        createTestCodingEnvironment({ ...options, hostWorkspaceRoot: guest.root })
-    });
-    try {
-      await application.start();
-      const snapshot = await application.readContext('source.txt', new AbortController().signal);
-      assert.equal(snapshot.content, 'guest revision');
-      assert.match(snapshot.sourceUri, /^workspace:/);
-      assert.ok((await application.listFiles()).some((entry) => entry.path === 'guest-only.txt'));
-    } finally {
-      await application.close();
-    }
-  }
-);
-
-test(
-  'shared environment completions retain the owning session in notifications and model context',
-  { skip: process.platform !== 'linux' },
-  async (t) => {
-    const provider = await scriptedOllama([finalResponse('Done.')]);
-    const fixture = await createWorkspace({
-      endpoint: provider.endpoint,
-      tools: ['exec_command'],
-      checks: []
-    });
-    let application;
-    let settle;
-    let reports = [];
-    t.after(async () => {
-      await application?.close();
-      await provider.close();
-      await fixture.close();
-    });
-    await trust(fixture);
-    application = await openCodingApplication({
-      root: fixture.root,
-      stateRoot: fixture.stateRoot,
-      providerEndpoint: provider.endpoint,
-      permissionMode: 'sandbox',
-      async environmentFactory(options) {
-        settle = options.onSettlement;
-        const environment = await createTestCodingEnvironment(options);
-        environment.commandExecution.recoveredTerminalReports = () => reports;
-        return environment;
-      }
-    });
-    const delivered = [];
-    application.subscribe(
-      (event) => delivered.push(event),
-      (error) => assert.fail(error)
-    );
-    await application.start();
-    const ownerId = `coding-session:${application.state().session.sessionId}`;
-    const empty = {
-      segments: [],
-      observedBytes: 0,
-      capturedBytes: 0,
-      omittedBytes: 0,
-      startsAtOutputStart: true,
-      endsAtOutputEnd: true
-    };
-    const result = {
-      processId: 'owned-completion',
-      owner: {
-        ownerId,
-        runId: 'prior-run',
-        turnId: 'prior-turn',
-        toolBatchId: 'prior-batch',
-        callIndex: 0
-      },
-      status: 'exited',
-      exitCode: 0,
-      cursorStart: 0,
-      cursorEnd: 0,
-      stdout: empty,
-      stderr: empty,
-      combined: empty
-    };
-    const foreign = {
-      ...result,
-      processId: 'foreign-completion',
-      owner: { ...result.owner, ownerId: 'another-session' }
-    };
-    reports = [{ result }, { result: foreign }];
-    settle(reports[1]);
-    settle(reports[0]);
-    assert.deepEqual(
-      delivered
-        .filter((event) => event.type === 'command.settled')
-        .map((event) => event.result.processId),
-      ['owned-completion']
-    );
-    const submitted = await application.submit({ task: 'Continue.' });
-    assert.equal(submitted.kind, 'started');
-    assert.equal((await submitted.completion).terminal.executionStatus, 'completed');
-    const request = JSON.stringify(provider.chatRequests[0]);
-    assert.match(request, /owned-completion/);
-    assert.doesNotMatch(request, /foreign-completion/);
   }
 );

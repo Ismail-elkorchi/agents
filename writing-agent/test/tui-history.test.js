@@ -27,7 +27,7 @@ test(
     const state = { workspace: '/workspace', mode: 'edit', sessionId: session.id, status: 'ready' };
     const application = {
       state: () => state,
-      readSession: async () => ({
+      readSession: async () => ({ toolDiagnostics: [],
         session: {
           sessionId: session.id,
           phase: 'idle',
@@ -118,7 +118,7 @@ test(
     let selected = first;
     const application = {
       state: () => ({ workspace: '/workspace', mode: 'edit', sessionId: selected.id, status: 'ready' }),
-      readSession: async () => ({
+      readSession: async () => ({ toolDiagnostics: [],
         session: {
           sessionId: selected.id,
           phase: 'idle',

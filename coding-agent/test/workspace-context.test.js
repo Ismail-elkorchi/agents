@@ -2,23 +2,21 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openCodingApplication } from '@ismail-elkorchi/coding-agent';
 import { createWorkspace, scriptedOllama, finalResponse, toolResponse, trust } from './fixtures/scripted-cli.js';
-import { withTestCodingEnvironment } from './fixtures/test-environment.js';
 
-for (const permissionMode of ['read_only', 'full_host', 'sandbox'])
+for (const permissionMode of ['read_only', 'full_host'])
   test(`${permissionMode}: startup and inspection identify the effective file root`, { skip: process.platform !== 'linux' }, async (t) => {
     const provider = await scriptedOllama([finalResponse('Ready.')]);
     const fixture = await createWorkspace({ endpoint: provider.endpoint, tools: ['read_files'], checks: [] });
     await trust(fixture);
     const options = { root: fixture.root, stateRoot: fixture.stateRoot, permissionMode, providerEndpoint: provider.endpoint };
-    const app = await openCodingApplication(permissionMode === 'sandbox' ? withTestCodingEnvironment(options) : options);
+    const app = await openCodingApplication(options);
     t.after(async () => { await app.close(); await provider.close(); await fixture.close(); });
     await app.start();
-    const displayRoot = permissionMode === 'sandbox' ? '/workspace' : fixture.root;
+    const displayRoot = fixture.root;
     const inspected = await app.inspectContext();
     const content = inspected.available.resources.find(item => item.id === 'coding-agent/workspace').content;
     assert.ok(content.includes(`Workspace root: ${JSON.stringify(displayRoot)}`));
     assert.match(content, /relative to this root/);
-    if (permissionMode === 'sandbox') assert.ok(!content.includes(fixture.root));
     const submission = await app.submit({ task: 'Identify your workspace without calling tools.' });
     assert.equal(submission.kind, 'started');
     assert.equal((await submission.completion).state, 'ended');

@@ -27,20 +27,14 @@ import {
 import {
   commandExecutionResources,
   commandReleaseReport,
-  isWorkspaceFiles,
   type CommandExecutionReport
 } from '@agent-core/tools';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { CodingAgentConfiguration } from './configuration.js';
-import {
-  openCodingEnvironment,
-  type CodingEnvironment
-} from './execution/coding-command-authority.js';
 import { processControls } from './execution/process-controls.js';
 import {
   createLocalToolHost,
-  createWorkspaceToolHost,
   DEFAULT_LOCAL_TOOL_CONFIGURATION,
   LocalCommandExecution,
   TextPatchJournal,
@@ -72,11 +66,7 @@ export interface CodingSessionOptions {
     readonly sha256: string;
     readonly trustLevel: 'trusted';
   };
-  readonly environment?: CodingEnvironment;
-  readonly environmentFactory?: CodingEnvironmentFactory;
 }
-
-export type CodingEnvironmentFactory = typeof openCodingEnvironment;
 
 /** Application composition shared by the CLI, TUI, and RPC surfaces. */
 export type CodingSessionComposition = Awaited<ReturnType<typeof createCodingSession>>;
@@ -160,7 +150,6 @@ export async function createCodingSession(options: CodingSessionOptions) {
   ]);
   const memoryToolNames = new Set(memoryTools.map((tool) => tool.name));
 
-  const ownsEnvironment = authority.mode !== 'sandbox' || options.environment === undefined;
   const commitTerminalReport = async (report: CommandExecutionReport): Promise<void> => {
     const released = commandReleaseReport(report);
     if (released.outcome === 'unknown') throw new Error('Command lifetime is still unresolved.');
@@ -173,6 +162,9 @@ export async function createCodingSession(options: CodingSessionOptions) {
         event.type !== 'resource.released' ||
         event.resourceId !== released.resourceId ||
         event.outcome !== 'released' ||
+        event.details.status !== released.details.status ||
+        event.details.exitCode !== released.details.exitCode ||
+        event.details.signal !== released.details.signal ||
         hashJson(event.details.owner) !== hashJson(report.result.owner)
       )
         throw new Error('Committed command settlement does not match its owner.');
@@ -190,32 +182,16 @@ export async function createCodingSession(options: CodingSessionOptions) {
       { actor: 'runtime', idempotencyKey: key }
     );
   };
-  const environment =
-    authority.mode === 'sandbox'
-      ? options.environment ??
-        (await (options.environmentFactory ?? openCodingEnvironment)({
-          repositoryDirectory: path.join(workspace.runtimeDir, 'sandsurf'),
-          hostWorkspaceRoot: openedWorkspace.fileRoot.identity.canonicalPath,
-          workspaceId: workspace.identity.id,
-          state: openedWorkspace.privateState,
-          events,
-          artifacts,
-          commandExecution: true,
-          writable: true,
-          onSettlement: ({ result }) => {
-            if (result.owner.ownerId === ownerId) options.onCommandSettlement?.(result);
-          }
-        }))
-      : await openHostEnvironment(
-          openedWorkspace.fileRoot,
-          workspace.runtimeDir,
-          artifacts,
-          authority,
-          commitTerminalReport,
-          (result) => {
-            if (result.owner.ownerId === ownerId) options.onCommandSettlement?.(result);
-          }
-        );
+  const environment = await openHostEnvironment(
+    openedWorkspace.fileRoot,
+    workspace.runtimeDir,
+    artifacts,
+    authority,
+    commitTerminalReport,
+    (result) => {
+      if (result.owner.ownerId === ownerId) options.onCommandSettlement?.(result);
+    }
+  );
   const commandExecution = environment.commandExecution;
   const sessionGuidance = RepositoryGuidanceSession.open({
     root: environment.files,
@@ -225,7 +201,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
   try {
     await commandExecution?.reconcile();
   } catch (error) {
-    if (ownsEnvironment) await environment.close();
+    await environment.close();
     throw error;
   }
 
@@ -254,15 +230,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
           security: openedWorkspace.security,
           configuredPaths: configuration?.instructions.map((instruction) => instruction.path) ?? []
         });
-        const host =
-          'toolHost' in environment
-            ? environment.toolHost
-            : createWorkspaceToolHost({
-                files: environment.files,
-                artifacts,
-                ...(commandExecution ? { commandExecution } : {}),
-                enabledTools: authority.enabledTools
-              });
+        const host = environment.toolHost;
 
         const checkTools =
           commandExecution &&
@@ -351,12 +319,12 @@ export async function createCodingSession(options: CodingSessionOptions) {
                   originalOutput: result.originalOutput
                 })
               })) ?? [],
-          contextItems: [workspaceContext(authority, workspaceDisplayRoot(environment.files))],
+          contextItems: [workspaceContext(authority, environment.files.displayPath)],
           ...(projectPolicy && configuration?.limits ? { limits: configuration.limits } : {}),
           metadata: {
             workspaceId: workspace.identity.id,
             workspaceName: workspace.workspaceName,
-            workspaceRoot: workspaceDisplayRoot(environment.files),
+            workspaceRoot: environment.files.displayPath,
             workspaceTrust: openedWorkspace.security.trustLevel,
             ...(options.configurationSource
               ? {
@@ -417,12 +385,12 @@ export async function createCodingSession(options: CodingSessionOptions) {
           },
           available: {
             instructions: (await sessionGuidance.refresh()).instructions,
-            resources: [workspaceContext(authority, workspaceDisplayRoot(environment.files))],
+            resources: [workspaceContext(authority, environment.files.displayPath)],
             toolNames: authority.enabledTools
           }
         };
       },
-      workspaceRoot: workspaceDisplayRoot(environment.files),
+      workspaceRoot: environment.files.displayPath,
       fileRoot: environment.files,
       permissions: authority.permissions,
       ...(configuration ? { configuration } : {}),
@@ -434,7 +402,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
               await commandExecution?.acknowledgeTerminalReport(report.result.processId);
             }
           } finally {
-            if (ownsEnvironment) await environment.close();
+            await environment.close();
           }
         })();
         return closeCompletion;
@@ -442,7 +410,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
     };
   } catch (error) {
     try {
-      if (ownsEnvironment) await environment.close();
+      await environment.close();
     } catch (cleanup) {
       throw new AggregateError(
         [error, cleanup],
@@ -466,20 +434,14 @@ function workspaceContext(authority: CodingAuthority, displayRoot: string): Prom
     content: [
       `Workspace root: ${JSON.stringify(displayRoot)}`,
       'File-tool paths and command workdir are relative to this root; "." means this root.',
-      authority.mode === 'sandbox'
-        ? 'Sandsurf guest workspace. Edits stay in the guest; they do not appear in the host project.'
-        : authority.mode === 'read_only'
-          ? 'Read-only host workspace. Edits and commands are disabled.'
-          : 'Host workspace. Commands run under your host account with access to the rest of the system and network.',
+      authority.mode === 'read_only'
+        ? 'Read-only host workspace. Edits and commands are disabled.'
+        : 'Host workspace. Commands run under your host account with access to the rest of the system and network.',
       `Permission mode: ${authority.mode}`,
       `Available workspace tools: ${authority.enabledTools.join(', ') || 'none'}`
     ].join('\n'),
     purpose: 'Current source location and permission boundary.'
   });
-}
-
-function workspaceDisplayRoot(files: CodingEnvironment['files'] | RootedFileAuthority): string {
-  return isWorkspaceFiles(files) ? files.descriptor.displayRoot : files.displayPath;
 }
 
 async function openHostEnvironment(

@@ -33,7 +33,7 @@ for (const agent of ['coding', 'writing'])
       }),
       start: async () => {},
       readHistory: () => repository.readBranchPage(session),
-      readSession: async () => ({
+      readSession: async () => ({ toolDiagnostics: [],
         session: {
           sessionId: session.id,
           phase: 'idle',
@@ -129,7 +129,7 @@ for (const agent of ['coding', 'writing'])
         }),
         start: async () => {},
         readHistory: () => repository.readBranchPage(session),
-        readSession: async () => ({
+        readSession: async () => ({ toolDiagnostics: [],
           session: {
             sessionId: session.id,
             phase: 'idle',
@@ -229,7 +229,7 @@ for (const agent of ['coding', 'writing'])
       modelSelection: () => selection,
       connectProvider: operations.connect,
       readHistory: () => repository.readBranchPage(session),
-      readSession: async () => ({
+      readSession: async () => ({ toolDiagnostics: [],
         session: {
           sessionId: session.id,
           phase: 'idle',
@@ -321,7 +321,7 @@ for (const agent of ['coding', 'writing'])
       }),
       start: async () => {},
       readHistory: () => repository.readBranchPage(session),
-      readSession: async () => ({ session: sessionState, runs: [] }),
+      readSession: async () => ({ toolDiagnostics: [], session: sessionState, runs: [] }),
       readHistoryEntry: read
     };
     const runtime = createTuiRuntime({
@@ -379,7 +379,7 @@ async function panelTestRuntime(agent, { configuration, navigation, application:
     state: () => ({ workspace: '/workspace', mode: 'edit', sessionId: session.id, status: 'ready' }),
     start: async () => {},
     readHistory: () => { historyReads++; return repository.readBranchPage(session); },
-    readSession: async () => ({
+    readSession: async () => ({ toolDiagnostics: [],
       session: {
         sessionId: session.id, phase: 'idle', queuedInputs: 0,
         configuration: { provider: 'fixture', model: 'fixture' }

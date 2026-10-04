@@ -126,7 +126,7 @@ test('wrapped conversation entries survive tool disclosure, streaming, and resiz
   const runtime = createTuiRuntime({
     host: createMemoryTerminalHost({ terminalSize: { columns: 48, rows: 20 } }),
     app: createCodingAgentTuiApp('', {
-      initialHydration: {
+      initialHydration: { toolDiagnostics: [],
         history: await repository.readBranchPage(session),
         changes: [],
         verification: [],

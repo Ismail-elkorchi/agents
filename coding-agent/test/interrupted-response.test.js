@@ -5,7 +5,6 @@ import test from 'node:test';
 import { openCodingApplication } from '@ismail-elkorchi/coding-agent';
 import { offlineCodex } from '../../test-helpers/codex.js';
 import { createWorkspace, trust } from './fixtures/scripted-cli.js';
-import { withTestCodingEnvironment } from './fixtures/test-environment.js';
 
 test(
   'a broken response preserves committed edits and partial text through reopen, reconciliation and stop',
@@ -27,7 +26,7 @@ test(
       provider: 'openai-codex',
       model: 'gpt-5.6-luna',
       reasoning: { strategy: 'effort', effort: 'low' },
-      permissionMode: 'sandbox'
+      permissionMode: 'full_host'
     };
     let requests = 0;
     t.mock.method(globalThis, 'fetch', async (url, init) => {
@@ -94,7 +93,7 @@ test(
       await fixture.close();
     });
     await trust(fixture);
-    application = await openCodingApplication(withTestCodingEnvironment(options));
+    application = await openCodingApplication({ permissionMode: 'full_host', ...options });
     const progress = [];
     application.subscribe(
       (event) => {
@@ -120,10 +119,10 @@ test(
     await application.close();
 
     application = await openCodingApplication(
-      withTestCodingEnvironment({
+      { permissionMode: 'full_host',
         ...options,
         sessionSelection: { kind: 'existing', id: sessionId }
-      })
+      }
     );
     await application.start();
     const restored = await application.readSession();

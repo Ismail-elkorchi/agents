@@ -31,18 +31,10 @@ import {
 import { CodingApplication } from './application/service.js';
 import type { CodingRunVerification } from './verification/configured-check-tool.js';
 import { openCodingWorkspace } from './workspace.js';
-import type { CodingEnvironmentFactory } from './session.js';
 
 type CliAuthProviderId = 'openai' | 'openai-codex';
 
-export interface CodingCliDependencies {
-  readonly environmentFactory?: CodingEnvironmentFactory;
-}
-
-export async function main(
-  argv: string[],
-  dependencies: CodingCliDependencies = {}
-): Promise<void> {
+export async function main(argv: string[]): Promise<void> {
   if (argv.length === 1 && (argv[0] === 'help' || argv[0] === '--help' || argv[0] === '-h')) {
     printHelp();
     return;
@@ -71,8 +63,6 @@ export async function main(
     return;
   }
   const parsed = parseOptions(exec || rpc ? argv.slice(1) : argv);
-  if (dependencies.environmentFactory !== undefined)
-    parsed.options.environmentFactory = dependencies.environmentFactory;
   if (
     parsed.options.freshContinuation &&
     (parsed.options.sessionSelection.kind === 'new' ||
@@ -949,7 +939,7 @@ Usage:
 Safety defaults:
   New and identity-changed workspaces are untrusted and cannot send provider requests or run effects.
   Private runs, sessions, artifacts, journals, and trust records are stored outside the workspace.
-  read_only inspects the host project; sandbox edits and executes in Sandsurf; full_host uses the host account.
+  read_only inspects the host project; full_host uses the host account.
   A new workspace requires admission before sending its contents to a model or running effects.
 
 Common options:
@@ -968,7 +958,7 @@ Common options:
   --reasoning-effort <level>
                          Model-supported reasoning effort; none requests disabled reasoning.
   --show-reasoning       Stream separate model reasoning or reasoning summaries to stderr.
-  --permissions <mode>   read_only, sandbox, or full_host. Default: read_only.
+  --permissions <mode>   read_only or full_host. Default: read_only.
   --resume               Select the latest session; taskless exec drives only its unfinished run.
   --session <id>         Open an existing session by ID.
   --branch <entry-id>    Branch the active session from a prior entry before running.

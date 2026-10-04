@@ -50,22 +50,19 @@ Permission modes are:
 | Mode | Workspace capability |
 | --- | --- |
 | `read_only` (default) | Read the selected host project; no edits or commands |
-| `sandbox` | Read, edit, and run commands in an isolated Sandsurf guest without host credentials or network access |
 | `full_host` | Edit the host project and run commands under the host account, with access to the rest of the system and network |
 
-In `sandbox` mode, file tools, attachments, guidance, checks, and commands use the same guest `/workspace`. Patches commit in the guest. The host directory is imported when the guest is created; edits do not write through, and reopening reconnects the existing guest rather than importing again. Host publication and re-import are not exposed by this application yet. `read_only` and `full_host` use the selected host project directly. Run change reports describe recorded patches, not a complete inventory of command-created changes.
+Both modes use the selected host project directly. Run change reports describe recorded patches, not a complete inventory of command-created changes.
 
 Runs, sessions, artifacts, journals, trust decisions, and user model settings live in the platform user-state directory. `--state-root` selects another dedicated state directory outside the workspace. Coding Agent does not create private state inside the project.
 
 ## Command execution
 
-Sandbox mode creates or reconnects a persistent Sandsurf Linux environment. The verified image supplies the shell and tools; commands run as the guest `agent` user without inherited host credentials or network grants. Missing or incompatible guest state fails explicitly and is never replaced by replaying prior effects. Read-only mode starts no command executor. Full host mode uses Agent Core's supervised local command executor with the host account's environment and network access.
+Read-only mode starts no command executor. Full Host mode uses Agent Core's supervised local command executor with the host account's environment and network access. Commands stream until exit or timeout; explicitly background commands return session-owned process handles. `write_stdin` and `stop_process` operate across model runs. Closing the application stops session jobs and records their original-owner terminal results.
 
-Sandbox commands support pipes and PTYs, and an explicitly selected `environment` lifetime can continue beyond a tool call or session connection. Full host commands use supervised local processes without PTY or environment lifetime. `write_stdin` and `stop_process` operate on session-owned processes across model runs. Closing the application stops session jobs, commits their original-owner terminal evidence, and acknowledges retained records. It detaches clients without destroying a Sandsurf guest or its explicitly retained environment services. Terminal input is acquired only when needed.
+Captured output buffers have bounded retention. Terminal identity, ownership, status, and artifact references remain queryable after buffer expiration and application restart. Stopping an already completed owned process returns its original terminal outcome. Output availability and execution uncertainty remain separate facts; accepting uncertainty never certifies success or replays a command.
 
-Original output is captured independently of bounded model/UI views. Known terminal outcomes remain authoritative after runtime evidence becomes unavailable. Missing logs, unavailable controls, and unknown execution outcomes remain distinct; accepting uncertainty never certifies success or replays a command.
-
-Sandsurf requires a qualified virtualization host and sufficient persistent storage. Current Coding Agent startup still uses Core's Linux host-root authority for trust identity and project-configuration discovery; the application's macOS/Windows startup path is not yet qualified. Writing Agent has no Sandsurf or virtualization dependency.
+Coding Agent's host-root authority currently requires Linux `/proc`; macOS and Windows startup are not yet qualified.
 
 ## Repository guidance
 
@@ -122,13 +119,11 @@ The stdio adapter uses UTF-8 JSONL with JSON-RPC 2.0. `input.submit` accepts the
 
 ## Development
 
-The repository pins exact Agent Core, Sandbox, terminal-ui, and markspan revisions. Run the complete gate with:
+The repository pins exact Agent Core, terminal-ui, and markspan revisions. Run the complete gate with:
 
 ```bash
 npm run verify:release
 ```
-
-On a Linux KVM host, exercise real guest import, file transactions, pipe/PTY commands, and reconnect with `SANDSURF_KVM_TEST=1 node --test coding-agent/test/coding-command-authority.test.js`. Test storage must fit the guest disk; select a disk-backed `TMPDIR` if the default temporary filesystem is too small.
 
 When a model cannot use selected native state, the model selector offers **Continue fresh in this session** as an explicit second action. This preserves the session and original history, continuing from selected portable user contributions, answers, complete tool observations and selected notes. Pending or uncertain work must be resolved first; unsupported selected images remain a conflict. Continuing processes retain their original controls.
 

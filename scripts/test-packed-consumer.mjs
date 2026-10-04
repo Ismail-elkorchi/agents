@@ -30,7 +30,6 @@ try {
     ...packageDirs.map((relative) => path.join(core, relative)),
     path.join(root, 'node_modules/@ismail-elkorchi/terminal-ui'),
     path.join(root, 'node_modules/markspan'),
-    path.resolve(root, '../sandbox/packages/sandbox'),
     ...agentsManifest.workspaces.map((workspace) => path.join(root, workspace))
   ];
   for (const directory of directories) {

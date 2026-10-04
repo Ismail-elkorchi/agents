@@ -9,7 +9,6 @@ import {
   toolResponse,
   trust
 } from './fixtures/scripted-cli.js';
-import { withTestCodingEnvironment } from './fixtures/test-environment.js';
 
 test(
   'nested repository guidance precedes command dispatch and the reconsidered command completes',
@@ -61,12 +60,12 @@ test(
     });
     await trust(fixture);
     application = await openCodingApplication(
-      withTestCodingEnvironment({
+      {
         root: fixture.root,
         stateRoot: fixture.stateRoot,
         providerEndpoint: provider.endpoint,
-        permissionMode: 'sandbox'
-      })
+        permissionMode: 'full_host'
+      }
     );
     await application.start();
     const submitted = await application.submit({ task: 'Inspect the subproject.' });
@@ -272,11 +271,11 @@ test(
     });
     await trust(fixture);
     application = await openCodingApplication(
-      withTestCodingEnvironment({
+      { permissionMode: 'full_host',
         root: fixture.root,
         stateRoot: fixture.stateRoot,
         providerEndpoint: provider.endpoint
-      })
+      }
     );
     await application.start();
     const first = await application.submit({ task: 'First request.' });

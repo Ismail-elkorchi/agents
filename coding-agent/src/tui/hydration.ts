@@ -4,9 +4,9 @@ import type {
   AgentRunState,
   AgentRunSuspension
 } from '@agent-core/runtime';
-import { suspensionMessage } from '@agent-core/tui';
+import { projectToolDiagnostics, suspensionMessage } from '@agent-core/tui';
 import type { CodingSessionView } from '../application/contracts.js';
-import { upsertConversationEntry } from './conversation.js';
+import { upsertActivity, upsertConversationEntry } from './conversation.js';
 import { applySessionState } from './event-reducer.js';
 import { presentHistoryPages } from './history.js';
 import type { CodingAgentTuiState } from './state.js';
@@ -63,6 +63,8 @@ export function hydrateCodingAgentTuiState(
       }
     };
   next = applySessionState(next, hydration.session);
+  for (const diagnostic of projectToolDiagnostics(hydration.toolDiagnostics, next.conversation.items))
+    next = upsertActivity(next, diagnostic);
   return restoreSessionRunState(next, hydration);
 }
 

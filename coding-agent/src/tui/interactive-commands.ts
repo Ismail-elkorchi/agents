@@ -141,7 +141,6 @@ export const INTERACTIVE_COMMAND_REGISTRY = {
   '/exit': action('/exit', 'Close the terminal interface.', { type: 'application.exit' }),
   '/permissions': command('/permissions', 'Choose authority for new runs.', 'required', [
     { value: 'read_only', description: 'Inspect the host project without edits or commands.' },
-    { value: 'sandbox', description: 'Edit and run commands in an isolated Sandsurf guest.' },
     { value: 'full_host', description: 'Unrestricted commands with host account and network access.' }
   ]),
   '/trust': command('/trust', 'Choose the workspace trust decision.', 'required', [

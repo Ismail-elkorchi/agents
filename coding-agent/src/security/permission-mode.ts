@@ -1,6 +1,6 @@
 import type { ToolPolicy, ToolRisk } from '@agent-core/tools';
 
-export type CodingPermissionMode = 'read_only' | 'sandbox' | 'full_host';
+export type CodingPermissionMode = 'read_only' | 'full_host';
 
 export interface CodingAuthority {
   readonly mode: CodingPermissionMode;
@@ -11,7 +11,7 @@ export interface CodingAuthority {
     readonly mode: CodingPermissionMode;
     readonly workspaceRead: 'root_bound';
     readonly workspaceWrite: 'denied' | 'structured';
-    readonly commandExecution: 'denied' | 'sandboxed' | 'host';
+    readonly commandExecution: 'denied' | 'host';
     readonly network: 'denied' | 'host';
     readonly hostEscape: 'denied' | 'allowed';
     readonly tools: readonly string[];
@@ -60,7 +60,7 @@ export function resolveCodingAuthority(input: {
       workspaceRead: 'root_bound',
       workspaceWrite: mode === 'read_only' ? 'denied' : 'structured',
       commandExecution:
-        mode === 'read_only' ? 'denied' : mode === 'sandbox' ? 'sandboxed' : 'host',
+        mode === 'read_only' ? 'denied' : 'host',
       network: mode === 'full_host' ? 'host' : 'denied',
       hostEscape: mode === 'full_host' ? 'allowed' : 'denied',
       tools: Object.freeze([
@@ -75,6 +75,6 @@ export function parseCodingPermissionMode(
   value: unknown,
   label = 'permission mode'
 ): CodingPermissionMode {
-  if (value === 'read_only' || value === 'sandbox' || value === 'full_host') return value;
-  throw new Error(`${label} must be read_only, sandbox, or full_host.`);
+  if (value === 'read_only' || value === 'full_host') return value;
+  throw new Error(`${label} must be read_only or full_host.`);
 }

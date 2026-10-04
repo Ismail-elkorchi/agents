@@ -33,6 +33,7 @@ import {
   observeAttention,
   presentProgress,
   projectProgress,
+  projectToolDiagnostics,
   promptsFromHistory,
   providerFailureText,
   recoverDraft,
@@ -1934,6 +1935,9 @@ function loadView(
       ? { document: documentState(message.document.value, next.document) }
       : {})
   };
+  if (message.session !== undefined)
+    next = { ...next, liveConversation: mergeConversationEntries(next.liveConversation,
+      projectToolDiagnostics(message.session.toolDiagnostics, next.liveConversation)) };
   if (message.document?.kind === 'unavailable') {
     const updated = { ...next, notice: message.document.message };
     delete updated.document;

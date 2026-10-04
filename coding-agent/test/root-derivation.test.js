@@ -3,7 +3,6 @@ import test from 'node:test';
 import { mkdir, rename, writeFile } from 'node:fs/promises';
 import { openCodingApplication } from '@ismail-elkorchi/coding-agent';
 import { createWorkspace, finalResponse, scriptedOllama, trust } from './fixtures/scripted-cli.js';
-import { withTestCodingEnvironment } from './fixtures/test-environment.js';
 
 test(
   'an application environment is not recreated when the source workspace path is replaced',
@@ -23,11 +22,11 @@ test(
     });
     await trust(fixture);
     application = await openCodingApplication(
-      withTestCodingEnvironment({
+      { permissionMode: 'full_host',
         root: fixture.root,
         stateRoot: fixture.stateRoot,
         providerEndpoint: provider.endpoint
-      })
+      }
     );
     await application.start();
     await rename(fixture.root, `${fixture.root}-original`);

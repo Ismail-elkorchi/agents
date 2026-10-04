@@ -90,7 +90,7 @@ export function codingRpcMethods(application: CodingApplication, shutdown: () =>
       ({ level }) => application.selectWorkspaceTrust(level)
     ),
     'permissions.select': rpcMethod(
-      z.strictObject({ mode: z.enum(['read_only', 'sandbox', 'full_host']) }),
+      z.strictObject({ mode: z.enum(['read_only', 'full_host']) }),
       ({ mode }) => application.selectPermissionMode(mode)
     ),
     'session.branch': rpcMethod(

@@ -1,5 +1,6 @@
 import type {
   AgentRunInspection,
+  AgentToolDiagnostic,
   AgentSessionEvent,
   AgentSessionState,
   AgentSessionSubmissionResult,
@@ -20,10 +21,10 @@ export interface CodingRuntimeDetails {
   readonly sessionLocation?: string;
   readonly workspaceTrust?: 'untrusted' | 'trusted';
   readonly permissions?: {
-    readonly mode: 'read_only' | 'sandbox' | 'full_host';
+    readonly mode: 'read_only' | 'full_host';
     readonly workspaceRead: 'root_bound';
     readonly workspaceWrite: 'denied' | 'structured';
-    readonly commandExecution: 'denied' | 'sandboxed' | 'host';
+    readonly commandExecution: 'denied' | 'host';
     readonly network: 'denied' | 'host';
     readonly hostEscape: 'denied' | 'allowed';
     readonly tools: readonly string[];
@@ -41,6 +42,7 @@ export interface CodingSessionView extends CodingHistoryPage {
   readonly branchPoints: readonly SessionBranchPoint[];
   readonly pendingSubmissions: readonly SessionPendingSubmission[];
   readonly runs: readonly AgentRunInspection[];
+  readonly toolDiagnostics: readonly AgentToolDiagnostic[];
 }
 
 export type CodingSetupRequirement = 'workspace_trust' | 'provider' | 'model';

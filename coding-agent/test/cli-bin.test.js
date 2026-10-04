@@ -53,21 +53,16 @@ for (const [agent, flag] of [
     }
   );
 
-test('permission choices expose the same work tools with distinct execution authority', () => {
+test('permission choices separate read-only inspection from full host execution', () => {
   const readOnly = resolveCodingAuthority({ requestedMode: 'read_only', hasVerificationChecks: true });
-  const sandbox = resolveCodingAuthority({ requestedMode: 'sandbox', hasVerificationChecks: true });
   const host = resolveCodingAuthority({ requestedMode: 'full_host', hasVerificationChecks: true });
   assert.deepEqual(readOnly.toolPolicy.allowedRisks, ['read']);
   assert.equal(readOnly.enabledTools.includes('exec_command'), false);
   assert.equal(readOnly.enabledTools.includes('apply_patch'), false);
   assert.equal(readOnly.verificationCommands, false);
   assert.equal(readOnly.permissions.commandExecution, 'denied');
-  assert.deepEqual(sandbox.enabledTools, host.enabledTools);
-  assert.equal(sandbox.enabledTools.includes('exec_command'), true);
-  assert.equal(sandbox.verificationCommands, true);
-  assert.equal(sandbox.permissions.commandExecution, 'sandboxed');
-  assert.equal(sandbox.permissions.network, 'denied');
-  assert.equal(sandbox.permissions.hostEscape, 'denied');
+  assert.equal(host.enabledTools.includes('exec_command'), true);
+  assert.equal(host.verificationCommands, true);
   assert.equal(host.permissions.commandExecution, 'host');
   assert.equal(host.permissions.network, 'host');
   assert.equal(host.permissions.hostEscape, 'allowed');
@@ -107,7 +102,7 @@ test('CLI binary help works through the published executable', async () => {
   );
   assert.match(
     output.stdout + output.stderr,
-    /--permissions <mode>\s+read_only, sandbox, or full_host/iu
+    /--permissions <mode>\s+read_only or full_host/iu
   );
   assert.match(output.stdout + output.stderr, /--codex-transport <http_sse\|websocket>/u);
 });
@@ -133,7 +128,7 @@ test(
       })
     );
     const trust = await run(
-      path.resolve('coding-agent/test/fixtures/scripted-cli-entry.js'),
+      path.resolve('coding-agent/dist/cli.js'),
       ['trust', 'trusted', '--root', root],
       {
         env: { ...process.env, HOME: home, USERPROFILE: home, XDG_STATE_HOME: stateHome }
@@ -141,7 +136,7 @@ test(
     );
     assert.equal(trust.code, 0, trust.stderr);
     const output = await run(
-      path.resolve('coding-agent/test/fixtures/scripted-cli-entry.js'),
+      path.resolve('coding-agent/dist/cli.js'),
       ['exec', 'test', '--root', root, '--provider', 'openai-codex', '--model', 'gpt-5.6-luna'],
       {
         env: {

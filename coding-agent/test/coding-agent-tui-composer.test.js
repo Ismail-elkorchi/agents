@@ -280,7 +280,6 @@ test('tool-only and failed turns never create empty assistant messages; interrup
   assert.equal(assistant.status, 'interrupted');
 });
 
-
 test('context suspension shows its actual conflict and context actions instead of a pending decision', async t => {
   const { renderFramePlain } = await import('@ismail-elkorchi/terminal-ui/renderer');
   const host = createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 32 } });

@@ -110,7 +110,7 @@ test('hydration restores exact approval and unknown-effect recovery boundaries',
   assert.ok(
     recoveryRuntime
       .state()
-      .conversation.items.some((entry) => entry.kind === 'notice' && entry.text.includes('recorded result'))
+      .conversation.items.some((entry) => entry.kind === 'notice' && entry.text.includes('Inspect its diagnostic'))
   );
   assert.ok(recoveryRuntime.frame().focusPath.includes('composer'));
   await recoveryRuntime.dispatch({ type: 'recovery.open' });
@@ -535,7 +535,7 @@ async function completedHydration() {
     ],
     mutationReceipts: []
   };
-  return {
+  return { toolDiagnostics: [],
     session: {
       sessionId: 'session-1',
       phase: 'idle',
@@ -578,7 +578,7 @@ function baseHydration(sessionOverrides, runOverrides) {
     ...runOverrides,
     pendingState: undefined
   });
-  return {
+  return { toolDiagnostics: [],
     session: {
       sessionId: 'session-1',
       configuration: { provider: 'test-provider', model: 'test-model' },

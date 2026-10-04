@@ -44,7 +44,7 @@ test('a question completes without mutating the workspace', async () => {
       'exec',
       'What does src/count.js do?',
       '--permissions',
-      'sandbox'
+      'full_host'
     ]);
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, /returns the number of values/u);
@@ -58,7 +58,7 @@ test('a question completes without mutating the workspace', async () => {
   }
 });
 
-test('read-only mode reads the host project without opening Sandsurf', async () => {
+test('read-only mode reads the host project without a command executor', async () => {
   const provider = await scriptedOllama([
     toolResponse('read_files', { files: [{ path: 'source.txt' }] }),
     finalResponse('Read the host file.')
@@ -143,7 +143,7 @@ test('an authorized patch changes the selected workspace before the final answer
       'exec',
       'Change src/note.txt from alpha to beta.',
       '--permissions',
-      'sandbox'
+      'full_host'
     ]);
     assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
     assert.equal(await readFile(path.join(fixture.root, 'src/note.txt'), 'utf8'), 'beta\n');
@@ -178,7 +178,7 @@ test('an explicitly configured failed check reaches the model and remains visibl
       'exec',
       'Run the configured check and report its result.',
       '--permissions',
-      'sandbox'
+      'full_host'
     ]);
     assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
     assert.match(result.stdout, /Check explicit: required\/failed \(targeted\)/u);

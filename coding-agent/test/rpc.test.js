@@ -32,7 +32,7 @@ test(
     });
     await trust(f);
     const args = [
-      'coding-agent/test/fixtures/scripted-cli-entry.js',
+      'coding-agent/dist/cli.js',
       'rpc',
       '--root',
       f.root,
@@ -122,7 +122,7 @@ test(
     });
     await trust(f);
     const args = [
-      'coding-agent/test/fixtures/scripted-cli-entry.js',
+      'coding-agent/dist/cli.js',
       'rpc',
       '--root',
       f.root,
@@ -185,7 +185,7 @@ test(
     });
     await trust(f);
     const client = rpcClient([
-      'coding-agent/test/fixtures/scripted-cli-entry.js',
+      'coding-agent/dist/cli.js',
       'rpc',
       '--root',
       f.root,
@@ -194,7 +194,7 @@ test(
       '--provider-endpoint',
       provider.endpoint,
       '--permissions',
-      'sandbox'
+      'full_host'
     ]);
     t.after(() => client.close());
     await client.request('application.read');

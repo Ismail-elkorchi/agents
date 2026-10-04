@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
-const cli = path.resolve('coding-agent/test/fixtures/scripted-cli-entry.js');
+const cli = path.resolve('coding-agent/dist/cli.js');
 const runFile = promisify(execFile);
 
 export async function createWorkspace({
@@ -239,7 +239,7 @@ function cliArguments(fixture, args) {
         fixture.stateRoot,
         '--provider-endpoint',
         fixture.endpoint,
-        ...(args.includes('--permissions') ? [] : ['--permissions', 'sandbox'])
+        ...(args.includes('--permissions') ? [] : ['--permissions', 'full_host'])
       ];
 }
 

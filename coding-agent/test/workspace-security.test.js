@@ -6,7 +6,6 @@ import path from 'node:path';
 import { RootedFileAuthority } from '@agent-core/tools-local';
 import { createSessionBinding } from '@agent-core/runtime';
 import { adoptWorkspaceContent } from '../dist/security/content-provenance.js';
-import { classifyImplicitExecution, implicitExecutionSurfaces } from '../dist/security/implicit-execution.js';
 import { admitProviderEgress } from '../dist/security/provider-egress.js';
 import { InferenceService } from '@agent-core/runtime';
 import { redactJson } from '@agent-core/persistence';
@@ -158,13 +157,4 @@ test('provider admission rejects credentials before I/O and accepts redacted sou
   await invoke('apiKey: [REDACTED]');
   await invoke(redactJson('API_TOKEN=private-value').value);
   assert.equal(calls, 3);
-});
-
-test('every implicit repository execution surface is classified as a sandboxed effect', () => {
-  assert.equal(implicitExecutionSurfaces.length, 11);
-  for (const surface of implicitExecutionSurfaces) {
-    const classification = classifyImplicitExecution(surface);
-    assert.equal(classification.kind, 'sandboxed_effect');
-    assert.equal(classification.explanation.length > 20, true);
-  }
 });

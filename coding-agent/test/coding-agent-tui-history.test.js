@@ -46,7 +46,7 @@ test(
     const runtime = await open(t, {
       historyReader: read,
       historySearcher: (request) => repository.searchBranch(session, request),
-      initialHydration: {
+      initialHydration: { toolDiagnostics: [],
         ...latest,
         session: {
           sessionId: session.id,
@@ -136,7 +136,7 @@ test('a stale tail read cannot erase a reply completed while the read was pendin
   };
   const runtime = await open(t, {
     historyReader: read,
-    initialHydration: {
+    initialHydration: { toolDiagnostics: [],
       ...stale,
       session: {
         sessionId: session.id,
@@ -257,7 +257,7 @@ test(
       changes: [],
       verification: []
     });
-    const view = async () => ({
+    const view = async () => ({ toolDiagnostics: [],
       ...(await read()),
       session: {
         sessionId: selected.id,

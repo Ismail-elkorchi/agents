@@ -25,7 +25,6 @@ import {
 import { type CodingPermissionMode } from '../security/permission-mode.js';
 import {
   createCodingSession,
-  type CodingEnvironmentFactory,
   type CodingSessionComposition
 } from '../session.js';
 import { type CodingAgentModelSelection } from '../state/model-selection-store.js';
@@ -59,7 +58,6 @@ export interface CodingApplicationOptions {
     readonly sha256: string;
     readonly trustLevel: 'trusted';
   };
-  environmentFactory?: CodingEnvironmentFactory;
 }
 
 export interface ModelProviderBinding {
@@ -202,17 +200,22 @@ export async function readCodingSessionView(runtime: CodingAgentRuntimeCompositi
     const session = runtime.agent.state();
     if (JSON.stringify(before) !== JSON.stringify(session)) continue;
     const runs = [...inspection.runs];
+    const toolDiagnostics = [...inspection.toolDiagnostics];
     if (
       session.activeRunId !== undefined &&
       !runs.some((run) => run.state.runId === session.activeRunId)
-    )
-      runs.push(await runtime.runs.inspect(session.activeRunId));
+    ) {
+      const run = await runtime.runs.inspect(session.activeRunId);
+      runs.push(run);
+      toolDiagnostics.push(...await runtime.runs.readToolDiagnostics(run.state));
+    }
     return {
       session,
       ...history,
       branchPoints,
       pendingSubmissions: inspection.pendingSubmissions,
-      runs
+      runs,
+      toolDiagnostics
     };
   }
   throw new Error('Session scheduling changed during the read; request a fresh session view.');
@@ -280,9 +283,6 @@ export async function createRuntime(
       ...(settings.reasoning === undefined ? {} : { reasoning: settings.reasoning })
     },
     permissionMode: options.permissionMode,
-    ...(options.environmentFactory === undefined
-      ? {}
-      : { environmentFactory: options.environmentFactory }),
     ...(options.maxOutputTokens === undefined ? {} : { maxOutputTokens: options.maxOutputTokens }),
     ...(options.configuration === undefined ? {} : { configuration: options.configuration }),
     ...(options.configurationSource === undefined

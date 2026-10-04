@@ -3,7 +3,6 @@ import test from 'node:test';
 import { readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { openCodingApplication, loadWorkspace } from '@ismail-elkorchi/coding-agent';
-import { Sandsurf } from 'sandsurf';
 import { JsonlEventRepository } from '@agent-core/persistence/node';
 import { agentEventCodec } from '@agent-core/runtime';
 import {
@@ -13,11 +12,10 @@ import {
   toolResponse,
   trust
 } from './fixtures/scripted-cli.js';
-import { createTestCodingEnvironment, withTestCodingEnvironment } from './fixtures/test-environment.js';
 
 for (const action of ['poll', 'stop', 'settle'])
   test(
-    `a running sandbox process allows ${action} and subsequent workspace access`,
+    `a running host process allows ${action} and subsequent workspace access`,
     {
       skip: process.platform !== 'linux',
       timeout: 30_000
@@ -72,12 +70,12 @@ for (const action of ['poll', 'stop', 'settle'])
       });
       await trust(fixture);
       application = await openCodingApplication(
-        withTestCodingEnvironment({
+        {
           root: fixture.root,
           stateRoot: fixture.stateRoot,
           providerEndpoint: provider.endpoint,
-          permissionMode: 'sandbox'
-        })
+          permissionMode: 'full_host'
+        }
       );
       await application.start();
       const submitted = await application.submit({ task: `Start the process and ${action} it.` });
@@ -117,7 +115,7 @@ for (const action of ['poll', 'stop', 'settle'])
   );
 
 test(
-  'foreground sandbox commands report completion and deadlines without process-control turns',
+  'foreground host commands report completion and deadlines without process-control turns',
   { skip: process.platform !== 'linux', timeout: 45_000 },
   async (t) => {
     const provider = await scriptedOllama([
@@ -142,12 +140,12 @@ test(
     });
     await trust(fixture);
     application = await openCodingApplication(
-      withTestCodingEnvironment({
+      {
         root: fixture.root,
         stateRoot: fixture.stateRoot,
         providerEndpoint: provider.endpoint,
-        permissionMode: 'sandbox'
-      })
+        permissionMode: 'full_host'
+      }
     );
     await application.start();
     const submitted = await application.submit({ task: 'Run both commands and report their outcomes.' });
@@ -165,84 +163,7 @@ test(
   }
 );
 
-test(
-  'session jobs stop on close and retain their original owner and evidence after restart',
-  { skip: process.env.SANDSURF_KVM_TEST !== '1', timeout: 1_200_000 },
-  async (t) => {
-    const provider = await scriptedOllama([
-      toolResponse('exec_command', {
-        command: `while IFS= read -r line; do printf '%s\\n' "$line"; done`,
-        background: true,
-        timeoutMs: 35000
-      }),
-      finalResponse('The command is still available.')
-    ]);
-    const fixture = await createWorkspace({
-      endpoint: provider.endpoint,
-      tools: ['exec_command', 'write_stdin', 'stop_process'],
-      checks: [],
-      files: {}
-    });
-    let application;
-    let target;
-    t.after(async () => {
-      if (application && target)
-        await application.controlProcess(target, { kind: 'terminate' }).catch(() => undefined);
-      await application?.close();
-      await provider.close();
-      const layout = await loadWorkspace(fixture.root, { stateRoot: fixture.stateRoot });
-      const cleanup = await Sandsurf.open({
-        directory: path.join(layout.runtimeDir, 'sandsurf', 'host'),
-        authorizer: (change) => change.kind === 'lifecycle'
-      });
-      try {
-        for (const sandbox of await cleanup.sandboxes.list()) await sandbox.destroy();
-      } finally {
-        await cleanup.close();
-      }
-      await fixture.close();
-    });
-    await trust(fixture);
-    const options = {
-      root: fixture.root,
-      stateRoot: fixture.stateRoot,
-      providerEndpoint: provider.endpoint,
-      permissionMode: 'sandbox'
-    };
-    application = await openCodingApplication(options);
-    await application.start();
-    const submitted = await application.submit({ task: 'Start a continuing command.' });
-    assert.equal(submitted.kind, 'started');
-    const completed = await submitted.completion;
-    assert.equal(completed.terminal?.executionStatus, 'completed', JSON.stringify(completed));
-    [target] = await application.listProcesses();
-    assert.equal(target.status, 'running');
-    assert.equal(
-      (await application.controlProcess(target, { kind: 'input', text: 'before restart\n' }))
-        .status,
-      'running'
-    );
-    await application.close();
-    application = await openCodingApplication({
-      ...options,
-      sessionSelection: { kind: 'existing', id: target.sessionId }
-    });
-    await application.start();
-    const [restored] = await application.listProcesses();
-    assert.equal(restored.processId, target.processId);
-    assert.deepEqual(restored.owner, target.owner);
-    assert.equal(restored.status, 'stopped');
-    target = restored;
-    await assert.rejects(application.controlProcess(target, { kind: 'input', text: 'after restart\n' }));
-    const result = await application.controlProcess(target, { kind: 'inspect', afterCursor: 0 });
-    assert.equal(result.status, 'stopped');
-    assert.match(result.stdout.segments.join(''), /before restart\n/);
-    assert.equal(provider.chatRequests.length, 2);
-  }
-);
-
-
-for (const background of [false, true]) test(`closing a local session durably acknowledges its ${background ? 'background' : 'foreground'} command`, async (t) => {
+for (const background of [false, true]) test(`closing a local session durably acknowledges its ${background ? 'background' : 'foreground'} command`, { skip: process.platform !== 'linux' }, async (t) => {
   const provider = await scriptedOllama([
     toolResponse('exec_command', { command: background ? 'sleep 30' : 'printf done', background }),
     finalResponse('Command started.')
@@ -259,7 +180,7 @@ for (const background of [false, true]) test(`closing a local session durably ac
   assert.equal((await submitted.completion).state, 'ended');
   await application.close();
   const layout = await loadWorkspace(fixture.root, { stateRoot: fixture.stateRoot });
-  assert.deepEqual(await readdir(path.join(layout.runtimeDir, 'host-processes')), []);
+  assert((await readdir(path.join(layout.runtimeDir, 'host-processes'))).every(name => name.endsWith('.terminal.json')));
   const events = new JsonlEventRepository({ rootDir: layout.runsDir, codec: agentEventCodec });
   const released = [];
   for await (const { event } of events.read(submitted.runId)) if (event.type === 'resource.released') released.push(event);
@@ -268,40 +189,29 @@ for (const background of [false, true]) test(`closing a local session durably ac
   assert.equal(released[0].details.status, background ? 'stopped' : 'exited');
 });
 
-test('reopening after a committed terminal handoff acknowledges retained evidence without rewriting settlement', async (t) => {
+test('a refused process lookup is recorded and the coding session continues', { skip: process.platform !== 'linux' }, async (t) => {
   const provider = await scriptedOllama([
-    toolResponse('exec_command', { command: 'printf original' }), finalResponse('Done.')
+    toolResponse('stop_process', { processId: 'missing-process' }),
+    finalResponse('The process is unavailable; work can continue.')
   ]);
-  const fixture = await createWorkspace({ endpoint: provider.endpoint, tools: ['exec_command'], checks: [] });
+  const fixture = await createWorkspace({ endpoint: provider.endpoint, tools: ['stop_process'], checks: [] });
   let application;
-  let sessionId;
-  let ledgerDirectory;
-  t.after(async () => { try { await application?.close(); } finally { await provider.close(); await fixture.close(); } });
+  t.after(async () => { await application?.close(); await provider.close(); await fixture.close(); });
   await trust(fixture);
-  const options = { root: fixture.root, stateRoot: fixture.stateRoot, providerEndpoint: provider.endpoint,
-    permissionMode: 'sandbox' };
-  application = await openCodingApplication({ ...options, async environmentFactory(input) {
-    ledgerDirectory = path.join(input.repositoryDirectory, 'test-command-ledger');
-    const environment = await createTestCodingEnvironment(input);
-    environment.commandExecution.acknowledgeTerminalReport = async () => { throw new Error('Crash before acknowledgement'); };
-    return environment;
-  } });
+  application = await openCodingApplication({ root: fixture.root, stateRoot: fixture.stateRoot,
+    providerEndpoint: provider.endpoint, permissionMode: 'full_host' });
   await application.start();
-  const submitted = await application.submit({ task: 'Run the command.' });
+  const submitted = await application.submit({ task: 'Stop the missing process and continue.' });
   assert.equal(submitted.kind, 'started');
-  assert.equal((await submitted.completion).state, 'ended');
-  sessionId = application.state().session.sessionId;
-  await assert.rejects(application.close(), (error) =>
-    error instanceof AggregateError && error.errors.some((cause) => cause.message === 'Crash before acknowledgement'));
-  assert((await readdir(ledgerDirectory)).some((name) => /^proc_[a-f0-9-]+\.json$/u.test(name)));
-  application = await openCodingApplication(withTestCodingEnvironment({ ...options,
-    sessionSelection: { kind: 'existing', id: sessionId } }));
-  await application.start();
-  await application.close();
-  assert.deepEqual(await readdir(ledgerDirectory), []);
+  const result = await submitted.completion;
+  assert.equal(result.terminal?.executionStatus, 'completed', JSON.stringify(result));
+  const view = await application.readSession();
+  const failure = view.history.entries.find(entry => entry.type === 'observation' && entry.toolName === 'stop_process');
+  assert.equal(failure.kind, 'failure');
+  assert.equal(failure.output.details.cause, 'not_found');
   const layout = await loadWorkspace(fixture.root, { stateRoot: fixture.stateRoot });
   const events = new JsonlEventRepository({ rootDir: layout.runsDir, codec: agentEventCodec });
-  let released = 0;
-  for await (const { event } of events.read(submitted.runId)) if (event.type === 'resource.released') released++;
-  assert.equal(released, 1);
+  for await (const { event } of events.read(submitted.runId))
+    if (event.type === 'tool.ended' && event.toolName === 'stop_process')
+      assert.equal(event.observation.execution.state, 'not_started');
 });

@@ -10,7 +10,6 @@ import {
   toolResponse,
   trust
 } from './fixtures/scripted-cli.js';
-import { withTestCodingEnvironment } from './fixtures/test-environment.js';
 
 test(
   'current instructions, earlier observations, and unrelated files survive changes of task and requirements',
@@ -44,12 +43,12 @@ test(
     });
     await trust(f);
     app = await openCodingApplication(
-      withTestCodingEnvironment({
+      {
         root: f.root,
         stateRoot: f.stateRoot,
         providerEndpoint: provider.endpoint,
-        permissionMode: 'sandbox'
-      })
+        permissionMode: 'full_host'
+      }
     );
     await app.start();
     const tasks = [

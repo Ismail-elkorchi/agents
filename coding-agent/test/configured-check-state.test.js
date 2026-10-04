@@ -179,7 +179,7 @@ for (const [processStatus, exitCode, status] of [
 }
 
 test(
-  'complete immutable definition and Sandbox planning are bound before invocation',
+  'complete immutable definition and command planning are bound before invocation',
   { skip: process.platform !== 'linux' },
   async (t) => {
     const { root } = await fixture(t);
@@ -533,8 +533,7 @@ test('checks preserve terminal facts and incomplete output returned by the execu
   assert.match(observation.output.output, /Earlier output not included/);
 });
 
-
-test('a refused check dispatch records not_started without claiming an unknown effect', async (t) => {
+test('a refused check dispatch records not_started without claiming an unknown effect', { skip: process.platform !== 'linux' }, async (t) => {
   const { root } = await fixture(t);
   const execution = executor({ refusal: 'Process limit reached.' });
   const { observation } = await run(root, execution);
