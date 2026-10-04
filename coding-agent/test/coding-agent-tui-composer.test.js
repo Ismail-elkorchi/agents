@@ -279,3 +279,28 @@ test('tool-only and failed turns never create empty assistant messages; interrup
   assert.equal(assistant.text, 'Partial answer');
   assert.equal(assistant.status, 'interrupted');
 });
+
+
+test('context suspension shows its actual conflict and context actions instead of a pending decision', async t => {
+  const { renderFramePlain } = await import('@ismail-elkorchi/terminal-ui/renderer');
+  const host = createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 32 } });
+  const runtime = createTuiRuntime({ host, app: createCodingAgentTuiApp('') });
+  t.after(() => runtime.dispose());
+  await runtime.start();
+  const { pendingApprovals: _pending, ...base } = approvalSuspension();
+  await runtime.dispatch({ type: 'run.suspended', suspension: { ...base, reason: 'context_admission',
+    contextAdmission: { kind: 'request_capacity', message: 'Estimated input exceeds the selected model input limit.',
+      estimatedInputTokens: 12000, contextTokens: 10000, outputReservation: 1000, reasoningReservation: 0,
+      actions: ['select_sources', 'change_model', 'reduce_reservation', 'cancel'] } } });
+  const paused = renderFramePlain(runtime.frame());
+  assert.match(paused, /Context needs adjustment/);
+  assert.match(paused, /Estimated input exceeds/);
+  assert.doesNotMatch(paused, /Review pending decision/);
+  await runtime.dispatch({ type: 'recovery.open' });
+  const dialog = renderFramePlain(runtime.frame());
+  assert.match(dialog, /Retry admission/);
+  assert.match(dialog, /Inspect context/);
+  assert.doesNotMatch(dialog, /Check for a recorded result/);
+  await runtime.handleInput(key('escape'));
+  assert.equal(runtime.state().overlay.kind, 'none');
+});

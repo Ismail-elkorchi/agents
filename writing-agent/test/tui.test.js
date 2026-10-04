@@ -215,3 +215,37 @@ test(
     );
   }
 );
+
+
+test('context admission shows the conflict and source adjustment without suggesting result reconciliation',
+  { skip: process.platform !== 'linux', timeout: 30000 }, async t => {
+    const f = await fixture('Document.\n');
+    const describe = f.provider.describeModel.bind(f.provider);
+    f.provider.describeModel = async () => ({ ...await describe(), limits: { contextTokens: 64000, maxInputTokens: 500, outputTokens: 4000 } });
+    const app = f.application;
+    const runtime = createTuiRuntime({ host: createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 32 } }),
+      app: createWritingAgentTuiApp(app) });
+    const detach = app.subscribe(event => {
+      if (event.type === 'run.completed') return runtime.dispatch({ type: 'result', result: event.result });
+      if (event.type === 'run.progress') return runtime.dispatch({ type: 'progress', runId: event.runId, event: event.event });
+      if (event.type === 'application.state.changed') return runtime.dispatch({ type: 'application', state: event.state });
+    }, error => { throw error; });
+    t.after(async () => { detach(); await runtime.dispose(); await f.close(); });
+    await runtime.start();
+    await waitForState(runtime, t.signal, () => runtime.state().history.length > 0);
+    const submission = await app.submit({ task: 'Review the document. ' + 'source '.repeat(1000) });
+    assert.notEqual(submission.kind, 'rejected', submission.reason);
+    const result = await submission.completion;
+    assert.equal(result.state, 'suspended');
+    assert.equal(result.reason, 'context_admission');
+    await waitForState(runtime, t.signal, () => runtime.state().sessionView?.session.suspension !== undefined);
+    assert.match(renderFramePlain(runtime.frame()), /Context needs adjustment/);
+    assert.doesNotMatch(renderFramePlain(runtime.frame()), /Review pending decision/);
+    await runtime.dispatch({ type: 'recovery.open' });
+    await waitForState(runtime, t.signal, () => runtime.state().overlay.kind === 'recovery');
+    const frame = renderFramePlain(runtime.frame());
+    assert.match(frame, /Inspect context/);
+    assert.match(frame, /token limit exceeded/);
+    assert.doesNotMatch(frame, /Check for a recorded result/);
+    assert.equal(f.provider.requests.length, 0);
+});

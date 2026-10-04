@@ -135,7 +135,7 @@ export const INTERACTIVE_COMMAND_REGISTRY = {
   '/editor': action('/editor', 'Edit the draft in an external editor.', {
     type: 'composer.external-editor'
   }),
-  '/recovery': action('/recovery', 'Review pending decisions and uncertain outcomes.', {
+  '/recovery': action('/recovery', 'Inspect a paused run and its available actions.', {
     type: 'recovery.open'
   }),
   '/exit': action('/exit', 'Close the terminal interface.', { type: 'application.exit' }),

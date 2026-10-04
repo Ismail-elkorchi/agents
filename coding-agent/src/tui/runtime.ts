@@ -1,5 +1,5 @@
 import { progressReplacementKey, type AgentRunResult } from '@agent-core/runtime';
-import { applicationEventSource, preferencesTheme, ringTerminalBell } from '@agent-core/tui';
+import { applicationEventSource, preferencesTheme, ringTerminalBell, suspensionMessage, suspensionPresentation } from '@agent-core/tui';
 import {
   exportConversation,
   FileDraftStorage,
@@ -150,7 +150,7 @@ export async function runCodingAgentTuiApp(
           }
           const result = await controller.resumeSuspension(suspension.runId);
           return result.state === 'suspended'
-            ? 'No recorded result is available yet. You can check again or stop this run.'
+            ? `${suspensionMessage(result)}\n${suspensionPresentation(result.reason).waitingMessage}`
             : 'The run has finished.';
         },
         approvalHandler: async (suspension, decision) => {

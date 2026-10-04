@@ -44,7 +44,7 @@ import {
   sessionConversationId,
   shortcutBindings,
   shortcutHelp,
-  suspensionPresentation,
+  suspensionMessage,
   updateAttachments,
   notesPanel,
   updatePreferences,
@@ -1091,7 +1091,7 @@ function update(
           result: message.result,
           notice:
             message.result.state === 'suspended'
-              ? (state.failure ?? suspensionPresentation(message.result.reason).explanation)
+              ? (state.failure ?? suspensionMessage(message.result))
               : message.result.terminal.executionStatus === 'failed'
                 ? message.result.terminal.errorMessage
                 : `Run ${message.result.terminal.executionStatus}`

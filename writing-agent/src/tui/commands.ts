@@ -108,7 +108,7 @@ export const WRITING_COMMANDS: readonly {
   { name: '/search', description: 'Search recorded history', message: { type: 'search.open' } },
   {
     name: '/recovery',
-    description: 'Review pending decisions',
+    description: 'Inspect a paused run and its available actions',
     message: { type: 'recovery.open' }
   },
   {

@@ -1,4 +1,4 @@
-import { CompleteRequestEstimator, type ModelProvider } from '@agent-core/model';
+import { RequestTokenEstimator, type ModelProvider } from '@agent-core/model';
 import { hashJson } from '@agent-core/persistence';
 import { JsonlEventRepository, LocalArtifactRepository } from '@agent-core/persistence/node';
 import {
@@ -180,7 +180,7 @@ export function createWritingSession(
           context,
           contextRenewal: { automatic: true },
           notes,
-          estimator: new CompleteRequestEstimator(),
+          estimator: new RequestTokenEstimator(),
           toolBoundary: {
             authorizationPolicyId: `writing-agent/${mode}`,
             executionTargetId: hashJson(workspace.binding)

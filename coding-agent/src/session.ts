@@ -1,4 +1,4 @@
-import { CompleteRequestEstimator, type ModelProvider } from '@agent-core/model';
+import { RequestTokenEstimator, type ModelProvider } from '@agent-core/model';
 import { hashJson } from '@agent-core/persistence';
 import { JsonlEventRepository, LocalArtifactRepository } from '@agent-core/persistence/node';
 import {
@@ -294,7 +294,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
               commandExecution?.descriptor.recoveryIdentity ?? workspace.identity.id
           },
           repositories: { events, session: sessionBinding, artifacts },
-          estimator: new CompleteRequestEstimator(),
+          estimator: new RequestTokenEstimator(),
           maxOutputTokens:
             options.maxOutputTokens ??
             defaultGenerationAllowance(await provider.describeModel(runtimeSettings.model)),

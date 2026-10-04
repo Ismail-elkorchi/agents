@@ -1,4 +1,4 @@
-import { suspensionPresentation } from '@agent-core/tui';
+import { suspensionPresentation, suspensionMessage } from '@agent-core/tui';
 import { button, richText, text, type Element } from '@ismail-elkorchi/terminal-ui/components';
 import { column } from '@ismail-elkorchi/terminal-ui/layout';
 import type { WritingTuiMessage, WritingTuiState } from './state.js';
@@ -6,12 +6,14 @@ import type { WritingTuiMessage, WritingTuiState } from './state.js';
 export function recoveryView(state: WritingTuiState): Element<WritingTuiMessage> {
   const session = state.sessionView;
   const suspension = session?.session.suspension;
+  const presentation = suspension ? suspensionPresentation(suspension.reason) : undefined;
   const children: Element<WritingTuiMessage>[] = [
     text({
       content:
         suspension === undefined
           ? 'No suspended run in this session.'
-          : `${suspensionPresentation(suspension.reason).title}\n${suspensionPresentation(suspension.reason).explanation}`
+          : [presentation?.title, suspensionMessage(suspension), presentation?.explanation]
+              .filter((value, index, values) => Boolean(value) && values.indexOf(value) === index).join('\n')
     })
   ];
   if (suspension !== undefined) {
@@ -21,10 +23,16 @@ export function recoveryView(state: WritingTuiState): Element<WritingTuiMessage>
       children.push(
         button({
           id: 'writing-recovery-resume',
-          label: suspension.actions.includes('reconcile') ? 'Check for a recorded result' : 'Continue',
+          label: suspensionPresentation(suspension.reason).resumeLabel ?? 'Continue',
           onPress: () => ({ type: 'recovery.resume' })
         })
       );
+    if (suspension.actions.includes('context'))
+      children.push(button({
+        id: 'writing-recovery-context',
+        label: 'Inspect context',
+        onPress: () => ({ type: 'context.open' })
+      }));
     const decision = suspension.decisionRequest;
     if (decision !== undefined) {
       children.push(text({ content: decision.reason }));

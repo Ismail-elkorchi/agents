@@ -12,6 +12,7 @@ import {
   resourceCompletionRows,
   resourceSuggestions,
   sessionNameView,
+  suspensionPresentation,
   statusline,
   type StatusField
 } from '@agent-core/tui';
@@ -139,7 +140,7 @@ export function writingView(
         ...(state.sessionView?.session.suspension === undefined
           ? []
           : [
-              action('writing-pending-decision', 'Review pending decision', {
+              action('writing-pending-decision', suspensionPresentation(state.sessionView.session.suspension.reason).title, {
                 type: 'recovery.open'
               })
             ]),
@@ -328,7 +329,8 @@ function modalView(
             });
       break;
     case 'recovery':
-      title = 'Run recovery and decisions';
+      title = state.sessionView?.session.suspension
+        ? suspensionPresentation(state.sessionView.session.suspension.reason).title : 'Paused run';
       focusId = 'writing-modal-close';
       content = scrollable(state, 'writing-recovery', recoveryView(state));
       break;

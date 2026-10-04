@@ -43,6 +43,8 @@ import {
   savePreferences,
   searchResources,
   selectedSource,
+  suspensionMessage,
+  suspensionPresentation,
   sessionNameView,
   shortcutBindings,
   shortcutHelp,
@@ -1247,10 +1249,11 @@ function updateCodingAgentTui(
         run: { kind: 'waiting_for_approval', suspension: message.suspension }
       });
     case 'run.suspended':
-      return updated({
+      return updated(upsertConversationEntry({
         ...state,
         run: { kind: 'waiting_for_recovery', suspension: message.suspension }
-      });
+      }, { id: `recovery:${message.suspension.runId}`, kind: 'notice', tone: 'warning',
+        text: suspensionMessage(message.suspension) }));
     case 'recovery.open':
       return state.run.kind === 'waiting_for_approval' || state.run.kind === 'waiting_for_recovery'
         ? {
@@ -1261,7 +1264,7 @@ function updateCodingAgentTui(
               modalOffsetRow: 0
             }
           }
-        : updated(appendNotice(state, 'No pending decision in this session.'));
+        : updated(appendNotice(state, 'No paused run in this session.'));
     case 'recovery.act': {
       if (state.run.kind !== 'waiting_for_recovery' || state.run.operation !== undefined)
         return { state };
@@ -1952,7 +1955,7 @@ function agentTuiView(
           ? [
               button<CodingAgentTuiMessage>({
                 id: 'review-decision',
-                label: 'Review pending decision',
+                label: suspensionPresentation(state.run.suspension.reason).title,
                 onPress: () => ({ type: 'recovery.open' })
               })
             ]

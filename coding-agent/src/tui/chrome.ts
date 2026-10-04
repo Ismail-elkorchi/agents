@@ -1,4 +1,4 @@
-import { progressStatusFields, reasoningLabel, statusline, type StatusField } from '@agent-core/tui';
+import { progressStatusFields, reasoningLabel, statusline, suspensionPresentation, type StatusField } from '@agent-core/tui';
 import type { Element, InlineContent, StatusBarStatus } from '@ismail-elkorchi/terminal-ui/components';
 import { richText, statusBar } from '@ismail-elkorchi/terminal-ui/components';
 import type { CodingAgentTuiMessage } from './messages.js';
@@ -86,7 +86,7 @@ function runPresentation(state: CodingAgentTuiState): {
     case 'waiting_for_approval':
       return { text: 'Approval required', status: 'warning' };
     case 'waiting_for_recovery':
-      return { text: 'Run paused', status: 'warning' };
+      return { text: suspensionPresentation(state.run.suspension.reason).title, status: 'warning' };
     case 'failed':
       return { text: 'Failed', status: 'error' };
     case 'ended': {

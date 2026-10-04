@@ -4,7 +4,7 @@ import type {
   AgentRunState,
   AgentRunSuspension
 } from '@agent-core/runtime';
-import { suspensionPresentation } from '@agent-core/tui';
+import { suspensionMessage } from '@agent-core/tui';
 import type { CodingSessionView } from '../application/contracts.js';
 import { upsertConversationEntry } from './conversation.js';
 import { applySessionState } from './event-reducer.js';
@@ -93,7 +93,7 @@ function restoreSessionRunState(
         id: `recovery:${suspension.runId}`,
         kind: 'notice',
         tone: 'warning',
-        text: suspensionPresentation(suspension.reason).explanation
+        text: suspensionMessage(suspension)
       }
     );
   }

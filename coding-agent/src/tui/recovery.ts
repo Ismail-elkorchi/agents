@@ -1,5 +1,5 @@
 import type { AgentRunSuspension } from '@agent-core/runtime';
-import { diagnosticMessage, suspensionPresentation } from '@agent-core/tui';
+import { diagnosticMessage, suspensionMessage, suspensionPresentation } from '@agent-core/tui';
 import { button, dialog, richText, type Element } from '@ismail-elkorchi/terminal-ui/components';
 import { column, viewport } from '@ismail-elkorchi/terminal-ui/layout';
 import type { TuiContext, TuiEffect } from '@ismail-elkorchi/terminal-ui/tui';
@@ -60,23 +60,26 @@ export function recoveryDialog(
       onPress: (): CodingAgentTuiMessage => ({ type: 'recovery.act', action: 'stop' })
     })
   ];
-  if (suspension.reason !== 'user_decision')
+  if (presentation.resumeLabel !== undefined)
     actions.push(
       button({
         id: 'recovery-resume',
-        label:
-          suspension.reason === 'missing_implementation'
-            ? 'Continue'
-            : 'Check for a recorded result',
+        label: presentation.resumeLabel,
         disabled: run.operation !== undefined,
         onPress: (): CodingAgentTuiMessage => ({ type: 'recovery.act', action: 'resume' })
       })
     );
+  if (suspension.reason === 'context_admission')
+    actions.push(button({
+      id: 'recovery-context',
+      label: 'Inspect context',
+      onPress: (): CodingAgentTuiMessage => ({ type: 'context.open' })
+    }));
   const message =
     run.operation === 'stop'
       ? 'Stopping…'
       : run.operation === 'resume'
-        ? 'Checking…'
+        ? suspension.reason === 'context_admission' ? 'Checking request capacity…' : 'Checking…'
         : (run.message ?? '');
   return dialog({
     id: 'recovery-dialog',
@@ -93,10 +96,10 @@ export function recoveryDialog(
         paragraph(
           [
             message,
-            suspension.decisionRequest?.reason ?? suspension.cleanupDiagnostic?.message,
+            suspensionMessage(suspension),
             presentation.explanation
           ]
-            .filter(Boolean)
+            .filter((value, index, values) => Boolean(value) && values.indexOf(value) === index)
             .join('\n\n')
         ),
         {
