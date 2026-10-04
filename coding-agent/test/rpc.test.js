@@ -213,5 +213,7 @@ test(
     assert.equal(changed.checks[0].applicability.status, 'stale');
     assert.equal(changed.checks[0].receipt.hash, observed.receipt.hash);
     await client.request('application.shutdown');
+    const exit = await client.exited;
+    assert.equal(exit.code, 0, exit.stderr);
   }
 );

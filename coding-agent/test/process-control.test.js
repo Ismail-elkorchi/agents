@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { openCodingApplication, loadWorkspace } from '@ismail-elkorchi/coding-agent';
 import { Sandsurf } from 'sandsurf';
+import { JsonlEventRepository } from '@agent-core/persistence/node';
+import { agentEventCodec } from '@agent-core/runtime';
 import {
   createWorkspace,
   finalResponse,
@@ -11,7 +13,7 @@ import {
   toolResponse,
   trust
 } from './fixtures/scripted-cli.js';
-import { withTestCodingEnvironment } from './fixtures/test-environment.js';
+import { createTestCodingEnvironment, withTestCodingEnvironment } from './fixtures/test-environment.js';
 
 for (const action of ['poll', 'stop', 'settle'])
   test(
@@ -164,7 +166,7 @@ test(
 );
 
 test(
-  'session command controls remain available while idle and after restart before a prompt',
+  'session jobs stop on close and retain their original owner and evidence after restart',
   { skip: process.env.SANDSURF_KVM_TEST !== '1', timeout: 1_200_000 },
   async (t) => {
     const provider = await scriptedOllama([
@@ -229,18 +231,77 @@ test(
     const [restored] = await application.listProcesses();
     assert.equal(restored.processId, target.processId);
     assert.deepEqual(restored.owner, target.owner);
-    assert.equal(restored.status, 'running');
+    assert.equal(restored.status, 'stopped');
     target = restored;
-    await application.controlProcess(target, { kind: 'input', text: 'after restart\n' });
-    await application.controlProcess(target, { kind: 'close-input' });
-    let result;
-    for (let attempt = 0; attempt < 40; attempt++) {
-      result = await application.controlProcess(target, { kind: 'inspect', afterCursor: 0 });
-      if (result.status !== 'running') break;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    assert.equal(result.status, 'exited');
-    assert.match(result.stdout.segments.join(''), /before restart\nafter restart\n/);
+    await assert.rejects(application.controlProcess(target, { kind: 'input', text: 'after restart\n' }));
+    const result = await application.controlProcess(target, { kind: 'inspect', afterCursor: 0 });
+    assert.equal(result.status, 'stopped');
+    assert.match(result.stdout.segments.join(''), /before restart\n/);
     assert.equal(provider.chatRequests.length, 2);
   }
 );
+
+
+for (const background of [false, true]) test(`closing a local session durably acknowledges its ${background ? 'background' : 'foreground'} command`, async (t) => {
+  const provider = await scriptedOllama([
+    toolResponse('exec_command', { command: background ? 'sleep 30' : 'printf done', background }),
+    finalResponse('Command started.')
+  ]);
+  const fixture = await createWorkspace({ endpoint: provider.endpoint, tools: ['exec_command'], checks: [] });
+  let application;
+  t.after(async () => { try { await application?.close(); } finally { await provider.close(); await fixture.close(); } });
+  await trust(fixture);
+  application = await openCodingApplication({ root: fixture.root, stateRoot: fixture.stateRoot,
+    providerEndpoint: provider.endpoint, permissionMode: 'full_host' });
+  await application.start();
+  const submitted = await application.submit({ task: 'Run the command.' });
+  assert.equal(submitted.kind, 'started');
+  assert.equal((await submitted.completion).state, 'ended');
+  await application.close();
+  const layout = await loadWorkspace(fixture.root, { stateRoot: fixture.stateRoot });
+  assert.deepEqual(await readdir(path.join(layout.runtimeDir, 'host-processes')), []);
+  const events = new JsonlEventRepository({ rootDir: layout.runsDir, codec: agentEventCodec });
+  const released = [];
+  for await (const { event } of events.read(submitted.runId)) if (event.type === 'resource.released') released.push(event);
+  assert.equal(released.length, 1);
+  assert.equal(released[0].outcome, 'released');
+  assert.equal(released[0].details.status, background ? 'stopped' : 'exited');
+});
+
+test('reopening after a committed terminal handoff acknowledges retained evidence without rewriting settlement', async (t) => {
+  const provider = await scriptedOllama([
+    toolResponse('exec_command', { command: 'printf original' }), finalResponse('Done.')
+  ]);
+  const fixture = await createWorkspace({ endpoint: provider.endpoint, tools: ['exec_command'], checks: [] });
+  let application;
+  let sessionId;
+  let ledgerDirectory;
+  t.after(async () => { try { await application?.close(); } finally { await provider.close(); await fixture.close(); } });
+  await trust(fixture);
+  const options = { root: fixture.root, stateRoot: fixture.stateRoot, providerEndpoint: provider.endpoint,
+    permissionMode: 'sandbox' };
+  application = await openCodingApplication({ ...options, async environmentFactory(input) {
+    ledgerDirectory = path.join(input.repositoryDirectory, 'test-command-ledger');
+    const environment = await createTestCodingEnvironment(input);
+    environment.commandExecution.acknowledgeTerminalReport = async () => { throw new Error('Crash before acknowledgement'); };
+    return environment;
+  } });
+  await application.start();
+  const submitted = await application.submit({ task: 'Run the command.' });
+  assert.equal(submitted.kind, 'started');
+  assert.equal((await submitted.completion).state, 'ended');
+  sessionId = application.state().session.sessionId;
+  await assert.rejects(application.close(), (error) =>
+    error instanceof AggregateError && error.errors.some((cause) => cause.message === 'Crash before acknowledgement'));
+  assert((await readdir(ledgerDirectory)).some((name) => /^proc_[a-f0-9-]+\.json$/u.test(name)));
+  application = await openCodingApplication(withTestCodingEnvironment({ ...options,
+    sessionSelection: { kind: 'existing', id: sessionId } }));
+  await application.start();
+  await application.close();
+  assert.deepEqual(await readdir(ledgerDirectory), []);
+  const layout = await loadWorkspace(fixture.root, { stateRoot: fixture.stateRoot });
+  const events = new JsonlEventRepository({ rootDir: layout.runsDir, codec: agentEventCodec });
+  let released = 0;
+  for await (const { event } of events.read(submitted.runId)) if (event.type === 'resource.released') released++;
+  assert.equal(released, 1);
+});

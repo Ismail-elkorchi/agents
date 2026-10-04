@@ -50,6 +50,7 @@ const statusSchema = z.enum([
   'timed_out',
   'cancelled',
   'execution_failed',
+  'not_started',
   'unknown'
 ]);
 const ownerSchema = z
@@ -65,7 +66,7 @@ export const configuredCheckObservationSchema = z
   .strictObject({
     definition: definitionSchema,
     status: statusSchema,
-    processStatus: z.enum(['exited', 'stopped', 'timed_out', 'failed', 'unknown']),
+    processStatus: z.enum(['exited', 'stopped', 'timed_out', 'failed', 'unknown', 'not_started']),
     processId: z.string().optional(),
     owner: ownerSchema,
     executionIdentity: z.string().regex(/^[a-f0-9]{64}$/u),
@@ -406,13 +407,18 @@ export function createConfiguredCheckTool(input: {
           const before = await captureTestedState(input.root, check.definition.testedPaths);
           let result: CommandExecutionResult | undefined;
           let executionError: string | undefined;
+          let notStarted = false;
           try {
-            result = await startCommandExecutionPlan(input.commandExecution, reservation, {
+            const started = await startCommandExecutionPlan(input.commandExecution, reservation, {
               ...(executionContext.signal ? { signal: executionContext.signal } : {}),
               ...(executionContext.resourceLease ? { lease: executionContext.resourceLease } : {}),
               onProgress: (progress) => executionContext.emitProgress?.(progress),
               awaitTerminal: true
             });
+            if (started.kind === 'not_started') {
+              notStarted = true;
+              executionError = started.diagnostic;
+            } else result = started.result;
           } catch (error) {
             executionError = error instanceof Error ? error.message : String(error);
           }
@@ -424,12 +430,12 @@ export function createConfiguredCheckTool(input: {
             result.combined.endsAtOutputEnd &&
             result.combined.omittedBytes === 0;
           const processStatus =
-            !result || result.status === 'running' ? ('unknown' as const) : result.status;
+            notStarted ? ('not_started' as const) : !result || result.status === 'running' ? ('unknown' as const) : result.status;
           const status = checkOutcome(processStatus, result?.exitCode);
           return {
             kind: 'result' as const,
             execution: {
-              state: processStatus === 'unknown' ? ('unknown' as const) : ('settled' as const)
+              state: notStarted ? ('not_started' as const) : processStatus === 'unknown' ? ('unknown' as const) : ('settled' as const)
             },
             summary: `Configured check ${check.definition.id} ${status}.`,
             scope: {
@@ -490,6 +496,7 @@ function checkOutcome(
   status: CheckObservation['processStatus'],
   exitCode?: number | null
 ): CheckObservation['status'] {
+  if (status === 'not_started') return 'not_started';
   if (status === 'unknown') return 'unknown';
   if (status === 'timed_out') return 'timed_out';
   if (status === 'stopped') return 'cancelled';

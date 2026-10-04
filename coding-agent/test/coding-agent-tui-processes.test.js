@@ -206,3 +206,21 @@ test('process picker retains its index while editing and replaces query ownershi
   assert.equal(replaced.pickerQueryResult.count, 0);
   assert.equal(replaced.picker.editor.activeId, undefined, 'removed query result cannot remain actionable');
 });
+
+test('authority-wide uncertainty is visible without granting controls over an earlier owner', async () => {
+  const blocked = { processId: 'old-process', revision: 'current-revision', status: 'unknown',
+    owner: { ...target.owner, ownerId: 'earlier-owner' }, diagnostic: 'Supervisor evidence is missing.' };
+  let accepted;
+  const authority = {
+    async listProcesses() { return accepted ? [] : [blocked]; },
+    async acknowledgeUnresolved(value) { accepted = value; },
+    async retryReconciliation() {}
+  };
+  const controls = processControls('current-session', 'current-owner', authority);
+  const [listed] = await controls.listProcesses();
+  assert.equal(listed.processId, blocked.processId);
+  assert.equal(listed.sessionId, 'current-session');
+  await assert.rejects(controls.controlProcess(listed, { kind: 'terminate' }), /authority-wide recovery/);
+  assert.deepEqual(await controls.reconcileProcesses(listed), []);
+  assert.deepEqual(accepted, [{ processId: blocked.processId, revision: blocked.revision }]);
+});

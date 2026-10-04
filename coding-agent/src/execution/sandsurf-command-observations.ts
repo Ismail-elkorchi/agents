@@ -7,6 +7,7 @@ import {
   validateArtifactRef,
   type ArtifactRepository,
   type EventRepository,
+  type EventReference,
   type ProtectedArtifactRef
 } from '@agent-core/persistence';
 import type { AgentEvent } from '@agent-core/runtime';
@@ -50,15 +51,15 @@ export class SandsurfCommandObservations {
   async terminal(identity: SandsurfCommandIdentity): Promise<CommandExecutionReport | undefined> {
     const record = await this.#read(identity, terminalKey(identity.processId));
     if (!record) return undefined;
-    const result = processOutputSchema.parse(record.result) as CommandExecutionResult;
+    const result = processOutputSchema.parse(record.details.result) as CommandExecutionResult;
     if (
       result.processId !== identity.processId ||
       hashJson(result.owner) !== hashJson(identity.owner) ||
       result.status === 'running'
     )
       throw new Error('Committed command settlement identity is invalid.');
-    validateProtectedArtifactRef(record.protectedArtifact);
-    return { result, protectedArtifact: record.protectedArtifact };
+    validateProtectedArtifactRef(record.details.protectedArtifact);
+    return { result, protectedArtifact: record.details.protectedArtifact, settlementReference: record.reference };
   }
 
   async capture(
@@ -133,7 +134,7 @@ export class SandsurfCommandObservations {
     const previous = await this.terminal(identity);
     if (previous) {
       const recorded = await this.#read(identity, terminalKey(identity.processId));
-      if (recorded?.receiptDigest !== receipt.digest)
+      if (recorded?.details.receiptDigest !== receipt.digest)
         throw new Error('Command has conflicting terminal receipts.');
       await this.#acknowledge(process, receipt);
       return previous;
@@ -223,10 +224,10 @@ export class SandsurfCommandObservations {
 
   async acknowledge(identity: SandsurfCommandIdentity, process: SandboxProcess): Promise<void> {
     const record = await this.#read(identity, terminalKey(identity.processId));
-    if (!record || typeof record.receiptDigest !== 'string') return;
-    const result = processOutputSchema.parse(record.result);
+    if (!record || typeof record.details.receiptDigest !== 'string') return;
+    const result = processOutputSchema.parse(record.details.result);
     if (result.originalOutput?.kind !== 'captured') return;
-    await process.acknowledge(record.receiptDigest, { operationId: `ack-${record.receiptDigest}` });
+    await process.acknowledge(record.details.receiptDigest, { operationId: `ack-${record.details.receiptDigest}` });
   }
 
   async #acknowledge(process: SandboxProcess, receipt: ReceiptView): Promise<void> {
@@ -242,7 +243,7 @@ export class SandsurfCommandObservations {
     receipt: ReceiptView,
     report: CommandExecutionReport
   ): Promise<CommandExecutionReport> {
-    await this.options.events.append(
+    const committed = await this.options.events.append(
       identity.owner.runId,
       {
         type: 'resource.released',
@@ -253,12 +254,21 @@ export class SandsurfCommandObservations {
       },
       { idempotencyKey: terminalKey(identity.processId) }
     );
+    const settled = Object.freeze({
+      ...report,
+      settlementReference: Object.freeze({
+        runId: committed.runId,
+        sequence: committed.sequence,
+        eventId: committed.eventId,
+        hash: committed.hash
+      })
+    });
     try {
-      this.options.onSettlement?.(report);
+      this.options.onSettlement?.(settled);
     } catch {
       // Subscriber delivery cannot change committed application evidence.
     }
-    return report;
+    return settled;
   }
 
   async present(
@@ -370,9 +380,9 @@ export class SandsurfCommandObservations {
     const cached = this.#captures.get(identity.processId);
     const capture: Capture = cached ?? { cursor: 0, segments: [] };
     for (;;) {
-      const details = await this.#read(identity, outputKey(identity.processId, capture.cursor));
-      if (!details) break;
-      const segment = parseJsonObject(details.segment);
+      const record = await this.#read(identity, outputKey(identity.processId, capture.cursor));
+      if (!record) break;
+      const segment = parseJsonObject(record.details.segment);
       validateProtectedArtifactRef(segment.artifact);
       if (
         segment.start !== capture.cursor ||
@@ -392,7 +402,7 @@ export class SandsurfCommandObservations {
     return capture;
   }
 
-  async #read(identity: SandsurfCommandIdentity, key: string): Promise<JsonObject | undefined> {
+  async #read(identity: SandsurfCommandIdentity, key: string): Promise<Readonly<{ details: JsonObject; reference: EventReference }> | undefined> {
     const reference = await this.options.events.referenceByKey(identity.owner.runId, key);
     if (!reference) return undefined;
     const { event } = await this.options.events.readReference(reference);
@@ -402,7 +412,7 @@ export class SandsurfCommandObservations {
       hashJson(event.details.identity) !== hashJson(identity)
     )
       throw new Error('Command evidence does not match its Sandsurf binding.');
-    return event.details;
+    return { details: event.details, reference };
   }
 }
 

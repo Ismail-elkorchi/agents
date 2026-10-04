@@ -74,7 +74,7 @@ test(
         outputTokenBudget: 1000,
         owner: { ownerId: 'session', runId: 'run', turnId: 'turn', toolBatchId: 'batch', callIndex }
       });
-      let result = await execution.start(request);
+      let result = startedCommand(await execution.start(request));
       while (result.status === 'running')
         result = await execution.query(result.processId, 1000, 1000, 0);
       assert.equal(result.status, 'exited', result.diagnostic);
@@ -119,7 +119,7 @@ test(
         callIndex: 2
       }
     });
-    let ownership = await environment.commandExecution.start(writable);
+    let ownership = startedCommand(await environment.commandExecution.start(writable));
     while (ownership.status === 'running')
       ownership = await environment.commandExecution.query(
         ownership.processId,
@@ -134,3 +134,8 @@ test(
     );
   }
 );
+
+function startedCommand(started) {
+  assert.equal(started.kind, 'started', started.diagnostic);
+  return started.result;
+}

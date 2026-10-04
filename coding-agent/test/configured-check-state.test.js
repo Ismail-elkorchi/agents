@@ -42,7 +42,7 @@ async function fixture(t) {
   });
   return { root, directory };
 }
-function executor({ exitCode = 0, status = 'exited', incomplete = false, effect } = {}) {
+function executor({ exitCode = 0, status = 'exited', incomplete = false, effect, refusal } = {}) {
   const calls = [];
   const output = {
     segments: ['diagnostic'],
@@ -70,8 +70,9 @@ function executor({ exitCode = 0, status = 'exited', incomplete = false, effect 
     async start(reservation, options) {
       assert.equal(options.awaitTerminal, true, 'execution authority owns completion');
       calls.push(['start', reservation.authorization]);
+      if (refusal) return { kind: 'not_started', diagnostic: refusal };
       await effect?.();
-      return {
+      return { kind: 'started', result: {
         processId: 'process-1',
         owner,
         status,
@@ -81,8 +82,9 @@ function executor({ exitCode = 0, status = 'exited', incomplete = false, effect 
         stdout: output,
         stderr: output,
         combined: output
-      };
+      } };
     },
+    async listProcesses() { return []; },
     async query() {
       throw new Error('unexpected query');
     },
@@ -529,4 +531,14 @@ test('checks preserve terminal facts and incomplete output returned by the execu
   assert.equal(observation.output.status, 'passed');
   assert.equal(observation.output.outputComplete, false);
   assert.match(observation.output.output, /Earlier output not included/);
+});
+
+
+test('a refused check dispatch records not_started without claiming an unknown effect', async (t) => {
+  const { root } = await fixture(t);
+  const execution = executor({ refusal: 'Process limit reached.' });
+  const { observation } = await run(root, execution);
+  assert.equal(observation.execution.state, 'not_started');
+  assert.equal(observation.output.status, 'not_started');
+  assert.equal(observation.output.processStatus, 'not_started');
 });

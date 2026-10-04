@@ -18,6 +18,8 @@ import {
   type CommandExecutionReservation,
   type CommandExecutionResult,
   type CommandExecutionStatus,
+  type CommandProcess,
+  type CommandStartResult,
   type CommandOutputView,
   type CommandReconciliationResult,
   type CommandUncertaintyAcceptance,
@@ -36,7 +38,6 @@ import type {
   SandboxTerminal
 } from 'sandsurf';
 import type { PrivateStateDirectory } from '../state/private-state.js';
-import type { CodingProcess } from './coding-command-authority.js';
 import {
   SandsurfCommandObservations,
   type SandsurfCommandIdentity,
@@ -149,7 +150,7 @@ export class SandsurfCommandExecution implements CommandExecution {
   async start(
     reservation: CommandExecutionReservation,
     options: StartCommandExecutionOptions = {}
-  ): Promise<CommandExecutionResult> {
+  ): Promise<CommandStartResult> {
     this.#ensureOpen();
     const planned = this.#plans.get(reservation);
     if (planned?.state !== 'planned')
@@ -160,7 +161,7 @@ export class SandsurfCommandExecution implements CommandExecution {
     const lifetime = planned.request.lifetime ?? 'job';
     const elapsedDeadlineUnixMs = Date.now() + planned.request.timeoutMs;
     if (!Number.isSafeInteger(elapsedDeadlineUnixMs))
-      throw new Error('Sandsurf command deadline exceeds the supported timestamp range.');
+      return { kind: 'not_started', diagnostic: 'Sandsurf command deadline exceeds the supported timestamp range.' };
     const { stored, created } = await this.#recordIntent({
       schemaVersion: 1,
       sandboxId: this.options.sandbox.id,
@@ -180,12 +181,12 @@ export class SandsurfCommandExecution implements CommandExecution {
         0,
         stored.request.owner
       );
-      if (!options.awaitTerminal || recorded.status !== 'running') return recorded;
-      return this.#startResult(
+      if (!options.awaitTerminal || recorded.status !== 'running') return { kind: 'started', result: recorded };
+      return { kind: 'started', result: await this.#startResult(
         await this.options.sandbox.processes.get(stored.processId),
         stored,
         options
-      );
+      ) };
     }
     // Once dispatch starts its outcome can be unknown. Preserve the effect lease
     // until an observation establishes settlement or the user accepts uncertainty.
@@ -219,7 +220,7 @@ export class SandsurfCommandExecution implements CommandExecution {
         stage: 'process_started',
         message: `Sandsurf process ${planned.processId} started.`
       });
-    return this.#startResult(process, stored, options);
+    return { kind: 'started', result: await this.#startResult(process, stored, options) };
   }
 
   async #startResult(
@@ -349,11 +350,11 @@ export class SandsurfCommandExecution implements CommandExecution {
   async disposeOwner(ownerId: string): Promise<readonly CommandExecutionReport[]> {
     const reports: CommandExecutionReport[] = [];
     for (const process of await this.listProcesses()) {
-      if (process.owner.ownerId !== ownerId) continue;
+      if (process.owner?.ownerId !== ownerId || process.status === 'acknowledged-unknown') continue;
       const stored = await this.#stored(process.processId);
       if (stored.request.lifetime === 'environment') continue;
       const result = await this.terminate(process.processId, stored.request.owner);
-      const report = this.#recovered.get(process.processId);
+      const report = await this.#observations.terminal(commandIdentity(stored));
       if (report) reports.push(report);
       else reports.push({ result });
     }
@@ -438,12 +439,12 @@ export class SandsurfCommandExecution implements CommandExecution {
     }
   }
 
-  async listProcesses(): Promise<readonly CodingProcess[]> {
+  async listProcesses(): Promise<readonly CommandProcess[]> {
     this.#ensureOpen();
-    const values: CodingProcess[] = [];
+    const values: CommandProcess[] = [];
     for (const stored of await this.#bindings()) {
       const recorded = await this.#observations.terminal(commandIdentity(stored));
-      let status: CodingProcess['status'];
+      let status: CommandProcess['status'];
       let revision: string;
       let diagnostic: string | undefined;
       if (recorded) {

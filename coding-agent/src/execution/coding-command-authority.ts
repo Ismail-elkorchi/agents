@@ -2,8 +2,6 @@ import {
   ResourceLeaseCoordinator,
   type CommandExecution,
   type CommandExecutionDescriptor,
-  type CommandExecutionOwner,
-  type CommandExecutionStatus,
   type WorkspaceFiles
 } from '@agent-core/tools';
 import {
@@ -27,24 +25,11 @@ import { SandsurfWorkspaceFiles } from './sandsurf-workspace.js';
 
 export class CodingCommandUnavailableError extends Error {}
 
-export interface CodingProcess {
-  readonly command: string;
-  readonly revision: string;
-  readonly diagnostic?: string;
-  readonly processId: string;
-  readonly owner: CommandExecutionOwner;
-  readonly status: CommandExecutionStatus | 'unknown' | 'acknowledged-unknown';
-}
-
-export interface CodingCommandAuthority extends CommandExecution {
-  listProcesses(): Promise<readonly CodingProcess[]>;
-}
-
 export interface CodingEnvironment {
   readonly host: Sandsurf;
   readonly sandbox: Sandbox;
   readonly files: WorkspaceFiles;
-  readonly commandExecution?: CodingCommandAuthority;
+  readonly commandExecution?: CommandExecution;
   close(): Promise<void>;
 }
 

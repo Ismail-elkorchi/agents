@@ -1,4 +1,5 @@
 import { CompleteRequestEstimator, type ModelProvider } from '@agent-core/model';
+import { hashJson } from '@agent-core/persistence';
 import { JsonlEventRepository, LocalArtifactRepository } from '@agent-core/persistence/node';
 import {
   AgentRunCoordinator,
@@ -23,7 +24,12 @@ import {
   JsonlNoteRepository,
   JsonlSessionRepository
 } from '@agent-core/runtime/node';
-import { commandExecutionResources, isWorkspaceFiles } from '@agent-core/tools';
+import {
+  commandExecutionResources,
+  commandReleaseReport,
+  isWorkspaceFiles,
+  type CommandExecutionReport
+} from '@agent-core/tools';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { CodingAgentConfiguration } from './configuration.js';
@@ -155,6 +161,35 @@ export async function createCodingSession(options: CodingSessionOptions) {
   const memoryToolNames = new Set(memoryTools.map((tool) => tool.name));
 
   const ownsEnvironment = authority.mode !== 'sandbox' || options.environment === undefined;
+  const commitTerminalReport = async (report: CommandExecutionReport): Promise<void> => {
+    const released = commandReleaseReport(report);
+    if (released.outcome === 'unknown') throw new Error('Command lifetime is still unresolved.');
+    if (released.settlementReference) return;
+    const key = `${report.result.owner.runId}:command:${released.resourceId}:terminal`;
+    const previous = await events.referenceByKey(report.result.owner.runId, key);
+    if (previous) {
+      const { event } = await events.readReference(previous);
+      if (
+        event.type !== 'resource.released' ||
+        event.resourceId !== released.resourceId ||
+        event.outcome !== 'released' ||
+        hashJson(event.details.owner) !== hashJson(report.result.owner)
+      )
+        throw new Error('Committed command settlement does not match its owner.');
+      return;
+    }
+    await events.append(
+      report.result.owner.runId,
+      {
+        type: 'resource.released',
+        runId: report.result.owner.runId,
+        resourceId: released.resourceId,
+        outcome: released.outcome,
+        details: released.details
+      },
+      { actor: 'runtime', idempotencyKey: key }
+    );
+  };
   const environment =
     authority.mode === 'sandbox'
       ? options.environment ??
@@ -176,6 +211,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
           workspace.runtimeDir,
           artifacts,
           authority,
+          commitTerminalReport,
           (result) => {
             if (result.owner.ownerId === ownerId) options.onCommandSettlement?.(result);
           }
@@ -346,6 +382,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
     };
     const agent = new AgentSession(sessionOptions);
 
+    let closeCompletion: Promise<void> | undefined;
     return {
       ...processControls(session.id, ownerId, commandExecution),
       agent,
@@ -389,8 +426,18 @@ export async function createCodingSession(options: CodingSessionOptions) {
       fileRoot: environment.files,
       permissions: authority.permissions,
       ...(configuration ? { configuration } : {}),
-      async closeResources() {
-        if (ownsEnvironment) await environment.close();
+      closeResources() {
+        closeCompletion ??= (async () => {
+          try {
+            for (const report of (await commandExecution?.disposeOwner(ownerId)) ?? []) {
+              await commitTerminalReport(report);
+              await commandExecution?.acknowledgeTerminalReport(report.result.processId);
+            }
+          } finally {
+            if (ownsEnvironment) await environment.close();
+          }
+        })();
+        return closeCompletion;
       }
     };
   } catch (error) {
@@ -440,6 +487,7 @@ async function openHostEnvironment(
   runtimeDirectory: string,
   artifacts: LocalArtifactRepository,
   authority: CodingAuthority,
+  commitTerminalReport: (report: CommandExecutionReport) => Promise<void>,
   onSettlement: (result: import('@agent-core/tools').CommandExecutionResult) => void
 ) {
   const files = workspaceRoot.derive();
@@ -457,7 +505,14 @@ async function openHostEnvironment(
         artifactRepository: artifacts,
         rootedFileAuthority: files,
         ledgerDirectory: processDirectory,
-        onSettlement,
+        commitTerminalReport: async (report) => {
+          await commitTerminalReport(report);
+          try {
+            onSettlement(report.result);
+          } catch {
+            // Subscriber delivery cannot change the committed command settlement.
+          }
+        },
         ...DEFAULT_LOCAL_TOOL_CONFIGURATION.process
       });
     }

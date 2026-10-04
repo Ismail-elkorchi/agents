@@ -1,10 +1,7 @@
 import { hashJson } from '@agent-core/persistence';
-import type { CommandExecutionResult } from '@agent-core/tools';
-import type { CodingCommandAuthority, CodingProcess } from './coding-command-authority.js';
+import type { CommandExecution, CommandExecutionResult, CommandProcess } from '@agent-core/tools';
 
-export interface CodingProcessTarget extends CodingProcess {
-  readonly sessionId: string;
-}
+export type CodingProcessTarget = CommandProcess & { readonly sessionId: string };
 
 export type CodingProcessAction =
   | { readonly kind: 'inspect'; readonly afterCursor: number }
@@ -25,11 +22,11 @@ export interface CodingProcessOperations {
 export function processControls(
   sessionId: string,
   ownerId: string,
-  authority: CodingCommandAuthority | undefined
+  authority: CommandExecution | undefined
 ): CodingProcessOperations {
   const ownedProcesses = async () =>
     ((await authority?.listProcesses()) ?? []).filter(
-      (process) => process.owner.ownerId === ownerId
+      (process) => process.status === 'unknown' || process.owner.ownerId === ownerId
     );
   return {
     async listProcesses() {
@@ -50,7 +47,7 @@ export function processControls(
           throw new Error(
             'Command evidence changed. Refresh Processes before accepting uncertainty.'
           );
-        if (hashJson(current.owner) !== hashJson(acknowledge.owner))
+        if (hashJson(current.owner ?? null) !== hashJson(acknowledge.owner ?? null))
           throw new Error('Command owner does not match.');
         await authority.acknowledgeUnresolved([
           { processId: current.processId, revision: acknowledge.revision }
@@ -68,6 +65,8 @@ export function processControls(
         );
         if (current === undefined)
           throw new Error('Process identity is unavailable. Refresh the process list.');
+        if (!current.owner || !target.owner || current.owner.ownerId !== ownerId)
+          throw new Error('This is an authority-wide recovery record; inspect its diagnostic or reconcile it.');
         const left = current.owner;
         const right = target.owner;
         if (

@@ -84,7 +84,7 @@ export type ProcessMessage =
 const processIndex = (processes: readonly CodingProcessTarget[]) =>
   createSearchPickerIndex(processes, (process) => ({
     id: process.processId,
-    label: `${process.status} · ${process.command}`,
+    label: `${process.status} · ${process.command ?? process.processId}`,
     value: process.processId
   }));
 
@@ -274,7 +274,7 @@ export function updateProcesses(
           pending: false,
           selected: {
             ...state.selected,
-            target: { ...state.selected.target, status: message.result.status },
+            target: { ...state.selected.target, status: message.result.status, owner: message.result.owner },
             result: message.result,
             output: createTextAreaState({ value: renderCommandOutput(message.result.combined) }),
             input:
@@ -287,7 +287,7 @@ export function updateProcesses(
     }
     case 'processes.action': {
       const selected = state.selected;
-      if (selected === undefined || state.pending) return { state };
+      if (selected === undefined || state.pending || selected.target.status === 'unknown' || selected.target.status === 'acknowledged-unknown') return { state };
       const action: CodingProcessAction =
         message.action === 'input'
           ? { kind: 'input', text: textDocumentText(selected.input.document) }
@@ -359,7 +359,7 @@ export function processesView(
       : column(
           [
             text({
-              content: `${selected.target.command}\nRun ${selected.target.owner.runId} · ${selected.target.status}`
+              content: `${selected.target.command ?? selected.target.processId}\n${selected.target.owner ? `Run ${selected.target.owner.runId}` : 'Authority-wide recovery'} · ${selected.target.status}`
             }),
             textArea<Message>({
               id: 'process-output',
@@ -384,12 +384,12 @@ export function processesView(
               control('process-inspect', 'Refresh', {
                 type: 'processes.action',
                 action: 'inspect'
-              }),
+              }, selected.target.status === 'unknown' || selected.target.status === 'acknowledged-unknown'),
               control('process-more', 'Next output', {
                 type: 'processes.action',
                 action: 'inspect',
                 more: true
-              })
+              }, selected.target.status === 'unknown' || selected.target.status === 'acknowledged-unknown')
             ]),
             ...(selected.target.status !== 'running'
               ? []

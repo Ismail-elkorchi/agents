@@ -184,6 +184,9 @@ test('terminal capture durably stores every original byte and acknowledges witho
   assert.equal(report.result.originalOutput.cursorEnd, bytes.length);
   assert.equal(report.protectedArtifact.visibility, 'protected');
   assert.deepEqual((await sink.terminal(identity)).result, report.result);
+  assert.deepEqual((await sink.terminal(identity)).settlementReference, report.settlementReference);
+  assert.equal((await events.readReference(report.settlementReference)).event.type, 'resource.released');
+  assert.deepEqual(await sink.settle(identity, process, receipt, result), report);
   const page = await sink.present(identity, report.result, 0, 1);
   assert.equal(page.cursorEnd, 1);
   assert.deepEqual(page.combined.segments, ['a']);
@@ -451,7 +454,7 @@ test('command execution resumes from a persisted Sandsurf event cursor without p
       assert.equal(stored.eventCursor, 5);
       return process;
     };
-    const result = await execution.start(reservation);
+    const result = startedCommand(await execution.start(reservation));
     assert.equal(result.status, 'exited');
     assert.equal(result.eventCursor.position, '6');
     assert.equal(result.combined.segments.join(''), 'event output');
@@ -747,8 +750,8 @@ test('owner cleanup terminates transient jobs but leaves environment services ru
       outputTokenBudget: 0,
       owner: { ...owner, callIndex: 1 }
     });
-    const job = await execution.start(jobPlan);
-    const service = await execution.start(servicePlan);
+    const job = startedCommand(await execution.start(jobPlan));
+    const service = startedCommand(await execution.start(servicePlan));
     assert.equal(job.status, 'running');
     assert.equal(service.status, 'running');
     assert.equal(Number.isSafeInteger(processes.get(job.processId).deadlineUnixMs), true);
@@ -957,7 +960,7 @@ async function commandFixture(t, initialMode = 'exited') {
       return options;
     },
     async start(startOptions) {
-      return execution.start(await execution.plan(request), startOptions);
+      return startedCommand(await execution.start(await execution.plan(request), startOptions));
     }
   };
 }
@@ -996,7 +999,7 @@ test('committed outcomes and bounded logs remain readable after runtime evidence
   assert.equal(result.cursorEnd, 10);
   assert.ok(result.combined.omittedBytes > 0);
   assert.equal((await restarted.listProcesses())[0].status, 'exited');
-  const repeated = await restarted.start(await restarted.plan(fixture.request));
+  const repeated = startedCommand(await restarted.start(await restarted.plan(fixture.request)));
   assert.equal(repeated.status, 'exited');
   assert.equal(fixture.flags.spawnCount, 1);
 });
@@ -1056,6 +1059,7 @@ test('ambiguous dispatch is never replayed and accepted unavailable observations
   const restarted = fixture.create();
   assert.deepEqual((await restarted.reconcile()).unresolved, []);
   assert.equal((await restarted.listProcesses())[0].status, 'acknowledged-unknown');
+  assert.deepEqual(await restarted.disposeOwner(fixture.owner.ownerId), [], 'accepted uncertainty is not a new termination request');
   assert.equal(fixture.leases.activeCount(), 0);
   await assert.rejects(
     restarted.start(await restarted.plan(fixture.request)),
@@ -1152,9 +1156,9 @@ test('workspace authority rejects read-only mutations and a changed environment 
 
 test('terminal commands do not acquire input as a prerequisite for observing completion', async (t) => {
   const fixture = await commandFixture(t);
-  const result = await fixture.execution.start(
+  const result = startedCommand(await fixture.execution.start(
     await fixture.execution.plan({ ...fixture.request, pty: true })
-  );
+  ));
   assert.equal(fixture.dispatched.stdio, 'terminal');
   assert.equal(result.status, 'exited');
   assert.equal(result.exitCode, 0);
@@ -1193,4 +1197,20 @@ test('workspace bounded ranges validate coverage independently of whole-file lim
   await assert.rejects(files.readRange('source.txt', { offset: -1, length: 5 }), /range requires/);
   sandbox.fs.read = async () => ({ kind: 'read', range: { offset: 0, bytes: [...source], revision, eof: true } });
   await assert.rejects(files.readRange('source.txt', { offset: 0, length: 2 }), /range coverage/);
+});
+
+function startedCommand(started) {
+  assert.equal(started.kind, 'started', started.diagnostic);
+  return started.result;
+}
+
+test('a deadline refused before Sandsurf dispatch does not create an execution intent', async (t) => {
+  const fixture = await commandFixture(t);
+  const result = await fixture.execution.start(await fixture.execution.plan({
+    ...fixture.request, timeoutMs: Number.MAX_SAFE_INTEGER
+  }));
+  assert.equal(result.kind, 'not_started');
+  assert.match(result.diagnostic, /deadline/);
+  assert.equal(fixture.dispatched, undefined);
+  assert.deepEqual(await fixture.execution.listProcesses(), []);
 });
