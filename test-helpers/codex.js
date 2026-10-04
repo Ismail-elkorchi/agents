@@ -21,6 +21,8 @@ export async function offlineCodex(t, output = 'Hello from the provider.') {
   ).toString('base64url')}.test`;
   await new FileCredentialStore().write('openai-codex', { token, expiresAt: Date.now() + 3_600_000 });
   const requests = [];
+  let assertionFailure;
+  t.after(() => { if (assertionFailure) throw assertionFailure; });
   t.mock.method(globalThis, 'fetch', async (url, init) => {
     if (new URL(url).pathname.endsWith('/models')) {
       return Response.json({ models: [{
@@ -29,11 +31,17 @@ export async function offlineCodex(t, output = 'Hello from the provider.') {
         supported_reasoning_levels: ['low', 'medium', 'high', 'xhigh'].map((effort) => ({ effort, description: effort }))
       }] });
     }
-    assert.equal(String(url), 'https://offline-codex.invalid/codex/responses');
     const body = JSON.parse(init.body);
     requests.push(body);
-    assert.equal('max_output_tokens' in body, false);
-    const content = typeof output === 'function' ? await output(body) : output;
+    let content;
+    try {
+      assert.equal(String(url), 'https://offline-codex.invalid/codex/responses');
+      assert.equal('max_output_tokens' in body, false);
+      content = typeof output === 'function' ? await output(body) : output;
+    } catch (error) {
+      if (error instanceof assert.AssertionError) assertionFailure ??= error;
+      throw error;
+    }
     const items = typeof content === 'string'
       ? [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: content }] }]
       : content;

@@ -109,10 +109,14 @@ test('CLI binary help works through the published executable', async () => {
 test(
   'CLI discards configured reasoning when provider or model identity changes',
   { skip: process.platform !== 'linux' },
-  async () => {
+  async (t) => {
     const root = await mkdtemp(path.join(tmpdir(), 'coding-agent-cli-provider-'));
     const home = path.join(root, 'home');
     const stateHome = `${root}-state`;
+    t.after(async () => {
+      await rm(root, { recursive: true, force: true });
+      await rm(stateHome, { recursive: true, force: true });
+    });
     await mkdir(home);
     await writeFile(
       path.join(root, 'coding-agent.config.json'),
@@ -143,11 +147,13 @@ test(
           HOME: home,
           USERPROFILE: home,
           XDG_CONFIG_HOME: home,
-          XDG_STATE_HOME: stateHome
+          XDG_STATE_HOME: stateHome,
+          AGENT_CORE_HOME: path.join(home, 'agent-core')
         }
       }
     );
-    assert.equal(output.code, 7);
+    assert.equal(output.code, 1);
+    assert.match(output.stdout, /No stored credentials found for openai-codex/u);
     assert.doesNotMatch(output.stderr, /reasoning\.mode|reasoning mode/iu);
   }
 );
