@@ -11,91 +11,6 @@ import { createWritingAgentTuiApp } from '@ismail-elkorchi/writing-agent/tui';
 import { waitFor } from './coding-agent-tui-test-helpers.js';
 
 for (const agent of ['coding', 'writing'])
-  test(`${agent} notes close, replacement and reopen fence pending work`, async (t) => {
-    const repository = new InMemorySessionRepository();
-    const session = await repository.create({
-      binding: { schemaId: 'notes-test', schemaVersion: 1, subject: {} }
-    });
-    const reads = [];
-    const reader = {
-      listNotes: () => new Promise((resolve) => reads.push(resolve)),
-      readNote: async () => {
-        throw new Error('Unexpected note content request');
-      }
-    };
-    const application = {
-      ...reader,
-      state: () => ({
-        workspace: '/workspace',
-        mode: 'edit',
-        sessionId: session.id,
-        status: 'ready'
-      }),
-      start: async () => {},
-      readHistory: () => repository.readBranchPage(session),
-      readSession: async () => ({ toolDiagnostics: [],
-        session: {
-          sessionId: session.id,
-          phase: 'idle',
-          configuration: { provider: 'fixture', model: 'fixture' },
-          queuedInputs: 0
-        },
-        runs: []
-      })
-    };
-    const host = createMemoryTerminalHost({ terminalSize: { columns: 80, rows: 24 } });
-    const runtime = createTuiRuntime({
-      host,
-      app:
-        agent === 'coding'
-          ? createCodingAgentTuiApp('', { navigation: reader })
-          : createWritingAgentTuiApp(application)
-    });
-    t.after(() => runtime.dispose());
-    await runtime.start();
-    if (agent === 'writing') await waitFor(() => runtime.state().history.length > 0);
-    await runtime.dispatch({ type: 'notes.open' });
-    await waitFor(() => reads.length === 1);
-    const first = runtime.state().overlay.state;
-    assert.match(renderFramePlain(runtime.frame()), /Reading model-authored notes/);
-    await runtime.dispatch({ type: 'overlay.close' });
-    assert.equal(runtime.state().overlay.kind, 'none');
-    await runtime.dispatch({ type: 'notes.open' });
-    await waitFor(() => reads.length === 2);
-    const second = runtime.state().overlay.state;
-    assert.notEqual(first.generation, second.generation);
-    const page = { items: [], coverage: 'complete' };
-    await runtime.dispatch({
-      type: 'notes.child',
-      child: {
-        id: first.id,
-        generation: first.generation,
-        message: {
-          type: 'notes.failed',
-          requestId: first.state.requestId,
-          message: 'Stale failure'
-        }
-      }
-    });
-    assert.equal(runtime.state().overlay.state.state.error, undefined);
-    reads[0](page);
-    reads[1](page);
-    await waitFor(() => runtime.state().overlay.state.state.page !== undefined);
-    assert.equal(runtime.state().overlay.state.generation, second.generation);
-    await runtime.dispatch({
-      type: 'notes.child',
-      child: { id: second.id, generation: second.generation, message: { type: 'notes.close' } }
-    });
-    assert.equal(runtime.state().overlay.kind, 'none');
-    await runtime.dispatch({ type: 'notes.open' });
-    await waitFor(() => reads.length === 3);
-    await runtime.dispatch({ type: 'preferences.open' });
-    reads[2](page);
-    await runtime.dispatch({ type: 'terminal.resized' });
-    assert.equal(runtime.state().overlay.kind, 'preferences');
-  });
-
-for (const agent of ['coding', 'writing'])
   for (const fails of [false, true])
     test(`${agent} hidden queue ${fails ? 'failure' : 'withdrawal'} settles once and releases child`, async (t) => {
       const repository = new InMemorySessionRepository();
@@ -129,7 +44,8 @@ for (const agent of ['coding', 'writing'])
         }),
         start: async () => {},
         readHistory: () => repository.readBranchPage(session),
-        readSession: async () => ({ toolDiagnostics: [],
+        readSession: async () => ({
+          toolDiagnostics: [],
           session: {
             sessionId: session.id,
             phase: 'idle',
@@ -229,7 +145,8 @@ for (const agent of ['coding', 'writing'])
       modelSelection: () => selection,
       connectProvider: operations.connect,
       readHistory: () => repository.readBranchPage(session),
-      readSession: async () => ({ toolDiagnostics: [],
+      readSession: async () => ({
+        toolDiagnostics: [],
         session: {
           sessionId: session.id,
           phase: 'idle',
@@ -369,19 +286,33 @@ for (const agent of ['coding', 'writing'])
     assert.equal(runtime.state().overlay.state.state.selected.entry.kind, 'reference');
   });
 
-async function panelTestRuntime(agent, { configuration, navigation, application: extra = {} } = {}) {
+async function panelTestRuntime(
+  agent,
+  { configuration, navigation, application: extra = {} } = {}
+) {
   const repository = new InMemorySessionRepository();
   const session = await repository.create({
     binding: { schemaId: 'panel-lifecycle-test', schemaVersion: 1, subject: {} }
   });
   let historyReads = 0;
   const application = {
-    state: () => ({ workspace: '/workspace', mode: 'edit', sessionId: session.id, status: 'ready' }),
+    state: () => ({
+      workspace: '/workspace',
+      mode: 'edit',
+      sessionId: session.id,
+      status: 'ready'
+    }),
     start: async () => {},
-    readHistory: () => { historyReads++; return repository.readBranchPage(session); },
-    readSession: async () => ({ toolDiagnostics: [],
+    readHistory: () => {
+      historyReads++;
+      return repository.readBranchPage(session);
+    },
+    readSession: async () => ({
+      toolDiagnostics: [],
       session: {
-        sessionId: session.id, phase: 'idle', queuedInputs: 0,
+        sessionId: session.id,
+        phase: 'idle',
+        queuedInputs: 0,
         configuration: { provider: 'fixture', model: 'fixture' }
       },
       runs: []
@@ -390,9 +321,10 @@ async function panelTestRuntime(agent, { configuration, navigation, application:
   };
   const runtime = createTuiRuntime({
     host: createMemoryTerminalHost({ terminalSize: { columns: 80, rows: 24 } }),
-    app: agent === 'coding'
-      ? createCodingAgentTuiApp('', { configuration, navigation })
-      : createWritingAgentTuiApp(application)
+    app:
+      agent === 'coding'
+        ? createCodingAgentTuiApp('', { configuration, navigation })
+        : createWritingAgentTuiApp(application)
   });
   await runtime.start();
   if (agent === 'writing') await waitFor(() => runtime.state().history.length > 0);
@@ -403,27 +335,43 @@ for (const agent of ['coding', 'writing'])
   for (const action of ['save', 'cancel'])
     test(`${agent} hidden queue ${action} finishes once without replacing a newer overlay`, async (t) => {
       const submission = {
-        submissionId: 'queued', runId: 'run', state: 'queued', input: { task: 'Original input' }
+        submissionId: 'queued',
+        runId: 'run',
+        state: 'queued',
+        input: { task: 'Original input' }
       };
       const mutations = [];
       let complete;
       const operations = {
-        readPendingSubmissions: async () => mutations.length === 0 ? [submission] : [],
+        readPendingSubmissions: async () => (mutations.length === 0 ? [submission] : []),
         updateQueuedSubmission: (...args) => {
           mutations.push(args);
-          return new Promise((resolve) => { complete = resolve; });
+          return new Promise((resolve) => {
+            complete = resolve;
+          });
         }
       };
-      const { runtime } = await panelTestRuntime(agent, { navigation: operations, application: operations });
-      t.after(async () => { complete?.(); await runtime.dispose(); });
+      const { runtime } = await panelTestRuntime(agent, {
+        navigation: operations,
+        application: operations
+      });
+      t.after(async () => {
+        complete?.();
+        await runtime.dispose();
+      });
       await runtime.dispatch({ type: 'queue.open' });
       await waitFor(() => runtime.state().queuePanel?.state.stage === 'list');
       const child = runtime.state().queuePanel;
-      const dispatch = (message) => runtime.dispatch({
-        type: 'queue.child', child: { id: child.id, generation: child.generation, message }
-      });
+      const dispatch = (message) =>
+        runtime.dispatch({
+          type: 'queue.child',
+          child: { id: child.id, generation: child.generation, message }
+        });
       await dispatch({ type: 'queue.select', submissionId: submission.submissionId });
-      await dispatch({ type: 'queue.edit', transition: { kind: 'edit', operation: { kind: 'insert', text: ' edited' } } });
+      await dispatch({
+        type: 'queue.edit',
+        transition: { kind: 'edit', operation: { kind: 'insert', text: ' edited' } }
+      });
       await dispatch({ type: `queue.${action}` });
       await waitFor(() => mutations.length === 1);
       await runtime.dispatch({ type: 'overlay.close' });
@@ -435,15 +383,27 @@ for (const agent of ['coding', 'writing'])
       complete();
       await waitFor(() => runtime.state().queuePanel === undefined);
       assert.equal(runtime.state().overlay.kind, 'preferences');
-      assert.deepEqual(mutations, [[submission.submissionId,
-        action === 'save'
-          ? { kind: 'replace', expectedInput: submission.input, input: { task: 'Original input edited' } }
-          : { kind: 'cancel', expectedInput: submission.input }
-      ]]);
+      assert.deepEqual(mutations, [
+        [
+          submission.submissionId,
+          action === 'save'
+            ? {
+                kind: 'replace',
+                expectedInput: submission.input,
+                input: { task: 'Original input edited' }
+              }
+            : { kind: 'cancel', expectedInput: submission.input }
+        ]
+      ]);
       await runtime.dispatch({ type: 'queue.open' });
       await waitFor(() => runtime.state().queuePanel?.state.stage === 'list');
       assert.notEqual(runtime.state().queuePanel.generation, child.generation);
-      await dispatch({ type: 'queue.failed', id: child.state.id, operation: 'change', error: 'Stale mutation' });
+      await dispatch({
+        type: 'queue.failed',
+        id: child.state.id,
+        operation: 'change',
+        error: 'Stale mutation'
+      });
       assert.equal(runtime.state().queuePanel.state.stage, 'list');
       assert.equal(runtime.state().queuePanel.state.error, undefined);
       assert.equal(mutations.length, 1);
@@ -452,39 +412,60 @@ for (const agent of ['coding', 'writing'])
 for (const agent of ['coding', 'writing'])
   test(`${agent} configuration save and its completion are consumed exactly once`, async (t) => {
     const profile = parseModelProfile({
-      id: 'model', provider: 'openai', limits: { contextTokens: 10000 },
-      modalities: { input: ['text'], output: ['text'] }, supportedParameters: [],
+      id: 'model',
+      provider: 'openai',
+      limits: { contextTokens: 10000 },
+      modalities: { input: ['text'], output: ['text'] },
+      supportedParameters: [],
       capabilities: {
-        streaming: true, toolCalling: false, supportedToolInputs: [], jsonMode: false,
-        jsonSchema: false, logprobs: false, temperature: false, topP: false
+        streaming: true,
+        toolCalling: false,
+        supportedToolInputs: [],
+        jsonMode: false,
+        jsonSchema: false,
+        logprobs: false,
+        temperature: false,
+        topP: false
       }
     });
-    const adapter = { describeModel: async () => profile, listModels: async () => [{ id: 'model' }] };
+    const adapter = {
+      describeModel: async () => profile,
+      listModels: async () => [{ id: 'model' }]
+    };
     const saved = [];
     let complete;
     const selection = { provider: 'openai', model: '' };
     const operations = {
-      providers: [{ id: 'openai', label: 'OpenAI' }], current: () => selection,
+      providers: [{ id: 'openai', label: 'OpenAI' }],
+      current: () => selection,
       connect: async () => adapter,
       save: (...args) => {
         saved.push(args);
-        return new Promise((resolve) => { complete = resolve; });
+        return new Promise((resolve) => {
+          complete = resolve;
+        });
       }
     };
     const { runtime, historyReads } = await panelTestRuntime(agent, {
       configuration: operations,
       application: {
-        modelSelection: operations.current, connectProvider: operations.connect,
+        modelSelection: operations.current,
+        connectProvider: operations.connect,
         configureModel: operations.save
       }
     });
-    t.after(async () => { complete?.(); await runtime.dispose(); });
+    t.after(async () => {
+      complete?.();
+      await runtime.dispose();
+    });
     const readsBefore = historyReads();
     await runtime.dispatch({ type: 'configuration.open' });
     const child = runtime.state().overlay.state;
-    const dispatch = (message) => runtime.dispatch({
-      type: 'configuration.child', child: { id: child.id, generation: child.generation, message }
-    });
+    const dispatch = (message) =>
+      runtime.dispatch({
+        type: 'configuration.child',
+        child: { id: child.id, generation: child.generation, message }
+      });
     await dispatch({ type: 'configuration.pick', value: 'openai' });
     await waitFor(() => runtime.state().overlay.state.state.models.length === 1);
     await dispatch({ type: 'configuration.pick', value: 'model' });

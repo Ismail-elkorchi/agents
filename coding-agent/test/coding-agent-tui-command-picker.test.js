@@ -46,17 +46,11 @@ test('Escape closes the command picker without cancelling the app', async () => 
   await runtime.dispose();
 });
 
-test('raw command and empty-notes gestures close locally and restore the exact composer', async (t) => {
+test('raw command gestures close locally and restore the exact composer', async (t) => {
   const host = createMemoryTerminalHost({ terminalSize: { columns: 80, rows: 24 } });
   const runtime = createTuiRuntime({
     host,
-    app: createCodingAgentTuiApp('Keep this draft 文', {
-      navigation: {
-        async listNotes() {
-          return { items: [], coverage: 'complete' };
-        }
-      }
-    })
+    app: createCodingAgentTuiApp('Keep this draft 文')
   });
   t.after(() => runtime.dispose());
   await runtime.start();
@@ -66,7 +60,7 @@ test('raw command and empty-notes gestures close locally and restore the exact c
     host.clock.advance(100);
     await batch.pending;
   };
-  for (const opening of ['\x10', '\x1bn']) {
+  for (const opening of ['\x10']) {
     for (const closing of [opening, '\x03', '\x1b']) {
       await raw(opening);
       assert.notEqual(runtime.state().overlay.kind, 'none');
@@ -260,7 +254,6 @@ test('closing a pending context inspection keeps the composer and rejects its la
       context: {
         inspectContext: () => result.promise,
         contextSources: async () => ({ items: [] }),
-        listNotes: async () => ({ items: [] }),
         renewContext: async () => {}
       }
     })

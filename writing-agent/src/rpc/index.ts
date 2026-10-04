@@ -4,7 +4,6 @@ import {
   RpcError,
   historyRpcMethods,
   inputRpcMethods,
-  noteRpcMethods,
   recoveryRpcMethods,
   rpcMethod,
   sessionRpcMethods
@@ -25,7 +24,6 @@ const id = z.string().min(1);
 export function writingRpcMethods(application: WritingApplication, shutdown: () => void) {
   return {
     ...historyRpcMethods(application),
-    ...noteRpcMethods(application),
     ...sessionRpcMethods(application),
     ...inputRpcMethods(application),
     ...recoveryRpcMethods({

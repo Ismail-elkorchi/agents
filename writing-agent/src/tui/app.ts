@@ -47,7 +47,6 @@ import {
   shortcutHelp,
   suspensionMessage,
   updateAttachments,
-  notesPanel,
   updatePreferences,
   updatePromptRecall,
   receivePromptRecallQuery,
@@ -109,7 +108,6 @@ export function createWritingAgentTuiApp(
   const inspector = writingInspector((boundary, entryId) =>
     application.readHistoryEntry(boundary, entryId)
   );
-  const notes = writingNotes(application);
   const configuration = writingConfiguration(application);
   const app: import('@ismail-elkorchi/terminal-ui/tui').TuiApp<WritingTuiState, WritingTuiMessage> =
     defineTui<WritingTuiState, WritingTuiMessage>({
@@ -193,13 +191,11 @@ export function createWritingAgentTuiApp(
       resizeMessage: () => ({ type: 'terminal.resized' }),
       subscriptions: (state, context) => [
         ...(events === undefined ? [] : [events]),
-        ...(state.overlay.kind === 'notes'
-          ? notes.subscriptions(state.overlay.state, context)
-          : state.overlay.kind === 'configuration'
-            ? configuration.subscriptions(state.overlay.state, context)
-            : state.overlay.kind === 'inspector'
-              ? inspector.subscriptions(state.overlay.state, context)
-              : []),
+        ...(state.overlay.kind === 'configuration'
+          ? configuration.subscriptions(state.overlay.state, context)
+          : state.overlay.kind === 'inspector'
+            ? inspector.subscriptions(state.overlay.state, context)
+            : []),
         ...(state.queuePanel === undefined
           ? []
           : writingQueue(application, state.queuePanel.state.sessionId).subscriptions(
@@ -273,17 +269,11 @@ export function createWritingAgentTuiApp(
               state.overlay.kind !== 'none'
           },
           {
-            ...binding('Close notes', 'n', { type: 'overlay.close' }, { alt: true }),
-            enabled: ({ state }: TuiInputBindingContext<WritingTuiState>) =>
-              state.overlay.kind === 'notes'
-          },
-          {
             ...binding('Exit', 'd', { type: 'exit' }, { ctrl: true }),
             enabled: ({ state }: TuiInputBindingContext<WritingTuiState>) =>
               state.overlay.kind === 'none' &&
               textDocumentText(state.composer.input.document).length === 0
           },
-          binding('Model notes', 'n', { type: 'notes.open' }, { alt: true }),
           {
             id: 'Help',
             label: 'Help',
@@ -441,16 +431,14 @@ export function createWritingAgentTuiApp(
           ),
           state.overlay.kind === 'configuration'
             ? configuration.view(state.overlay.state, context)
-            : state.overlay.kind === 'notes'
-              ? notes.view(state.overlay.state, context)
-              : state.overlay.kind === 'queue' && state.queuePanel !== undefined
-                ? writingQueue(application, state.queuePanel.state.sessionId).view(
-                    state.queuePanel,
-                    context
-                  )
-                : state.overlay.kind === 'inspector'
-                  ? inspector.view(state.overlay.state, context)
-                  : undefined
+            : state.overlay.kind === 'queue' && state.queuePanel !== undefined
+              ? writingQueue(application, state.queuePanel.state.sessionId).view(
+                  state.queuePanel,
+                  context
+                )
+              : state.overlay.kind === 'inspector'
+                ? inspector.view(state.overlay.state, context)
+                : undefined
         )
     });
   return app;
@@ -532,7 +520,9 @@ function update(
               ...state,
               resourceCompletion: updateResourceCompletion(state.resourceCompletion, message)
             },
-            ...(message.type === 'resource.close' ? { cancel: [{ kind: 'effect', id: 'resource-search' }] } : {})
+            ...(message.type === 'resource.close'
+              ? { cancel: [{ kind: 'effect', id: 'resource-search' }] }
+              : {})
           };
     case 'status.open':
       return update(
@@ -559,7 +549,6 @@ function update(
     case 'context.apply':
     case 'context.page':
     case 'context.source':
-    case 'context.note':
     case 'context.scroll':
     case 'context.loaded':
     case 'context.failed': {
@@ -699,9 +688,16 @@ function update(
         recall,
         {
           state: recall.state,
-          effects: options.drafts === undefined
-            ? []
-            : [loadRecoveredPrompts(options.drafts, state.application.sessionId ?? ':new', recall.state.id)]
+          effects:
+            options.drafts === undefined
+              ? []
+              : [
+                  loadRecoveredPrompts(
+                    options.drafts,
+                    state.application.sessionId ?? ':new',
+                    recall.state.id
+                  )
+                ]
         }
       );
     }
@@ -726,7 +722,10 @@ function update(
       if (draft === undefined) return { state };
       return {
         state: { ...state, overlay: { kind: 'none' }, composer: draft },
-        cancel: [{ kind: 'effect', id: 'prompt-recall-query' }, { kind: 'effect', id: 'recovered-drafts' }],
+        cancel: [
+          { kind: 'effect', id: 'prompt-recall-query' },
+          { kind: 'effect', id: 'recovered-drafts' }
+        ],
         focus: { kind: 'element', elementId: 'writing-composer' }
       };
     }
@@ -789,10 +788,15 @@ function update(
           notice: 'Input removed from the queue. Its full draft is available in /drafts.'
         },
         effects: [
-          recoverDraft(options.drafts, message.sessionId, draft, (message): WritingTuiMessage => ({
-            type: 'notice',
-            message
-          }))
+          recoverDraft(
+            options.drafts,
+            message.sessionId,
+            draft,
+            (message): WritingTuiMessage => ({
+              type: 'notice',
+              message
+            })
+          )
         ]
       };
     }
@@ -877,10 +881,14 @@ function update(
       return {
         state: { ...state, preferences },
         effects: [
-          savePreferences(preferences, options.presentation, (message): WritingTuiMessage => ({
-            type: 'notice',
-            message
-          }))
+          savePreferences(
+            preferences,
+            options.presentation,
+            (message): WritingTuiMessage => ({
+              type: 'notice',
+              message
+            })
+          )
         ]
       };
     }
@@ -910,14 +918,6 @@ function update(
         state,
         effects: [copySource(message.text, (message) => ({ type: 'notice', message }))]
       };
-    case 'notes.open':
-    case 'notes.child': {
-      const notes = writingNotes(app);
-      if (message.type === 'notes.open') return mountPanel(state, 'notes', notes, context);
-      if (state.overlay.kind !== 'notes') return { state };
-      const result = notes.update(state.overlay.state, message.child, context);
-      return applyPanelResult(state, 'notes', result, result.outputs?.includes('close'));
-    }
 
     case 'search.open':
     case 'search.adjacent':
@@ -1044,11 +1044,10 @@ function update(
       const draft = result.state.composer;
       if (textDocumentText(draft.input.document).length > 0 || draft.attachments.length > 0)
         return result;
-      return combineTuiResults(
-        { ...result.state, draftRestoreSession: sessionId },
-        result,
-        { state: result.state, effects: [loadDraft(options.drafts, sessionId, draft)] }
-      );
+      return combineTuiResults({ ...result.state, draftRestoreSession: sessionId }, result, {
+        state: result.state,
+        effects: [loadDraft(options.drafts, sessionId, draft)]
+      });
     }
     case 'application':
       return { state: { ...state, application: message.state } };
@@ -1481,7 +1480,12 @@ function update(
         return mountPanel(state, 'configuration', configuration, context);
       if (state.overlay.kind !== 'configuration') return { state };
       const result = configuration.update(state.overlay.state, message.child, context);
-      const panel = applyPanelResult(state, 'configuration', result, (result.outputs?.length ?? 0) > 0);
+      const panel = applyPanelResult(
+        state,
+        'configuration',
+        result,
+        (result.outputs?.length ?? 0) > 0
+      );
       return combineTuiResults(panel.state, panel, {
         state: panel.state,
         effects: result.outputs?.includes('saved') ? [refresh(app, state.document?.value.path)] : []
@@ -1936,8 +1940,13 @@ function loadView(
       : {})
   };
   if (message.session !== undefined)
-    next = { ...next, liveConversation: mergeConversationEntries(next.liveConversation,
-      projectToolDiagnostics(message.session.toolDiagnostics, next.liveConversation)) };
+    next = {
+      ...next,
+      liveConversation: mergeConversationEntries(
+        next.liveConversation,
+        projectToolDiagnostics(message.session.toolDiagnostics, next.liveConversation)
+      )
+    };
   if (message.document?.kind === 'unavailable') {
     const updated = { ...next, notice: message.document.message };
     delete updated.document;
@@ -1984,17 +1993,15 @@ function copyInput(state: WritingTuiState, focusPath?: readonly string[]) {
   if (state.overlay.kind === 'inspector') return state.overlay.state.state.selected?.input;
   return state.overlay.kind === 'source'
     ? state.source?.input
-    : state.overlay.kind === 'notes'
-      ? state.overlay.state.state.source?.input
-      : state.overlay.kind !== 'none'
-        ? undefined
-        : focusPath?.includes('writing-composer')
-          ? state.composer.input
-          : focusPath?.includes('writing-document-source')
-            ? state.document?.input
-            : selectedSource(state.composer.input) !== undefined
-              ? state.composer.input
-              : state.document?.input;
+    : state.overlay.kind !== 'none'
+      ? undefined
+      : focusPath?.includes('writing-composer')
+        ? state.composer.input
+        : focusPath?.includes('writing-document-source')
+          ? state.document?.input
+          : selectedSource(state.composer.input) !== undefined
+            ? state.composer.input
+            : state.document?.input;
 }
 
 function withoutFailure(state: WritingTuiState): WritingTuiState {
@@ -2046,13 +2053,6 @@ function withAttention(
   });
 }
 
-function writingNotes(reader: import('@agent-core/tui').NoteReader) {
-  return createTuiChild(notesPanel(reader), (child): WritingTuiMessage => ({
-    type: 'notes.child',
-    child
-  }));
-}
-
 function writingConfiguration(app: WritingApplication) {
   return createTuiChild(
     configurationPanel(() => app.modelSelection(), writingConfigurationOperations(app)),
@@ -2061,10 +2061,13 @@ function writingConfiguration(app: WritingApplication) {
 }
 
 function writingQueue(operations: import('@agent-core/tui').QueueOperations, sessionId: string) {
-  return createTuiChild(queuePanel(operations, sessionId), (child): WritingTuiMessage => ({
-    type: 'queue.child',
-    child
-  }));
+  return createTuiChild(
+    queuePanel(operations, sessionId),
+    (child): WritingTuiMessage => ({
+      type: 'queue.child',
+      child
+    })
+  );
 }
 
 function writingInspector(
@@ -2078,12 +2081,12 @@ function writingInspector(
   );
 }
 
-function mountedPanels(state: WritingTuiState): readonly import('@ismail-elkorchi/terminal-ui/tui').TuiChildState<unknown>[] {
+function mountedPanels(
+  state: WritingTuiState
+): readonly import('@ismail-elkorchi/terminal-ui/tui').TuiChildState<unknown>[] {
   const overlay = state.overlay;
   return [
-    ...(overlay.kind === 'notes' || overlay.kind === 'configuration' || overlay.kind === 'inspector'
-      ? [overlay.state]
-      : []),
+    ...(overlay.kind === 'configuration' || overlay.kind === 'inspector' ? [overlay.state] : []),
     ...(state.queuePanel === undefined ? [] : [state.queuePanel])
   ];
 }

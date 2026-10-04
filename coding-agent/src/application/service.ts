@@ -12,12 +12,10 @@ import {
   type ModelChangeOptions,
   assertSessionImagesSupported,
   progressReplacementKey,
-  SessionNotes,
   sourceRef,
   type AgentEvent,
   type AgentRunResult,
   type AgentSession,
-  type SessionNoteRead,
   type SessionSubmissionInput
 } from '@agent-core/runtime';
 import { JsonlSessionRepository } from '@agent-core/runtime/node';
@@ -610,13 +608,8 @@ export class CodingApplication {
     return this.submit(input, { delivery: 'follow_up' });
   }
 
-  listNotes(cursor?: string) {
-    const { history, notes } = this.requireRuntime();
-    return new SessionNotes(history, notes).list(cursor);
-  }
-  readNote(request: SessionNoteRead) {
-    const { history, notes } = this.requireRuntime();
-    return new SessionNotes(history, notes).read(request);
+  readHistorySource(request: import('@agent-core/runtime').HistoryReadRequest) {
+    return this.requireRuntime().history.read(request);
   }
 
   contextSources(request: import('@agent-core/runtime').HistorySearchRequest) {
@@ -692,7 +685,6 @@ export class CodingApplication {
       selection: {
         strategy: 'sources',
         retained,
-        notes: window?.selection.notes ?? [],
         ...(window?.selection.continuity === undefined
           ? {}
           : { continuity: window.selection.continuity })

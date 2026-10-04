@@ -2,8 +2,15 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import test from 'node:test';
 import { promisify } from 'node:util';
+import path from 'node:path';
 import { openCodingApplication } from '@ismail-elkorchi/coding-agent';
-import { createWorkspace, finalResponse, scriptedOllama, trust } from './fixtures/scripted-cli.js';
+import {
+  createWorkspace,
+  finalResponse,
+  toolResponse,
+  scriptedOllama,
+  trust
+} from './fixtures/scripted-cli.js';
 
 test('headless package imports do not load executable or terminal adapters', async () => {
   await promisify(execFile)(process.execPath, [
@@ -31,12 +38,11 @@ test(
   { skip: process.platform !== 'linux' },
   async () => {
     const fixture = await createWorkspace({ tools: ['read_files'], checks: [] });
-    const application = await openCodingApplication(
-      { permissionMode: 'full_host',
-        root: fixture.root,
-        stateRoot: fixture.stateRoot
-      }
-    );
+    const application = await openCodingApplication({
+      permissionMode: 'full_host',
+      root: fixture.root,
+      stateRoot: fixture.stateRoot
+    });
     const events = [];
     let failedCalls = 0;
     let observerFailure;
@@ -136,12 +142,11 @@ test(
     } finally {
       await application.close();
     }
-    const restored = await openCodingApplication(
-      { permissionMode: 'full_host',
-        ...options,
-        sessionSelection: { kind: 'existing', id: sessionId }
-      }
-    );
+    const restored = await openCodingApplication({
+      permissionMode: 'full_host',
+      ...options,
+      sessionSelection: { kind: 'existing', id: sessionId }
+    });
     try {
       await restored.start();
       const view = await restored.readSession();
@@ -162,15 +167,14 @@ test(
     const provider = await offlineCodex(t, 'No changes are necessary.');
     const fixture = await createWorkspace({ tools: ['read_files'], checks: [] });
     await trust(fixture);
-    const app = await openCodingApplication(
-      { permissionMode: 'full_host',
-        root: fixture.root,
-        stateRoot: fixture.stateRoot,
-        provider: 'openai-codex',
-        model: 'gpt-5.6-luna',
-        providerEndpoint: provider.endpoint
-      }
-    );
+    const app = await openCodingApplication({
+      permissionMode: 'full_host',
+      root: fixture.root,
+      stateRoot: fixture.stateRoot,
+      provider: 'openai-codex',
+      model: 'gpt-5.6-luna',
+      providerEndpoint: provider.endpoint
+    });
     t.after(async () => {
       await app.close();
       await fixture.close();
@@ -199,15 +203,14 @@ test(
     ]);
     const fixture = await createWorkspace({ endpoint: provider.endpoint, tools: [], checks: [] });
     await trust(fixture);
-    const application = await openCodingApplication(
-      { permissionMode: 'full_host',
-        root: fixture.root,
-        stateRoot: fixture.stateRoot,
-        provider: 'ollama',
-        model: 'v0-scripted',
-        providerEndpoint: provider.endpoint
-      }
-    );
+    const application = await openCodingApplication({
+      permissionMode: 'full_host',
+      root: fixture.root,
+      stateRoot: fixture.stateRoot,
+      provider: 'ollama',
+      model: 'v0-scripted',
+      providerEndpoint: provider.endpoint
+    });
     t.after(async () => {
       await application.close();
       await provider.close();
@@ -237,5 +240,71 @@ test(
         (entry) => entry.type === 'input' && entry.task.includes('café')
       )
     );
+  }
+);
+
+test(
+  'read-only coding retains interpretation across prompts and reopen without editing files',
+  { skip: process.platform !== 'linux', timeout: 30000 },
+  async (t) => {
+    const text = 'Change intent: explain first. Unresolved: verify repository guidance.';
+    const provider = await scriptedOllama([
+      toolResponse('update_working_state', {
+        edits: [
+          {
+            range: { start: { line: 1, column: 1 }, end: { line: 1, column: 1 } },
+            expectedText: '',
+            replacementText: text
+          }
+        ]
+      }),
+      finalResponse('Explained.'),
+      finalResponse('Continued.')
+    ]);
+    const fixture = await createWorkspace({
+      endpoint: provider.endpoint,
+      tools: ['read_files'],
+      checks: [],
+      files: { 'original.txt': 'Original.' }
+    });
+    await trust(fixture);
+    const options = {
+      permissionMode: 'read_only',
+      root: fixture.root,
+      stateRoot: fixture.stateRoot,
+      provider: 'ollama',
+      model: 'v0-scripted',
+      providerEndpoint: provider.endpoint
+    };
+    let app = await openCodingApplication(options);
+    t.after(async () => {
+      await app.close();
+      await provider.close();
+      await fixture.close();
+    });
+    await app.start();
+    const first = await app.submit({ task: 'Explain the change intent without changing files.' });
+    assert.equal((await first.completion).terminal.executionStatus, 'completed');
+    const state = await app.inspectContext();
+    assert.equal(state.workingState.text, text);
+    const original = await app.readHistorySource({
+      source: state.workingState.source,
+      maxBytes: 16
+    });
+    assert.equal(original.status, 'available');
+    assert.equal(original.item.generated, true);
+    assert.equal(original.item.truncated, true);
+    await app.close();
+    app = await openCodingApplication({ ...options, sessionSelection: { kind: 'existing', id: state.cut.sessionId } });
+    await app.start();
+    assert.equal(
+      (await app.inspectContext()).workingState.revisionId,
+      state.workingState.revisionId
+    );
+    const next = await app.submit({ task: 'What remains uncertain?' });
+    assert.equal((await next.completion).terminal.executionStatus, 'completed');
+    assert.ok(JSON.stringify(provider.chatRequests.at(-1)).includes(text));
+    const { readFile } = await import('node:fs/promises');
+    assert.equal(await readFile(path.join(fixture.root, 'original.txt'), 'utf8'), 'Original.');
   }
 );

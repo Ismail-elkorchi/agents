@@ -27,7 +27,6 @@ export type InteractiveCommandName =
   | '/sessions'
   | '/new'
   | '/name'
-  | '/notes'
   | '/search'
   | '/attach'
   | '/drafts'
@@ -102,7 +101,6 @@ export const INTERACTIVE_COMMAND_REGISTRY = {
   }),
   '/name': action('/name', 'Name this conversation.', { type: 'session-name.open' }),
   '/new': action('/new', 'Start a new conversation.', { type: 'session.new' }),
-  '/notes': action('/notes', 'Inspect model-authored notes.', { type: 'notes.open' }),
   '/search': action('/search', 'Search recorded conversation.', {
     type: 'overlay.open',
     overlay: 'search'
@@ -141,7 +139,10 @@ export const INTERACTIVE_COMMAND_REGISTRY = {
   '/exit': action('/exit', 'Close the terminal interface.', { type: 'application.exit' }),
   '/permissions': command('/permissions', 'Choose authority for new runs.', 'required', [
     { value: 'read_only', description: 'Inspect the host project without edits or commands.' },
-    { value: 'full_host', description: 'Unrestricted commands with host account and network access.' }
+    {
+      value: 'full_host',
+      description: 'Unrestricted commands with host account and network access.'
+    }
   ]),
   '/trust': command('/trust', 'Choose the workspace trust decision.', 'required', [
     {
@@ -194,11 +195,6 @@ export const CODING_SHORTCUTS: readonly ShortcutAction[] = [
     id: 'commands',
     label: 'Commands',
     bindings: ['commands', 'close-commands']
-  },
-  {
-    id: 'notes',
-    label: 'Model notes',
-    bindings: ['Model notes', 'close-notes']
   },
   {
     id: 'tools',

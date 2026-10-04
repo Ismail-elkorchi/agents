@@ -14,7 +14,7 @@ import type {
   SessionBranchPoint,
   SessionPendingSubmission
 } from '@agent-core/runtime';
-import type { ComposerDraft, ConversationEntry, NotesState } from '@agent-core/tui';
+import type { ComposerDraft, ConversationEntry } from '@agent-core/tui';
 import { defaultTuiPreferences, RetainedListPresentation } from '@agent-core/tui';
 import type {
   ScrollState,
@@ -97,10 +97,6 @@ export type CodingAgentTuiOverlay =
   | { readonly kind: 'context'; readonly state: import('@agent-core/tui').ContextState }
   | { readonly kind: 'none' }
   | { readonly kind: 'decision' }
-  | {
-      readonly kind: 'notes';
-      readonly state: import('@ismail-elkorchi/terminal-ui/tui').TuiChildState<NotesState>;
-    }
   | { readonly kind: 'commands'; readonly picker: CodingAgentTuiPickerState }
   | {
       readonly kind: 'command_values';

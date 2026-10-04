@@ -29,8 +29,6 @@ import type { CodingAgentTuiPickerState, CodingAgentTuiState } from './state.js'
 
 export type CodingNavigationOperations = Pick<
   CodingApplication,
-  | 'listNotes'
-  | 'readNote'
   | 'listSessions'
   | 'newSession'
   | 'selectSession'
@@ -143,12 +141,14 @@ export function openPanel(
           else {
             if (operations === undefined) throw new Error('Session operations are unavailable.');
             items = await Promise.all(
-              (await operations.listSessions()).map(async (session): Promise<PanelItem> => ({
-                kind: 'session',
-                id: session.id,
-                sessionId: session.id,
-                label: `${session.id === state.debug.sessionId ? '✓ ' : ''}${(await names?.read(session.id)) ?? session.preview ?? session.id} · ${session.updatedAt}`
-              }))
+              (await operations.listSessions()).map(
+                async (session): Promise<PanelItem> => ({
+                  kind: 'session',
+                  id: session.id,
+                  sessionId: session.id,
+                  label: `${session.id === state.debug.sessionId ? '✓ ' : ''}${(await names?.read(session.id)) ?? session.preview ?? session.id} · ${session.updatedAt}`
+                })
+              )
             );
           }
           return {

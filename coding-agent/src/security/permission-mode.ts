@@ -1,10 +1,7 @@
-import type { ToolPolicy, ToolRisk } from '@agent-core/tools';
-
 export type CodingPermissionMode = 'read_only' | 'full_host';
 
 export interface CodingAuthority {
   readonly mode: CodingPermissionMode;
-  readonly toolPolicy: ToolPolicy;
   readonly enabledTools: readonly string[];
   readonly verificationCommands: boolean;
   readonly permissions: {
@@ -47,26 +44,19 @@ export function resolveCodingAuthority(input: {
       ? [...available]
       : available.filter((name) => input.enabledTools?.includes(name))
   );
-  const allowedRisks: readonly ToolRisk[] =
-    mode === 'read_only' ? ['read'] : ['read', 'write', 'destructive', 'execute'];
   const verificationCommands = mode !== 'read_only' && input.hasVerificationChecks;
   return Object.freeze({
     mode,
-    toolPolicy: Object.freeze({ allowedRisks: Object.freeze(allowedRisks) }),
     enabledTools,
     verificationCommands,
     permissions: Object.freeze({
       mode,
       workspaceRead: 'root_bound',
       workspaceWrite: mode === 'read_only' ? 'denied' : 'structured',
-      commandExecution:
-        mode === 'read_only' ? 'denied' : 'host',
+      commandExecution: mode === 'read_only' ? 'denied' : 'host',
       network: mode === 'full_host' ? 'host' : 'denied',
       hostEscape: mode === 'full_host' ? 'allowed' : 'denied',
-      tools: Object.freeze([
-        ...enabledTools,
-        ...(verificationCommands ? ['run_check'] : [])
-      ])
+      tools: Object.freeze([...enabledTools, ...(verificationCommands ? ['run_check'] : [])])
     })
   });
 }

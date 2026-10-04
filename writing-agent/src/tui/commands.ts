@@ -104,7 +104,6 @@ export const WRITING_COMMANDS: readonly {
   },
   { name: '/name', description: 'Name this conversation', message: { type: 'session-name.open' } },
   { name: '/new', description: 'Start a new conversation', message: { type: 'session.new' } },
-  { name: '/notes', description: 'Inspect model-authored notes', message: { type: 'notes.open' } },
   { name: '/search', description: 'Search recorded history', message: { type: 'search.open' } },
   {
     name: '/recovery',
@@ -131,11 +130,6 @@ export const WRITING_SHORTCUTS: readonly ShortcutAction[] = [
     id: 'commands',
     label: 'Commands',
     bindings: ['Commands', 'Close commands']
-  },
-  {
-    id: 'notes',
-    label: 'Model notes',
-    bindings: ['Model notes', 'Close notes']
   },
   {
     id: 'tools',

@@ -29,7 +29,6 @@ import {
   loadRecoveredPrompts,
   loadSessionName,
   moveCommand,
-  notesPanel,
   observeAttention,
   panel,
   preferencesView,
@@ -189,7 +188,6 @@ export function createCodingAgentTuiApp(
   const inspector = codingInspector(options.historyEntryReader);
   const configuration =
     options.configuration === undefined ? undefined : codingConfiguration(options.configuration);
-  const notes = options.navigation === undefined ? undefined : codingNotes(options.navigation);
   const app: import('@ismail-elkorchi/terminal-ui/tui').TuiApp<
     CodingAgentTuiState,
     CodingAgentTuiMessage
@@ -341,16 +339,6 @@ export function createCodingAgentTuiApp(
           { ctrl: true },
           { type: 'overlay.close' },
           ({ state }) => state.overlay.kind === 'commands'
-        ),
-        binding(
-          'close-notes',
-          'n',
-          { alt: true },
-          { type: 'overlay.close' },
-          ({ state }) => state.overlay.kind === 'notes'
-        ),
-        binding('Model notes', 'n', { alt: true }, { type: 'notes.open' }, ({ state }) =>
-          canOpenOverlay(state)
         ),
         binding(
           'commands',
@@ -556,13 +544,11 @@ export function createCodingAgentTuiApp(
     ),
     subscriptions: (state, context) => [
       ...(eventSource === undefined ? [] : [eventSource]),
-      ...(state.overlay.kind === 'notes'
-        ? (notes?.subscriptions(state.overlay.state, context) ?? [])
-        : state.overlay.kind === 'configuration'
-          ? (configuration?.subscriptions(state.overlay.state, context) ?? [])
-          : state.overlay.kind === 'inspector'
-            ? inspector.subscriptions(state.overlay.state, context)
-            : []),
+      ...(state.overlay.kind === 'configuration'
+        ? (configuration?.subscriptions(state.overlay.state, context) ?? [])
+        : state.overlay.kind === 'inspector'
+          ? inspector.subscriptions(state.overlay.state, context)
+          : []),
       ...(state.queuePanel === undefined || options.navigation === undefined
         ? []
         : codingQueue(options.navigation, state.queuePanel.state.sessionId).subscriptions(
@@ -587,18 +573,16 @@ export function createCodingAgentTuiApp(
         hints,
         state.overlay.kind === 'configuration'
           ? configuration?.view(state.overlay.state, context)
-          : state.overlay.kind === 'notes'
-            ? notes?.view(state.overlay.state, context)
-            : state.overlay.kind === 'queue' &&
-                state.queuePanel !== undefined &&
-                options.navigation !== undefined
-              ? codingQueue(options.navigation, state.queuePanel.state.sessionId).view(
-                  state.queuePanel,
-                  context
-                )
-              : state.overlay.kind === 'inspector'
-                ? inspector.view(state.overlay.state, context)
-                : undefined
+          : state.overlay.kind === 'queue' &&
+              state.queuePanel !== undefined &&
+              options.navigation !== undefined
+            ? codingQueue(options.navigation, state.queuePanel.state.sessionId).view(
+                state.queuePanel,
+                context
+              )
+            : state.overlay.kind === 'inspector'
+              ? inspector.view(state.overlay.state, context)
+              : undefined
       );
     }
   });
@@ -633,7 +617,6 @@ function updateCodingAgentTui(
     case 'context.apply':
     case 'context.page':
     case 'context.source':
-    case 'context.note':
     case 'context.scroll':
     case 'context.loaded':
     case 'context.failed': {
@@ -749,7 +732,9 @@ function updateCodingAgentTui(
               ...state,
               resourceCompletion: updateResourceCompletion(state.resourceCompletion, message)
             }),
-            ...(message.type === 'resource.close' ? { cancel: [{ kind: 'effect', id: 'resource-search' }] } : {})
+            ...(message.type === 'resource.close'
+              ? { cancel: [{ kind: 'effect', id: 'resource-search' }] }
+              : {})
           };
     case 'conversation.export':
       return {
@@ -877,9 +862,16 @@ function updateCodingAgentTui(
         recall,
         {
           state: recall.state,
-          effects: options.drafts === undefined
-            ? []
-            : [loadRecoveredPrompts(options.drafts, state.debug.sessionId ?? ':new', recall.state.id)]
+          effects:
+            options.drafts === undefined
+              ? []
+              : [
+                  loadRecoveredPrompts(
+                    options.drafts,
+                    state.debug.sessionId ?? ':new',
+                    recall.state.id
+                  )
+                ]
         }
       );
     }
@@ -908,7 +900,10 @@ function updateCodingAgentTui(
           overlay: { kind: 'none' },
           composer: composerWithDraft(state.composer, draft)
         },
-        cancel: [{ kind: 'effect', id: 'prompt-recall-query' }, { kind: 'effect', id: 'recovered-drafts' }],
+        cancel: [
+          { kind: 'effect', id: 'prompt-recall-query' },
+          { kind: 'effect', id: 'recovered-drafts' }
+        ],
         focus: { kind: 'element', elementId: 'composer' }
       };
     }
@@ -1103,11 +1098,15 @@ function updateCodingAgentTui(
           conversation: { ...state.conversation, expandedIds: [] }
         }),
         effects: [
-          savePreferences(preferences, options.presentation, (message): CodingAgentTuiMessage => ({
-            type: 'interactive.notice',
-            message,
-            tone: 'error'
-          }))
+          savePreferences(
+            preferences,
+            options.presentation,
+            (message): CodingAgentTuiMessage => ({
+              type: 'interactive.notice',
+              message,
+              tone: 'error'
+            })
+          )
         ]
       };
     }
@@ -1119,15 +1118,6 @@ function updateCodingAgentTui(
             state,
             effects: [copySource(source, (message) => ({ type: 'interactive.notice', message }))]
           };
-    }
-    case 'notes.open':
-    case 'notes.child': {
-      if (options.navigation === undefined) return { state };
-      const notes = codingNotes(options.navigation);
-      if (message.type === 'notes.open') return mountPanel(state, 'notes', notes, context);
-      if (state.overlay.kind !== 'notes') return { state };
-      const result = notes.update(state.overlay.state, message.child, context);
-      return applyPanelResult(state, 'notes', result, result.outputs?.includes('close'));
     }
 
     case 'progress':
@@ -1211,19 +1201,6 @@ function updateCodingAgentTui(
     case 'interactive.notice':
       if (state.overlay.kind === 'source')
         return { state: { ...state, overlay: { ...state.overlay, notice: message.message } } };
-      if (state.overlay.kind === 'notes')
-        return {
-          state: {
-            ...state,
-            overlay: {
-              ...state.overlay,
-              state: {
-                ...state.overlay.state,
-                state: { ...state.overlay.state.state, error: message.message }
-              }
-            }
-          }
-        };
       return updated(appendNotice(state, message.message, message.tone ?? 'info'));
     case 'session.hydrated': {
       const result = restoreSessionView(state, message.hydration, options.historyReader);
@@ -1237,11 +1214,10 @@ function updateCodingAgentTui(
       const draft = result.state.composer;
       if (textDocumentText(draft.input.document).length > 0 || draft.attachments.length > 0)
         return result;
-      return combineTuiResults(
-        { ...result.state, draftRestoreSession: sessionId },
-        result,
-        { state: result.state, effects: [loadDraft(options.drafts, sessionId, draft)] }
-      );
+      return combineTuiResults({ ...result.state, draftRestoreSession: sessionId }, result, {
+        state: result.state,
+        effects: [loadDraft(options.drafts, sessionId, draft)]
+      });
     }
     case 'approval.required':
       return updated({
@@ -1249,11 +1225,20 @@ function updateCodingAgentTui(
         run: { kind: 'waiting_for_approval', suspension: message.suspension }
       });
     case 'run.suspended':
-      return updated(upsertConversationEntry({
-        ...state,
-        run: { kind: 'waiting_for_recovery', suspension: message.suspension }
-      }, { id: `recovery:${message.suspension.runId}`, kind: 'notice', tone: 'warning',
-        text: suspensionMessage(message.suspension) }));
+      return updated(
+        upsertConversationEntry(
+          {
+            ...state,
+            run: { kind: 'waiting_for_recovery', suspension: message.suspension }
+          },
+          {
+            id: `recovery:${message.suspension.runId}`,
+            kind: 'notice',
+            tone: 'warning',
+            text: suspensionMessage(message.suspension)
+          }
+        )
+      );
     case 'recovery.open':
       return state.run.kind === 'waiting_for_approval' || state.run.kind === 'waiting_for_recovery'
         ? {
@@ -2141,8 +2126,6 @@ function overlayView(
       );
     case 'configuration':
       return childPanel;
-    case 'notes':
-      return childPanel;
     case 'none':
       return undefined;
     case 'attachments':
@@ -2623,11 +2606,9 @@ function copyInput(state: CodingAgentTuiState) {
   if (overlay.kind === 'inspector') return overlay.state.state.selected?.input;
   return overlay.kind === 'source'
     ? overlay.input
-    : overlay.kind === 'notes'
-      ? overlay.state.state.source?.input
-      : overlay.kind === 'none'
-        ? state.composer.input
-        : undefined;
+    : overlay.kind === 'none'
+      ? state.composer.input
+      : undefined;
 }
 
 function withAttention(
@@ -2687,13 +2668,6 @@ function withoutConversationAnchor(
   return next;
 }
 
-function codingNotes(reader: import('@agent-core/tui').NoteReader) {
-  return createTuiChild(notesPanel(reader), (child): CodingAgentTuiMessage => ({
-    type: 'notes.child',
-    child
-  }));
-}
-
 function codingConfiguration(operations: NonNullable<CodingAgentTuiAppOptions['configuration']>) {
   return createTuiChild(
     configurationPanel(() => operations.current(), operations),
@@ -2702,10 +2676,13 @@ function codingConfiguration(operations: NonNullable<CodingAgentTuiAppOptions['c
 }
 
 function codingQueue(operations: import('@agent-core/tui').QueueOperations, sessionId: string) {
-  return createTuiChild(queuePanel(operations, sessionId), (child): CodingAgentTuiMessage => ({
-    type: 'queue.child',
-    child
-  }));
+  return createTuiChild(
+    queuePanel(operations, sessionId),
+    (child): CodingAgentTuiMessage => ({
+      type: 'queue.child',
+      child
+    })
+  );
 }
 
 function codingInspector(
@@ -2719,12 +2696,12 @@ function codingInspector(
   );
 }
 
-function mountedPanels(state: CodingAgentTuiState): readonly import('@ismail-elkorchi/terminal-ui/tui').TuiChildState<unknown>[] {
+function mountedPanels(
+  state: CodingAgentTuiState
+): readonly import('@ismail-elkorchi/terminal-ui/tui').TuiChildState<unknown>[] {
   const overlay = state.overlay;
   return [
-    ...(overlay.kind === 'notes' || overlay.kind === 'configuration' || overlay.kind === 'inspector'
-      ? [overlay.state]
-      : []),
+    ...(overlay.kind === 'configuration' || overlay.kind === 'inspector' ? [overlay.state] : []),
     ...(state.queuePanel === undefined ? [] : [state.queuePanel])
   ];
 }

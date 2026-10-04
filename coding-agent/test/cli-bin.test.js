@@ -54,9 +54,11 @@ for (const [agent, flag] of [
   );
 
 test('permission choices separate read-only inspection from full host execution', () => {
-  const readOnly = resolveCodingAuthority({ requestedMode: 'read_only', hasVerificationChecks: true });
+  const readOnly = resolveCodingAuthority({
+    requestedMode: 'read_only',
+    hasVerificationChecks: true
+  });
   const host = resolveCodingAuthority({ requestedMode: 'full_host', hasVerificationChecks: true });
-  assert.deepEqual(readOnly.toolPolicy.allowedRisks, ['read']);
   assert.equal(readOnly.enabledTools.includes('exec_command'), false);
   assert.equal(readOnly.enabledTools.includes('apply_patch'), false);
   assert.equal(readOnly.verificationCommands, false);
@@ -100,10 +102,7 @@ test('CLI binary help works through the published executable', async () => {
     output.stdout + output.stderr,
     /approval <allow\|deny> <run-id> <approval-id> <fingerprint>/u
   );
-  assert.match(
-    output.stdout + output.stderr,
-    /--permissions <mode>\s+read_only or full_host/iu
-  );
+  assert.match(output.stdout + output.stderr, /--permissions <mode>\s+read_only or full_host/iu);
   assert.match(output.stdout + output.stderr, /--codex-transport <http_sse\|websocket>/u);
 });
 

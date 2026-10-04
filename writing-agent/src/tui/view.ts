@@ -140,9 +140,13 @@ export function writingView(
         ...(state.sessionView?.session.suspension === undefined
           ? []
           : [
-              action('writing-pending-decision', suspensionPresentation(state.sessionView.session.suspension.reason).title, {
-                type: 'recovery.open'
-              })
+              action(
+                'writing-pending-decision',
+                suspensionPresentation(state.sessionView.session.suspension.reason).title,
+                {
+                  type: 'recovery.open'
+                }
+              )
             ]),
         action('writing-commands', 'Commands', { type: 'commands.open' }),
         ...(state.application.status === 'running'
@@ -299,8 +303,6 @@ function modalView(
       break;
     case 'context':
       return contextView(modal.state, width, height);
-    case 'notes':
-      return childPanel;
     case 'none':
       return undefined;
     case 'search':
@@ -330,7 +332,8 @@ function modalView(
       break;
     case 'recovery':
       title = state.sessionView?.session.suspension
-        ? suspensionPresentation(state.sessionView.session.suspension.reason).title : 'Paused run';
+        ? suspensionPresentation(state.sessionView.session.suspension.reason).title
+        : 'Paused run';
       focusId = 'writing-modal-close';
       content = scrollable(state, 'writing-recovery', recoveryView(state));
       break;

@@ -58,7 +58,7 @@ test(
     assert(!f.provider.requests[0].tools.some((tool) => tool.name === 'apply_patch'));
     assert(
       f.provider.requests[0].tools.some(
-        (tool) => tool.type === 'function' && tool.function.name === 'notes_write'
+        (tool) => tool.type === 'function' && tool.function.name === 'update_working_state'
       )
     );
   }
@@ -134,7 +134,7 @@ test(
 );
 
 test(
-  'history and notes are available as model tools without preselected document excerpts',
+  'history and working state are available as model tools without preselected document excerpts',
   integration,
   async (t) => {
     const f = await fixture('Only retrieve this when needed.\n', {
@@ -149,7 +149,7 @@ test(
     const first = f.provider.requests[0];
     assert(!JSON.stringify(first).includes('Only retrieve this when needed.'));
     assert(JSON.stringify(f.provider.requests[1]).includes('Only retrieve this when needed.'));
-    for (const name of ['history_read', 'notes_write', 'context_transition'])
+    for (const name of ['history_read', 'update_working_state', 'context_transition'])
       assert(
         first.tools.some((tool) => tool.type === 'function' && tool.function.name === name),
         name
@@ -255,5 +255,51 @@ test(
         (entry) => entry.type === 'input' && entry.task.includes('café')
       )
     );
+  }
+);
+
+test(
+  'review mode retains working state without gaining document mutation authority',
+  integration,
+  async (t) => {
+    const text = 'Audience: researchers. Preserve source uncertainty.';
+    const f = await fixture('Original document.\n', {
+      mode: 'review',
+      responses: [
+        toolCall('update_working_state', {
+          edits: [
+            {
+              range: { start: { line: 1, column: 1 }, end: { line: 1, column: 1 } },
+              expectedText: '',
+              replacementText: text
+            }
+          ]
+        }),
+        'Reviewed.',
+        'Answered.'
+      ]
+    });
+    t.after(() => f.close());
+    await f.application.start();
+    assert.equal(
+      (await submit(f.application, 'Review the document for researchers.')).terminal
+        .executionStatus,
+      'completed'
+    );
+    const inspected = await f.application.inspectContext();
+    assert.equal(inspected.workingState.text, text);
+    const original = await f.application.readHistorySource({
+      source: inspected.workingState.source,
+      maxBytes: 16
+    });
+    assert.equal(original.status, 'available');
+    assert.equal(original.item.generated, true);
+    assert.equal(original.item.truncated, true);
+    assert.equal(await readFile(path.join(f.root, 'document.txt'), 'utf8'), 'Original document.\n');
+    assert.equal(
+      (await submit(f.application, 'Why did you choose that audience?')).terminal.executionStatus,
+      'completed'
+    );
+    assert.ok(JSON.stringify(f.provider.requests.at(-1)).includes(text));
   }
 );

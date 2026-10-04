@@ -4,7 +4,7 @@ import type {
   SessionBranchEntry,
   SessionBranchPage
 } from '@agent-core/runtime';
-import type { ComposerDraft, ConversationEntry, NotesState } from '@agent-core/tui';
+import type { ComposerDraft, ConversationEntry } from '@agent-core/tui';
 import {
   createDraft,
   defaultTuiPreferences,
@@ -44,10 +44,6 @@ export type WritingTuiOverlay =
       readonly preferences: import('@agent-core/tui').TuiPreferences;
     }
   | { readonly kind: 'none' }
-  | {
-      readonly kind: 'notes';
-      readonly state: import('@ismail-elkorchi/terminal-ui/tui').TuiChildState<NotesState>;
-    }
   | { readonly kind: 'loading'; readonly requestId: string }
   | { readonly kind: 'source' }
   | { readonly kind: 'recovery' }
@@ -193,13 +189,6 @@ export type WritingTuiMessage =
   | { readonly type: 'terminal.focus'; readonly focused: boolean }
   | import('@agent-core/tui').PreferencesMessage
   | { readonly type: 'preferences.open' }
-  | { readonly type: 'notes.open' }
-  | {
-      readonly type: 'notes.child';
-      readonly child: import('@ismail-elkorchi/terminal-ui/tui').TuiChildMessage<
-        import('@agent-core/tui').NotesMessage
-      >;
-    }
   | { readonly type: 'commands.open' | 'tools.toggle' | 'reasoning.toggle' | 'completion.close' }
   | { readonly type: 'completion.move'; readonly delta: number }
   | { readonly type: 'completion.accept'; readonly open: boolean; readonly name?: string }

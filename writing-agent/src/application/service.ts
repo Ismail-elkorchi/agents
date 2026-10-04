@@ -4,23 +4,15 @@ import {
   type ModelProvider,
   type ModelSelection
 } from '@agent-core/model';
-import {
-  JsonlEventRepository,
-  LocalArtifactRepository,
-  atomicWritePrivateJson
-} from '@agent-core/persistence/node';
+import { LocalArtifactRepository, atomicWritePrivateJson } from '@agent-core/persistence/node';
 import {
   ApplicationEvents,
   recordedModelSelection,
-  HistoryReader,
-  SessionNotes,
-  agentEventCodec,
   assertHistoryModelCompatibility,
   type ModelChangeOptions,
   assertSessionImagesSupported,
   ownSessionSubmissionInput,
   progressReplacementKey,
-  type AgentEvent,
   type AgentSession,
   type AgentSessionEvent,
   type AgentSessionSubmissionResult,
@@ -29,10 +21,9 @@ import {
   type SessionBranchPageRequest,
   type SessionBranchSearchRequest,
   type SessionDescriptor,
-  type SessionNoteRead,
   type SessionSubmissionInput
 } from '@agent-core/runtime';
-import { JsonlNoteRepository, JsonlSessionRepository } from '@agent-core/runtime/node';
+import { JsonlSessionRepository } from '@agent-core/runtime/node';
 import {
   DEFAULT_LOCAL_TOOL_CONFIGURATION,
   readRootedImage,
@@ -512,12 +503,12 @@ export class WritingApplication {
   readHistoryEntry(boundary: SessionBranchBoundary, entryId: string) {
     return this.sessions.readBranchEntry(this.requireDescriptor(), boundary, entryId);
   }
-  listNotes(cursor?: string) {
-    return this.sessionNotes().list(cursor);
+
+  readHistorySource(request: import('@agent-core/runtime').HistoryReadRequest) {
+    if (!this.composition) throw new Error('Open a session before reading original history.');
+    return this.composition.history.read(request);
   }
-  readNote(request: SessionNoteRead) {
-    return this.sessionNotes().read(request);
-  }
+
   contextSources(request: import('@agent-core/runtime').HistorySearchRequest) {
     if (!this.composition) throw new Error('Open a session before inspecting context.');
     return this.composition.history.search(request);
@@ -645,29 +636,6 @@ export class WritingApplication {
     this.unsubscribe = undefined;
     await this.composition?.close();
     this.composition = undefined;
-  }
-
-  private sessionNotes() {
-    this.assertOpen();
-    if (this.composition) return new SessionNotes(this.composition.history, this.composition.notes);
-    const artifacts = new LocalArtifactRepository({
-      rootDir: path.join(this.workspace.stateDirectory, 'artifacts')
-    });
-    return new SessionNotes(
-      new HistoryReader({
-        repository: this.sessions,
-        session: this.requireDescriptor(),
-        artifacts,
-        events: new JsonlEventRepository<AgentEvent>({
-          rootDir: path.join(this.workspace.stateDirectory, 'runs'),
-          codec: agentEventCodec
-        })
-      }),
-      new JsonlNoteRepository({
-        rootDir: path.join(this.workspace.stateDirectory, 'notes'),
-        artifacts
-      })
-    );
   }
 
   private requireAgent() {

@@ -2,15 +2,13 @@ import { renderFramePlain } from '@ismail-elkorchi/terminal-ui/renderer';
 import { createTestEventSource } from './helpers/event-source.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import path from 'node:path';import assert from 'node:assert/strict';
+import path from 'node:path';
+import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import { textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
 import { createTuiRuntime, runTui } from '@ismail-elkorchi/terminal-ui/tui';
-import {
-  createCodingAgentTuiApp,
-  runCodingAgentTuiApp
-} from '@ismail-elkorchi/coding-agent/tui';
+import { createCodingAgentTuiApp, runCodingAgentTuiApp } from '@ismail-elkorchi/coding-agent/tui';
 import { waitFor } from './coding-agent-tui-test-helpers.js';
 
 test('durable restore precedes live append and stable identities prevent duplicates', async () => {
@@ -60,7 +58,12 @@ test('durable restore precedes live append and stable identities prevent duplica
       turnId: 'turn-1',
       requestAttempt: 1,
       content: 'Partial restored',
-      modelOutput: { status: 'complete', message: 'Partial restored', source: 'content', turnIndex: 1 }
+      modelOutput: {
+        status: 'complete',
+        message: 'Partial restored',
+        source: 'content',
+        turnIndex: 1
+      }
     }
   });
   // Source emission acknowledges admission; exit is requested after the frame commits.
@@ -70,13 +73,15 @@ test('durable restore precedes live append and stable identities prevent duplica
   await events.close();
 
   assert.equal(
-    exit.state.conversation.items.filter((entry) => entry.kind === 'user' && entry.text === 'Existing task')
-      .length,
+    exit.state.conversation.items.filter(
+      (entry) => entry.kind === 'user' && entry.text === 'Existing task'
+    ).length,
     1
   );
   assert.equal(
-    exit.state.conversation.items.filter((entry) => entry.kind === 'assistant' && entry.turnId === 'turn-1')
-      .length,
+    exit.state.conversation.items.filter(
+      (entry) => entry.kind === 'assistant' && entry.turnId === 'turn-1'
+    ).length,
     1
   );
   assert.equal(
@@ -110,7 +115,9 @@ test('hydration restores exact approval and unknown-effect recovery boundaries',
   assert.ok(
     recoveryRuntime
       .state()
-      .conversation.items.some((entry) => entry.kind === 'notice' && entry.text.includes('Inspect its diagnostic'))
+      .conversation.items.some(
+        (entry) => entry.kind === 'notice' && entry.text.includes('Inspect its diagnostic')
+      )
   );
   assert.ok(recoveryRuntime.frame().focusPath.includes('composer'));
   await recoveryRuntime.dispatch({ type: 'recovery.open' });
@@ -167,7 +174,12 @@ test('hydration retains concurrent work and selects the exact per-call approval 
   const approval = approvalHydration();
   approval.runs[0].state.toolBatches[0].callStates.unshift({
     stage: 'approval',
-    approval: { ...approvalRequest(), approvalId: 'other-approval', callIndex: 1, callId: 'other-call' }
+    approval: {
+      ...approvalRequest(),
+      approvalId: 'other-approval',
+      callIndex: 1,
+      callId: 'other-call'
+    }
   });
   const approvals = createTuiRuntime({
     app: createCodingAgentTuiApp('', { initialHydration: approval }),
@@ -283,7 +295,9 @@ test('long stream pressure retains every reliable boundary and the latest stream
   host.input('/exit\r');
   const exit = await running;
   await events.close();
-  const assistant = exit.state.conversation.items.find((entry) => entry.id === 'assistant:pressure-turn');
+  const assistant = exit.state.conversation.items.find(
+    (entry) => entry.id === 'assistant:pressure-turn'
+  );
   assert.equal(assistant.text, 'final-value');
   assert.equal(assistant.status, 'complete');
 });
@@ -375,7 +389,10 @@ test('normal shutdown preserves committed messages without source diagnostics', 
       (entry) => entry.kind === 'notice' && entry.text === 'visible before shutdown'
     )
   );
-  assert.equal(exit.diagnostics.filter((item) => item.diagnostic.code === 'TUI_SOURCE_FAILED').length, 0);
+  assert.equal(
+    exit.diagnostics.filter((item) => item.diagnostic.code === 'TUI_SOURCE_FAILED').length,
+    0
+  );
 });
 
 test('application exit unsubscribes delivery before cancelling an active session', async (t) => {
@@ -444,7 +461,13 @@ function runningHydration() {
     history: {
       ...hydration.history,
       entries: [
-        entry({ id: 'input-1', type: 'input', runId: 'run-1', task: 'Existing task', instructions: [] }),
+        entry({
+          id: 'input-1',
+          type: 'input',
+          runId: 'run-1',
+          task: 'Existing task',
+          instructions: []
+        }),
         entry({
           id: 'assistant-1',
           type: 'assistant',
@@ -516,7 +539,12 @@ async function completedHydration() {
     executionStatus: 'completed',
     terminationReason: 'model_completed',
     modelTerminationReason: 'stop',
-    modelOutput: { status: 'complete', message: 'Completed answer.', source: 'content', turnIndex: 1 },
+    modelOutput: {
+      status: 'complete',
+      message: 'Completed answer.',
+      source: 'content',
+      turnIndex: 1
+    },
     turnCount: 1,
     budget: budget()
   });
@@ -535,7 +563,8 @@ async function completedHydration() {
     ],
     mutationReceipts: []
   };
-  return { toolDiagnostics: [],
+  return {
+    toolDiagnostics: [],
     session: {
       sessionId: 'session-1',
       phase: 'idle',
@@ -578,7 +607,8 @@ function baseHydration(sessionOverrides, runOverrides) {
     ...runOverrides,
     pendingState: undefined
   });
-  return { toolDiagnostics: [],
+  return {
+    toolDiagnostics: [],
     session: {
       sessionId: 'session-1',
       configuration: { provider: 'test-provider', model: 'test-model' },
@@ -619,7 +649,11 @@ function runInspection(overrides) {
         runtimeImplementationId: 'runtime@1',
         toolImplementationIds: [],
         checks: [],
-        disposition: { implementationId: 'disposition@1', policyIdentity: {}, policyHash: '0'.repeat(64) },
+        disposition: {
+          implementationId: 'disposition@1',
+          policyIdentity: {},
+          policyHash: '0'.repeat(64)
+        },
         policyHash: 'policy'
       },
       control: overrides.control,
@@ -735,11 +769,13 @@ test('restored and live context transitions share the exact window identity', as
       throughEntryId: 'assistant-1',
       sourceRevision: 1
     },
-    selection: { strategy: 'retain', retained: [], omitted: [], notes: [] },
+    selection: { strategy: 'sources', retained: [] },
     reason: 'Retain the original conversation.',
     createdAt: '2026-09-07T00:00:00.000Z'
   };
-  hydration.history.entries.push(entry({ id: 'transition-entry-1', type: 'context_transition', window }));
+  hydration.history.entries.push(
+    entry({ id: 'transition-entry-1', type: 'context_transition', window })
+  );
   const runtime = createTuiRuntime({
     app: createCodingAgentTuiApp('', { initialHydration: hydration }),
     host: createMemoryTerminalHost()
@@ -765,7 +801,9 @@ test('restored and live context transitions share the exact window identity', as
     });
     const transitions = runtime
       .state()
-      .conversation.items.filter((item) => item.kind === 'notice' && item.text.includes('Context changed'));
+      .conversation.items.filter(
+        (item) => item.kind === 'notice' && item.text.includes('Context changed')
+      );
     assert.equal(transitions.length, 1);
     assert.equal(transitions[0].id, 'session:window-1');
     assert.match(transitions[0].text, /Retain the original conversation/u);

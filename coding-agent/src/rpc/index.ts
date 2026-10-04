@@ -4,7 +4,6 @@ import {
   RpcError,
   historyRpcMethods,
   inputRpcMethods,
-  noteRpcMethods,
   recoveryRpcMethods,
   rpcMethod,
   sessionRpcMethods
@@ -54,7 +53,6 @@ const processAction = z.discriminatedUnion('kind', [
 export function codingRpcMethods(application: CodingApplication, shutdown: () => void) {
   return {
     ...historyRpcMethods(application),
-    ...noteRpcMethods(application),
     ...sessionRpcMethods(application),
     ...inputRpcMethods(application),
     ...recoveryRpcMethods({
@@ -85,9 +83,8 @@ export function codingRpcMethods(application: CodingApplication, shutdown: () =>
         return application.modelSelection();
       }
     ),
-    'workspace.trust': rpcMethod(
-      z.strictObject({ level: z.literal('trusted') }),
-      ({ level }) => application.selectWorkspaceTrust(level)
+    'workspace.trust': rpcMethod(z.strictObject({ level: z.literal('trusted') }), ({ level }) =>
+      application.selectWorkspaceTrust(level)
     ),
     'permissions.select': rpcMethod(
       z.strictObject({ mode: z.enum(['read_only', 'full_host']) }),

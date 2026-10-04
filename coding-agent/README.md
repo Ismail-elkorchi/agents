@@ -23,13 +23,13 @@ Interactive startup shows the missing workspace-trust and model decisions as con
 
 Type `/` for command suggestions or press Ctrl+P for the searchable command menu. Enter sends; Shift+Enter or Alt+Enter inserts a newline. Ctrl+O toggles tool details; Ctrl+T toggles provider-exposed reasoning. Ctrl+F searches recorded history; F3/Shift+F3 move between search matches; Alt+PageUp/PageDown move between messages. Ctrl+PageUp/PageDown load history, and Ctrl+End returns to live output. F1 shows the actual current bindings, including saved overrides.
 
-Escape closes the top interaction. Ctrl+C copies an active selection, otherwise closes a popup before requesting interruption of active work. Ctrl+P and Alt+N toggle commands and notes. Ctrl+D exits from an empty composer; `/exit` also preserves an unsent draft. `/stop` requests interruption without erasing it.
+Escape closes the top interaction. Ctrl+C copies an active selection, otherwise closes a popup before requesting interruption of active work. Ctrl+P toggles commands. Ctrl+D exits from an empty composer; `/exit` also preserves an unsent draft. `/stop` requests interruption without erasing it.
 
 `/settings` and `/statusline` offer theme, reasoning visibility, tool disclosure, optional notifications, shortcut controls, and an ordered status-field selection with preview. Save applies presentation preferences without changing model inference or workspace authority. `/status` exposes full details and identifies unavailable accounting.
 
 `/attach` adds, inspects, or removes authorized file and passage context and supported native images. `@` completes workspace references. `/drafts` recalls earlier or recovered prompts without sending them. Drafts retain text, caret, selection, and attachments across session switches and controlled restart. `/editor` uses `VISUAL` or `EDITOR`, suspends terminal ownership, and preserves the draft on failure.
 
-`/sessions`, `/new`, `/name`, `/notes`, `/queue`, and `/branches` manage conversation navigation. Queue controls distinguish editing/canceling accepted pending input from composing a new request; steering is an explicit action. Branching history does not revert files. `/source` inspects messages, code, and tool results; `/export` writes the loaded history coverage locally. `/context` distinguishes available resources and the unsent draft from the latest admitted request. `/processes` inspects session-owned commands and authority-wide recovery blockers. Input and termination require the current session owner; recovery decisions bind the current evidence revision. `/changes` shows recorded patches; `/recovery` handles pending approvals and uncertain outcomes.
+`/sessions`, `/new`, `/name`, `/queue`, and `/branches` manage conversation navigation. Queue controls distinguish editing/canceling accepted pending input from composing a new request; steering is an explicit action. Branching history does not revert files. `/source` inspects messages, code, and tool results; `/export` writes the loaded history coverage locally. `/context` distinguishes available resources and the unsent draft from the latest admitted request and shows the current generated working state. `/processes` inspects session-owned commands and authority-wide recovery blockers. Input and termination require the current session owner; recovery decisions bind the current evidence revision. `/changes` shows recorded patches; `/recovery` handles pending approvals and uncertain outcomes.
 
 Clipboard transport preserves selected source text, including tabs and line endings. Terminal capabilities are negotiated by terminal-ui; unsupported operations are reported explicitly.
 
@@ -101,7 +101,7 @@ The optional `limits` object accepts Agent Core's current run limits. Project co
 
 ## Durable conversation and recovery
 
-Informational questions and editing tasks use the same Agent Core session contract. A user prompt does not create a separate revision workflow. Original contributions, corrections, tool observations, provider state, context selections, notes, branches, queued input, approvals, and uncertain effects remain durable.
+Informational questions and editing tasks use the same Agent Core session contract. A user prompt does not create a separate revision workflow. Original contributions, corrections, tool observations, provider state, context selections, working state, branches, queued input, approvals, and uncertain effects remain durable.
 
 An approval binds the exact tool input, effects, implementation, policy, and execution target. Changed facts invalidate it. Effects with an unknown outcome are not replayed automatically. `--resume` without a task drives only an unfinished accepted run.
 
@@ -115,7 +115,7 @@ The package root exports `openCodingApplication`, `createCodingSession`, workspa
 coding-agent rpc --root /path/to/workspace --session latest
 ```
 
-The stdio adapter uses UTF-8 JSONL with JSON-RPC 2.0. `input.submit` accepts the Core session submission fields (`task`, `instructions`, `contextItems`, `images`, and `relationship`) and returns durable submission identities; notifications carry progress and terminal results. `session.read`, history, notes, approvals, and change methods read the same recorded state. On `delivery.gap`, refresh the authoritative session. EOF and `application.shutdown` close application resources.
+The stdio adapter uses UTF-8 JSONL with JSON-RPC 2.0. `input.submit` accepts the Core session submission fields (`task`, `instructions`, `contextItems`, `images`, and `relationship`) and returns durable submission identities; notifications carry progress and terminal results. `session.read`, history, context, approvals, and change methods read the same recorded state. On `delivery.gap`, refresh the authoritative session. EOF and `application.shutdown` close application resources.
 
 ## Development
 
@@ -125,7 +125,7 @@ The repository pins exact Agent Core, terminal-ui, and markspan revisions. Run t
 npm run verify:release
 ```
 
-When a model cannot use selected native state, the model selector offers **Continue fresh in this session** as an explicit second action. This preserves the session and original history, continuing from selected portable user contributions, answers, complete tool observations and selected notes. Pending or uncertain work must be resolved first; unsupported selected images remain a conflict. Continuing processes retain their original controls.
+When a model cannot use selected native state, the model selector offers **Continue fresh in this session** as an explicit second action. This preserves the session and original history, continuing from selected portable user contributions, answers, complete tool observations and working state. Pending or uncertain work must be resolved first; unsupported selected images remain a conflict. Continuing processes retain their original controls.
 
 For a resumed CLI session, use `--fresh-continuation --session ID --provider PROVIDER --model MODEL` (or `--resume` in place of `--session ID`). RPC `configuration.set` accepts the usual flat model selection plus `"continuation": "fresh"`. The option applies to that command only. Ordinary compatible model changes do not require it.
 

@@ -11,7 +11,7 @@ import {
   agentEventCodec,
   createContextTools,
   createHistoryTools,
-  createNotesTools,
+  createWorkingStateTool,
   type AgentEvent,
   type AgentSessionConfiguration,
   type AgentSessionOptions,
@@ -19,11 +19,7 @@ import {
   type PromptContextItemInput,
   type SessionDescriptor
 } from '@agent-core/runtime';
-import {
-  JsonlInferenceRepository,
-  JsonlNoteRepository,
-  JsonlSessionRepository
-} from '@agent-core/runtime/node';
+import { JsonlInferenceRepository, JsonlSessionRepository } from '@agent-core/runtime/node';
 import {
   commandExecutionResources,
   commandReleaseReport,
@@ -122,15 +118,13 @@ export async function createCodingSession(options: CodingSessionOptions) {
   let inference = createInference();
   const runs = new AgentRunCoordinator(events, artifacts);
   const history = new HistoryReader({ repository: sessions, session, events, artifacts });
-  const notes = new JsonlNoteRepository({
-    rootDir: path.join(workspace.runtimeDir, 'notes'),
-    artifacts
-  });
+
   const context = new ContextService({
     repository: sessions,
     session,
     history,
-    notes,
+
+    artifacts,
     policy: {
       maxSourceBytes: 4 * 1024 * 1024,
       historyRead: { history, isAvailable: () => true }
@@ -138,14 +132,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
   });
   const memoryTools = Object.freeze([
     ...createHistoryTools({ history }),
-    ...createNotesTools({
-      repository: notes,
-      scope: async () => {
-        const cut = await history.capture();
-        return { sessionId: cut.sessionId, branchId: cut.branchId };
-      },
-      authorId: 'coding-model'
-    }),
+    createWorkingStateTool(context),
     ...createContextTools({ context })
   ]);
   const memoryToolNames = new Set(memoryTools.map((tool) => tool.name));
@@ -212,7 +199,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
       repository: sessions,
       runs,
       context,
-      notes,
+
       configuration: {
         provider: options.provider.id,
         model: settings.model,
@@ -253,7 +240,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
           inferenceService: inference,
           context,
           contextRenewal: { automatic: true },
-          notes,
+
           inferenceOwnerId: ownerId,
           model: runtimeSettings.model,
           toolBoundary: {
@@ -273,7 +260,9 @@ export async function createCodingSession(options: CodingSessionOptions) {
                 resources: commandExecutionResources(commandExecution, { kind: 'owner', ownerId })
               }
             : {}),
-          toolPolicy: authority.toolPolicy,
+          // File/command authority is enforced by the exposed host capabilities and authorizer.
+          // Session-state publication remains available in read-only workspaces.
+          toolPolicy: { allowedRisks: ['read', 'write', 'destructive', 'execute'] },
           toolContextPrerequisite: (request) =>
             memoryToolNames.has(request.call.name)
               ? Promise.resolve(undefined)
@@ -282,7 +271,8 @@ export async function createCodingSession(options: CodingSessionOptions) {
             if (memoryToolNames.has(request.call.name))
               return {
                 decision: 'allow',
-                reason: 'The tool is bound to this session history, notes, or context service.'
+                reason:
+                  'The tool is bound to this session history, working state, or context service.'
               };
             const workspaceDecision = openedWorkspace.security.authorizeTool(request);
             if (workspaceDecision.decision === 'deny') return workspaceDecision;
@@ -366,7 +356,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
       },
       history,
       artifacts,
-      notes,
+
       context,
       runs,
       events,

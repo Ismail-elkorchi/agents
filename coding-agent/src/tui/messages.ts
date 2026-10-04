@@ -60,13 +60,6 @@ export type CodingAgentTuiMessage =
   | { readonly type: 'terminal.focus'; readonly focused: boolean }
   | import('@agent-core/tui').PreferencesMessage
   | { readonly type: 'preferences.open' }
-  | { readonly type: 'notes.open' }
-  | {
-      readonly type: 'notes.child';
-      readonly child: import('@ismail-elkorchi/terminal-ui/tui').TuiChildMessage<
-        import('@agent-core/tui').NotesMessage
-      >;
-    }
   | {
       readonly type: 'configuration.child';
       readonly child: import('@ismail-elkorchi/terminal-ui/tui').TuiChildMessage<
