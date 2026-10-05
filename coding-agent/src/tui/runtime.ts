@@ -1,4 +1,4 @@
-import { progressReplacementKey, type AgentRunResult } from '@agent-core/runtime';
+import { progressReplacementKey, type AgentRunResult, type AgentSessionSuspensionDescriptor } from '@agent-core/runtime';
 import { applicationEventSource, preferencesTheme, ringTerminalBell, suspensionMessage, suspensionPresentation } from '@agent-core/tui';
 import {
   exportConversation,
@@ -55,7 +55,9 @@ export async function runCodingAgentTuiApp(
           });
           return;
         }
-        result = await presentControllerEvent(event, emit, result);
+        result = await presentControllerEvent(
+          event, emit, result, controller.state().session?.suspension
+        );
         if (
           event.type === 'input.queued' ||
           event.type === 'input.revised' ||
@@ -192,7 +194,8 @@ export async function runCodingAgentTuiApp(
 async function presentControllerEvent(
   event: CodingApplicationEvent,
   emit: (message: CodingAgentTuiMessage) => Promise<void>,
-  currentResult: AgentRunResult | undefined
+  currentResult: AgentRunResult | undefined,
+  suspension: AgentSessionSuspensionDescriptor | undefined
 ): Promise<AgentRunResult | undefined> {
   let message: CodingAgentTuiMessage;
   switch (event.type) {
@@ -225,7 +228,9 @@ async function presentControllerEvent(
       message = { type: 'context.transitioned', window: event.window };
       break;
     case 'run.failed':
-      message = { type: 'failure', message: event.error.message };
+      message = suspension
+        ? { type: 'run.suspended', suspension }
+        : { type: 'failure', message: event.error.message };
       break;
     case 'run.completed': {
       const result = event.result;
@@ -234,13 +239,27 @@ async function presentControllerEvent(
           ? { type: 'result', result }
           : result.reason === 'approval_required'
             ? { type: 'approval.required', suspension: result }
-            : { type: 'run.suspended', suspension: result };
+            : { type: 'run.suspended', suspension: requireSuspension(suspension, result.runId) };
+      if (
+        result.state === 'suspended' &&
+        result.reason !== 'approval_required' &&
+        result.cleanupDiagnostic
+      )
+        await emit({
+          type: 'interactive.notice', tone: 'warning', message: result.cleanupDiagnostic.message
+        });
       currentResult = result;
       break;
     }
   }
   await emit(message);
   return currentResult;
+}
+
+function requireSuspension(suspension: AgentSessionSuspensionDescriptor | undefined, runId: string) {
+  if (suspension?.runId !== runId)
+    throw new Error('Run recovery has no matching session descriptor.');
+  return suspension;
 }
 
 function errorMessage(error: unknown): string {

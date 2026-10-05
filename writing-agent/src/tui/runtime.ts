@@ -38,7 +38,8 @@ export async function runWritingAgentTuiApp(
           case 'run.completed':
             return emit({ type: 'result', result: event.result });
           case 'run.failed':
-            return emit({ type: 'notice', message: event.error.message });
+            await emit({ type: 'notice', message: event.error.message });
+            return emit({ type: 'refresh' });
           case 'delivery.gap':
           case 'configuration.changed':
           case 'input.queued':

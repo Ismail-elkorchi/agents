@@ -250,13 +250,7 @@ test(
     const text = 'Change intent: explain first. Unresolved: verify repository guidance.';
     const provider = await scriptedOllama([
       toolResponse('update_working_state', {
-        edits: [
-          {
-            range: { start: { line: 1, column: 1 }, end: { line: 1, column: 1 } },
-            expectedText: '',
-            replacementText: text
-          }
-        ]
+        text
       }),
       finalResponse('Explained.'),
       finalResponse('Continued.')

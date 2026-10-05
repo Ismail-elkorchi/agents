@@ -267,13 +267,7 @@ test(
       mode: 'review',
       responses: [
         toolCall('update_working_state', {
-          edits: [
-            {
-              range: { start: { line: 1, column: 1 }, end: { line: 1, column: 1 } },
-              expectedText: '',
-              replacementText: text
-            }
-          ]
+          text
         }),
         'Reviewed.',
         'Answered.'

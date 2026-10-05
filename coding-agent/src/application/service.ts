@@ -833,8 +833,8 @@ export class CodingApplication {
       return agent.reconcileExternal(suspension.runId);
     if (suspension.category === 'context_admission')
       return agent.resumeContextAdmission(suspension.runId);
-    if (suspension.category === 'implementation')
-      return agent.resumeImplementation(suspension.runId);
+    if (suspension.category === 'runtime')
+      return agent.resumeRuntime(suspension.runId);
     throw new Error('The suspension requires a decision.');
   }
 

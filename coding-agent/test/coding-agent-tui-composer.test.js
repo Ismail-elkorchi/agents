@@ -97,7 +97,9 @@ test('non-approval suspensions remain distinct recovery decisions', async () => 
   await runtime.dispatch({
     type: 'run.suspended',
     suspension: {
-      state: 'suspended',
+      submissionId: 'input',
+      category: 'external_recovery',
+      actions: ['reconcile', 'abort'],
       reason: 'tool_outcome_unknown',
       runId: 'run',
       finalizationId: 'final',
@@ -213,7 +215,8 @@ for (const columns of [48, 100])
     await runtime.dispatch({
       type: 'run.suspended',
       suspension: {
-        ...approvalSuspension(),
+        runId: 'run', submissionId: 'input', category: 'external_recovery',
+        actions: ['reconcile', 'abort'],
         reason: 'provider_outcome_unknown',
         effectId: 'request'
       }
@@ -286,7 +289,7 @@ test('context suspension shows its actual conflict and context actions instead o
   const runtime = createTuiRuntime({ host, app: createCodingAgentTuiApp('') });
   t.after(() => runtime.dispose());
   await runtime.start();
-  const { pendingApprovals: _pending, ...base } = approvalSuspension();
+  const base = { runId: 'run-1', submissionId: 'input', category: 'context_admission', actions: ['context', 'abort'] };
   await runtime.dispatch({ type: 'run.suspended', suspension: { ...base, reason: 'context_admission',
     contextAdmission: { kind: 'request_capacity', message: 'Estimated input exceeds the selected model input limit.',
       estimatedInputTokens: 12000, contextTokens: 10000, outputReservation: 1000, reasoningReservation: 0,

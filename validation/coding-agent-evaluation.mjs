@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { parseArgs, promisify } from 'node:util';
 import { openCodingApplication } from '@ismail-elkorchi/coding-agent';
+import { EvaluationMetrics } from './evaluation-metrics.mjs';
 
 const execute = promisify(execFile);
 const { values } = parseArgs({
@@ -181,29 +182,14 @@ try {
         if (event.type !== 'run.progress') return;
         let metrics = measured.get(event.runId);
         if (!metrics) {
-          metrics = {
-            generationRequests: 0,
-            estimatedGenerationPromptTokens: 0,
-            estimatedGenerationToolSchemaTokens: 0,
-            toolCalls: [], toolFailures: 0, timedOutToolResults: 0,
-            contextRenewals: 0, modelInterruptions: 0
-          };
+          metrics = new EvaluationMetrics();
           measured.set(event.runId, metrics);
         }
-        const progress = event.event;
-        if (progress.type === 'model.requested') {
-          metrics.generationRequests++;
-          metrics.estimatedGenerationPromptTokens += progress.estimate.totalPromptTokens;
-          metrics.estimatedGenerationToolSchemaTokens += progress.estimate.toolSchemaTokens;
-        } else if (progress.type === 'tool.started') metrics.toolCalls.push(progress.toolName);
-        else if (progress.type === 'tool.ended') {
-          if (progress.observation.kind === 'failure') metrics.toolFailures++;
-          if (progress.observation.output?.status === 'timed_out') metrics.timedOutToolResults++;
-        } else if (progress.type === 'context.transitioned') metrics.contextRenewals++;
-        else if (progress.type === 'assistant.interrupted') metrics.modelInterruptions++;
+        metrics.record(event.event);
       }, error => { measurementErrors.push(error.message); });
       const steps = [];
-      report.trials.push({ scenario: scenario.id, trial, steps, measurementErrors });
+      const trialRecord = { scenario: scenario.id, trial, steps, measurementErrors };
+      report.trials.push(trialRecord);
       try {
         await app.start();
         await app.selectWorkspaceTrust('trusted');
@@ -241,7 +227,6 @@ try {
             budget: terminal?.budget,
             terminationReason: terminal?.terminationReason,
             elapsedMs: performance.now() - startedAt,
-            metrics: measured.get(accepted.runId),
             checks,
             passed:
               terminal?.executionStatus === 'completed' &&
@@ -260,6 +245,7 @@ try {
         });
       } finally {
         unsubscribe();
+        trialRecord.runMetrics = Object.fromEntries(measured);
         await app.close();
       }
       await saveReport();

@@ -811,3 +811,28 @@ test('restored and live context transitions share the exact window identity', as
     await runtime.dispose();
   }
 });
+
+test('a dispatch failure before the first turn restores usable recovery controls from the session', async t => {
+  const suspension = { runId: 'run-1', submissionId: 'submission-1', category: 'runtime',
+    reason: 'runtime_failed', diagnostic: 'Driver attachment failed', actions: ['resume', 'abort'] };
+  const hydration = baseHydration({ phase: 'suspended', activeRunId: 'run-1', queuedInputs: 0, suspension },
+    { pendingState: 'suspended', control: { status: 'detached' }, phase: { kind: 'accepted' }, budget: undefined });
+  const actions = [];
+  const runtime = createTuiRuntime({
+    host: createMemoryTerminalHost({ terminalSize: { columns: 90, rows: 24 } }),
+    app: createCodingAgentTuiApp('', { initialHydration: hydration,
+      recoveryHandler: async (descriptor, action) => { actions.push({ descriptor, action }); return 'Recovery requested'; } })
+  });
+  t.after(() => runtime.dispose());
+  await runtime.start();
+  assert.equal(runtime.state().run.kind, 'waiting_for_recovery');
+  assert.deepEqual(runtime.state().run.suspension, suspension);
+  await runtime.dispatch({ type: 'recovery.open' });
+  const frame = renderFramePlain(runtime.frame());
+  assert.match(frame, /Driver attachment failed/);
+  assert.match(frame, /Resume recorded work/);
+  assert.match(frame, /Stop this run/);
+  await runtime.dispatch({ type: 'recovery.act', action: 'resume' });
+  await waitFor(() => actions.length === 1);
+  assert.deepEqual(actions[0], { descriptor: suspension, action: 'resume' });
+});

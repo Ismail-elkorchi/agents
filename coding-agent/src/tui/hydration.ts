@@ -1,8 +1,7 @@
 import type {
   AgentApprovalSuspension,
   AgentRunInspection,
-  AgentRunState,
-  AgentRunSuspension
+  AgentRunState
 } from '@agent-core/runtime';
 import { projectToolDiagnostics, suspensionMessage } from '@agent-core/tui';
 import type { CodingSessionView } from '../application/contracts.js';
@@ -79,13 +78,12 @@ function restoreSessionRunState(
     if (session.suspension?.runId !== run.state.runId) {
       throw new Error('Restored session suspension has no matching durable descriptor.');
     }
-    const suspension = runSuspension(run.state);
-    if (suspension.reason !== session.suspension.reason) {
-      throw new Error('Restored session suspension contradicts its durable run.');
-    }
-    if (suspension.reason === 'approval_required') {
-      return { ...state, run: { kind: 'waiting_for_approval', suspension } };
-    }
+    const suspension = session.suspension;
+    if (suspension.reason === 'approval_required')
+      return {
+        ...state,
+        run: { kind: 'waiting_for_approval', suspension: approvalSuspension(run.state) }
+      };
     return upsertConversationEntry(
       {
         ...state,
@@ -132,7 +130,7 @@ function selectedRun(hydration: CodingSessionView): AgentRunInspection | undefin
   return hydration.runs.find((run) => pendingRunIds.has(run.state.runId));
 }
 
-function runSuspension(run: AgentRunState): AgentApprovalSuspension | AgentRunSuspension {
+function approvalSuspension(run: AgentRunState): AgentApprovalSuspension {
   if (run.budget === undefined) {
     throw new Error(`Suspended run ${run.runId} has no durable budget.`);
   }
@@ -163,52 +161,7 @@ function runSuspension(run: AgentRunState): AgentApprovalSuspension | AgentRunSu
       budget: run.budget
     };
   }
-  const reason = runSuspensionReason(run);
-  if (reason === undefined) throw new Error(`Run ${run.runId} is not suspended.`);
-  const effectId = runEffectId(run, reason);
-  return {
-    state: 'suspended',
-    reason,
-    runId: run.runId,
-    finalizationId: run.finalizationId,
-    ...(effectId === undefined ? {} : { effectId }),
-    budget: run.budget
-  };
-}
-
-function runSuspensionReason(run: AgentRunState): AgentRunSuspension['reason'] | undefined {
-  const phase = run.phase;
-  if (phase.kind === 'suspended') return phase.reason === 'approval' ? undefined : phase.reason;
-  if (run.providerRequests.some((request) => request.stage === 'outcome_unknown'))
-    return 'provider_outcome_unknown';
-  if (
-    run.toolBatches.some((batch) =>
-      batch.callStates.some((call) => call.stage === 'outcome_unknown')
-    )
-  )
-    return 'tool_outcome_unknown';
-  return undefined;
-}
-
-function runEffectId(run: AgentRunState, reason: AgentRunSuspension['reason']): string | undefined {
-  const phase = run.phase;
-  if (
-    phase.kind === 'suspended' &&
-    phase.reason !== 'approval' &&
-    phase.reason !== 'context_admission' &&
-    phase.effectId !== undefined
-  )
-    return phase.effectId;
-  if (reason === 'provider_outcome_unknown') {
-    return run.providerRequests.find((request) => request.stage === 'outcome_unknown')?.effect
-      .intent.effectId;
-  }
-  if (reason === 'tool_outcome_unknown') {
-    return run.toolBatches
-      .flatMap((batch) => batch.callStates)
-      .find((call) => call.stage === 'outcome_unknown')?.effect.intent.effectId;
-  }
-  return undefined;
+  throw new Error(`Suspended run ${run.runId} has no pending tool approval.`);
 }
 
 function runLabel(run: AgentRunState): string {

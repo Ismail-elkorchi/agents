@@ -8,7 +8,7 @@ import type {
   AgentRunConfiguration,
   AgentRunInspection,
   AgentRunPhase,
-  AgentRunSuspension,
+  AgentSessionSuspensionDescriptor,
   AgentSessionState,
   AgentTerminalSnapshot,
   SessionBranchPoint,
@@ -63,7 +63,7 @@ export type CodingAgentTuiRunState =
   | { readonly kind: 'waiting_for_approval'; readonly suspension: AgentApprovalSuspension }
   | {
       readonly kind: 'waiting_for_recovery';
-      readonly suspension: AgentRunSuspension;
+      readonly suspension: AgentSessionSuspensionDescriptor;
       readonly operation?: import('./recovery.js').RecoveryAction;
       readonly message?: string;
     }

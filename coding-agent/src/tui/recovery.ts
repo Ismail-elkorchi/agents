@@ -1,4 +1,4 @@
-import type { AgentRunSuspension } from '@agent-core/runtime';
+import type { AgentSessionSuspensionDescriptor } from '@agent-core/runtime';
 import { diagnosticMessage, suspensionMessage, suspensionPresentation } from '@agent-core/tui';
 import { button, dialog, richText, type Element } from '@ismail-elkorchi/terminal-ui/components';
 import { column, viewport } from '@ismail-elkorchi/terminal-ui/layout';
@@ -8,12 +8,12 @@ import type { CodingAgentTuiRunState } from './state.js';
 
 export type RecoveryAction = 'stop' | 'resume';
 export type RecoveryHandler = (
-  suspension: AgentRunSuspension,
+  suspension: AgentSessionSuspensionDescriptor,
   action: RecoveryAction
 ) => Promise<string>;
 
 export function recoveryEffect(
-  suspension: AgentRunSuspension,
+  suspension: AgentSessionSuspensionDescriptor,
   action: RecoveryAction,
   handler: RecoveryHandler | undefined
 ): TuiEffect<CodingAgentTuiMessage> {

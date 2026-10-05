@@ -541,8 +541,8 @@ export class WritingApplication {
     const agent = this.requireAgent();
     if (agent.inspectSuspension()?.category === 'context_admission')
       return agent.resumeContextAdmission(runId);
-    return agent.inspectSuspension()?.category === 'implementation'
-      ? agent.resumeImplementation(runId)
+    return agent.inspectSuspension()?.category === 'runtime'
+      ? agent.resumeRuntime(runId)
       : agent.reconcileExternal(runId);
   }
   decide(input: Parameters<AgentSession['resolveDecision']>[0]) {
