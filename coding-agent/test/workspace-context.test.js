@@ -6,7 +6,8 @@ import { createWorkspace, scriptedOllama, finalResponse, toolResponse, trust } f
 for (const permissionMode of ['read_only', 'full_host'])
   test(`${permissionMode}: startup and inspection identify the effective file root`, { skip: process.platform !== 'linux' }, async (t) => {
     const provider = await scriptedOllama([finalResponse('Ready.')]);
-    const fixture = await createWorkspace({ endpoint: provider.endpoint, tools: ['read_files'], checks: [] });
+    const fixture = await createWorkspace({ endpoint: provider.endpoint, tools: ['read_files', 'view_image'],
+      checks: [{ id: 'test', command: 'npm test', coverage: 'full' }] });
     await trust(fixture);
     const options = { root: fixture.root, stateRoot: fixture.stateRoot, permissionMode, providerEndpoint: provider.endpoint };
     const app = await openCodingApplication(options);
@@ -21,6 +22,11 @@ for (const permissionMode of ['read_only', 'full_host'])
     assert.equal(submission.kind, 'started');
     assert.equal((await submission.completion).state, 'ended');
     assert.ok(JSON.stringify(provider.chatRequests[0]).includes(JSON.stringify(content).slice(1, -1)));
+    const declared = provider.chatRequests[0].tools.map(tool => tool.function.name);
+    assert.deepEqual([...inspected.available.toolNames].sort(), [...declared].sort());
+    assert.ok(inspected.available.toolNames.includes('update_working_state'));
+    assert.equal(inspected.available.toolNames.includes('run_check'), permissionMode === 'full_host');
+    assert.ok(!inspected.available.toolNames.includes('view_image'), 'The text-only model cannot view images.');
   });
 
 test('reading source preserves identifiers and redacts credentials without interrupting inference', {

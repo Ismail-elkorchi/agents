@@ -23,6 +23,9 @@ import { JsonlInferenceRepository, JsonlSessionRepository } from '@agent-core/ru
 import {
   commandExecutionResources,
   commandReleaseReport,
+  isToolAvailable,
+  toolRequirementsSatisfied,
+  type ToolPolicy,
   type CommandExecutionReport
 } from '@agent-core/tools';
 import { promises as fs } from 'node:fs';
@@ -193,6 +196,28 @@ export async function createCodingSession(options: CodingSessionOptions) {
   }
 
   try {
+    const host = environment.toolHost;
+
+    const checkTools =
+      commandExecution &&
+      configuration &&
+      authority.verificationCommands &&
+      configuration.verification.required.length + configuration.verification.advisory.length >
+        0
+        ? [
+            createConfiguredCheckTool({
+              required: configuration.verification.required,
+              advisory: configuration.verification.advisory,
+              commandExecution,
+              root: environment.files
+            })
+          ]
+        : [];
+    const tools = Object.freeze([...host.tools, ...checkTools, ...sessionTools]);
+    const resources = commandExecution
+      ? commandExecutionResources(commandExecution, { kind: 'owner', ownerId })
+      : undefined;
+    const toolPolicy: ToolPolicy = { allowedRisks: ['read', 'write', 'destructive', 'execute'] };
     const sessionOptions: AgentSessionOptions = {
       descriptor: session,
       expectedBinding: binding,
@@ -217,24 +242,6 @@ export async function createCodingSession(options: CodingSessionOptions) {
           security: openedWorkspace.security,
           configuredPaths: configuration?.instructions.map((instruction) => instruction.path) ?? []
         });
-        const host = environment.toolHost;
-
-        const checkTools =
-          commandExecution &&
-          configuration &&
-          authority.verificationCommands &&
-          configuration.verification.required.length + configuration.verification.advisory.length >
-            0
-            ? [
-                createConfiguredCheckTool({
-                  required: configuration.verification.required,
-                  advisory: configuration.verification.advisory,
-                  commandExecution,
-                  root: environment.files
-                })
-              ]
-            : [];
-        const tools = Object.freeze([...host.tools, ...checkTools, ...sessionTools]);
         const runtime = new AgentRuntime({
           provider,
           inferenceService: inference,
@@ -255,14 +262,10 @@ export async function createCodingSession(options: CodingSessionOptions) {
             defaultGenerationAllowance(await provider.describeModel(runtimeSettings.model)),
           tools,
           toolContext: { services: host.services },
-          ...(commandExecution
-            ? {
-                resources: commandExecutionResources(commandExecution, { kind: 'owner', ownerId })
-              }
-            : {}),
+          ...(resources === undefined ? {} : { resources }),
           // File/command authority is enforced by the exposed host capabilities and authorizer.
           // Session-state publication remains available in read-only workspaces.
-          toolPolicy: { allowedRisks: ['read', 'write', 'destructive', 'execute'] },
+          toolPolicy,
           toolContextPrerequisite: (request) =>
             sessionToolNames.has(request.call.name)
               ? Promise.resolve(undefined)
@@ -376,7 +379,15 @@ export async function createCodingSession(options: CodingSessionOptions) {
           available: {
             instructions: (await sessionGuidance.refresh()).instructions,
             resources: [workspaceContext(authority, environment.files.displayPath)],
-            toolNames: authority.enabledTools
+            toolNames: tools
+              .filter((tool) =>
+                isToolAvailable(tool, toolPolicy) && toolRequirementsSatisfied(tool, {
+                  services: host.services,
+                  modelInputModalities: profile.modalities.input,
+                  hostCapabilities: resources?.capabilities ?? []
+                })
+              )
+              .map((tool) => tool.name)
           }
         };
       },
