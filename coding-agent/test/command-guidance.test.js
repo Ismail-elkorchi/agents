@@ -190,6 +190,37 @@ test(
   }
 );
 
+test('scoped reads discover guidance before the next effect without claiming source delivery',
+  { skip: process.platform !== 'linux', timeout: 30000 }, async t => {
+    const provider = await scriptedOllama([
+      () => toolResponse('read_files', { files: [{ path: 'subproject/file.txt' }] }),
+      request => {
+        assert.match(JSON.stringify(request.messages.filter(message => message.role === 'system')), /DISCOVERED-ON-READ/);
+        return toolResponse('exec_command', { command: 'printf inspected', workdir: 'subproject' });
+      },
+      request => {
+        assert.doesNotMatch(JSON.stringify(request.messages.filter(message => message.role === 'tool')), /context_required/);
+        assert.match(request.messages.at(-1).content, /inspected/);
+        return finalResponse('Inspection complete.');
+      }
+    ]);
+    const fixture = await createWorkspace({ endpoint: provider.endpoint,
+      tools: ['read_files', 'exec_command'], checks: [],
+      files: { 'subproject/AGENTS.md': 'DISCOVERED-ON-READ: preserve unrelated work.', 'subproject/file.txt': 'source' } });
+    let application;
+    t.after(async () => { await application?.close(); await provider.close(); await fixture.close(); });
+    await trust(fixture);
+    application = await openCodingApplication({ root: fixture.root, stateRoot: fixture.stateRoot,
+      providerEndpoint: provider.endpoint, permissionMode: 'full_host' });
+    await application.start();
+    const submitted = await application.submit({ task: 'Read the source, then inspect its directory.' });
+    const completed = await submitted.completion;
+    assert.equal(completed.terminal.executionStatus, 'completed', JSON.stringify(completed));
+    const observations = (await application.readSession()).history.entries.filter(entry => entry.type === 'observation');
+    assert.equal(observations.length, 2);
+    assert(!observations.some(entry => entry.output.status === 'context_required'));
+  });
+
 // Source freshness is independent of provider success or an attempted prerequisite callback.
 test(
   'guidance revisions require actual admitted delivery and detect additions, edits, removal and configured precedence',

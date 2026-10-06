@@ -163,16 +163,17 @@ export class RepositoryGuidanceSession {
     return result;
   }
 
+  /** Scoped reads discover guidance for the next request without delaying the read. */
   async authorize(
     request: ToolAuthorizationRequest
   ): Promise<ToolAuthorizationDecision | undefined> {
-    if (!mutatesOrExecutes(request)) return undefined;
+    const requiresGuidance = mutatesOrExecutes(request);
     let omissions: readonly RepositoryGuidanceOmission[] = [];
     await this.#exclusive(async () => {
       const revisions = await this.#resolve(request);
       omissions = revisions.flatMap((item) => (item.omission ? [item.omission] : []));
     });
-    if (omissions.length === 0) return undefined;
+    if (!requiresGuidance || omissions.length === 0) return undefined;
     return Object.freeze({
       decision: 'deny',
       reason: `Repository guidance could not be safely loaded for this target: ${omissions.map((item) => `${item.path} (${item.reason})`).join(', ')}.`

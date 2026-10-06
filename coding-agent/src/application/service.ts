@@ -657,7 +657,7 @@ export class CodingApplication {
         maxBytes: 8 * 1024 * 1024 - bytes
       });
       bytes += page.bytes;
-      if (page.unavailable?.length)
+      if (page.unread?.length)
         throw new Error(
           'Original history exceeds the bounded source read. Select specific original sources.'
         );
