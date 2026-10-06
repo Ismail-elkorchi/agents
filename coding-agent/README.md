@@ -103,6 +103,8 @@ The optional `limits` object accepts Agent Core's current run limits. Project co
 
 Informational questions and editing tasks use the same Agent Core session contract. A user prompt does not create a separate revision workflow. Original contributions, corrections, tool observations, provider state, context selections, working state, branches, queued input, approvals, and uncertain effects remain durable.
 
+Core manages one current working-state revision per branch. Automatic context renewal retains recent originals and complete tool exchanges that fit admission, rather than forcing the model to retrieve everything again. State updates are optional and do not establish verification or permission. Native reasoning stays separate; unsupported model-specific prefix or catalog changes are rejected. Context capacity, the output reservation and the continuing session budget remain distinct.
+
 An approval binds the exact tool input, effects, implementation, policy, and execution target. Changed facts invalidate it. Effects with an unknown outcome are not replayed automatically. `--resume` without a task drives only an unfinished accepted run.
 
 Conversation storage is authoritative. Live TUI delivery is a projection: a delivery gap or listener failure triggers a fresh state/history read, and stale asynchronous pages cannot replace newer conversation state. Browsing older history keeps live updates and Ctrl+End returns to the current tail.

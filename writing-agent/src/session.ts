@@ -97,7 +97,7 @@ export function createWritingSession(
       historyRead: { history, isAvailable: () => true }
     }
   });
-  const memoryTools = [
+  const sessionTools = [
     ...createHistoryTools({ history }),
     createWorkingStateTool(context),
     ...createContextTools({ context })
@@ -151,7 +151,7 @@ export function createWritingSession(
         const tools = [
           ...host.tools,
           ...createWritingDocumentTools(root, artifacts),
-          ...memoryTools
+          ...sessionTools
         ];
         const contextItems = workspaceContext(workspace, mode);
         const runtime = new AgentRuntime({
@@ -233,7 +233,7 @@ export function createWritingSession(
             ...readTools,
             ...(mode === 'edit' ? ['apply_patch', 'edit_text'] : []),
             ...createWritingDocumentTools(workspace.root, artifacts).map((tool) => tool.name),
-            ...memoryTools.map((tool) => tool.name)
+            ...sessionTools.map((tool) => tool.name)
           ]
         }
       };

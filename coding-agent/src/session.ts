@@ -130,12 +130,12 @@ export async function createCodingSession(options: CodingSessionOptions) {
       historyRead: { history, isAvailable: () => true }
     }
   });
-  const memoryTools = Object.freeze([
+  const sessionTools = Object.freeze([
     ...createHistoryTools({ history }),
     createWorkingStateTool(context),
     ...createContextTools({ context })
   ]);
-  const memoryToolNames = new Set(memoryTools.map((tool) => tool.name));
+  const sessionToolNames = new Set(sessionTools.map((tool) => tool.name));
 
   const commitTerminalReport = async (report: CommandExecutionReport): Promise<void> => {
     const released = commandReleaseReport(report);
@@ -234,7 +234,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
                 })
               ]
             : [];
-        const tools = Object.freeze([...host.tools, ...checkTools, ...memoryTools]);
+        const tools = Object.freeze([...host.tools, ...checkTools, ...sessionTools]);
         const runtime = new AgentRuntime({
           provider,
           inferenceService: inference,
@@ -264,11 +264,11 @@ export async function createCodingSession(options: CodingSessionOptions) {
           // Session-state publication remains available in read-only workspaces.
           toolPolicy: { allowedRisks: ['read', 'write', 'destructive', 'execute'] },
           toolContextPrerequisite: (request) =>
-            memoryToolNames.has(request.call.name)
+            sessionToolNames.has(request.call.name)
               ? Promise.resolve(undefined)
               : guidance.contextPrerequisite(request),
           toolAuthorizer: async (request) => {
-            if (memoryToolNames.has(request.call.name))
+            if (sessionToolNames.has(request.call.name))
               return {
                 decision: 'allow',
                 reason:
