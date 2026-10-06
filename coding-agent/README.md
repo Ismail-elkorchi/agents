@@ -62,7 +62,7 @@ Read-only mode starts no command executor. Full Host mode uses Agent Core's supe
 
 Captured output buffers have bounded retention. Terminal identity, ownership, status, and artifact references remain queryable after buffer expiration and application restart. Stopping an already completed owned process returns its original terminal outcome. Output availability and execution uncertainty remain separate facts; accepting uncertainty never certifies success or replays a command.
 
-Coding Agent's host-root authority currently requires Linux `/proc`; macOS and Windows startup are not yet qualified.
+Coding Agent's host-root authority currently requires Linux `/proc`. Host workspace access is unavailable on macOS and Windows.
 
 ## Repository guidance
 

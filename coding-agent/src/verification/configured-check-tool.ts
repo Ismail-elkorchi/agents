@@ -391,6 +391,7 @@ export function createConfiguredCheckTool(input: {
     async bindExecution(check, context) {
       const reservation = await planCommandExecution(input.commandExecution, {
         command: check.definition.command,
+        mode: 'foreground',
         rootedDirectory: '.',
         pty: false,
         timeoutMs: check.definition.timeoutMs,
@@ -412,8 +413,7 @@ export function createConfiguredCheckTool(input: {
             const started = await startCommandExecutionPlan(input.commandExecution, reservation, {
               ...(executionContext.signal ? { signal: executionContext.signal } : {}),
               ...(executionContext.resourceLease ? { lease: executionContext.resourceLease } : {}),
-              onProgress: (progress) => executionContext.emitProgress?.(progress),
-              awaitTerminal: true
+              onProgress: (progress) => executionContext.emitProgress?.(progress)
             });
             if (started.kind === 'not_started') {
               notStarted = true;

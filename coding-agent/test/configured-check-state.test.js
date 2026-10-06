@@ -61,14 +61,14 @@ function executor({ exitCode = 0, status = 'exited', incomplete = false, effect,
     }),
     resourceLeases: new ResourceLeaseCoordinator(),
     async plan(request) {
+      assert.equal(request.mode, 'foreground', 'checks run to a terminal outcome');
       calls.push(['plan', request]);
       return createCommandExecutionReservation(
         { command: request.command, timeoutMs: request.timeoutMs },
         () => calls.push(['release'])
       );
     },
-    async start(reservation, options) {
-      assert.equal(options.awaitTerminal, true, 'execution authority owns completion');
+    async start(reservation) {
       calls.push(['start', reservation.authorization]);
       if (refusal) return { kind: 'not_started', diagnostic: refusal };
       await effect?.();
