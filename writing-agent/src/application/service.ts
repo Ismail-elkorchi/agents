@@ -459,7 +459,8 @@ export class WritingApplication {
         .map((entry) => ({
           path: path.posix.join(directory, entry.name),
           type: entry.type
-        }));
+        }))
+        .sort((left, right) => left.path.localeCompare(right.path));
     } finally {
       await opened.close();
     }

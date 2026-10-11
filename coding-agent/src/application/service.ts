@@ -226,11 +226,12 @@ export class CodingApplication {
     const root = this.requireRuntime().fileRoot;
     const canonical = root.canonicalPath(directory);
     const entries: { path: string; kind: 'file' | 'directory' }[] = [];
+    const maximumVisited = 4096;
     let visited = 0;
     const handle = await root.openDirectory(canonical);
     try {
-      for (const entry of await handle.entries()) {
-        if (++visited > 4096 || entries.length >= 256) break;
+      for (const entry of await handle.entries(maximumVisited + 1)) {
+        if (++visited > maximumVisited || entries.length >= 256) break;
         if (!entry.name.startsWith(prefix) || (entry.type !== 'file' && entry.type !== 'directory'))
           continue;
         const pathname = canonical === '.' ? entry.name : `${canonical}/${entry.name}`;
