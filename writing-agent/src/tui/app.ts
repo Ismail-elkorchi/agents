@@ -1069,6 +1069,7 @@ function update(
     case 'refresh':
       return refreshView(state, app);
     case 'loaded': {
+      if (message.application.sessionId !== app.state().sessionId) return { state };
       const result = loadView(state, message, app);
       const sessionId = message.history.boundary.sessionId;
       if (
@@ -1995,7 +1996,6 @@ function loadView(
   message: Extract<WritingTuiMessage, { type: 'loaded' }>,
   app: WritingApplication
 ): Update {
-  if (message.application.sessionId !== app.state().sessionId) return { state };
   const previousSession = state.history.at(-1)?.boundary.sessionId;
   const switched =
     previousSession !== undefined && previousSession !== message.history.boundary.sessionId;

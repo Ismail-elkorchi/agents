@@ -2,11 +2,100 @@ import { waitForState } from '../../test-helpers/tui-runtime.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { InMemorySessionRepository } from '@agent-core/runtime';
+import { createDraft } from '@agent-core/tui';
 import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import { createTuiRuntime } from '@ismail-elkorchi/terminal-ui/tui';
 import { renderFramePlain } from '@ismail-elkorchi/terminal-ui/renderer';
 import { textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
 import { createWritingAgentTuiApp } from '@ismail-elkorchi/writing-agent/tui';
+
+for (const source of ['discarded history', 'late draft'])
+  test(`writing ${source} cannot restore another session draft`, { timeout: 10000 }, async (t) => {
+    const repository = new InMemorySessionRepository();
+    const sessions = [];
+    for (const name of ['first', 'skipped', 'current'])
+      sessions.push(
+        await repository.create({
+          binding: { schemaId: `test/${name}`, schemaVersion: 1, subject: {} }
+        })
+      );
+    let selected = sessions[0];
+    const application = {
+      state: () => ({
+        workspace: '/workspace',
+        mode: 'edit',
+        sessionId: selected.id,
+        status: 'ready'
+      }),
+      start: async () => {},
+      readHistory: () => repository.readBranchPage(selected, { limit: 4 }),
+      readSession: async () => ({
+        toolDiagnostics: [],
+        runs: [],
+        session: {
+          sessionId: selected.id,
+          phase: 'idle',
+          configuration: { provider: 'fixture', model: 'fixture' },
+          queuedInputs: 0
+        }
+      })
+    };
+    const reads = [];
+    const pending = Promise.withResolvers();
+    const drafts = {
+      read: async (id) => {
+        reads.push(id);
+        if (id !== sessions[1].id) return undefined;
+        return source === 'late draft' ? pending.promise : createDraft('Another session draft.');
+      },
+      write: async () => {}
+    };
+    const runtime = createTuiRuntime({
+      host: createMemoryTerminalHost({ terminalSize: { columns: 90, rows: 28 } }),
+      app: createWritingAgentTuiApp(application, { drafts })
+    });
+    t.after(() => {
+      pending.resolve();
+      return runtime.dispose();
+    });
+    await runtime.start();
+    await waitForState(
+      runtime,
+      t.signal,
+      () => runtime.state().history.length > 0 && runtime.metrics().effects.owned === 0
+    );
+    selected = sessions[1];
+    const delayed = {
+      type: 'loaded',
+      application: application.state(),
+      history: await application.readHistory(),
+      session: await application.readSession()
+    };
+    if (source === 'discarded history') {
+      selected = sessions[2];
+      await runtime.dispatch({ type: 'application', state: application.state() });
+      await runtime.dispatch(delayed);
+    } else {
+      await runtime.dispatch(delayed);
+      await waitForState(runtime, t.signal, () => reads.includes(sessions[1].id));
+      selected = sessions[0];
+      await runtime.dispatch({
+        type: 'loaded',
+        application: application.state(),
+        history: await application.readHistory(),
+        session: await application.readSession()
+      });
+      pending.resolve(createDraft('Another session draft.'));
+    }
+    await waitForState(runtime, t.signal, () => runtime.metrics().effects.owned === 0);
+    if (source === 'discarded history')
+      assert.equal(
+        reads.includes(sessions[1].id),
+        false,
+        'discarded hydration must not trigger draft retrieval'
+      );
+    assert.equal(textDocumentText(runtime.state().composer.input.document), '');
+  });
 
 test(
   'writing browses bounded history and finds unloaded original inputs while live output preserves position and draft',
