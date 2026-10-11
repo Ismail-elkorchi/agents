@@ -64,9 +64,10 @@ import {
   type ConfigurationOperations
 } from '@agent-core/tui';
 import { editTextExternally } from '@agent-core/tui/node';
-import type { SearchPickerIndex } from '@ismail-elkorchi/terminal-ui/behavior';
+import type { AutocompleteComboboxTransition, SearchPickerIndex } from '@ismail-elkorchi/terminal-ui/behavior';
 import {
   applyScrollRequest,
+  autocompleteComboboxView,
   createSearchPickerIndex,
   createSearchPickerState,
   scrollReducer,
@@ -76,6 +77,7 @@ import {
 import type { Element, InlineContent } from '@ismail-elkorchi/terminal-ui/components';
 import {
   button,
+  combobox,
   dialog,
   disclosure,
   richText,
@@ -523,6 +525,9 @@ export function createCodingAgentTuiApp(
         }
       };
       const removedQueryEffects: string[] = [];
+      if (state.overlay.kind === 'search' && result.state.overlay.kind !== 'search')
+        removedQueryEffects.push('history-search', 'history-jump');
+
       if (
         state.overlay.kind === 'recall' &&
         (result.state.overlay.kind !== 'recall' ||
@@ -2216,40 +2221,48 @@ function overlayView(
         }
       });
     }
-    case 'search':
+    case 'search': {
+      const { scroll, ...view } = autocompleteComboboxView(state.overlay.picker);
+      void scroll;
       return panel({
         ...modalOptions('search-dialog', 'Find', 'conversation-search', width, height),
         slots: {
-          content: searchPicker<string, CodingAgentTuiMessage, CodingAgentTuiMessage>({
-            id: 'conversation-search',
-            title:
-              state.overlay.loading !== undefined
-                ? 'Searching stored history…'
-                : state.overlay.result?.older !== undefined
-                  ? 'Find · more history remains'
-                  : 'Find in stored history',
-            view: searchPickerView(state.overlay.picker),
-            searchPickerIndex: state.overlay.searchPickerIndex,
-            queryResult: state.overlay.queryResult,
-            maxVisible: Math.max(3, height - 5),
-            emptyText:
-              state.overlay.error ??
-              (state.overlay.loading !== undefined
-                ? 'Searching…'
-                : state.overlay.result === undefined
-                  ? 'Type exact text to search this branch'
-                  : state.overlay.result.oversizedEntry !== undefined
-                    ? 'An oversized entry was not searched. Inspect it explicitly.'
-                    : 'No matches in remaining history'),
-            helpText: 'Enter jump · F3 next matches · Esc close',
-            onTransition: (transition): CodingAgentTuiMessage => ({
-              type: 'search.transition',
-              transition
+          content: column([
+            text({
+              content:
+                state.overlay.loading !== undefined
+                  ? 'Searching stored history…'
+                  : state.overlay.result?.older !== undefined
+                    ? 'More history remains'
+                    : 'Literal, case-sensitive history search'
             }),
-            onAccept: (event): CodingAgentTuiMessage => ({ type: 'search.accept', event })
-          })
+            text({
+              content:
+                state.overlay.error ??
+                (state.overlay.result?.oversizedEntry !== undefined
+                  ? 'An oversized entry was not searched. Inspect it explicitly.'
+                  : state.overlay.result?.matches.length === 0
+                    ? 'No matches in the searched history.'
+                    : '')
+            }),
+            text({ content: 'Enter jump · F3 next matches · Esc close' }),
+            combobox({
+              id: 'conversation-search',
+              label: 'Find',
+              view: { ...view, open: view.open && state.overlay.optionsView.count > 0 },
+              collection: state.overlay.collection,
+              optionsView: state.overlay.optionsView,
+              maxVisibleOptions: Math.max(3, height - 7),
+              placeholder: 'Exact text in recorded history',
+              onTransition: (
+                transition: AutocompleteComboboxTransition
+              ): CodingAgentTuiMessage => ({ type: 'search.transition', transition }),
+              onCommit: (event): CodingAgentTuiMessage => ({ type: 'search.accept', event })
+            })
+          ])
         }
       });
+    }
     case 'help':
       return panel({
         ...modalOptions(

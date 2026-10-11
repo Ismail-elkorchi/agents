@@ -8,6 +8,8 @@ import type {
   SessionPendingSubmission
 } from '@agent-core/runtime';
 import type {
+  AutocompleteComboboxTransition,
+  ComboboxCommitEvent,
   ScrollTransition,
   SearchPickerAcceptEvent,
   SearchPickerControlTransition,
@@ -176,7 +178,7 @@ export type CodingAgentTuiMessage =
     }
   | { readonly type: 'search.failed'; readonly requestId: string; readonly message: string }
   | { readonly type: 'search.jumped'; readonly page: CodingHistoryPage; readonly entryId: string }
-  | { readonly type: 'search.transition'; readonly transition: SearchPickerControlTransition }
-  | { readonly type: 'search.accept'; readonly event: SearchPickerAcceptEvent }
+  | { readonly type: 'search.transition'; readonly transition: AutocompleteComboboxTransition }
+  | { readonly type: 'search.accept'; readonly event: ComboboxCommitEvent }
   | { readonly type: 'terminal.resized' }
   | { readonly type: 'app.exit'; readonly reason?: string };

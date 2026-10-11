@@ -6,15 +6,15 @@ import {
   oversizedHistoryEntry,
   selectHistoryMatch
 } from '@agent-core/tui';
-import type { SearchPickerControlTransition } from '@ismail-elkorchi/terminal-ui/behavior';
 import {
-  createSearchPickerIndex,
-  createSearchPickerState,
-  searchPickerReducer,
-  querySearchPickerIndex,
-  type SearchPickerIndex,
-  type SearchPickerQueryResult,
-  searchPickerView
+  autocompleteComboboxReducer,
+  createAutocompleteComboboxState,
+  createListboxCollection,
+  createListboxView,
+  type AutocompleteComboboxTransition,
+  type AutocompleteComboboxState,
+  type CompleteListboxCollection,
+  type ListboxView
 } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { TuiUpdateResult } from '@ismail-elkorchi/terminal-ui/tui';
 import { applyBranchEntry } from './branch-presentation.js';
@@ -22,13 +22,18 @@ import { appendNotice } from './conversation.js';
 import type { CodingHistoryReader } from './history.js';
 import { presentHistoryPages } from './history.js';
 import type { CodingAgentTuiMessage } from './messages.js';
-import type { CodingAgentTuiPickerState, CodingAgentTuiState } from './state.js';
+import type { CodingAgentTuiState } from './state.js';
+
+interface SearchResultItem {
+  readonly id: string;
+  readonly label: string;
+}
 
 export interface HistorySearch {
   readonly kind: 'search';
-  readonly searchPickerIndex: SearchPickerIndex;
-  readonly queryResult: SearchPickerQueryResult | null;
-  readonly picker: CodingAgentTuiPickerState;
+  readonly collection: CompleteListboxCollection<SearchResultItem>;
+  readonly optionsView: ListboxView<SearchResultItem>;
+  readonly picker: AutocompleteComboboxState;
   readonly result?: SessionBranchSearchResult;
   readonly loading?: string;
   readonly error?: string;
@@ -38,25 +43,27 @@ export type HistorySearcher = (
 ) => Promise<SessionBranchSearchResult>;
 type Update = TuiUpdateResult<CodingAgentTuiState, CodingAgentTuiMessage>;
 
-const EMPTY_SEARCH_INDEX = createSearchPickerIndex<string>([]);
-function historySearchIndex(result: SessionBranchSearchResult | undefined) {
+const EMPTY_COLLECTION = createListboxCollection<SearchResultItem>([], (item) => item);
+const EMPTY_VIEW = createListboxView(EMPTY_COLLECTION);
+function historySearchCollection(result: SessionBranchSearchResult | undefined) {
   const reference = result?.oversizedEntry;
-  return createSearchPickerIndex([
-    ...(result?.matches.map((match) => ({
-      id: match.entryId,
-      label: match.excerpt,
-      value: match.entryId
-    })) ?? []),
-    ...(reference === undefined
-      ? []
-      : [
-          {
-            id: reference.entryId,
-            label: `Not searched · ${String(reference.bytes)} bytes · inspect entry`,
-            value: reference.entryId
-          }
-        ])
-  ]);
+  return createListboxCollection(
+    [
+      ...(result?.matches.map((match) => ({
+        id: match.entryId,
+        label: match.excerpt
+      })) ?? []),
+      ...(reference === undefined
+        ? []
+        : [
+            {
+              id: reference.entryId,
+              label: `Not searched · ${String(reference.bytes)} bytes · inspect entry`
+            }
+          ])
+    ],
+    (item) => item
+  );
 }
 
 export function openHistorySearch(state: CodingAgentTuiState): Update {
@@ -64,18 +71,20 @@ export function openHistorySearch(state: CodingAgentTuiState): Update {
     state.historyMatch?.result.boundary.sessionId === state.debug.sessionId
       ? state.historyMatch
       : undefined;
-  const index = historySearchIndex(previous?.result);
-  const query = { text: previous?.query ?? '', mode: 'contains' as const, caseSensitive: true };
-  const queryResult = querySearchPickerIndex(index, query);
+  const collection = historySearchCollection(previous?.result);
+  const optionsView = createListboxView(collection);
   return {
     state: {
       ...state,
       overlay: {
         kind: 'search',
-        searchPickerIndex: index,
-        queryResult,
+        collection,
+        optionsView,
         ...(previous === undefined ? {} : { result: previous.result }),
-        picker: createSearchPickerState({ query, queryResult }, index)
+        picker: createAutocompleteComboboxState(
+          { value: previous?.query ?? '', open: true },
+          optionsView.interactionIndex
+        )
       }
     }
   };
@@ -83,21 +92,17 @@ export function openHistorySearch(state: CodingAgentTuiState): Update {
 
 export function transitionHistorySearch(
   state: CodingAgentTuiState,
-  transition: SearchPickerControlTransition,
+  transition: AutocompleteComboboxTransition,
   search: HistorySearcher | undefined
 ): Update {
   if (state.overlay.kind !== 'search') return { state };
-  const previous = searchPickerView(state.overlay.picker).input.text;
-  const picker = searchPickerReducer(state.overlay.picker, transition, {
-    searchPickerIndex: state.overlay.searchPickerIndex,
-    queryResult: state.overlay.queryResult
+  const overlay = state.overlay;
+  const previous = overlay.picker.editor.input.text;
+  const picker = autocompleteComboboxReducer(overlay.picker, transition, {
+    indexForText: () => overlay.optionsView.interactionIndex
   });
   const next = { ...state, overlay: { ...state.overlay, picker } };
-  return previous === searchPickerView(picker).input.text &&
-    picker.mode === state.overlay.picker.mode &&
-    picker.caseSensitive === state.overlay.picker.caseSensitive
-    ? { state: next }
-    : searchHistory(next, search);
+  return previous === picker.editor.input.text ? { state: next } : searchHistory(next, search);
 }
 
 export function searchHistory(
@@ -106,15 +111,19 @@ export function searchHistory(
   more = false
 ): Update {
   if (state.overlay.kind !== 'search') return { state };
-  const query = searchPickerView(state.overlay.picker).input.text;
+  const query = state.overlay.picker.editor.input.text;
   const cursor = more ? state.overlay.result?.older : undefined;
   if (more && cursor === undefined) return { state };
   const id = `search:${String(state.nextLocalId)}`;
   const overlay: HistorySearch = {
     kind: 'search',
-    picker: state.overlay.picker,
-    searchPickerIndex: EMPTY_SEARCH_INDEX,
-    queryResult: null
+    picker: autocompleteComboboxReducer(
+      state.overlay.picker,
+      { kind: 'setActive' },
+      { indexForText: () => EMPTY_VIEW.interactionIndex }
+    ),
+    collection: EMPTY_COLLECTION,
+    optionsView: EMPTY_VIEW
   };
   if (!query.length) return { state: { ...state, overlay } };
   return {
@@ -150,23 +159,19 @@ export function receiveSearch(
   delete overlay.loading;
   if (message.type === 'search.failed')
     return { ...state, overlay: { ...overlay, error: message.message } };
-  const searchPickerIndex = historySearchIndex(message.result);
-  const queryResult = querySearchPickerIndex(searchPickerIndex, {
-    text: overlay.picker.editor.input.text,
-    mode: overlay.picker.mode,
-    caseSensitive: overlay.picker.caseSensitive
-  });
+  const collection = historySearchCollection(message.result);
+  const optionsView = createListboxView(collection);
   return {
     ...state,
     overlay: {
       ...overlay,
       result: message.result,
-      searchPickerIndex,
-      queryResult,
-      picker: searchPickerReducer(
+      collection,
+      optionsView,
+      picker: autocompleteComboboxReducer(
         overlay.picker,
         { kind: 'firstActive' },
-        { searchPickerIndex, queryResult }
+        { indexForText: () => optionsView.interactionIndex }
       )
     }
   };
@@ -186,7 +191,7 @@ export function jumpToSearchResult(
   const { boundary } = result;
   const query =
     state.overlay.kind === 'search'
-      ? searchPickerView(state.overlay.picker).input.text
+      ? state.overlay.picker.editor.input.text
       : (state.historyMatch?.query ?? '');
   if (result.oversizedEntry?.entryId === entryId) {
     const reference = oversizedHistoryEntry({

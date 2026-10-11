@@ -78,7 +78,7 @@ test(
     await runtime.dispatch({ type: 'overlay.open', overlay: 'search' });
     await runtime.dispatch({
       type: 'search.transition',
-      transition: { kind: 'setQuery', query: { text: 'UNLOADED_MATCH', mode: 'contains' } }
+      transition: { kind: 'setText', value: 'UNLOADED_MATCH' }
     });
     await waitForState(
       runtime,
@@ -87,7 +87,7 @@ test(
     );
     assert.equal(runtime.state().overlay.result.matches[0].entryId, entries[0].id);
     assert.equal(runtime.state().overlay.result.older, undefined);
-    await runtime.dispatch({ type: 'search.accept', event: { kind: 'accept', id: entries[0].id } });
+    await runtime.dispatch({ type: 'search.accept', event: { kind: 'commit', id: entries[0].id } });
     await waitForState(runtime, t.signal, () => runtime.state().overlay.kind === 'none');
     assert.equal(runtime.state().conversation.items[0].id, 'input:run-0');
     assert.match(renderFramePlain(runtime.frame()), /UNLOADED_MATCH/);
