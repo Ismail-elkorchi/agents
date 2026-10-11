@@ -679,7 +679,10 @@ function updateCodingAgentTui(
           : state.overlay.kind === 'processes'
             ? state.overlay.state
             : undefined;
-      if (processes === undefined)
+      if (
+        processes === undefined ||
+        (message.type === 'processes.failed' && message.id !== processes.id)
+      )
         return {
           state:
             message.type === 'processes.failed' && !['list', 'inspect'].includes(message.operation)

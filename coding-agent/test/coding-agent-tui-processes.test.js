@@ -224,3 +224,130 @@ test('authority-wide uncertainty is visible without granting controls over an ea
   assert.deepEqual(await controls.reconcileProcesses(listed), []);
   assert.deepEqual(accepted, [{ processId: blocked.processId, revision: blocked.revision }]);
 });
+
+for (const operation of ['inspect', 'reconcile'])
+  test(
+    `reopening Processes does not drop ${operation} while the preceding panel settles`,
+    { timeout: 10000 },
+    async (t) => {
+      const pending = Promise.withResolvers();
+      let calls = 0;
+      const run = async () => {
+        calls++;
+        if (calls === 1) await pending.promise;
+      };
+      const runtime = createTuiRuntime({
+        host: createMemoryTerminalHost({ terminalSize: { columns: 60, rows: 24 } }),
+        app: createCodingAgentTuiApp('Unsent draft', {
+          processes: {
+            listProcesses: async () => [target],
+            async controlProcess() {
+              await run();
+              return result;
+            },
+            async reconcileProcesses() {
+              await run();
+              return [target];
+            }
+          }
+        })
+      });
+      t.after(async () => {
+        pending.resolve();
+        await runtime.dispose();
+      });
+      const start = () =>
+        runtime.dispatch(
+          operation === 'inspect'
+            ? { type: 'processes.select', processId: target.processId }
+            : { type: 'processes.reconcile', acknowledge: false }
+        );
+      await runtime.start();
+      await runtime.dispatch({ type: 'processes.open' });
+      await waitForState(runtime, t.signal, () => !runtime.state().overlay.state.pending);
+      await start();
+      await waitForState(runtime, t.signal, () => calls === 1);
+      const firstPanel = runtime.state().overlay.state.id;
+      await runtime.dispatch({ type: 'overlay.close' });
+      await runtime.dispatch({ type: 'processes.open' });
+      await waitForState(runtime, t.signal, () => !runtime.state().overlay.state.pending);
+      assert.notEqual(runtime.state().overlay.state.id, firstPanel);
+      await start();
+      pending.resolve();
+      await waitForState(runtime, t.signal, () => runtime.metrics().effects.owned === 0);
+      assert.equal(calls, 2, 'the new panel action must reach the authority');
+      assert.equal(runtime.state().overlay.state.pending, false);
+      assert.equal(textDocumentText(runtime.state().composer.input.document), 'Unsent draft');
+    }
+  );
+
+for (const action of ['input', 'acknowledge'])
+  test(
+    `a failed ${action} remains visible after reopening Processes`,
+    { timeout: 10000 },
+    async (t) => {
+      const pending = Promise.withResolvers();
+      let started = false;
+      const selected = action === 'input' ? target : { ...target, status: 'unknown' };
+      const mutate = async () => {
+        started = true;
+        await pending.promise;
+        throw new Error('Authority rejected the requested operation');
+      };
+      const runtime = createTuiRuntime({
+        host: createMemoryTerminalHost({ terminalSize: { columns: 60, rows: 24 } }),
+        app: createCodingAgentTuiApp('', {
+          processes: {
+            listProcesses: async () => [selected],
+            async controlProcess(_target, operation) {
+              if (operation.kind === 'input') await mutate();
+              return result;
+            },
+            async reconcileProcesses() {
+              await mutate();
+              return [selected];
+            }
+          }
+        })
+      });
+      t.after(async () => {
+        pending.resolve();
+        await runtime.dispose();
+      });
+      await runtime.start();
+      await runtime.dispatch({ type: 'processes.open' });
+      await waitForState(runtime, t.signal, () => !runtime.state().overlay.state.pending);
+      await runtime.dispatch({ type: 'processes.select', processId: target.processId });
+      await waitForState(runtime, t.signal, () => !runtime.state().overlay.state.pending);
+      if (action === 'input') {
+        await runtime.dispatch({
+          type: 'processes.edit',
+          field: 'input',
+          transition: { kind: 'edit', operation: { kind: 'insert', text: 'requested input\n' } }
+        });
+        await runtime.dispatch({ type: 'processes.action', action: 'input' });
+      } else await runtime.dispatch({ type: 'processes.reconcile', acknowledge: true });
+      await waitForState(runtime, t.signal, () => started);
+      await runtime.dispatch({ type: 'overlay.close' });
+      await runtime.dispatch({ type: 'processes.open' });
+      await waitForState(runtime, t.signal, () => !runtime.state().overlay.state.pending);
+      const newPanel = runtime.state().overlay.state;
+      pending.resolve();
+      await waitForState(runtime, t.signal, () => runtime.metrics().effects.owned === 0);
+      assert.equal(
+        runtime.state().overlay.state,
+        newPanel,
+        'old failure cannot modify the new panel'
+      );
+      assert(
+        runtime
+          .state()
+          .conversation.items.some(
+            (entry) =>
+              entry.kind === 'notice' &&
+              entry.text.includes('Authority rejected the requested operation')
+          ),
+        'an explicit operation failure must remain visible'
+      );
+    }
+  );

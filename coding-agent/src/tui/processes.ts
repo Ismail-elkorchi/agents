@@ -76,7 +76,7 @@ export type ProcessMessage =
     }
   | {
       readonly type: 'processes.failed';
-      readonly operation: 'list' | CodingProcessAction['kind'];
+      readonly operation: 'list' | 'reconcile' | 'acknowledge' | CodingProcessAction['kind'];
       readonly id: string;
       readonly message: string;
     };
@@ -114,7 +114,7 @@ export function updateProcesses(
         effects: [
           {
             id: 'process-reconciliation',
-            concurrency: 'keep-first',
+            concurrency: 'enqueue',
             async run() {
               return {
                 kind: 'message',
@@ -131,7 +131,7 @@ export function updateProcesses(
               kind: 'message',
               message: {
                 type: 'processes.failed',
-                operation: 'list',
+                operation: message.acknowledge ? 'acknowledge' : 'reconcile',
                 id: state.id,
                 message: diagnosticMessage(diagnostic)
               }
@@ -302,7 +302,7 @@ export function updateProcesses(
         effects: [
           {
             id: 'process-control',
-            concurrency: 'keep-first',
+            concurrency: 'enqueue',
             async run() {
               return {
                 kind: 'message',
