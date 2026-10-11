@@ -178,6 +178,21 @@ export function createWritingAgentTuiApp(
           }
         };
         const removedQueryEffects: string[] = [];
+        const documentRequest = result.state.documentRequest;
+        if (
+          documentRequest !== undefined &&
+          (documentRequest.sessionId !== application.state().sessionId ||
+            (documentRequest.kind === 'open' &&
+              (result.state.overlay.kind !== 'loading' ||
+                result.state.overlay.requestId !== documentRequest.id)))
+        ) {
+          const next = { ...result.state };
+          delete next.documentRequest;
+          if (next.overlay.kind === 'loading' && next.overlay.requestId === documentRequest.id)
+            next.overlay = { kind: 'none' };
+          result = { ...result, state: next };
+          removedQueryEffects.push('writing-document');
+        }
         if (
           state.overlay.kind === 'recall' &&
           (result.state.overlay.kind !== 'recall' ||
@@ -1052,7 +1067,7 @@ function update(
             }
           };
     case 'refresh':
-      return { state, effects: [refresh(app, state.document?.value.path)] };
+      return refreshView(state, app);
     case 'loaded': {
       const result = loadView(state, message, app);
       const sessionId = message.history.boundary.sessionId;
@@ -1078,7 +1093,7 @@ function update(
       return { state: { ...state, notice: '' } };
     case 'notice':
       return {
-        state: { ...state, notice: message.message, submitting: false }
+        state: { ...state, notice: message.message }
       };
     case 'tool.toggle':
       return {
@@ -1115,8 +1130,8 @@ function update(
       return { state: next };
     }
     case 'result':
-      return {
-        state: {
+      return refreshView(
+        {
           ...state,
           result: message.result,
           notice:
@@ -1126,14 +1141,9 @@ function update(
                 ? message.result.terminal.errorMessage
                 : `Run ${message.result.terminal.executionStatus}`
         },
-        effects: [
-          refresh(
-            app,
-            state.document?.value.path,
-            message.result.state === 'ended' ? message.result.terminal.runId : undefined
-          )
-        ]
-      };
+        app,
+        message.result.state === 'ended' ? message.result.terminal.runId : undefined
+      );
     case 'mode.toggle':
       return {
         state,
@@ -1291,7 +1301,13 @@ function update(
     }
     case 'submission.failed': {
       if (message.sessionId !== (state.application.sessionId ?? ':new'))
-        return { state: { ...state, notice: `Session ${message.sessionId}: ${message.message}` } };
+        return {
+          state: {
+            ...state,
+            submitting: false,
+            notice: `Session ${message.sessionId}: ${message.message}`
+          }
+        };
       return { state: { ...state, submitting: false, notice: message.message } };
     }
     case 'submitted': {
@@ -1300,6 +1316,7 @@ function update(
         return {
           state: {
             ...state,
+            submitting: false,
             ...(message.receipt.kind === 'rejected'
               ? {
                   notice: `Session ${message.sessionId}: input rejected (${message.receipt.reason.replaceAll('_', ' ')}).`
@@ -1374,7 +1391,7 @@ function update(
         }
       };
     case 'document.refresh':
-      return { state, effects: [refresh(app, state.document?.value.path)] };
+      return refreshView(state, app);
     case 'document.compare':
       return state.document?.comparison === undefined
         ? { state }
@@ -1517,15 +1534,24 @@ function update(
     case 'picker.accept':
       return acceptPicker(state, message.id, app, options, context);
     case 'document.loaded':
+    case 'document.failed': {
+      const request = state.documentRequest;
+      if (request?.id !== message.requestId || request.sessionId !== app.state().sessionId)
+        return { state };
+      const next = { ...state };
+      delete next.documentRequest;
+      if (request.kind === 'open') next.overlay = { kind: 'none' };
+      if (message.type === 'document.failed')
+        return { state: { ...next, notice: message.message } };
       return {
         state: {
-          ...state,
-          document: documentState(message.document),
-          view: 'split',
-          overlay: { kind: 'none' },
+          ...next,
+          document: documentState(message.document, state.document),
+          view: request.kind === 'open' ? 'split' : state.view,
           notice: ''
         }
       };
+    }
     case 'configuration.open':
     case 'configuration.child': {
       const configuration = writingConfiguration(
@@ -1542,10 +1568,9 @@ function update(
         result,
         (result.outputs?.length ?? 0) > 0
       );
-      return combineTuiResults(panel.state, panel, {
-        state: panel.state,
-        effects: result.outputs?.includes('saved') ? [refresh(app, state.document?.value.path)] : []
-      });
+      if (!result.outputs?.includes('saved')) return panel;
+      const refreshed = refreshView(panel.state, app);
+      return combineTuiResults(refreshed.state, panel, refreshed);
     }
 
     case 'history.load': {
@@ -1716,39 +1741,75 @@ function update(
   }
 }
 
-function refresh(
+function refreshView(
+  state: WritingTuiState,
   app: WritingApplication,
-  resourceId?: string,
   recordedRunId?: string
-): TuiEffect<WritingTuiMessage> {
+): Update {
+  const document =
+    state.document === undefined || state.documentRequest?.kind === 'open'
+      ? { state }
+      : readDocument(state, app, state.document.value.path, 'refresh');
+  return combineTuiResults(document.state, document, {
+    state: document.state,
+    effects: [refresh(app, recordedRunId)]
+  });
+}
+
+/** One request lifetime owns opening and refreshing documents; session hydration owns neither. */
+function readDocument(
+  state: WritingTuiState,
+  app: WritingApplication,
+  path: string,
+  kind: 'open' | 'refresh'
+): Update {
+  const id = crypto.randomUUID();
+  return {
+    state: {
+      ...state,
+      documentRequest: { id, kind, sessionId: app.state().sessionId },
+      ...(kind === 'open' ? { overlay: { kind: 'loading' as const, requestId: id } } : {})
+    },
+    effects: [
+      {
+        id: 'writing-document',
+        concurrency: 'replace',
+        async run({ signal }) {
+          signal.throwIfAborted();
+          const document = await app.readDocument(path);
+          signal.throwIfAborted();
+          return { kind: 'message', message: { type: 'document.loaded', requestId: id, document } };
+        },
+        onError: ({ diagnostic }) => ({
+          kind: 'message',
+          message: {
+            type: 'document.failed',
+            requestId: id,
+            message: diagnosticMessage(diagnostic)
+          }
+        })
+      }
+    ]
+  };
+}
+
+function refresh(app: WritingApplication, recordedRunId?: string): TuiEffect<WritingTuiMessage> {
   return {
     ...effect('writing-refresh', async () => ({
-      ...(await readView(app, resourceId)),
+      ...(await readView(app)),
       ...(recordedRunId === undefined ? {} : { recordedRunId })
     })),
     concurrency: 'enqueue'
   };
 }
 async function readView(
-  app: WritingApplication,
-  resourceId?: string
+  app: WritingApplication
 ): Promise<Extract<WritingTuiMessage, { type: 'loaded' }>> {
   await app.start();
-  const document =
-    resourceId === undefined
-      ? undefined
-      : await app.readDocument(resourceId).then(
-          (value) => ({ kind: 'available' as const, value }),
-          (error: unknown) => ({
-            kind: 'unavailable' as const,
-            message: error instanceof Error ? error.message : String(error)
-          })
-        );
   const application = app.state();
   return {
     type: 'loaded',
     application,
-    ...(document === undefined ? {} : { document }),
     history: await app.readHistory(),
     ...(application.status === 'configuration_required' ? {} : { session: await app.readSession() })
   };
@@ -1890,15 +1951,7 @@ function acceptPicker(
           app,
           options.sessionNames
         );
-      return {
-        state,
-        effects: [
-          effect('writing-document', async () => ({
-            type: 'document.loaded',
-            document: await app.readDocument(id)
-          }))
-        ]
-      };
+      return readDocument(state, app, id, 'open');
     case 'sessions':
       return {
         state: { ...state, overlay: { kind: 'none' } },
@@ -1999,10 +2052,7 @@ function loadView(
     unread:
       !next.followTail &&
       !switched &&
-      (next.unread || next.history.at(-1)?.boundary.leafId !== message.history.boundary.leafId),
-    ...(message.document?.kind === 'available'
-      ? { document: documentState(message.document.value, next.document) }
-      : {})
+      (next.unread || next.history.at(-1)?.boundary.leafId !== message.history.boundary.leafId)
   };
   if (message.session !== undefined)
     next = {
@@ -2012,11 +2062,6 @@ function loadView(
         projectToolDiagnostics(message.session.toolDiagnostics, next.liveConversation)
       )
     };
-  if (message.document?.kind === 'unavailable') {
-    const updated = { ...next, notice: message.document.message };
-    delete updated.document;
-    next = updated;
-  }
   const cursor = switched
     ? next.sessionViews[message.history.boundary.sessionId]?.bookmark.cursor
     : undefined;

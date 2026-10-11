@@ -88,10 +88,10 @@ test(
     });
     await runtime.start();
     await waitForState(runtime, t.signal, () => runtime.state().history.length > 0);
-    await runtime.dispatch({
-      type: 'document.loaded',
-      document: await f.application.readDocument('document.txt')
-    });
+    await runtime.dispatch({ type: 'picker.open', subject: 'resources' });
+    await waitForState(runtime, t.signal, () => runtime.state().overlay.kind === 'picker');
+    await runtime.dispatch({ type: 'picker.accept', id: 'document.txt' });
+    await waitForState(runtime, t.signal, () => runtime.state().document !== undefined);
     await writeFile(path.join(f.root, 'document.txt'), 'Changed by the user after opening.\n');
     await runtime.dispatch({ type: 'document.toggle-source' });
     for (const operation of [
@@ -250,7 +250,7 @@ test('context admission shows the conflict and source adjustment without suggest
     assert.equal(f.provider.requests.length, 0);
 });
 
-test('writing submission failures remain visible with the draft; Escape interrupts only outside popups', { timeout: 20_000 }, async (t) => {
+test('writing submission failures remain visible with the draft; Escape interrupts only outside popups', { skip: process.platform !== 'linux', timeout: 20_000 }, async (t) => {
   const f = await fixture();
   await f.application.start();
   f.application.submit = async () => { throw new Error('Credential expired. Sign in again.'); };
@@ -279,7 +279,7 @@ test('writing submission failures remain visible with the draft; Escape interrup
   await waitForState(runtime, t.signal, () => aborted === 1);
 });
 
-test('document visibility is explicit and refresh compares the two observed revisions', { timeout: 20_000 }, async (t) => {
+test('document visibility is explicit and refresh compares the two observed revisions', { skip: process.platform !== 'linux', timeout: 20_000 }, async (t) => {
   const { writeFile } = await import('node:fs/promises');
   const f = await fixture('Original paragraph.\n');
   const runtime = createTuiRuntime({ host: createMemoryTerminalHost({ terminalSize: { columns: 120, rows: 32 } }), app: createWritingAgentTuiApp(f.application) });

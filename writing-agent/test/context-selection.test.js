@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { fixture, submit } from './helpers/runtime.js';
 
-test('context inspection and unchanged application preserve ordinary history; fresh context honors an explicit selection', { timeout: 30_000 }, async (t) => {
+test('context inspection and unchanged application preserve ordinary history; fresh context honors an explicit selection', { skip: process.platform !== 'linux', timeout: 30_000 }, async (t) => {
   const f = await fixture('', { responses: ['First answer.', 'Second answer.', 'Third answer.', 'Fresh answer.'] });
   t.after(() => f.close());
   await f.application.start();

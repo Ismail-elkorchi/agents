@@ -90,6 +90,11 @@ export interface WritingTuiState {
   >;
   readonly application: WritingApplicationState;
   readonly split: import('@ismail-elkorchi/terminal-ui/behavior').SplitPaneState;
+  readonly documentRequest?: {
+    readonly id: string;
+    readonly sessionId: string | undefined;
+    readonly kind: 'open' | 'refresh';
+  };
   readonly document?: {
     readonly comparison?: {
       readonly before: WritingDocument;
@@ -262,9 +267,6 @@ export type WritingTuiMessage =
       readonly type: 'loaded';
       readonly recordedRunId?: string;
       readonly session?: Awaited<ReturnType<WritingApplication['readSession']>>;
-      readonly document?:
-        | { readonly kind: 'available'; readonly value: WritingDocument }
-        | { readonly kind: 'unavailable'; readonly message: string };
       readonly history: SessionBranchPage;
       readonly application: WritingApplicationState;
     }
@@ -337,7 +339,12 @@ export type WritingTuiMessage =
       readonly transition: SearchPickerControlTransition;
     }
   | { readonly type: 'picker.accept'; readonly id: string }
-  | { readonly type: 'document.loaded'; readonly document: WritingDocument }
+  | {
+      readonly type: 'document.loaded';
+      readonly requestId: string;
+      readonly document: WritingDocument;
+    }
+  | { readonly type: 'document.failed'; readonly requestId: string; readonly message: string }
   | {
       readonly type: 'document.passage-loaded';
       readonly sessionId: string | undefined;
