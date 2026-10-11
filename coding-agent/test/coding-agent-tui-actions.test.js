@@ -122,7 +122,7 @@ test('workspace completion inserts an authorized path without replacing surround
     resources: {
       async search(query) {
         calls.push(query);
-        return [{ id: 'src/main.ts', label: 'src/main.ts', reference: 'src/main.ts' }];
+        return { coverage: 'complete', items: [{ id: 'src/main.ts', label: 'src/main.ts', reference: 'src/main.ts' }] };
       }
     }
   });

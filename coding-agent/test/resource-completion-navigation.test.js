@@ -31,9 +31,12 @@ for (const kind of ['coding', 'writing'])
           resources: {
             async search(query) {
               reads.push(query);
-              return query === ''
-                ? [{ id: 'folder', label: 'Draft notes', reference: 'draft notes/', continueSearch: true }]
-                : [{ id: 'file', label: 'Chapter one', reference: 'draft notes/chapter"one.md' }];
+              return {
+                coverage: 'complete',
+                items: query === ''
+                  ? [{ id: 'folder', label: 'Draft notes', reference: 'draft notes/', continueSearch: true }]
+                  : [{ id: 'file', label: 'Chapter one', reference: 'draft notes/chapter"one.md' }]
+              };
             }
           }
         })

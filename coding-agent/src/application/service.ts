@@ -219,7 +219,10 @@ export class CodingApplication {
   async listFiles(
     directory = '.',
     prefix = ''
-  ): Promise<readonly { readonly path: string; readonly kind: 'file' | 'directory' }[]> {
+  ): Promise<{
+    readonly entries: readonly { readonly path: string; readonly kind: 'file' | 'directory' }[];
+    readonly coverage: 'complete' | 'partial';
+  }> {
     this.assertOpen();
     const decision = this.workspace.security.decide('workspace_read');
     if (decision.kind !== 'allowed') throw new Error(decision.reason);
@@ -228,10 +231,14 @@ export class CodingApplication {
     const entries: { path: string; kind: 'file' | 'directory' }[] = [];
     const maximumVisited = 4096;
     let visited = 0;
+    let coverage: 'complete' | 'partial' = 'complete';
     const handle = await root.openDirectory(canonical);
     try {
       for (const entry of await handle.entries(maximumVisited + 1)) {
-        if (++visited > maximumVisited || entries.length >= 256) break;
+        if (++visited > maximumVisited) {
+          coverage = 'partial';
+          break;
+        }
         if (!entry.name.startsWith(prefix) || (entry.type !== 'file' && entry.type !== 'directory'))
           continue;
         const pathname = canonical === '.' ? entry.name : `${canonical}/${entry.name}`;
@@ -240,12 +247,16 @@ export class CodingApplication {
         } catch {
           continue;
         }
+        if (entries.length >= 256) {
+          coverage = 'partial';
+          break;
+        }
         entries.push({ path: pathname, kind: entry.type });
       }
     } finally {
       await handle.close();
     }
-    return entries.sort((left, right) => left.path.localeCompare(right.path));
+    return { entries: entries.sort((left, right) => left.path.localeCompare(right.path)), coverage };
   }
 
   close(): Promise<void> {

@@ -2161,17 +2161,20 @@ function documentResources(app: WritingApplication): import('@agent-core/tui').R
       const slash = query.lastIndexOf('/');
       const documents = await app.listDocuments(slash < 0 ? '.' : query.slice(0, slash) || '.');
       signal.throwIfAborted();
-      return documents
-        .filter((item) => item.path.startsWith(query))
-        .map((item) => {
-          const target = item.type === 'directory' ? `${item.path}/` : item.path;
-          return {
-            id: target,
-            label: target,
-            reference: target,
-            continueSearch: item.type === 'directory'
-          };
-        });
+      return {
+        coverage: 'complete',
+        items: documents
+          .filter((item) => item.path.startsWith(query))
+          .map((item) => {
+            const target = item.type === 'directory' ? `${item.path}/` : item.path;
+            return {
+              id: target,
+              label: target,
+              reference: target,
+              continueSearch: item.type === 'directory'
+            };
+          })
+      };
     }
   };
 }

@@ -125,20 +125,23 @@ export async function runCodingAgentTuiApp(
           async search(query, signal) {
             signal.throwIfAborted();
             const slash = query.lastIndexOf('/');
-            const files = await controller.listFiles(
+            const result = await controller.listFiles(
               slash < 0 ? '.' : query.slice(0, slash) || '.',
               query.slice(slash + 1)
             );
             signal.throwIfAborted();
-            return files.map((file) => {
-              const target = file.kind === 'directory' ? `${file.path}/` : file.path;
-              return {
-                id: target,
-                label: target,
-                reference: target,
-                continueSearch: file.kind === 'directory'
-              };
-            });
+            return {
+              coverage: result.coverage,
+              items: result.entries.map((file) => {
+                const target = file.kind === 'directory' ? `${file.path}/` : file.path;
+                return {
+                  id: target,
+                  label: target,
+                  reference: target,
+                  continueSearch: file.kind === 'directory'
+                };
+              })
+            };
           }
         },
         historyEntryReader: (boundary, entryId) => controller.readHistoryEntry(boundary, entryId),

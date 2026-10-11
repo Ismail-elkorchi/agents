@@ -119,6 +119,8 @@ coding-agent rpc --root /path/to/workspace --session latest
 
 The stdio adapter uses UTF-8 JSONL with JSON-RPC 2.0. `input.submit` accepts the Core session submission fields (`task`, `instructions`, `contextItems`, `images`, and `relationship`) and returns durable submission identities; notifications carry progress and terminal results. `session.read`, history, context, approvals, and change methods read the same recorded state. On `delivery.gap`, refresh the authoritative session. EOF and `application.shutdown` close application resources.
 
+`workspace.files` returns `entries` with `complete` or `partial` coverage. The same bounded listing drives composer suggestions, which identify incomplete searches even when no matching file was returned.
+
 ## Development
 
 The repository pins exact Agent Core, terminal-ui, and markspan revisions. Run the complete gate with:
