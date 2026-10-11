@@ -226,8 +226,9 @@ export function createWritingAgentTuiApp(
           type: 'search.submit',
           more: false
         }),
-        enabled: ({ state }: TuiInputBindingContext<WritingTuiState>) =>
-          state.overlay.kind === 'search'
+        enabled: ({ state, focusPath }: TuiInputBindingContext<WritingTuiState>) =>
+          state.overlay.kind === 'search' &&
+          focusPath?.includes('writing-history-search') === true
       },
       binding('Search history', 'f', { type: 'search.open' }, { ctrl: true }),
       ...(['previous', 'next'] as const).map((direction) => ({
@@ -402,6 +403,13 @@ export function createWritingAgentTuiApp(
           }
         };
         const removedQueryEffects: string[] = [];
+        if (
+          state.overlay.kind !== result.state.overlay.kind ||
+          state.application.sessionId !== result.state.application.sessionId
+        ) {
+          removedQueryEffects.push('writing-search-jump');
+          if (state.overlay.kind === 'search') removedQueryEffects.push('writing-history-search');
+        }
         if (
           result.state.overlay.kind === 'recovery' &&
           result.state.overlay.sessionId !== application.state().sessionId
@@ -1694,7 +1702,6 @@ function update(
           { kind: 'effect', id: 'writing-picker' },
           { kind: 'effect', id: 'writing-picker-query' },
           { kind: 'effect', id: 'writing-context' },
-          { kind: 'effect', id: 'writing-search-jump' },
           { kind: 'effect', id: 'attachment-read' },
           { kind: 'effect', id: 'session-name-load' }
         ]

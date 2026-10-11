@@ -525,8 +525,13 @@ export function createCodingAgentTuiApp(
         }
       };
       const removedQueryEffects: string[] = [];
-      if (state.overlay.kind === 'search' && result.state.overlay.kind !== 'search')
-        removedQueryEffects.push('history-search', 'history-jump');
+      if (
+        state.overlay.kind !== result.state.overlay.kind ||
+        state.debug.sessionId !== result.state.debug.sessionId
+      ) {
+        removedQueryEffects.push('history-jump');
+        if (state.overlay.kind === 'search') removedQueryEffects.push('history-search');
+      }
 
       if (
         state.overlay.kind === 'recall' &&
@@ -1593,7 +1598,6 @@ function updateCodingAgentTui(
           { kind: 'effect', id: 'prompt-recall-query' },
           { kind: 'effect', id: 'recovered-drafts' },
           { kind: 'effect', id: 'context-inspection' },
-          { kind: 'effect', id: 'history-jump' },
           { kind: 'effect', id: 'attachment-read' },
           { kind: 'effect', id: 'session-name-load' },
           { kind: 'effect', id: 'navigation-query' },

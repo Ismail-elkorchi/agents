@@ -37,7 +37,11 @@ export function updateHistorySearch(
           input: createTextAreaState({ value: previous?.query ?? '' }),
           ...(previous === undefined ? {} : { result: previous.result })
         }
-      }
+      },
+      cancel: [
+        { kind: 'effect', id: 'writing-history-search' },
+        { kind: 'effect', id: 'writing-search-jump' }
+      ]
     };
   }
   if (message.type === 'search.adjacent') {
@@ -71,13 +75,18 @@ export function updateHistorySearch(
   }
   if (state.overlay.kind !== 'search') return { state };
   const overlay = state.overlay;
-  if (message.type === 'search.edit')
+  if (message.type === 'search.edit') {
+    const input = textAreaReducer(overlay.input, message.transition).state;
+    if (textDocumentText(input.document) === textDocumentText(overlay.input.document))
+      return { state: { ...state, overlay: { ...overlay, input } } };
     return {
-      state: {
-        ...state,
-        overlay: { kind: 'search', input: textAreaReducer(overlay.input, message.transition).state }
-      }
+      state: { ...state, overlay: { kind: 'search', input } },
+      cancel: [
+        { kind: 'effect', id: 'writing-history-search' },
+        { kind: 'effect', id: 'writing-search-jump' }
+      ]
     };
+  }
   if (message.type === 'search.loaded')
     return overlay.requestId !== message.requestId
       ? { state }
@@ -116,6 +125,7 @@ export function updateHistorySearch(
   const requestId = crypto.randomUUID();
   return {
     state: { ...state, overlay: { ...overlay, requestId } },
+    cancel: [{ kind: 'effect', id: 'writing-search-jump' }],
     effects: [
       {
         id: 'writing-history-search',

@@ -86,7 +86,11 @@ export function openHistorySearch(state: CodingAgentTuiState): Update {
           optionsView.interactionIndex
         )
       }
-    }
+    },
+    cancel: [
+      { kind: 'effect', id: 'history-search' },
+      { kind: 'effect', id: 'history-jump' }
+    ]
   };
 }
 
@@ -125,9 +129,17 @@ export function searchHistory(
     collection: EMPTY_COLLECTION,
     optionsView: EMPTY_VIEW
   };
-  if (!query.length) return { state: { ...state, overlay } };
+  if (!query.length)
+    return {
+      state: { ...state, overlay },
+      cancel: [
+        { kind: 'effect', id: 'history-search' },
+        { kind: 'effect', id: 'history-jump' }
+      ]
+    };
   return {
     state: { ...state, nextLocalId: state.nextLocalId + 1, overlay: { ...overlay, loading: id } },
+    cancel: [{ kind: 'effect', id: 'history-jump' }],
     effects: [
       {
         id: 'history-search',
