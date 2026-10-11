@@ -1,3 +1,4 @@
+import { updateRecovery } from './recovery.js';
 import { splitPaneReducer } from '@ismail-elkorchi/terminal-ui/behavior';
 import { intervalSource } from '@ismail-elkorchi/terminal-ui/tui';
 import { createContextState, updateContext } from '@agent-core/tui';
@@ -401,6 +402,13 @@ export function createWritingAgentTuiApp(
           }
         };
         const removedQueryEffects: string[] = [];
+        if (
+          result.state.overlay.kind === 'recovery' &&
+          result.state.overlay.sessionId !== application.state().sessionId
+        ) result = { ...result, state: { ...result.state, overlay: { kind: 'none' } } };
+        if (state.overlay.kind === 'recovery' && result.state.overlay.kind !== 'recovery')
+          removedQueryEffects.push('writing-recovery-read');
+
         const documentRequest = result.state.documentRequest;
         if (
           documentRequest !== undefined &&
@@ -977,61 +985,13 @@ function update(
         update(next, { type: 'history.inspect', reference }, app, options, context)
       );
     case 'recovery.open':
-      return {
-        state,
-        effects: [
-          effect('writing-recovery-read', async () => ({
-            type: 'recovery.loaded',
-            session: await app.readSession()
-          }))
-        ]
-      };
     case 'recovery.loaded':
-      return {
-        state: {
-          ...state,
-          sessionView: message.session,
-          overlay: {
-            kind: message.session.session.suspension === undefined ? 'none' : 'recovery'
-          }
-        }
-      };
+    case 'recovery.failed':
     case 'recovery.resume':
-    case 'recovery.abort': {
-      const suspension = state.sessionView?.session.suspension;
-      if (suspension === undefined) return { state };
-      return {
-        state,
-        effects: [
-          effect('writing-recovery-command', async () => {
-            if (message.type === 'recovery.abort') await app.abort(suspension.runId);
-            else await app.resume(suspension.runId);
-            return {
-              type: 'recovery.loaded',
-              session: await app.readSession()
-            };
-          })
-        ]
-      };
-    }
+    case 'recovery.abort':
     case 'recovery.approval':
-      return {
-        state,
-        effects: [
-          effect('writing-approval', async () => {
-            await app.resolveApproval({
-              runId: message.runId,
-              approvalId: message.approvalId,
-              fingerprint: message.fingerprint,
-              decision: message.decision
-            });
-            return {
-              type: 'recovery.loaded',
-              session: await app.readSession()
-            };
-          })
-        ]
-      };
+    case 'recovery.settled':
+      return updateRecovery(state, message, app);
     case 'section.scroll':
       return {
         state: {
@@ -1262,8 +1222,11 @@ function update(
           options,
           context
         );
-      if (state.sessionView?.session.suspension !== undefined)
-        return { state: { ...state, overlay: { kind: 'recovery' } } };
+      if (
+        state.sessionView?.session.sessionId === state.application.sessionId &&
+        state.sessionView?.session.suspension !== undefined
+      )
+        return updateRecovery(state, { type: 'recovery.open' }, app);
       return {
         state: { ...withoutFailure(state), submitting: true },
         effects: [

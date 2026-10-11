@@ -47,7 +47,7 @@ export type WritingTuiOverlay =
   | { readonly kind: 'none' }
   | { readonly kind: 'loading'; readonly requestId: string }
   | { readonly kind: 'source' }
-  | { readonly kind: 'recovery' }
+  | { readonly kind: 'recovery'; readonly id: string; readonly sessionId: string; readonly loading: boolean }
   | {
       readonly kind: 'search';
       readonly input: TextAreaState;
@@ -64,6 +64,7 @@ export type WritingTuiOverlay =
     };
 
 export interface WritingTuiState {
+  readonly recoveryOperation?: { readonly id: string; readonly sessionId: string };
   readonly activityClock?: import('@agent-core/tui').ActivityClock | undefined;
   readonly queuePanel?: import('@ismail-elkorchi/terminal-ui/tui').TuiChildState<
     import('@agent-core/tui').QueueState
@@ -251,8 +252,11 @@ export type WritingTuiMessage =
   | { readonly type: 'recovery.open' }
   | {
       readonly type: 'recovery.loaded';
+      readonly requestId: string;
       readonly session: Awaited<ReturnType<WritingApplication['readSession']>>;
     }
+  | { readonly type: 'recovery.failed'; readonly requestId: string; readonly message: string }
+  | { readonly type: 'recovery.settled'; readonly operationId: string; readonly error?: string }
   | { readonly type: 'recovery.resume' }
   | { readonly type: 'recovery.abort' }
   | {

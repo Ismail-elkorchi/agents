@@ -159,7 +159,7 @@ test(
     );
     assert.equal(runtime.state().overlay.kind, 'none');
     await runtime.dispatch({ type: 'recovery.open' });
-    await waitForState(runtime, t.signal, () => runtime.state().overlay.kind === 'recovery');
+    await waitForState(runtime, t.signal, () => runtime.state().overlay.kind === 'recovery' && !runtime.state().overlay.loading);
     const frame = renderFramePlain(runtime.frame());
     assert.match(frame, /Response interrupted/);
     assert.match(frame, /Provider connection closed/);
@@ -174,6 +174,7 @@ test(
       textDocumentText(runtime.state().composer.input.document),
       'Preserve this instruction'
     );
+    await waitForState(runtime, t.signal, () => !runtime.state().overlay.loading);
     await runtime.dispatch({ type: 'recovery.abort' });
     await waitForState(runtime, t.signal, () => runtime.state().overlay.kind === 'none');
   }
@@ -242,7 +243,7 @@ test('context admission shows the conflict and source adjustment without suggest
     assert.match(renderFramePlain(runtime.frame()), /Context needs adjustment/);
     assert.doesNotMatch(renderFramePlain(runtime.frame()), /Review pending decision/);
     await runtime.dispatch({ type: 'recovery.open' });
-    await waitForState(runtime, t.signal, () => runtime.state().overlay.kind === 'recovery');
+    await waitForState(runtime, t.signal, () => runtime.state().overlay.kind === 'recovery' && !runtime.state().overlay.loading);
     const frame = renderFramePlain(runtime.frame());
     assert.match(frame, /Inspect context/);
     assert.match(frame, /token limit exceeded/);
