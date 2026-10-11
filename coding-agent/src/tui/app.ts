@@ -750,14 +750,19 @@ function updateCodingAgentTui(
     case 'resource.accept': {
       const completion = state.resourceCompletion;
       if (completion === undefined) return { state };
-      return updated({
-        ...state,
-        resourceCompletion: undefined,
-        composer: {
-          ...state.composer,
-          input: acceptResource(completion, state.composer.input, message.id)
-        }
-      });
+      const accepted = acceptResource(completion, state.composer.input, message.id);
+      if (accepted.completion === completion && accepted.input === state.composer.input)
+        return { state };
+      return {
+        ...updated({
+          ...state,
+          resourceCompletion: accepted.completion,
+          composer: { ...state.composer, input: accepted.input }
+        }),
+        ...(accepted.completion === undefined || options.resources === undefined
+          ? { cancel: [{ kind: 'effect', id: 'resource-search' }] }
+          : { effects: [searchResources(accepted.completion, options.resources)] })
+      };
     }
     case 'resource.loaded':
     case 'resource.failed':

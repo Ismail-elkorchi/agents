@@ -560,15 +560,18 @@ function update(
 
     case 'resource.accept': {
       if (state.resourceCompletion === undefined) return { state };
+      const accepted = acceptResource(state.resourceCompletion, state.composer.input, message.id);
+      if (accepted.completion === state.resourceCompletion && accepted.input === state.composer.input)
+        return { state };
       return {
         state: {
           ...state,
-          resourceCompletion: undefined,
-          composer: {
-            ...state.composer,
-            input: acceptResource(state.resourceCompletion, state.composer.input, message.id)
-          }
-        }
+          resourceCompletion: accepted.completion,
+          composer: { ...state.composer, input: accepted.input }
+        },
+        ...(accepted.completion === undefined
+          ? { cancel: [{ kind: 'effect', id: 'resource-search' }] }
+          : { effects: [searchResources(accepted.completion, documentResources(app))] })
       };
     }
     case 'resource.loaded':
@@ -1164,30 +1167,7 @@ function update(
         },
         ...(resourceCompletion === undefined
           ? { cancel: [{ kind: 'effect', id: 'resource-search' }] }
-          : {
-              effects: [
-                searchResources(resourceCompletion, {
-                  async search(query, signal) {
-                    signal.throwIfAborted();
-                    const slash = query.lastIndexOf('/');
-                    const documents = await app.listDocuments(
-                      slash < 0 ? '.' : query.slice(0, slash) || '.'
-                    );
-                    signal.throwIfAborted();
-                    return documents
-                      .filter((item) => item.path.startsWith(query))
-                      .map((item) => {
-                        const target = item.type === 'directory' ? `${item.path}/` : item.path;
-                        return {
-                          id: target,
-                          label: target,
-                          insertion: `@${/\s/u.test(target) ? JSON.stringify(target) : target}${item.type === 'directory' ? '' : ' '}`
-                        };
-                      });
-                  }
-                })
-              ]
-            })
+          : { effects: [searchResources(resourceCompletion, documentResources(app))] })
       };
     }
     case 'document.edit':
@@ -2172,4 +2152,26 @@ function mountedPanels(
     ...(overlay.kind === 'configuration' || overlay.kind === 'inspector' ? [overlay.state] : []),
     ...(state.queuePanel === undefined ? [] : [state.queuePanel])
   ];
+}
+
+function documentResources(app: WritingApplication): import('@agent-core/tui').ResourceSearch {
+  return {
+    async search(query, signal) {
+      signal.throwIfAborted();
+      const slash = query.lastIndexOf('/');
+      const documents = await app.listDocuments(slash < 0 ? '.' : query.slice(0, slash) || '.');
+      signal.throwIfAborted();
+      return documents
+        .filter((item) => item.path.startsWith(query))
+        .map((item) => {
+          const target = item.type === 'directory' ? `${item.path}/` : item.path;
+          return {
+            id: target,
+            label: target,
+            reference: target,
+            continueSearch: item.type === 'directory'
+          };
+        });
+    }
+  };
 }

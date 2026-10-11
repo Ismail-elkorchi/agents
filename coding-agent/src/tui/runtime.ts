@@ -135,7 +135,8 @@ export async function runCodingAgentTuiApp(
               return {
                 id: target,
                 label: target,
-                insertion: `@${/\s/u.test(target) ? JSON.stringify(target) : target}${file.kind === 'directory' ? '' : ' '}`
+                reference: target,
+                continueSearch: file.kind === 'directory'
               };
             });
           }
