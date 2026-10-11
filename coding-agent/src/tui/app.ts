@@ -2622,7 +2622,7 @@ function withAttention(
       : message.type === 'approval.required'
         ? `${message.suspension.runId}:approval:${message.suspension.pendingApprovals[0]?.fingerprint ?? ''}`
         : message.type === 'run.suspended'
-          ? `${message.suspension.runId}:${message.suspension.reason}:${message.suspension.decisionRequest?.id ?? message.suspension.effectId ?? ''}`
+          ? `${message.suspension.runId}:${message.suspension.reason}:${message.suspension.effectId ?? ''}`
           : message.type === 'progress' && message.event.type === 'run.ended'
             ? `${message.event.terminal.runId}:ended`
             : undefined;

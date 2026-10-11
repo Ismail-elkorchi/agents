@@ -545,10 +545,6 @@ export class WritingApplication {
       ? agent.resumeRuntime(runId)
       : agent.reconcileExternal(runId);
   }
-  decide(input: Parameters<AgentSession['resolveDecision']>[0]) {
-    this.assertOpen();
-    return this.requireAgent().resolveDecision(input);
-  }
   resolveApproval(input: Parameters<AgentSession['resolveApproval']>[0]) {
     this.assertOpen();
     return this.requireAgent().resolveApproval(input);

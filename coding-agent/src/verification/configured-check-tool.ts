@@ -9,8 +9,7 @@ import {
   type CommandExecution,
   type CommandExecutionOwner,
   type CommandExecutionResult,
-  type CompiledToolDefinition,
-  type WorkspaceFiles
+  type CompiledToolDefinition
 } from '@agent-core/tools';
 import { fileScope, processScope, type RootedFileAuthority } from '@agent-core/tools-local';
 import type {
@@ -138,7 +137,7 @@ export async function readConfiguredCheckResults(
   events: EventRepository<AgentEvent>,
   runId: string,
   configuration: Pick<CodingAgentConfiguration, 'verification'> | undefined,
-  root?: RootedFileAuthority | WorkspaceFiles,
+  root?: RootedFileAuthority,
   artifacts?: ArtifactRepository
 ): Promise<CodingRunVerification> {
   let queues = refreshQueues.get(events);
@@ -162,7 +161,7 @@ async function readCheckResults(
   events: EventRepository<AgentEvent>,
   runId: string,
   configuration: Pick<CodingAgentConfiguration, 'verification'> | undefined,
-  root?: RootedFileAuthority | WorkspaceFiles,
+  root?: RootedFileAuthority,
   artifacts?: ArtifactRepository
 ): Promise<CodingRunVerification> {
   let runs = indexes.get(events);
@@ -318,7 +317,7 @@ export function createConfiguredCheckTool(input: {
   readonly required: readonly CodingAgentCheckConfiguration[];
   readonly advisory: readonly CodingAgentCheckConfiguration[];
   readonly commandExecution: CommandExecution;
-  readonly root: RootedFileAuthority | WorkspaceFiles;
+  readonly root: RootedFileAuthority;
 }): CompiledToolDefinition {
   const checks = new Map(
     configuredDefinitions(input.required, input.advisory).map((definition) => [

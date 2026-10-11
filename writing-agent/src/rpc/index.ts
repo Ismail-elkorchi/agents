@@ -29,8 +29,7 @@ export function writingRpcMethods(application: WritingApplication, shutdown: () 
     ...recoveryRpcMethods({
       abort: (runId) => application.abort(runId),
       resume: (runId) => application.resume(runId),
-      resolveApproval: (request) => application.resolveApproval(request),
-      resolveDecision: (request) => application.decide(request)
+      resolveApproval: (request) => application.resolveApproval(request)
     }),
     'configuration.read': rpcMethod(empty, () => application.modelSelection()),
     'configuration.set': rpcMethod(

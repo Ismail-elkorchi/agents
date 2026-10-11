@@ -2,8 +2,7 @@ import type { AgentInstruction, PromptContextItemInput } from '@agent-core/runti
 import type {
   ToolAuthorizationDecision,
   ToolAuthorizationRequest,
-  ToolInputInspection,
-  WorkspaceFiles
+  ToolInputInspection
 } from '@agent-core/tools';
 import { rootedFileIdentitiesEqual, type RootedFileAuthority } from '@agent-core/tools-local';
 import { createHash } from 'node:crypto';
@@ -17,7 +16,6 @@ const MAX_GUIDANCE_DOCUMENTS = 64;
 const MAX_REMEMBERED_GUIDANCE_PATHS = 256;
 const MAX_GUIDANCE_DOCUMENT_BYTES = 32 * 1024;
 const MAX_TOTAL_GUIDANCE_BYTES = 128 * 1024;
-type GuidanceFiles = RootedFileAuthority | WorkspaceFiles;
 
 export interface RepositoryGuidanceSource {
   readonly path: string;
@@ -67,7 +65,7 @@ export async function loadInitialRepositoryGuidance(
 }
 
 export async function loadInitialRepositoryGuidanceFromRoot(
-  root: GuidanceFiles,
+  root: RootedFileAuthority,
   security: WorkspaceSecurityBoundary,
   configuredPaths: readonly string[] = []
 ): Promise<RepositoryGuidanceSet> {
@@ -82,7 +80,7 @@ interface GuidanceRevision {
 }
 
 export class RepositoryGuidanceSession {
-  readonly #root: GuidanceFiles;
+  readonly #root: RootedFileAuthority;
   readonly #security: WorkspaceSecurityBoundary;
   readonly #configured: ReadonlyMap<string, number>;
   readonly #configurationIdentity: string;
@@ -91,20 +89,20 @@ export class RepositoryGuidanceSession {
   #serial: Promise<void> = Promise.resolve();
 
   private constructor(input: {
-    readonly root: GuidanceFiles;
+    readonly root: RootedFileAuthority;
     readonly security: WorkspaceSecurityBoundary;
     readonly configuredPaths?: readonly string[];
   }) {
     this.#root = input.root;
     this.#security = input.security;
     this.#configured = new Map(
-      (input.configuredPaths ?? []).map((item, index) => [normalize(input.root, item), index])
+      (input.configuredPaths ?? []).map((item, index) => [input.root.canonicalPath(item), index])
     );
     this.#configurationIdentity = digest(JSON.stringify([...this.#configured]));
   }
 
   static open(input: {
-    readonly root: GuidanceFiles;
+    readonly root: RootedFileAuthority;
     readonly security: WorkspaceSecurityBoundary;
     readonly configuredPaths?: readonly string[];
   }): RepositoryGuidanceSession {
@@ -240,7 +238,7 @@ export class RepositoryGuidanceSession {
         if (++count > MAX_GUIDANCE_DOCUMENTS) {
           omission = { path: candidate, reason: 'file_limit' };
         } else {
-          const status = await inspect(this.#root, candidate);
+          const status = await this.#root.inspectPath(candidate);
           if (status.kind === 'file') {
             const loaded = await readInstruction(this.#root, this.#security, candidate);
             if (retainedBytes + loaded.source.retainedBytes > MAX_TOTAL_GUIDANCE_BYTES)
@@ -321,18 +319,18 @@ function digest(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function repositoryTargets(root: GuidanceFiles, request: ToolInputInspection): readonly string[] {
+function repositoryTargets(root: RootedFileAuthority, request: ToolInputInspection): readonly string[] {
   const targets = new Set<string>();
   for (const access of request.effects.accesses) {
     if (access.scope === 'files') targets.add('.');
     else if (access.scope.startsWith('files/'))
-      targets.add(normalize(root, access.scope.slice('files/'.length)));
+      targets.add(root.canonicalPath(access.scope.slice('files/'.length)));
   }
   for (const access of request.effects.accesses) {
     if (access.scope === 'processes' || access.scope.startsWith('processes/')) {
       targets.add(
         record(request.input) && typeof request.input.workdir === 'string'
-          ? normalize(root, request.input.workdir)
+          ? root.canonicalPath(request.input.workdir)
           : '.'
       );
     }
@@ -340,9 +338,9 @@ function repositoryTargets(root: GuidanceFiles, request: ToolInputInspection): r
   return Object.freeze([...targets].sort(compareCodeUnits));
 }
 
-async function guidancePaths(root: GuidanceFiles, target: string): Promise<readonly string[]> {
-  const canonical = normalize(root, target);
-  const status = await inspect(root, canonical);
+async function guidancePaths(root: RootedFileAuthority, target: string): Promise<readonly string[]> {
+  const canonical = root.canonicalPath(target);
+  const status = await root.inspectPath(canonical);
   const directory = status.kind === 'directory' ? canonical : path.posix.dirname(canonical);
   const parts = directory === '.' ? [] : directory.split('/');
   const paths = [INSTRUCTION_NAME];
@@ -358,7 +356,7 @@ function mutatesOrExecutes(request: ToolInputInspection): boolean {
 }
 
 async function readInstruction(
-  root: GuidanceFiles,
+  root: RootedFileAuthority,
   security: WorkspaceSecurityBoundary,
   candidatePath: string
 ): Promise<{
@@ -366,62 +364,35 @@ async function readInstruction(
   readonly source: Omit<RepositoryGuidanceSource, 'origin' | 'precedence'>;
 }> {
   let bytes: Uint8Array;
-  if (isGuestFiles(root)) {
-    const loaded = await root.readFile(candidatePath, {
-      maximumBytes: MAX_GUIDANCE_DOCUMENT_BYTES
-    });
-    bytes = loaded.bytes;
-  } else {
-    const file = await root.openFile(candidatePath);
-    try {
-      if (file.size > MAX_GUIDANCE_DOCUMENT_BYTES) throw new OversizedGuidanceError(candidatePath);
-      bytes = await file.readAll(MAX_GUIDANCE_DOCUMENT_BYTES);
-      const currentIdentity = await file.identityNow();
-      if (!rootedFileIdentitiesEqual(file.identity, currentIdentity))
-        throw new Error(`Repository instruction changed while it was read: ${candidatePath}.`);
-    } finally {
-      await file.close();
-    }
+  const file = await root.openFile(candidatePath);
+  try {
+    if (file.size > MAX_GUIDANCE_DOCUMENT_BYTES) throw new OversizedGuidanceError(candidatePath);
+    bytes = await file.readAll(MAX_GUIDANCE_DOCUMENT_BYTES);
+    if (!rootedFileIdentitiesEqual(file.identity, await file.identityNow()))
+      throw new Error(`Repository instruction changed while it was read: ${candidatePath}.`);
+  } finally {
+    await file.close();
   }
-  {
-    const content = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-    const scope = path.posix.dirname(candidatePath);
-    const adopted = security.adoptContent({
-      content,
-      kind: 'instruction',
-      sourceUri: workspaceUri(candidatePath),
+  const content = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  const scope = path.posix.dirname(candidatePath);
+  const adopted = security.adoptContent({
+    content,
+    kind: 'instruction',
+    sourceUri: workspaceUri(candidatePath),
+    scope,
+    maxBytes: MAX_GUIDANCE_DOCUMENT_BYTES
+  });
+  return Object.freeze({
+    content: adopted.content,
+    source: Object.freeze({
+      path: candidatePath,
       scope,
-      maxBytes: MAX_GUIDANCE_DOCUMENT_BYTES
-    });
-    return Object.freeze({
-      content: adopted.content,
-      source: Object.freeze({
-        path: candidatePath,
-        scope,
-        sourceUri: adopted.provenance.sourceUri,
-        sha256: createHash('sha256').update(bytes).digest('hex'),
-        retainedBytes: adopted.provenance.retainedBytes,
-        hazards: adopted.provenance.hazards
-      })
-    });
-  }
-}
-
-function isGuestFiles(root: GuidanceFiles): root is WorkspaceFiles {
-  return 'descriptor' in root;
-}
-
-function normalize(root: GuidanceFiles, requested: string): string {
-  return isGuestFiles(root) ? root.normalize(requested) : root.canonicalPath(requested);
-}
-
-async function inspect(
-  root: GuidanceFiles,
-  requested: string
-): Promise<{ readonly kind: 'file' | 'directory' | 'absent' | 'symlink' | 'other' }> {
-  if (isGuestFiles(root)) return root.stat(requested);
-  const status = await root.inspectPath(requested);
-  return { kind: status.kind };
+      sourceUri: adopted.provenance.sourceUri,
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+      retainedBytes: adopted.provenance.retainedBytes,
+      hazards: adopted.provenance.hazards
+    })
+  });
 }
 
 function completeSource(

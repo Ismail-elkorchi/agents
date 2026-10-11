@@ -231,7 +231,6 @@ export type WritingTuiMessage =
     }
   | { readonly type: 'recovery.resume' }
   | { readonly type: 'recovery.abort' }
-  | { readonly type: 'recovery.choice'; readonly choice: string }
   | {
       readonly type: 'recovery.approval';
       readonly runId: string;

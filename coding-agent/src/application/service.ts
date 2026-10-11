@@ -27,7 +27,6 @@ import {
 import { randomUUID } from 'node:crypto';
 import { readRecordedMutationPatches, readRunChangeReport } from '../changes/run-change-report.js';
 import { resolveCodingAuthority, type CodingPermissionMode } from '../security/permission-mode.js';
-import { isWorkspaceFiles } from '@agent-core/tools';
 import { createTrustDecision } from '../security/workspace-trust.js';
 import { closeCodingSession } from '../session.js';
 import { ModelSelectionStore } from '../state/model-selection-store.js';
@@ -132,7 +131,7 @@ export class CodingApplication {
     const root = this.requireRuntime().fileRoot;
     const snapshot = await readRootedText(
       root,
-      isWorkspaceFiles(root) ? root.normalize(filePath) : root.canonicalPath(filePath),
+      root.canonicalPath(filePath),
       DEFAULT_LOCAL_TOOL_CONFIGURATION.readFiles.maxBytesPerFile,
       signal
     );
@@ -140,9 +139,7 @@ export class CodingApplication {
       id: `file:${snapshot.sha256}`,
       title: snapshot.path,
       sourceKind: 'user',
-      sourceUri: `workspace:${
-        isWorkspaceFiles(root) ? root.descriptor.workspaceId : this.workspace.layout.identity.id
-      }/${snapshot.path}`,
+      sourceUri: `workspace:${this.workspace.layout.identity.id}/${snapshot.path}`,
       integrity: 'verified',
       representation: 'full',
       mediaType: 'text/plain',
@@ -160,9 +157,7 @@ export class CodingApplication {
     const root = this.requireRuntime().fileRoot;
     if (!profile.modalities.input.includes('image'))
       throw new Error('The selected model does not accept images. Choose an image-capable model.');
-    const canonical = isWorkspaceFiles(root)
-      ? root.normalize(filePath)
-      : root.canonicalPath(filePath);
+    const canonical = root.canonicalPath(filePath);
     const result = await readRootedImage(
       root,
       canonical,
@@ -229,33 +224,25 @@ export class CodingApplication {
     const decision = this.workspace.security.decide('workspace_read');
     if (decision.kind !== 'allowed') throw new Error(decision.reason);
     const root = this.requireRuntime().fileRoot;
-    const canonical = isWorkspaceFiles(root)
-      ? root.normalize(directory)
-      : root.canonicalPath(directory);
+    const canonical = root.canonicalPath(directory);
     const entries: { path: string; kind: 'file' | 'directory' }[] = [];
     let visited = 0;
-    const listed = isWorkspaceFiles(root)
-      ? root.list(canonical)
-      : await (async () => {
-          const handle = await root.openDirectory(canonical);
-          try {
-            return await handle.entries();
-          } finally {
-            await handle.close();
-          }
-        })();
-    for await (const entry of listed) {
-      if (++visited > 4096 || entries.length >= 256) break;
-      if (!entry.name.startsWith(prefix) || (entry.type !== 'file' && entry.type !== 'directory'))
-        continue;
-      const pathname = canonical === '.' ? entry.name : `${canonical}/${entry.name}`;
-      try {
-        if (isWorkspaceFiles(root)) root.normalize(pathname);
-        else root.canonicalPath(pathname);
-      } catch {
-        continue;
+    const handle = await root.openDirectory(canonical);
+    try {
+      for (const entry of await handle.entries()) {
+        if (++visited > 4096 || entries.length >= 256) break;
+        if (!entry.name.startsWith(prefix) || (entry.type !== 'file' && entry.type !== 'directory'))
+          continue;
+        const pathname = canonical === '.' ? entry.name : `${canonical}/${entry.name}`;
+        try {
+          root.canonicalPath(pathname);
+        } catch {
+          continue;
+        }
+        entries.push({ path: pathname, kind: entry.type });
       }
-      entries.push({ path: pathname, kind: entry.type });
+    } finally {
+      await handle.close();
     }
     return entries.sort((left, right) => left.path.localeCompare(right.path));
   }

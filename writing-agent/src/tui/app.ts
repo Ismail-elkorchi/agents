@@ -951,26 +951,15 @@ function update(
         }
       };
     case 'recovery.resume':
-    case 'recovery.abort':
-    case 'recovery.choice': {
+    case 'recovery.abort': {
       const suspension = state.sessionView?.session.suspension;
       if (suspension === undefined) return { state };
-      const decision = suspension.decisionRequest;
-      if (message.type === 'recovery.choice' && decision === undefined) return { state };
       return {
         state,
         effects: [
           effect('writing-recovery-command', async () => {
             if (message.type === 'recovery.abort') await app.abort(suspension.runId);
-            else if (message.type === 'recovery.resume') await app.resume(suspension.runId);
-            else if (decision !== undefined)
-              await app.decide({
-                runId: suspension.runId,
-                decisionRequestId: decision.id,
-                choice: message.choice,
-                fingerprint: decision.fingerprint,
-                expectedRunRevision: decision.runRevision
-              });
+            else await app.resume(suspension.runId);
             return {
               type: 'recovery.loaded',
               session: await app.readSession()
@@ -2021,7 +2010,7 @@ function withAttention(
         ? `${message.result.terminal.runId}:ended`
         : message.result.reason === 'approval_required'
           ? `${message.result.runId}:approval:${message.result.pendingApprovals.map((request) => request.approvalId).join(',')}`
-          : `${message.result.runId}:${message.result.reason}:${message.result.decisionRequest?.id ?? message.result.effectId ?? ''}`
+          : `${message.result.runId}:${message.result.reason}:${message.result.effectId ?? ''}`
       : undefined;
   if (event === undefined) return result;
   const attention = observeAttention(

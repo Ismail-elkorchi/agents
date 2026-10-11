@@ -33,18 +33,6 @@ export function recoveryView(state: WritingTuiState): Element<WritingTuiMessage>
         label: 'Inspect context',
         onPress: () => ({ type: 'context.open' })
       }));
-    const decision = suspension.decisionRequest;
-    if (decision !== undefined) {
-      children.push(text({ content: decision.reason }));
-      for (const choice of decision.choices)
-        children.push(
-          button({
-            id: `writing-decision:${choice}`,
-            label: choice,
-            onPress: () => ({ type: 'recovery.choice', choice })
-          })
-        );
-    }
     children.push(
       button({
         id: 'writing-recovery-abort',
