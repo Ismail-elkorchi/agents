@@ -29,7 +29,7 @@ test('durable restore precedes live append and stable identities prevent duplica
     type: 'progress',
     runId: 'run-1',
     event: {
-      type: 'turn.started',
+      type: 'turn.started', task: 'Test instruction',
       runId: 'run-1',
       sessionId: 'session-1',
       turnIndex: 1,
@@ -254,7 +254,7 @@ test('long stream pressure retains every reliable boundary and the latest stream
     type: 'progress',
     runId: 'run-1',
     event: {
-      type: 'turn.started',
+      type: 'turn.started', task: 'Test instruction',
       runId: 'pressure-run',
       turnIndex: 1,
       turnId: 'pressure-turn',
@@ -835,4 +835,29 @@ test('a dispatch failure before the first turn restores usable recovery controls
   await runtime.dispatch({ type: 'recovery.act', action: 'resume' });
   await waitFor(() => actions.length === 1);
   assert.deepEqual(actions[0], { descriptor: suspension, action: 'resume' });
+});
+
+test('a dismissed change inspection cannot reopen after its read settles', { timeout: 20_000 }, async (t) => {
+  let finish;
+  const reading = new Promise((resolve) => { finish = resolve; });
+  const runtime = createTuiRuntime({
+    host: createMemoryTerminalHost({ terminalSize: { columns: 80, rows: 24 } }),
+    app: createCodingAgentTuiApp('', {
+      initialHydration: await completedHydration(),
+      navigation: { readChange: async () => reading }
+    })
+  });
+  t.after(() => runtime.dispose());
+  await runtime.start();
+  await runtime.dispatch({ type: 'panel.open', panel: 'changes' });
+  await waitFor(() => runtime.state().overlay.kind === 'panel');
+  const panel = runtime.state().overlay;
+  assert.ok(panel.items.length > 0);
+  await runtime.dispatch({ type: 'panel.accept', id: panel.items[0].id });
+  await runtime.dispatch({ type: 'overlay.close' });
+  finish({ patches: [] });
+  await runtime.dispatch({ type: 'panel.change-loaded', panelId: panel.id,
+    sessionId: runtime.state().debug.sessionId, title: 'obsolete', content: 'obsolete', patch: 'obsolete' });
+  assert.equal(runtime.state().overlay.kind, 'none');
+  assert.doesNotMatch(renderFramePlain(runtime.frame()), /obsolete/);
 });

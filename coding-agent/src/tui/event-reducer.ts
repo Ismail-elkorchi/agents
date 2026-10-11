@@ -1,4 +1,4 @@
-import { renderLocalToolObservation } from '@agent-core/tools-local';
+import { localToolCallPresentation, renderLocalToolObservation } from '@agent-core/tools-local';
 import type {
   AgentEndedRunResult,
   AgentProgressEvent,
@@ -9,7 +9,6 @@ import type { CodingRunVerification } from '../verification/configured-check-too
 import { appendNotice, upsertActivity, upsertConversationEntry } from './conversation.js';
 import { terminalPresentation } from './run-presentation.js';
 import type { CodingAgentTuiState } from './state.js';
-import { toolLabel } from './tool-presentation.js';
 
 type ProgressEventType = AgentProgressEvent['type'];
 type ProgressEvent<K extends ProgressEventType> = Extract<AgentProgressEvent, { readonly type: K }>;
@@ -23,7 +22,7 @@ export function applyProgress(
   state = projectProgress(
     { runId, event },
     state.conversation.items,
-    toolLabel,
+    localToolCallPresentation,
     renderLocalToolObservation
   ).reduce(
     (state, entry) =>

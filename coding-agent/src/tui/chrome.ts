@@ -1,27 +1,25 @@
-import { progressStatusFields, reasoningLabel, statusline, suspensionPresentation, type StatusField } from '@agent-core/tui';
-import type { Element, InlineContent, StatusBarStatus } from '@ismail-elkorchi/terminal-ui/components';
-import { richText, statusBar } from '@ismail-elkorchi/terminal-ui/components';
+import {
+  progressStatusFields,
+  reasoningLabel,
+  responsiveStatusline,
+  suspensionPresentation,
+  type StatusField
+} from '@agent-core/tui';
+import type { Element, InlineContent } from '@ismail-elkorchi/terminal-ui/components';
+import { richText, text } from '@ismail-elkorchi/terminal-ui/components';
 import type { CodingAgentTuiMessage } from './messages.js';
 import { terminalPresentation } from './run-presentation.js';
 import type { CodingAgentTuiState } from './state.js';
 
 export function statusChrome(state: CodingAgentTuiState, columns: number): Element {
-  const presentation = runPresentation(state);
-  const preferences =
-    columns < 80
-      ? { ...state.preferences, statusline: state.preferences.statusline.filter((id) => id !== 'status') }
-      : state.preferences;
-  const center = statusline(preferences, codingStatusFields(state));
-  const runText = state.conversation.unread
-    ? 'New output · Ctrl+End'
-    : columns < 80
-      ? presentation.text
-      : '';
-  return statusBar({
+  return text({
     id: 'status',
-    leading: [{ id: 'app', kind: 'text', text: columns < 80 ? 'Coding' : 'Coding Agent' }],
-    center: center.length === 0 ? [] : [{ id: 'model-and-authority', kind: 'text', text: center }],
-    trailing: [{ id: 'run', kind: 'status', text: runText, status: presentation.status }]
+    content: responsiveStatusline(
+      columns < 90 ? 'Coding' : 'Coding Agent',
+      state.preferences,
+      codingStatusFields(state),
+      columns
+    )
   });
 }
 
@@ -46,11 +44,24 @@ export function codingStatusFields(state: CodingAgentTuiState): readonly StatusF
   return [
     ...progressStatusFields(state.progress),
     field('session', 'Session', state.debug.sessionId),
-    field('model', 'Model', modelSelectionLabel(state)),
+    {
+      ...field('model', 'Model', modelSelectionLabel(state)),
+      ...(state.runtimeDetails.modelId === undefined
+        ? {}
+        : { compactValue: state.runtimeDetails.modelId })
+    },
     field('reasoning', 'Reasoning configuration', reasoningLabel(state.runtimeDetails.reasoning)),
-    field('mode', 'Permissions', state.runtimeDetails.permissions?.mode),
+    field(
+      'mode',
+      'Permissions',
+      state.runtimeDetails.permissions === undefined
+        ? undefined
+        : state.runtimeDetails.permissions.mode === 'full_host'
+          ? 'Full host'
+          : 'Read only'
+    ),
     field('trust', 'Workspace trust', state.runtimeDetails.workspaceTrust),
-    field('status', 'Run status', runPresentation(state).text),
+    field('status', 'Run status', runStatus(state)),
     field('queue', 'Queued inputs', queueLabel(state))
   ];
 }
@@ -66,33 +77,26 @@ export function hintBar(
   const text =
     columns < 50
       ? show('commands', 'commands')
-      : [show('composer submit', 'send'), show('commands', 'commands'), show('help', 'help')]
-          .filter(Boolean)
-          .join(' · ');
+      : [show('commands', 'commands'), show('help', 'help')].filter(Boolean).join(' · ');
   return richText({ id: 'hints', segments: muted(text), wrap: false });
 }
 
-function runPresentation(state: CodingAgentTuiState): {
-  readonly text: string;
-  readonly status: StatusBarStatus;
-} {
-  if (state.setup.status === 'initializing') return { text: 'Initializing', status: 'running' };
-  if (state.setup.status === 'setup_required') return { text: 'Setup required', status: 'warning' };
+function runStatus(state: CodingAgentTuiState): string {
+  if (state.setup.status === 'initializing') return 'Initializing';
+  if (state.setup.status === 'setup_required') return 'Setup required';
   switch (state.run.kind) {
     case 'idle':
-      return { text: 'Idle', status: 'idle' };
+      return 'Idle';
     case 'working':
-      return { text: state.progress.label, status: 'running' };
+      return state.progress.label;
     case 'waiting_for_approval':
-      return { text: 'Approval required', status: 'warning' };
+      return 'Approval required';
     case 'waiting_for_recovery':
-      return { text: suspensionPresentation(state.run.suspension.reason).title, status: 'warning' };
+      return suspensionPresentation(state.run.suspension.reason).title;
     case 'failed':
-      return { text: 'Failed', status: 'error' };
-    case 'ended': {
-      const terminal = terminalPresentation(state.run.terminal);
-      return { text: terminal.headline, status: terminal.status };
-    }
+      return 'Failed';
+    case 'ended':
+      return terminalPresentation(state.run.terminal).headline;
   }
 }
 

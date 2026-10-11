@@ -1,9 +1,13 @@
+import { splitPaneReducer } from '@ismail-elkorchi/terminal-ui/behavior';
+import { intervalSource } from '@ismail-elkorchi/terminal-ui/tui';
 import { createContextState, updateContext } from '@agent-core/tui';
-import { renderLocalToolObservation } from '@agent-core/tools-local';
+import { localToolCallPresentation, renderLocalToolObservation } from '@agent-core/tools-local';
 import type { ConversationEntry } from '@agent-core/tui';
 import {
   MarkdownDocument,
   acceptResource,
+  compareText,
+  updateActivityClock,
   applyPanelResult,
   mountPanel,
   appendRecalledDrafts,
@@ -159,6 +163,20 @@ export function createWritingAgentTuiApp(
           delete next.queuePanel;
           result = { ...result, state: next };
         }
+        result = {
+          ...result,
+          state: {
+            ...result.state,
+            noticeOffset: result.state.notice === state.notice ? state.noticeOffset : 0,
+            activityClock: updateActivityClock(
+              message.type === 'progress' && message.event.type === 'run.configured'
+                ? undefined
+                : state.activityClock,
+              result.state.application.status === 'running',
+              context.clock.monotonicNow()
+            )
+          }
+        };
         const removedQueryEffects: string[] = [];
         if (
           state.overlay.kind === 'recall' &&
@@ -181,7 +199,7 @@ export function createWritingAgentTuiApp(
           result,
           reconcileTuiChildren(mountedPanels(state), mountedPanels(result.state), (child) => child)
         );
-        return context.terminalSize.rows < 12
+        return context.terminalSize.rows < 8
           ? {
               ...result,
               state: { ...result.state, completion: undefined, resourceCompletion: undefined }
@@ -190,6 +208,9 @@ export function createWritingAgentTuiApp(
       },
       resizeMessage: () => ({ type: 'terminal.resized' }),
       subscriptions: (state, context) => [
+        ...(state.application.status === 'running'
+          ? [intervalSource('activity-clock', 1000, { type: 'activity.tick' as const })]
+          : []),
         ...(events === undefined ? [] : [events]),
         ...(state.overlay.kind === 'configuration'
           ? configuration.subscriptions(state.overlay.state, context)
@@ -250,6 +271,14 @@ export function createWritingAgentTuiApp(
             { ctrl: true }
           ),
           binding('Steer active run', 's', { type: 'submit', delivery: 'steer' }, { alt: true }),
+          {
+            ...binding('Interrupt active run', 'escape', { type: 'interrupt' }),
+            enabled: ({ state }: TuiInputBindingContext<WritingTuiState>) =>
+              state.overlay.kind === 'none' &&
+              state.application.status === 'running' &&
+              state.completion === undefined &&
+              state.resourceCompletion === undefined
+          },
           binding('Commands', 'p', { type: 'commands.open' }, { ctrl: true }),
           binding('Tool output', 'o', { type: 'tools.toggle' }, { ctrl: true }),
           binding('Reasoning', 't', { type: 'reasoning.toggle' }, { ctrl: true }),
@@ -303,7 +332,7 @@ export function createWritingAgentTuiApp(
           binding('New conversation', 'f6', { type: 'session.new' }),
           binding('Edit or review', 'f7', { type: 'mode.toggle' }),
           binding('Use selected passage', 'f8', { type: 'document.use-passage' }),
-          binding('Model configuration', 'f10', { type: 'configuration.open' }),
+          binding('Model configuration', 'f10', { type: 'configuration.open', target: 'model' }),
           binding('Sessions', 'f11', { type: 'picker.open', subject: 'sessions' }),
           binding('Recovery', 'f12', { type: 'recovery.open' }),
           {
@@ -452,6 +481,8 @@ function update(
   context: import('@ismail-elkorchi/terminal-ui/tui').TuiContext
 ): Update {
   switch (message.type) {
+    case 'activity.tick':
+      return { state };
     case 'terminal.resized':
       return { state };
     case 'session-name.open': {
@@ -1041,6 +1072,10 @@ function update(
     }
     case 'application':
       return { state: { ...state, application: message.state } };
+    case 'notice.scroll':
+      return { state: { ...state, noticeOffset: message.offset } };
+    case 'notice.dismiss':
+      return { state: { ...state, notice: '' } };
     case 'notice':
       return {
         state: { ...state, notice: message.message, submitting: false }
@@ -1061,7 +1096,12 @@ function update(
         progress: presentProgress(state.progress, event),
         liveConversation: mergeConversationEntries(
           state.liveConversation,
-          projectProgress(message, state.liveConversation, undefined, renderLocalToolObservation)
+          projectProgress(
+            message,
+            state.liveConversation,
+            localToolCallPresentation,
+            renderLocalToolObservation
+          )
         ),
         unread: state.unread || !state.followTail
       };
@@ -1316,7 +1356,7 @@ function update(
             state.failure ??
             (receipt.kind === 'rejected'
               ? `Input rejected: ${receipt.reason.replaceAll('_', ' ')}`
-              : `Input ${receipt.kind}`),
+              : ''),
           composer:
             accepted && sameDraft(state.composer, message.draft) ? createDraft() : state.composer
         }
@@ -1324,14 +1364,37 @@ function update(
     }
     case 'view':
       return { state: { ...state, view: message.view } };
+    case 'document.split':
+      return {
+        state: {
+          ...state,
+          split: splitPaneReducer(state.split, message.transition, {
+            constraints: [{ minShare: 0.25 }, { minShare: 0.25 }]
+          })
+        }
+      };
+    case 'document.refresh':
+      return { state, effects: [refresh(app, state.document?.value.path)] };
+    case 'document.compare':
+      return state.document?.comparison === undefined
+        ? { state }
+        : {
+            state: {
+              ...state,
+              document: {
+                ...state.document,
+                source: false,
+                showComparison: !state.document.showComparison
+              }
+            }
+          };
     case 'document.toggle-source':
       return state.document === undefined
         ? { state }
         : {
             state: {
               ...state,
-              view: 'document',
-              document: { ...state.document, source: !state.document.source }
+              document: { ...state.document, source: !state.document.source, showComparison: false }
             },
             focus: {
               kind: 'element',
@@ -1458,14 +1521,17 @@ function update(
         state: {
           ...state,
           document: documentState(message.document),
-          view: 'document',
+          view: 'split',
           overlay: { kind: 'none' },
           notice: ''
         }
       };
     case 'configuration.open':
     case 'configuration.child': {
-      const configuration = writingConfiguration(app);
+      const configuration = writingConfiguration(
+        app,
+        message.type === 'configuration.open' ? message.target : undefined
+      );
       if (message.type === 'configuration.open')
         return mountPanel(state, 'configuration', configuration, context);
       if (state.overlay.kind !== 'configuration') return { state };
@@ -1711,6 +1777,15 @@ function documentState(
     return { ...previous, value };
   return {
     value,
+    ...(previous?.value.path === value.path
+      ? {
+          comparison: {
+            before: previous.value,
+            ...compareText(previous.value.content, value.content)
+          },
+          showComparison: previous.showComparison ?? false
+        }
+      : {}),
     input: createTextAreaState({ value: value.content }),
     markdown: new MarkdownDocument(value.content),
     source: previous?.source ?? false,
@@ -2043,9 +2118,12 @@ function withAttention(
   });
 }
 
-function writingConfiguration(app: WritingApplication) {
+function writingConfiguration(
+  app: WritingApplication,
+  target?: import('@agent-core/tui').ConfigurationTarget
+) {
   return createTuiChild(
-    configurationPanel(() => app.modelSelection(), writingConfigurationOperations(app)),
+    configurationPanel(() => app.modelSelection(), writingConfigurationOperations(app), target),
     (child): WritingTuiMessage => ({ type: 'configuration.child', child })
   );
 }

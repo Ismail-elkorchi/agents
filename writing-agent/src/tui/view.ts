@@ -10,14 +10,16 @@ import {
   promptRecallView,
   reasoningLabel,
   resourceCompletionRows,
+  suggestionLimit,
   resourceSuggestions,
   sessionNameView,
   suspensionPresentation,
-  statusline,
+  responsiveStatusline,
+  activityLine,
   type StatusField
 } from '@agent-core/tui';
 import type { TextAreaTransition } from '@ismail-elkorchi/terminal-ui/behavior';
-import { searchPickerView } from '@ismail-elkorchi/terminal-ui/behavior';
+import { searchPickerView, splitPaneLayout } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { Element } from '@ismail-elkorchi/terminal-ui/components';
 import {
   button,
@@ -27,7 +29,14 @@ import {
   text,
   textArea
 } from '@ismail-elkorchi/terminal-ui/components';
-import { column, overlay, row, viewport } from '@ismail-elkorchi/terminal-ui/layout';
+import {
+  column,
+  overlay,
+  row,
+  viewport,
+  splitPane,
+  flow
+} from '@ismail-elkorchi/terminal-ui/layout';
 import type { TuiContext } from '@ismail-elkorchi/terminal-ui/tui';
 import { WRITING_COMMANDS, WRITING_SHORTCUTS } from './commands.js';
 import { historyViewport } from './history.js';
@@ -47,32 +56,60 @@ export function writingView(
   childPanel?: View
 ): View {
   const { columns, rows } = context.terminalSize;
-  composerHeight += (rows >= 8 ? 1 : 0) + resourceCompletionRows(state.resourceCompletion);
+  const limit = suggestionLimit(rows);
+  composerHeight += (rows >= 8 ? 1 : 0) + resourceCompletionRows(state.resourceCompletion, limit);
   composerHeight +=
-    state.completion === undefined ? 0 : Math.min(5, state.completion.names.length) + 1;
+    state.completion === undefined ? 0 : Math.min(limit, state.completion.names.length) + 1;
   const fields = writingStatusFields(state);
-  const preferences =
-    columns < 80
-      ? {
-          ...state.preferences,
-          statusline: ['status', ...state.preferences.statusline.filter((id) => id !== 'status')]
-        }
-      : state.preferences;
-  const title = `Writing · ${statusline(preferences, fields)}`;
+  const title = responsiveStatusline('Writing', state.preferences, fields, columns);
   const main = conversationFrame({
     id: 'writing-workspace',
     terminalRows: rows,
     composerRows: composerHeight,
     slots: {
       status: text({ id: 'writing-status', content: title }),
-      conversation:
-        columns >= 100 && state.document !== undefined && state.view !== 'document'
-          ? row(
+      activity: activityLine(
+        state.application.status === 'running' ? state.progress.label : '',
+        state.activityClock
+      ),
+      ...(state.notice
+        ? {
+            feedback: row(
               [
-                documentView(state, Math.floor(columns * 0.6)),
-                sectionView(state, columns - Math.floor(columns * 0.6))
+                viewport(
+                  richText({ segments: [{ kind: 'text', text: state.notice }], wrap: true }),
+                  {
+                    id: 'writing-feedback',
+                    offset: { row: state.noticeOffset },
+                    scrollbar: { axis: 'vertical', visible: 'auto' },
+                    onScroll: (request): WritingTuiMessage => ({
+                      type: 'notice.scroll',
+                      offset: request.nextState.offsetRow
+                    })
+                  }
+                ),
+                action('dismiss-notice', 'Dismiss', { type: 'notice.dismiss' })
               ],
-              { sizes: [{ kind: 'percent', value: 60 }, { kind: 'fill' }] }
+              { sizes: [{ kind: 'fill' }, { kind: 'content' }] }
+            )
+          }
+        : {}),
+      conversation:
+        state.view === 'split' && columns >= 90
+          ? splitPane(
+              [
+                documentView(state, Math.floor((columns - 1) * (state.split.shares[0] ?? 0.5))),
+                conversationView(state, Math.floor((columns - 1) * (state.split.shares[1] ?? 0.5)))
+              ],
+              {
+                id: 'writing-split',
+                direction: 'horizontal',
+                ...splitPaneLayout(state.split),
+                onTransition: (transition): WritingTuiMessage => ({
+                  type: 'document.split',
+                  transition
+                })
+              }
             )
           : sectionView(state, columns),
       composer: column(
@@ -83,21 +120,25 @@ export function writingView(
                 composerControls({
                   attachments: state.composer.attachments,
                   queued: state.sessionView?.session.queuedInputs ?? 0,
-                  delivery: state.application.status === 'running' ? 'follow_up' : 'input',
+                  hint:
+                    state.application.status === 'running'
+                      ? 'Enter: queue follow-up · Alt+S: steer'
+                      : 'Enter: send · Shift+Enter: newline',
                   onAttachments: (): WritingTuiMessage => ({ type: 'attachments.open' }),
                   onQueue: (): WritingTuiMessage => ({ type: 'queue.open' })
                 })
               ]),
           ...(state.resourceCompletion === undefined
             ? []
-            : [resourceSuggestions(state.resourceCompletion)]),
+            : [resourceSuggestions(state.resourceCompletion, limit)]),
           ...(state.completion === undefined
             ? []
             : [
                 commandSuggestions(
                   state.completion,
                   WRITING_COMMANDS,
-                  (name): WritingTuiMessage => ({ type: 'completion.accept', open: true, name })
+                  (name): WritingTuiMessage => ({ type: 'completion.accept', open: true, name }),
+                  limit
                 )
               ]),
           textArea<WritingTuiMessage>({
@@ -124,13 +165,16 @@ export function writingView(
               : [
                   {
                     kind: 'fixed' as const,
-                    cells: resourceCompletionRows(state.resourceCompletion)
+                    cells: resourceCompletionRows(state.resourceCompletion, limit)
                   }
                 ]),
             ...(state.completion === undefined
               ? []
               : [
-                  { kind: 'fixed' as const, cells: Math.min(5, state.completion.names.length) + 1 }
+                  {
+                    kind: 'fixed' as const,
+                    cells: Math.min(limit, state.completion.names.length) + 1
+                  }
                 ]),
             { kind: 'fill' }
           ]
@@ -180,6 +224,8 @@ function sectionView(state: WritingTuiState, width: number): View {
   switch (state.view) {
     case 'document':
       return documentView(state, width);
+    case 'split':
+      return documentView(state, width);
     case 'conversation':
       return conversationView(state, width);
   }
@@ -195,46 +241,76 @@ function documentView(state: WritingTuiState, width: number): View {
         subject: 'resources'
       })
     ]);
-  const content = document.source
-    ? textArea<WritingTuiMessage>({
-        id: 'writing-document-source',
-        meta: { accessibleName: 'Document source and passage selection' },
-        state: document.input,
-        readOnly: true,
-        wrap: true,
-        lineNumbers: true,
-        scrollbar: { axis: 'vertical', visible: 'auto' },
-        onTransition: (transition: TextAreaTransition): WritingTuiMessage => ({
-          type: 'document.edit',
-          transition
-        })
-      })
-    : viewport(
-        richText({
-          id: 'writing-document-rendered',
-          segments: document.markdown.render(width - 2).segments,
-          wrap: true
-        }),
-        {
-          id: 'writing-document',
-          offset: { row: document.offsetRow },
-          scrollbar: { axis: 'vertical', visible: 'auto' },
-          onScroll: (request) => ({ type: 'document.scroll', request })
-        }
-      );
+  const comparison = document.showComparison ? document.comparison : undefined;
+  const content =
+    comparison !== undefined
+      ? viewport(
+          comparison.failure === undefined
+            ? richText({ segments: comparison.segments, wrap: true })
+            : text({ content: comparison.failure }),
+          {
+            id: 'writing-document-comparison',
+            offset: { row: document.offsetRow },
+            scrollbar: { axis: 'vertical', visible: 'auto' },
+            onScroll: (request): WritingTuiMessage => ({ type: 'document.scroll', request })
+          }
+        )
+      : document.source
+        ? textArea<WritingTuiMessage>({
+            id: 'writing-document-source',
+            meta: { accessibleName: 'Document source and passage selection' },
+            state: document.input,
+            readOnly: true,
+            wrap: true,
+            lineNumbers: true,
+            scrollbar: { axis: 'vertical', visible: 'auto' },
+            onTransition: (transition: TextAreaTransition): WritingTuiMessage => ({
+              type: 'document.edit',
+              transition
+            })
+          })
+        : viewport(
+            richText({
+              id: 'writing-document-rendered',
+              segments: document.markdown.render(width - 2).segments,
+              wrap: true
+            }),
+            {
+              id: 'writing-document',
+              offset: { row: document.offsetRow },
+              scrollbar: { axis: 'vertical', visible: 'auto' },
+              onScroll: (request) => ({ type: 'document.scroll', request })
+            }
+          );
   return column(
     [
+      text({
+        content: `${document.value.path} · snapshot ${document.value.sha256.slice(0, 8)}${comparison === undefined ? '' : ` · compared with ${comparison.before.sha256.slice(0, 8)}`}`
+      }),
       content,
-      row([
-        action('document-source-toggle', document.source ? 'Rendered' : 'Source / select', {
-          type: 'document.toggle-source'
-        }),
-        action('document-use-passage', 'Use snapshot passage', {
-          type: 'document.use-passage'
-        })
-      ])
+      flow(
+        [
+          action('document-source-toggle', document.source ? 'Rendered' : 'Source / select', {
+            type: 'document.toggle-source'
+          }),
+          action('document-refresh', 'Refresh', { type: 'document.refresh' }),
+          ...(document.comparison === undefined
+            ? []
+            : [
+                action('document-compare', document.showComparison ? 'Text' : 'Changes', {
+                  type: 'document.compare'
+                })
+              ]),
+          action('document-hide', 'Conversation', { type: 'view', view: 'conversation' }),
+          action('document-split', 'Split', { type: 'view', view: 'split' }),
+          action('document-use-passage', 'Use passage', {
+            type: 'document.use-passage'
+          })
+        ],
+        { direction: 'horizontal' }
+      )
     ],
-    { sizes: [{ kind: 'fill' }, { kind: 'fixed', cells: 1 }] }
+    { sizes: [{ kind: 'fixed', cells: 1 }, { kind: 'fill' }, { kind: 'content' }] }
   );
 }
 
@@ -382,9 +458,7 @@ function modalView(
     onDismiss: () => ({ type: 'overlay.close' }),
     slots: {
       actions: close,
-      content: column([content, plain(state.notice)], {
-        sizes: [{ kind: 'fill' }, { kind: 'fixed', cells: 2 }]
-      })
+      content
     }
   });
 }

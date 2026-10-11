@@ -1,4 +1,4 @@
-import { renderLocalToolObservation } from '@agent-core/tools-local';
+import { localToolCallPresentation, renderLocalToolObservation } from '@agent-core/tools-local';
 import type { SessionBranchEntry } from '@agent-core/runtime';
 import {
   projectSessionEntry,
@@ -7,7 +7,6 @@ import {
 } from '@agent-core/tui';
 import { upsertActivity, upsertConversationEntry } from './conversation.js';
 import type { CodingAgentTuiState } from './state.js';
-import { toolLabel } from './tool-presentation.js';
 
 export function applyBranchEntry(
   state: CodingAgentTuiState,
@@ -17,7 +16,12 @@ export function applyBranchEntry(
   const current = state.conversation.items.find(
     (item): item is ConversationActivityEntry => item.kind === 'activity' && item.id === id
   );
-  return projectSessionEntry(entry, current, toolLabel, renderLocalToolObservation).reduce(
+  return projectSessionEntry(
+    entry,
+    current,
+    localToolCallPresentation,
+    renderLocalToolObservation
+  ).reduce(
     (state, item) =>
       item.kind === 'activity' ? upsertActivity(state, item) : upsertConversationEntry(state, item),
     state

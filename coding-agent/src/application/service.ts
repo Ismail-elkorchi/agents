@@ -602,9 +602,10 @@ export class CodingApplication {
   contextSources(request: import('@agent-core/runtime').HistorySearchRequest) {
     return this.requireRuntime().history.search(request);
   }
-  async freshContext() {
+  async freshContext(retained?: readonly import('@agent-core/runtime').HistorySourceRef[]) {
     const runtime = this.requireRuntime();
     return runtime.agent.freshContinuation({
+      ...(retained === undefined ? {} : { retained }),
       profile: await runtime.provider.describeModel(runtime.agent.state().configuration.model)
     });
   }

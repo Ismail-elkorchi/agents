@@ -1,11 +1,16 @@
-import { createContextState, updateContext, contextView } from '@agent-core/tui';
+import { intervalSource } from '@ismail-elkorchi/terminal-ui/tui';
 import type { AgentApprovalRequest, AgentApprovalSuspension } from '@agent-core/runtime';
-import type { ConversationActivityEntry, ConversationEntry } from '@agent-core/tui';
+import type { ConversationEntry } from '@agent-core/tui';
 import {
   acceptResource,
+  activityLine,
+  updateActivityClock,
+  conversationEntryView,
+  createContextState,
+  updateContext,
+  contextView,
   applyPanelResult,
   mountPanel,
-  activityDetails,
   appendRecalledDrafts,
   attachmentsView,
   commandSuggestions,
@@ -37,6 +42,7 @@ import {
   recoverDraft,
   rememberPrompt,
   resourceCompletionRows,
+  suggestionLimit,
   resourceSuggestions,
   sameDraft,
   savePreferences,
@@ -229,6 +235,19 @@ export function createCodingAgentTuiApp(
         delete next.queuePanel;
         result = { ...result, state: next };
       }
+      result = {
+        ...result,
+        state: {
+          ...result.state,
+          activityClock: updateActivityClock(
+            message.type === 'progress' && message.event.type === 'run.configured'
+              ? undefined
+              : state.activityClock,
+            result.state.run.kind === 'working',
+            context.clock.monotonicNow()
+          )
+        }
+      };
       const removedQueryEffects: string[] = [];
       if (
         state.overlay.kind === 'recall' &&
@@ -240,7 +259,7 @@ export function createCodingAgentTuiApp(
         state.overlay.kind === 'panel' &&
         (result.state.overlay.kind !== 'panel' || result.state.overlay.id !== state.overlay.id)
       )
-        removedQueryEffects.push('navigation-query');
+        removedQueryEffects.push('navigation-query', 'change-source');
       if (removedQueryEffects.length > 0)
         result = combineTuiResults(result.state, result, {
           state: result.state,
@@ -259,7 +278,7 @@ export function createCodingAgentTuiApp(
         const history = loadHistory(result.state, 'tail', options.historyReader);
         return combineTuiResults(history.state, result, history);
       }
-      return context.terminalSize.rows < 12
+      return context.terminalSize.rows < 8
         ? {
             ...result,
             state: { ...result.state, completion: undefined, resourceCompletion: undefined }
@@ -466,8 +485,8 @@ export function createCodingAgentTuiApp(
         ),
         binding(
           'external-editor',
-          'f4',
-          {},
+          'g',
+          { ctrl: true },
           { type: 'composer.external-editor' },
           composerBindingEnabled
         ),
@@ -543,6 +562,9 @@ export function createCodingAgentTuiApp(
       }
     ),
     subscriptions: (state, context) => [
+      ...(state.run.kind === 'working'
+        ? [intervalSource('activity-clock', 1000, { type: 'activity.tick' as const })]
+        : []),
       ...(eventSource === undefined ? [] : [eventSource]),
       ...(state.overlay.kind === 'configuration'
         ? (configuration?.subscriptions(state.overlay.state, context) ?? [])
@@ -612,6 +634,8 @@ function updateCodingAgentTui(
   options: CodingAgentTuiAppOptions
 ): TuiUpdateResult<CodingAgentTuiState, CodingAgentTuiMessage> {
   switch (message.type) {
+    case 'activity.tick':
+      return { state };
     case 'context.open':
     case 'context.renew':
     case 'context.fresh':
@@ -1012,7 +1036,10 @@ function updateCodingAgentTui(
     case 'configuration.open':
     case 'configuration.child': {
       if (options.configuration === undefined) return { state };
-      const configuration = codingConfiguration(options.configuration);
+      const configuration = codingConfiguration(
+        options.configuration,
+        message.type === 'configuration.open' ? message.target : undefined
+      );
       if (message.type === 'configuration.open')
         return mountPanel(state, 'configuration', configuration, context);
       if (state.overlay.kind !== 'configuration') return { state };
@@ -1127,12 +1154,15 @@ function updateCodingAgentTui(
       return updated(livePresentation(state, applyResult(state, message.result)));
     case 'panel.open':
       return openPanel(state, message.panel, options.navigation, options.sessionNames);
+    case 'panel.change-loaded':
     case 'panel.source-loaded':
     case 'panel.loaded':
     case 'panel.failed':
     case 'panel.query':
     case 'panel.transition':
     case 'panel.accept':
+    case 'panel.source-mode':
+    case 'panel.source-scroll':
     case 'panel.text':
     case 'panel.branch':
     case 'panel.done':
@@ -1561,6 +1591,7 @@ function updateCodingAgentTui(
           { kind: 'effect', id: 'session-name-load' },
           { kind: 'effect', id: 'navigation-query' },
           { kind: 'effect', id: 'navigation-panel' },
+          { kind: 'effect', id: 'change-source' },
           { kind: 'effect', id: 'process-list' }
         ]
       };
@@ -1896,12 +1927,13 @@ function agentTuiView(
   hints: readonly { readonly label: string; readonly keys: string }[],
   childPanel?: Element<CodingAgentTuiMessage>
 ): Element<CodingAgentTuiMessage> {
+  const limit = suggestionLimit(context.terminalSize.rows);
   const workspace = conversationFrame({
     id: 'coding-agent-tui',
     terminalRows: context.terminalSize.rows,
     composerRows:
-      resourceCompletionRows(state.resourceCompletion) +
-      (state.completion === undefined ? 0 : Math.min(5, state.completion.names.length) + 1) +
+      resourceCompletionRows(state.resourceCompletion, limit) +
+      (state.completion === undefined ? 0 : Math.min(limit, state.completion.names.length) + 1) +
       (context.terminalSize.rows >= 8 ? 1 : 0) +
       composerRows(
         state.composer.input.document,
@@ -1911,19 +1943,28 @@ function agentTuiView(
     slots: {
       status: statusChrome(state, context.terminalSize.columns),
       conversation: conversationView(state, context),
+      activity: activityLine(
+        [
+          state.run.kind === 'working' ? state.progress.label : '',
+          state.conversation.unread ? 'New output · Ctrl+End' : ''
+        ]
+          .filter(Boolean)
+          .join(' · '),
+        state.activityClock
+      ),
       composer:
         context.terminalSize.rows < 8
-          ? composerView(state)
+          ? composerView(state, limit)
           : column(
               [
                 composerControls({
                   attachments: state.composer.attachments,
                   queued: state.debug.session?.queuedInputs ?? 0,
-                  delivery: state.run.kind === 'working' ? 'follow_up' : 'input',
+                  hint: composerHint(state, hints),
                   onAttachments: (): CodingAgentTuiMessage => ({ type: 'attachments.open' }),
                   onQueue: (): CodingAgentTuiMessage => ({ type: 'queue.open' })
                 }),
-                composerView(state)
+                composerView(state, limit)
               ],
               { sizes: [{ kind: 'fixed', cells: 1 }, { kind: 'fill' }] }
             ),
@@ -1983,7 +2024,7 @@ function agentTuiView(
     : overlay([workspace, modal], { id: 'coding-agent-overlay' });
 }
 
-function composerView(state: CodingAgentTuiState): Element<CodingAgentTuiMessage> {
+function composerView(state: CodingAgentTuiState, limit: number): Element<CodingAgentTuiMessage> {
   const placeholder =
     state.setup.status === 'setup_required'
       ? 'Send a message or open commands to finish setup'
@@ -2005,20 +2046,21 @@ function composerView(state: CodingAgentTuiState): Element<CodingAgentTuiMessage
   });
   const suggestions =
     state.resourceCompletion !== undefined
-      ? resourceSuggestions(state.resourceCompletion)
+      ? resourceSuggestions(state.resourceCompletion, limit)
       : state.completion === undefined
         ? undefined
         : commandSuggestions(
             state.completion,
             INTERACTIVE_COMMANDS,
-            (name): CodingAgentTuiMessage => ({ type: 'completion.accept', open: true, name })
+            (name): CodingAgentTuiMessage => ({ type: 'completion.accept', open: true, name }),
+            limit
           );
   const suggestionRows =
     state.resourceCompletion !== undefined
-      ? resourceCompletionRows(state.resourceCompletion)
+      ? resourceCompletionRows(state.resourceCompletion, limit)
       : state.completion === undefined
         ? 0
-        : Math.min(5, state.completion.names.length) + 1;
+        : Math.min(limit, state.completion.names.length) + 1;
   return column(suggestions === undefined ? [input] : [suggestions, input], {
     id: 'composer-field',
     sizes: [
@@ -2038,10 +2080,21 @@ function conversationView(
   const entries = state.presentation.render(
     items,
     items
-      .filter((entry) => entry.kind === 'activity' && activityExpanded(state, entry.id))
+      .filter(
+        (entry) =>
+          (entry.kind === 'activity' || entry.kind === 'reasoning') &&
+          activityExpanded(state, entry)
+      )
       .map((entry) => entry.id),
     String(context.terminalSize.columns),
-    (entry) => conversationEntryView(entry, state, context.terminalSize.columns)
+    (entry) =>
+      conversationEntryView(entry, {
+        width: context.terminalSize.columns,
+        expanded: activityExpanded(state, entry),
+        markdown: (id, source) => state.presentation.markdown(id, source),
+        onToggle: (id): CodingAgentTuiMessage => ({ type: 'activity.toggle', id }),
+        onInspect: (reference): CodingAgentTuiMessage => ({ type: 'history.inspect', reference })
+      })
   );
   return measuredViewport(
     entries.length === 0
@@ -2059,40 +2112,6 @@ function conversationView(
       onScroll: (request): CodingAgentTuiMessage => ({ type: 'conversation.scrolled', request })
     }
   );
-}
-
-function conversationEntryView(
-  entry: ConversationEntry,
-  state: CodingAgentTuiState,
-  width: number
-): Element<CodingAgentTuiMessage> {
-  if (entry.kind === 'reference')
-    return button<CodingAgentTuiMessage>({
-      id: entry.id,
-      label: `Read recorded entry · ${String(entry.bytes)} bytes`,
-      onPress: () => ({ type: 'history.inspect', reference: entry })
-    });
-  if (entry.kind === 'activity' && entry.details !== undefined) {
-    return disclosure({
-      id: entry.id,
-      label: activityLabel(entry),
-      ...(entry.summary === undefined ? {} : { summary: body(entry.summary) }),
-      expanded: activityExpanded(state, entry.id),
-      slots: {
-        content: richText({
-          id: `${entry.id}:details`,
-          segments: body(activityDetails(entry)),
-          wrap: { preserveWords: true }
-        })
-      },
-      onTransition: (): CodingAgentTuiMessage => ({ type: 'activity.toggle', id: entry.id })
-    });
-  }
-  return richText({
-    id: entry.id,
-    segments: conversationSegments(entry, state, width),
-    wrap: { preserveWords: true }
-  });
 }
 
 function overlayView(
@@ -2391,76 +2410,11 @@ function approvalEffect(
   };
 }
 
-function activityExpanded(state: CodingAgentTuiState, id: string): boolean {
-  return state.preferences.showTools !== state.conversation.expandedIds.includes(id);
-}
-
-function conversationSegments(
-  entry: ConversationEntry,
-  state: CodingAgentTuiState,
-  width: number
-): InlineContent {
-  switch (entry.kind) {
-    case 'reference':
-      return [{ kind: 'text', text: `Read recorded entry · ${String(entry.bytes)} bytes` }];
-    case 'user':
-      return [{ kind: 'text', text: 'You\n', style: { bold: true } }, ...body(`${entry.text}\n`)];
-    case 'assistant':
-      return [
-        { kind: 'text', text: 'Assistant\n', style: { bold: true } },
-        ...state.presentation.markdown(entry.id, entry.text).render(width).segments
-      ];
-    case 'reasoning':
-      return [
-        { kind: 'text', text: 'Reasoning summary\n', style: { bold: true, dim: true } },
-        { kind: 'text', text: `${entry.text}\n`, style: { dim: true } }
-      ];
-    case 'notice':
-      return [
-        {
-          kind: 'text',
-          text: `${entry.text}\n`,
-          style: entry.tone === 'error' ? { bold: true } : { dim: true }
-        }
-      ];
-    case 'activity':
-      return [
-        activitySymbol(entry.status),
-        {
-          kind: 'text',
-          text: ` ${entry.label}${entry.summary === undefined ? '' : ` — ${entry.summary}`}`,
-          ...(entry.status === 'running' ? { style: { dim: true } } : {})
-        }
-      ];
-  }
-}
-
-function activityLabel(entry: ConversationActivityEntry): string {
-  return `${activityGlyph(entry.status)} ${entry.label}`;
-}
-
-function activityGlyph(status: ConversationActivityEntry['status']): string {
-  switch (status) {
-    case 'running':
-      return '•';
-    case 'complete':
-    case 'success':
-      return '✓';
-    case 'warning':
-      return '!';
-    case 'failed':
-      return '✗';
-  }
-}
-
-function activitySymbol(status: ConversationActivityEntry['status']): InlineContent[number] {
-  return {
-    kind: 'symbol',
-    unicode: activityGlyph(status),
-    ascii:
-      status === 'success' ? '+' : status === 'failed' ? 'x' : status === 'warning' ? '!' : '*',
-    accessibleText: status
-  };
+function activityExpanded(state: CodingAgentTuiState, entry: ConversationEntry): boolean {
+  return (
+    (entry.kind === 'reasoning' || state.preferences.showTools) !==
+    state.conversation.expandedIds.includes(entry.id)
+  );
 }
 
 function modalOptions(id: string, title: string, focusId: string, width: number, height: number) {
@@ -2669,9 +2623,12 @@ function withoutConversationAnchor(
   return next;
 }
 
-function codingConfiguration(operations: NonNullable<CodingAgentTuiAppOptions['configuration']>) {
+function codingConfiguration(
+  operations: NonNullable<CodingAgentTuiAppOptions['configuration']>,
+  target?: import('@agent-core/tui').ConfigurationTarget
+) {
   return createTuiChild(
-    configurationPanel(() => operations.current(), operations),
+    configurationPanel(() => operations.current(), operations, target),
     (child): CodingAgentTuiMessage => ({ type: 'configuration.child', child })
   );
 }
@@ -2705,4 +2662,15 @@ function mountedPanels(
     ...(overlay.kind === 'configuration' || overlay.kind === 'inspector' ? [overlay.state] : []),
     ...(state.queuePanel === undefined ? [] : [state.queuePanel])
   ];
+}
+
+function composerHint(
+  state: CodingAgentTuiState,
+  hints: readonly { readonly label: string; readonly keys: string }[]
+): string {
+  const submit = hints.find((hint) => hint.label === 'composer submit')?.keys ?? 'Enter';
+  const steer = hints.find((hint) => hint.label === 'steer active run')?.keys ?? 'Alt+S';
+  return state.run.kind === 'working'
+    ? `${submit}: queue follow-up · ${steer}: steer`
+    : `${submit}: send · Shift+Enter: newline`;
 }

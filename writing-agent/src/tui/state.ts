@@ -1,3 +1,4 @@
+import { createSplitPaneState } from '@ismail-elkorchi/terminal-ui/behavior';
 import type {
   AgentProgressEvent,
   AgentRunResult,
@@ -24,7 +25,7 @@ import type {
   WritingDocument
 } from '../application/service.js';
 
-export type WritingView = 'document' | 'conversation';
+export type WritingView = 'document' | 'conversation' | 'split';
 export type WritingTuiOverlay =
   | { readonly kind: 'context'; readonly state: import('@agent-core/tui').ContextState }
   | { readonly kind: 'session-name'; readonly state: import('@agent-core/tui').SessionNameState }
@@ -63,6 +64,7 @@ export type WritingTuiOverlay =
     };
 
 export interface WritingTuiState {
+  readonly activityClock?: import('@agent-core/tui').ActivityClock | undefined;
   readonly queuePanel?: import('@ismail-elkorchi/terminal-ui/tui').TuiChildState<
     import('@agent-core/tui').QueueState
   >;
@@ -87,7 +89,14 @@ export interface WritingTuiState {
     >
   >;
   readonly application: WritingApplicationState;
+  readonly split: import('@ismail-elkorchi/terminal-ui/behavior').SplitPaneState;
   readonly document?: {
+    readonly comparison?: {
+      readonly before: WritingDocument;
+      readonly segments: import('@ismail-elkorchi/terminal-ui/components').InlineContent;
+      readonly failure?: string;
+    };
+    readonly showComparison?: boolean;
     readonly value: WritingDocument;
     readonly input: TextAreaState;
     readonly markdown: MarkdownDocument;
@@ -121,6 +130,7 @@ export interface WritingTuiState {
   readonly result?: AgentRunResult;
   readonly failure?: string;
   readonly notice: string;
+  readonly noticeOffset: number;
 }
 
 export function initialWritingState(
@@ -139,6 +149,7 @@ export function initialWritingState(
     composer: createDraft(),
     submitting: false,
     directory: '.',
+    split: createSplitPaneState(2, [0.5, 0.5]),
     view: 'conversation',
     overlay: { kind: 'none' },
     history: [],
@@ -149,11 +160,19 @@ export function initialWritingState(
     unread: false,
     offsets: {},
     promptHistory: { entries: [], index: null },
+    noticeOffset: 0,
     notice: ''
   };
 }
 
 export type WritingTuiMessage =
+  | { readonly type: 'notice.scroll'; readonly offset: number }
+  | {
+      readonly type: 'document.split';
+      readonly transition: import('@ismail-elkorchi/terminal-ui/behavior').SplitPaneTransition;
+    }
+  | { readonly type: 'document.compare' | 'document.refresh' }
+  | { readonly type: 'activity.tick' | 'notice.dismiss' }
   | import('./picker.js').WritingPickerQueryMessage
   | { readonly type: 'submission.failed'; readonly sessionId: string; readonly message: string }
   | import('@agent-core/tui').ContextMessage
@@ -330,7 +349,10 @@ export type WritingTuiMessage =
         import('@agent-core/tui').ConfigurationMessage
       >;
     }
-  | { readonly type: 'configuration.open' }
+  | {
+      readonly type: 'configuration.open';
+      readonly target?: import('@agent-core/tui').ConfigurationTarget;
+    }
   | {
       readonly type: 'history.failed';
       readonly requestId: string;

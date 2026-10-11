@@ -18,18 +18,18 @@ export const WRITING_COMMANDS: readonly {
   },
   {
     name: '/model',
-    description: 'Choose provider, model and reasoning',
-    message: { type: 'configuration.open' }
+    description: 'Choose a model',
+    message: { type: 'configuration.open', target: 'model' }
   },
   {
     name: '/provider',
     description: 'Choose or authenticate a provider',
-    message: { type: 'configuration.open' }
+    message: { type: 'configuration.open', target: 'provider' }
   },
   {
     name: '/login',
     description: 'Manage provider authentication',
-    message: { type: 'configuration.open' }
+    message: { type: 'configuration.open', target: 'authentication' }
   },
   { name: '/mode', description: 'Switch edit or review', message: { type: 'mode.toggle' } },
   {
@@ -83,6 +83,11 @@ export const WRITING_COMMANDS: readonly {
     message: { type: 'view', view: 'document' }
   },
   {
+    name: '/split',
+    description: 'Show document and conversation; drag the divider to resize',
+    message: { type: 'view', view: 'split' }
+  },
+  {
     name: '/conversation',
     description: 'Show the conversation',
     message: { type: 'view', view: 'conversation' }
@@ -119,7 +124,7 @@ export const WRITING_COMMANDS: readonly {
   {
     name: '/reasoning',
     description: 'Configure model reasoning',
-    message: { type: 'configuration.open' }
+    message: { type: 'configuration.open', target: 'reasoning' }
   },
   { name: '/stop', description: 'Interrupt active work', message: { type: 'interrupt' } },
   { name: '/exit', description: 'Close the terminal interface', message: { type: 'exit' } }

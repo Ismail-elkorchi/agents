@@ -151,7 +151,7 @@ test('permission details remain inspectable without crowding the default status 
   );
   await waitFor(() => host.frames().length > 0);
   const output = latestFramePlain(host);
-  assert.match(output, /full_host/u);
+  assert.match(output, /Full host/u);
   assert.doesNotMatch(output, /driver|net\/escape|3 tools/u);
   host.input('/status\r');
   await waitFor(() => /Application status/u.test(latestFramePlain(host)));
@@ -275,4 +275,17 @@ test('closing a pending context inspection keeps the composer and rejects its la
   assert.equal(runtime.state().overlay.kind, 'none');
   assert.equal(runtime.state().composer.input, draft);
   assert.ok(runtime.frame().focusPath.includes('composer'));
+});
+
+test('slash completion remains usable in a ten-row terminal', async (t) => {
+  const host = createMemoryTerminalHost({ terminalSize: { columns: 48, rows: 10 } });
+  const runtime = createTuiRuntime({ host, app: createCodingAgentTuiApp('') });
+  t.after(() => runtime.dispose());
+  await runtime.start();
+  const input = await runtime.handleInputChunk({ data: '/' });
+  await input.pending;
+  assert.ok(runtime.state().completion);
+  assert.match(latestFramePlain(host), /\/model/);
+  await runtime.handleInput(key('escape'));
+  assert.equal(runtime.state().completion, undefined);
 });

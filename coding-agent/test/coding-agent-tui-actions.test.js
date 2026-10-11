@@ -36,7 +36,7 @@ test('rejected input remains editable and never becomes an accepted conversation
       }
     }
   });
-  assert.match(renderFramePlain(runtime.frame()), /Enter send.*Ctrl\+P commands.*F1 help/);
+  assert.match(renderFramePlain(runtime.frame()), /Enter: send[\s\S]*Ctrl\+P commands.*F1 help/);
   await runtime.handleInput({ kind: 'paste', text: 'Keep this\nexact draft', bracketed: true });
   await runtime.handleInput(key('enter'));
   await waitFor(() => !runtime.state().composer.submitting);
@@ -105,7 +105,7 @@ test('external editing restores ownership and returns its draft to the composer'
   );
   t.after(() => host.endInput());
   await waitFor(() => host.frames().length > 0);
-  host.input('Draft\x1bOS');
+  host.input('Draft\x07');
   await waitFor(() => host.output().includes('Edited externally'));
   assert.equal(editorCalls, 1);
   host.input(' continued\x10');

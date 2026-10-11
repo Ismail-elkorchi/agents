@@ -132,6 +132,7 @@ export interface CodingAgentTuiComposerState extends ComposerDraft {
 }
 
 export interface CodingAgentTuiState {
+  readonly activityClock?: import('@agent-core/tui').ActivityClock | undefined;
   readonly queuePanel?: import('@ismail-elkorchi/terminal-ui/tui').TuiChildState<
     import('@agent-core/tui').QueueState
   >;

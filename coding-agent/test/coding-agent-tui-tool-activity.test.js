@@ -23,7 +23,7 @@ test('tool activity collapses success, expands failure, and keeps bounded observ
   await events.enqueue({
     type: 'progress',
     runId: 'run-1',
-    event: { type: 'turn.started', runId: 'run', turnIndex: 1, turnId: 'turn-1', requestAttempt: 1 }
+    event: { type: 'turn.started', task: 'Test instruction', runId: 'run', turnIndex: 1, turnId: 'turn-1', requestAttempt: 1 }
   });
   await events.enqueue({
     type: 'progress',
@@ -146,7 +146,7 @@ test('wrapped conversation entries survive tool disclosure, streaming, and resiz
   await runtime.start();
   const progress = (event) => runtime.dispatch({ type: 'progress', runId: 'run-1', event });
   await progress({
-    type: 'turn.started',
+    type: 'turn.started', task: 'Test instruction',
     runId: 'run-1',
     turnIndex: 1,
     turnId: 'turn-1',

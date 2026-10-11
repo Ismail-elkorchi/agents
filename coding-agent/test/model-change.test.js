@@ -40,12 +40,15 @@ for (const [name, methods] of [
 
 for (const [name, methods] of [['coding', codingRpcMethods], ['writing', writingRpcMethods]]) {
   test(`${name} RPC exposes same-model fresh context without a configuration command`, async () => {
-    let calls = 0;
-    const application = new Proxy({ freshContext: async () => { calls++; return { selected: true }; } },
+    const calls = [];
+    const application = new Proxy({ freshContext: async (retained) => { calls.push(retained); return { selected: true }; } },
       { get: (target, key) => target[key] ?? (() => { throw new Error(`Unexpected operation: ${String(key)}`); }) });
     const rpc = methods(application, () => undefined)['context.fresh'];
     assert.deepEqual(await rpc.invoke({}), { selected: true });
-    assert.equal(calls, 1);
+    assert.deepEqual(calls, [undefined]);
+    const retained = [{ sessionId: 'session', entryId: 'entry', sha256: 'a'.repeat(64) }];
+    await rpc.invoke({ retained });
+    assert.deepEqual(calls[1], retained);
     await assert.rejects(rpc.invoke({ provider: 'unexpected' }), /Unrecognized/);
   });
 }

@@ -27,7 +27,7 @@ Escape closes the top interaction. Ctrl+C copies an active selection, otherwise 
 
 `/settings` and `/statusline` offer theme, reasoning visibility, tool disclosure, optional notifications, shortcut controls, and an ordered status-field selection with preview. Save applies presentation preferences without changing model inference or workspace authority. `/status` exposes full details and identifies unavailable accounting.
 
-`/attach` adds, inspects, or removes authorized file and passage context and supported native images. `@` completes workspace references. `/drafts` recalls earlier or recovered prompts without sending them. Drafts retain text, caret, selection, and attachments across session switches and controlled restart. `/editor` uses `VISUAL` or `EDITOR`, suspends terminal ownership, and preserves the draft on failure.
+`/attach` adds, inspects, or removes authorized file and passage context and supported native images. `@` completes workspace references. `/drafts` recalls earlier or recovered prompts without sending them. Drafts retain text, caret, selection, and attachments across session switches and controlled restart. `/editor` or Ctrl+G uses `VISUAL` or `EDITOR`, suspends terminal ownership, and preserves the draft on failure.
 
 `/sessions`, `/new`, `/name`, `/queue`, and `/branches` manage conversation navigation. Queue controls distinguish editing/canceling accepted pending input from composing a new request; steering is an explicit action. Branching history does not revert files. `/source` inspects messages, code, and tool results; `/export` writes the loaded history coverage locally. `/context` distinguishes available resources and the unsent draft from the latest admitted request and shows the current generated working state. `/processes` inspects session-owned commands and authority-wide recovery blockers. Input and termination require the current session owner; recovery decisions bind the current evidence revision. `/changes` shows recorded patches; `/recovery` handles pending approvals and uncertain outcomes.
 
@@ -139,3 +139,5 @@ output tokens, bounded by advertised output capacity and half the context window
 reservation and whether the endpoint enforces a cap. A reservation-only endpoint
 can exceed that amount; actual usage still counts against the continuing session
 budget. This default has structural coverage, not live-model quality validation.
+
+Model, reasoning, and account commands open their respective controls directly. The status line prioritizes authority and activity at narrow widths; active work shows elapsed display time and an Escape stop hint above the composer. Tool details preserve inputs and observed outcomes, with highlighted patches and original-source inspection in `/changes`.

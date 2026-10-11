@@ -27,6 +27,7 @@ import type {
 import type { PanelItem, PanelKind } from './panels.js';
 
 export type CodingAgentTuiMessage =
+  | { readonly type: 'activity.tick' }
   | import('./panels.js').PanelQueryMessage
   | import('@agent-core/tui').ContextMessage
   | { readonly type: 'search.adjacent'; readonly direction: 'previous' | 'next' }
@@ -69,7 +70,10 @@ export type CodingAgentTuiMessage =
   | { readonly type: 'completion.move'; readonly delta: number }
   | { readonly type: 'completion.accept'; readonly open: boolean; readonly name?: string }
   | { readonly type: 'completion.close' }
-  | { readonly type: 'configuration.open' }
+  | {
+      readonly type: 'configuration.open';
+      readonly target?: import('@agent-core/tui').ConfigurationTarget;
+    }
   | { readonly type: 'recovery.open' | 'session.new' | 'setup.open' }
   | { readonly type: 'tools.toggle' | 'reasoning.toggle' | 'application.exit' }
   | { readonly type: 'source.copy' }
@@ -77,6 +81,14 @@ export type CodingAgentTuiMessage =
       readonly type: 'submissions.changed';
       readonly cancelledRunId?: string;
       readonly pending: readonly SessionPendingSubmission[];
+    }
+  | {
+      readonly type: 'panel.change-loaded';
+      readonly patch: string;
+      readonly panelId: string;
+      readonly sessionId: string | undefined;
+      readonly title: string;
+      readonly content: string;
     }
   | { readonly type: 'panel.source-loaded'; readonly title: string; readonly content: string }
   | { readonly type: 'panel.open'; readonly panel: PanelKind }
@@ -89,6 +101,8 @@ export type CodingAgentTuiMessage =
   | { readonly type: 'panel.failed'; readonly requestId: string; readonly message: string }
   | { readonly type: 'panel.transition'; readonly transition: SearchPickerControlTransition }
   | { readonly type: 'panel.accept'; readonly id: string }
+  | { readonly type: 'panel.source-mode' }
+  | { readonly type: 'panel.source-scroll'; readonly offset: number }
   | { readonly type: 'panel.text'; readonly transition: TextAreaTransition }
   | { readonly type: 'panel.branch'; readonly entryId: string }
   | { readonly type: 'panel.done' | 'panel.operation-failed'; readonly message: string }

@@ -1,4 +1,4 @@
-import { diagnosticMessage, panel as dismissiblePanel } from '@agent-core/tui';
+import { diagnosticMessage, patchSegments, panel as dismissiblePanel } from '@agent-core/tui';
 import type { TextAreaState, TextAreaTransition } from '@ismail-elkorchi/terminal-ui/behavior';
 import {
   createSearchPickerIndex,
@@ -12,8 +12,14 @@ import {
   textAreaReducer
 } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { Element } from '@ismail-elkorchi/terminal-ui/components';
-import { button, searchPicker, text, textArea } from '@ismail-elkorchi/terminal-ui/components';
-import { column } from '@ismail-elkorchi/terminal-ui/layout';
+import {
+  button,
+  searchPicker,
+  text,
+  textArea,
+  richText
+} from '@ismail-elkorchi/terminal-ui/components';
+import { column, viewport } from '@ismail-elkorchi/terminal-ui/layout';
 import {
   createTuiPreparedQuery,
   liftTuiResult,
@@ -56,6 +62,9 @@ export type CodingPanel =
     }
   | {
       readonly kind: 'source';
+      readonly patch?: string;
+      readonly rendered: boolean;
+      readonly offset: number;
       readonly title: string;
       readonly input: TextAreaState;
       readonly notice?: string;
@@ -246,8 +255,28 @@ export function updatePanel(
       if (item === undefined) return { state };
       return acceptPanelItem(state, item, operations);
     }
+    case 'panel.change-loaded':
+      if (
+        state.overlay.kind !== 'panel' ||
+        state.overlay.id !== message.panelId ||
+        state.debug.sessionId !== message.sessionId
+      )
+        return { state };
+      return sourcePanel(state, message.title, message.content, message.patch);
     case 'panel.source-loaded':
       return sourcePanel(state, message.title, message.content);
+    case 'panel.source-mode':
+      return state.overlay.kind !== 'source'
+        ? { state }
+        : {
+            state: { ...state, overlay: { ...state.overlay, rendered: !state.overlay.rendered } }
+          };
+    case 'panel.source-scroll':
+      return state.overlay.kind !== 'source'
+        ? { state }
+        : {
+            state: { ...state, overlay: { ...state.overlay, offset: message.offset } }
+          };
     case 'panel.text': {
       if (state.overlay.kind !== 'source') return { state };
       return {
@@ -279,13 +308,21 @@ export function updatePanel(
   }
 }
 
-function sourcePanel(state: CodingAgentTuiState, title: string, value: string): Update {
+function sourcePanel(
+  state: CodingAgentTuiState,
+  title: string,
+  value: string,
+  patch?: string
+): Update {
   return {
     state: {
       ...state,
       overlay: {
         kind: 'source',
         title,
+        ...(patch === undefined ? {} : { patch }),
+        rendered: patch !== undefined,
+        offset: 0,
         input: createTextAreaState({
           value,
           caret: { position: { offset: 0, affinity: 'downstream' } }
@@ -354,24 +391,44 @@ export function panelView(
       case 'source':
         return column(
           [
-            textArea<CodingAgentTuiMessage>({
-              id: 'source-text',
-              meta: { accessibleName: panel.title },
-              state: panel.input,
-              readOnly: true,
-              wrap: true,
-              scrollbar: { axis: 'vertical', visible: 'auto' },
-              onTransition: (transition: TextAreaTransition): CodingAgentTuiMessage => ({
-                type: 'panel.text',
-                transition
-              })
-            }),
+            panel.rendered && panel.patch !== undefined
+              ? viewport(richText({ segments: patchSegments(panel.patch), wrap: true }), {
+                  id: 'change-preview',
+                  offset: { row: panel.offset },
+                  scrollbar: { axis: 'vertical', visible: 'auto' },
+                  onScroll: (request): CodingAgentTuiMessage => ({
+                    type: 'panel.source-scroll',
+                    offset: request.nextState.offsetRow
+                  })
+                })
+              : textArea<CodingAgentTuiMessage>({
+                  id: 'source-text',
+                  meta: { accessibleName: panel.title },
+                  state: panel.input,
+                  readOnly: true,
+                  wrap: true,
+                  scrollbar: { axis: 'vertical', visible: 'auto' },
+                  onTransition: (transition: TextAreaTransition): CodingAgentTuiMessage => ({
+                    type: 'panel.text',
+                    transition
+                  })
+                }),
+            ...(panel.patch === undefined
+              ? []
+              : [
+                  button<CodingAgentTuiMessage>({
+                    id: 'change-source-mode',
+                    label: panel.rendered ? 'Original / select' : 'Highlighted patch',
+                    onPress: () => ({ type: 'panel.source-mode' })
+                  })
+                ]),
             text({ content: panel.notice ?? 'Ctrl+C copies selected source' })
           ],
           {
             sizes: [
               { kind: 'fill', weight: 1 },
-              { kind: 'fixed', cells: 2 }
+              ...(panel.patch === undefined ? [] : [{ kind: 'fixed' as const, cells: 1 }]),
+              { kind: 'fixed', cells: 1 }
             ]
           }
         );
@@ -403,7 +460,9 @@ export function panelView(
       : {
           focusId:
             panel.kind === 'source'
-              ? 'source-text'
+              ? panel.rendered
+                ? 'change-source-mode'
+                : 'source-text'
               : panel.kind === 'branch_review'
                 ? 'branch-continue'
                 : 'navigation-picker'
@@ -436,7 +495,9 @@ function acceptPanelItem(
         state: { ...state, overlay: { kind: 'branch_review', entryId: item.entryId } },
         focus: { kind: 'element', elementId: 'branch-continue' }
       };
-    case 'change':
+    case 'change': {
+      if (state.overlay.kind !== 'panel') return { state };
+      const panelId = state.overlay.id;
       return {
         state,
         effects: [
@@ -455,7 +516,10 @@ function acceptPanelItem(
               return {
                 kind: 'message',
                 message: {
-                  type: 'panel.source-loaded',
+                  type: 'panel.change-loaded',
+                  patch: `${item.change.kind} · ${item.change.state}\n${patches || 'No structured patch is recorded for this change.'}`,
+                  panelId,
+                  sessionId: state.debug.sessionId,
                   title: item.change.path,
                   content: `${describeChange(item)}\n\n${patches || 'No structured patch is recorded for this change.'}`
                 }
@@ -472,5 +536,6 @@ function acceptPanelItem(
           }
         ]
       };
+    }
   }
 }

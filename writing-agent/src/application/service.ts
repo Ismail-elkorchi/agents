@@ -513,11 +513,12 @@ export class WritingApplication {
     if (!this.composition) throw new Error('Open a session before inspecting context.');
     return this.composition.history.search(request);
   }
-  async freshContext() {
+  async freshContext(retained?: readonly import('@agent-core/runtime').HistorySourceRef[]) {
     this.assertOpen();
     const runtime = this.composition;
     if (!runtime) throw new Error('Configure a session before changing context.');
     return runtime.agent.freshContinuation({
+      ...(retained === undefined ? {} : { retained }),
       profile: await runtime.provider.describeModel(runtime.agent.state().configuration.model)
     });
   }

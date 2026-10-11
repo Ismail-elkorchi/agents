@@ -84,12 +84,20 @@ const command = (
 
 export const INTERACTIVE_COMMAND_REGISTRY = {
   '/model': action('/model', 'Choose provider, model and reasoning.', {
-    type: 'configuration.open'
+    type: 'configuration.open',
+    target: 'model'
   }),
-  '/provider': action('/provider', 'Choose provider and model.', { type: 'configuration.open' }),
-  '/login': action('/login', 'Manage provider credentials.', { type: 'configuration.open' }),
+  '/provider': action('/provider', 'Choose provider and model.', {
+    type: 'configuration.open',
+    target: 'provider'
+  }),
+  '/login': action('/login', 'Manage provider credentials.', {
+    type: 'configuration.open',
+    target: 'authentication'
+  }),
   '/reasoning': action('/reasoning', 'Configure supported model reasoning.', {
-    type: 'configuration.open'
+    type: 'configuration.open',
+    target: 'reasoning'
   }),
   '/settings': action('/settings', 'Configure presentation.', { type: 'preferences.open' }),
   '/statusline': action('/statusline', 'Customize the status line and appearance.', {
