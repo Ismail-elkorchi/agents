@@ -2232,8 +2232,7 @@ function overlayView(
       });
     }
     case 'search': {
-      const { scroll, ...view } = autocompleteComboboxView(state.overlay.picker);
-      void scroll;
+      const view = autocompleteComboboxView(state.overlay.picker);
       return panel({
         ...modalOptions('search-dialog', 'Find', 'conversation-search', width, height),
         slots: {

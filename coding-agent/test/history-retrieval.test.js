@@ -66,3 +66,31 @@ test('bounded history retrieval and invalid read budgets let Coding Agent contin
     assert.equal((await next.completion).terminal.executionStatus, 'completed');
   }
 );
+
+test('Coding Agent exposes live context sources before a committed window exists',
+  { skip: process.platform !== 'linux', timeout: 30_000 }, async (t) => {
+    let requests = 0;
+    const provider = await offlineCodex(t, (request) => {
+      if (++requests === 1) return [{ type: 'function_call', call_id: 'inspect',
+        name: 'context_inspect', arguments: JSON.stringify({ limit: 10, maxBytes: 8192 }) }];
+      const output = request.input.find(item => item.type === 'function_call_output' && item.call_id === 'inspect');
+      const inspection = JSON.parse(output.output);
+      assert.equal(inspection.committedWindow, null);
+      assert.equal(inspection.selection.status, 'available');
+      assert(inspection.selection.items.some(item => item.type === 'input' && item.group.release === 'protected'));
+      assert(inspection.admission.inputIdentity);
+      return 'The current source selection is available.';
+    });
+    const fixture = await createWorkspace({ tools: ['read_files'], checks: [], files: {} });
+    let application;
+    t.after(async () => { await application?.close(); await fixture.close(); });
+    await trust(fixture);
+    application = await openCodingApplication({ root: fixture.root, stateRoot: fixture.stateRoot,
+      providerEndpoint: provider.endpoint, provider: 'openai-codex', model: 'gpt-6-astra', permissionMode: 'read_only' });
+    await application.start();
+    const submission = await application.submit({ task: 'Inspect the current context.' });
+    const result = await submission.completion;
+    assert.equal(result.terminal?.executionStatus, 'completed', JSON.stringify(result));
+    assert.equal(requests, 2);
+  }
+);

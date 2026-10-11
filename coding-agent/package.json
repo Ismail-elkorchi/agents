@@ -34,7 +34,7 @@
     "@agent-core/runtime": "0.2.0",
     "@agent-core/tools": "0.2.0",
     "@agent-core/tools-local": "0.2.0",
-    "@ismail-elkorchi/terminal-ui": "git+https://github.com/Ismail-elkorchi/terminal-ui.git#932a82a8b63db02bdd67119d1aaafdb33016baa3",
+    "@ismail-elkorchi/terminal-ui": "git+https://github.com/Ismail-elkorchi/terminal-ui.git#822c9d50f51843e2448a6f4cb6531f8f7ee8da7f",
     "zod": "4.4.3",
     "@agent-core/rpc": "0.2.0",
     "@agent-core/tui": "0.2.0"
