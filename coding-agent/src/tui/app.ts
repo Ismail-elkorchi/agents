@@ -31,6 +31,7 @@ import {
   draftFromSubmission,
   insertCommand,
   loadDraft,
+  saveDrafts,
   loadRecoveredPrompts,
   loadSessionName,
   moveCommand,
@@ -476,7 +477,7 @@ export function createCodingAgentTuiApp(
       for (const [sessionId, view] of Object.entries(state.sessionViews))
         drafts.set(sessionId, view.composer);
       drafts.set(state.debug.sessionId ?? ':new', state.composer);
-      for (const [sessionId, draft] of drafts) await options.drafts.write(sessionId, draft);
+      await saveDrafts(options.drafts, drafts);
     },
 
     init: () => {
