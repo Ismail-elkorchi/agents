@@ -297,3 +297,23 @@ test(
     assert.ok(JSON.stringify(f.provider.requests.at(-1)).includes(text));
   }
 );
+
+test('review sessions can restart reasoning without maintenance inference or document authority', integration, async (t) => {
+  const f = await fixture('Original document.\n', { mode: 'review', responses: ['Reviewed.', 'Still reviewing.'] });
+  t.after(() => f.close());
+  await f.application.start();
+  await submit(f.application, 'Review the original document without editing.');
+  const selection = f.application.modelSelection();
+  await f.application.freshContext();
+  assert.deepEqual(f.application.modelSelection(), selection);
+  assert.equal(f.provider.requests.length, 1);
+  const context = await f.application.inspectContext();
+  assert.equal(context.window.selection.continuity.kind, 'fresh');
+  await submit(f.application, 'Discuss the review.');
+  assert.equal(f.provider.requests.length, 2);
+  const tools = f.provider.requests[1].tools.map(tool => tool.function?.name ?? tool.name);
+  assert(!tools.includes('edit_text'));
+  assert(!tools.includes('apply_patch'));
+  assert(tools.includes('context_transition'));
+  assert.equal(await readFile(path.join(f.root, 'document.txt'), 'utf8'), 'Original document.\n');
+});

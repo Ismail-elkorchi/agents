@@ -614,6 +614,7 @@ function updateCodingAgentTui(
   switch (message.type) {
     case 'context.open':
     case 'context.renew':
+    case 'context.fresh':
     case 'context.apply':
     case 'context.page':
     case 'context.source':

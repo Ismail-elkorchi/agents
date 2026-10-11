@@ -1,8 +1,8 @@
-import { contextSelectionSchema } from '@agent-core/runtime';
 import { ModelContinuationRequiredError, parseModelChangeRequest } from '@agent-core/runtime';
 import {
   RpcError,
   historyRpcMethods,
+  contextRpcMethods,
   inputRpcMethods,
   recoveryRpcMethods,
   rpcMethod,
@@ -53,6 +53,7 @@ const processAction = z.discriminatedUnion('kind', [
 export function codingRpcMethods(application: CodingApplication, shutdown: () => void) {
   return {
     ...historyRpcMethods(application),
+    ...contextRpcMethods(application),
     ...sessionRpcMethods(application),
     ...inputRpcMethods(application),
     ...recoveryRpcMethods({
@@ -60,10 +61,6 @@ export function codingRpcMethods(application: CodingApplication, shutdown: () =>
       resume: (runId) => application.resumeSuspension(runId),
       resolveApproval: (request) => application.resolveApproval(request)
     }),
-    'context.renew': rpcMethod(
-      z.strictObject({ selection: contextSelectionSchema.optional() }),
-      ({ selection }) => application.renewContext(selection)
-    ),
     'application.read': rpcMethod(empty, () => application.state()),
     'application.shutdown': rpcMethod(empty, () => {
       shutdown();
@@ -109,7 +106,6 @@ export function codingRpcMethods(application: CodingApplication, shutdown: () =>
       z.strictObject({ acknowledge: processTarget.optional() }),
       ({ acknowledge }) => application.reconcileProcesses(acknowledge)
     ),
-    'context.read': rpcMethod(empty, () => application.inspectContext()),
     'workspace.files': rpcMethod(
       z.strictObject({ directory: z.string().optional(), prefix: z.string().optional() }),
       ({ directory, prefix }) => application.listFiles(directory, prefix)

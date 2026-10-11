@@ -139,6 +139,10 @@ test(
       assert.deepEqual(input.originalInput.instructions, ['Answer in one sentence.']);
       assert.equal(input.originalInput.contextItems[0].sourceUri, 'test://request/context');
       assert.equal(input.originalInput.relationship.kind, 'side_question');
+      const configuration = application.modelSelection();
+      await application.freshContext();
+      assert.deepEqual(application.modelSelection(), configuration);
+      assert.equal((await application.inspectContext()).window.selection.continuity.kind, 'fresh');
     } finally {
       await application.close();
     }

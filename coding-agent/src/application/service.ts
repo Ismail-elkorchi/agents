@@ -602,6 +602,13 @@ export class CodingApplication {
   contextSources(request: import('@agent-core/runtime').HistorySearchRequest) {
     return this.requireRuntime().history.search(request);
   }
+  async freshContext() {
+    const runtime = this.requireRuntime();
+    return runtime.agent.freshContinuation({
+      profile: await runtime.provider.describeModel(runtime.agent.state().configuration.model)
+    });
+  }
+
   async renewContext(selection?: import('@agent-core/runtime').ContextSelection) {
     const agent = this.requireRuntime().agent;
     const selected = await agent.renewContext(selection);
@@ -820,8 +827,7 @@ export class CodingApplication {
       return agent.reconcileExternal(suspension.runId);
     if (suspension.category === 'context_admission')
       return agent.resumeContextAdmission(suspension.runId);
-    if (suspension.category === 'runtime')
-      return agent.resumeRuntime(suspension.runId);
+    if (suspension.category === 'runtime') return agent.resumeRuntime(suspension.runId);
     throw new Error('The suspension requires a decision.');
   }
 

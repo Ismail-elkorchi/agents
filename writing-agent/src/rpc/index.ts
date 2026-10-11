@@ -1,8 +1,8 @@
-import { contextSelectionSchema } from '@agent-core/runtime';
 import { ModelContinuationRequiredError, parseModelChangeRequest } from '@agent-core/runtime';
 import {
   RpcError,
   historyRpcMethods,
+  contextRpcMethods,
   inputRpcMethods,
   recoveryRpcMethods,
   rpcMethod,
@@ -24,6 +24,7 @@ const id = z.string().min(1);
 export function writingRpcMethods(application: WritingApplication, shutdown: () => void) {
   return {
     ...historyRpcMethods(application),
+    ...contextRpcMethods(application),
     ...sessionRpcMethods(application),
     ...inputRpcMethods(application),
     ...recoveryRpcMethods({
@@ -45,11 +46,6 @@ export function writingRpcMethods(application: WritingApplication, shutdown: () 
         }
         return application.modelSelection();
       }
-    ),
-    'context.read': rpcMethod(empty, () => application.inspectContext()),
-    'context.renew': rpcMethod(
-      z.strictObject({ selection: contextSelectionSchema.optional() }),
-      ({ selection }) => application.renewContext(selection)
     ),
     'application.read': rpcMethod(empty, () => application.state()),
     'application.shutdown': rpcMethod(empty, () => {
