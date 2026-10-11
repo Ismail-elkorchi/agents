@@ -331,6 +331,64 @@ async function panelTestRuntime(
   return { runtime, historyReads: () => historyReads };
 }
 
+for (const agent of ['coding', 'writing']) {
+  test(`${agent} shortcut capture checks the unsaved settings draft`, async (t) => {
+    const { runtime } = await panelTestRuntime(agent);
+    t.after(() => runtime.dispose());
+    await runtime.dispatch({ type: 'preferences.open' });
+    const capture = async (action, key) => {
+      await runtime.dispatch({ type: 'preferences.capture', action });
+      await runtime.handleInput({
+        kind: 'key',
+        key,
+        eventType: 'press',
+        location: 'standard',
+        modifiers: { ctrl: true, shift: true, alt: false, meta: false }
+      });
+    };
+    await capture('commands', 'k');
+    await capture('tools', 'k');
+    assert.equal(runtime.state().overlay.preferences.shortcuts.tools, undefined);
+    assert.match(runtime.state().overlay.error, /Commands/i);
+    assert.deepEqual(
+      runtime.state().preferences.shortcuts,
+      {},
+      'draft edits do not change active bindings'
+    );
+  });
+
+  test(`${agent} resetting a borrowed default cannot save conflicting shortcuts`, async (t) => {
+    const { runtime } = await panelTestRuntime(agent);
+    t.after(() => runtime.dispose());
+    await runtime.dispatch({ type: 'preferences.open' });
+    await runtime.dispatch({ type: 'preferences.capture', action: 'commands' });
+    await runtime.handleInput({
+      kind: 'key',
+      key: 'k',
+      eventType: 'press',
+      location: 'standard',
+      modifiers: { ctrl: true, shift: true, alt: false, meta: false }
+    });
+    await runtime.dispatch({ type: 'preferences.save' });
+    await runtime.dispatch({ type: 'preferences.open' });
+    await runtime.dispatch({ type: 'preferences.capture', action: 'tools' });
+    await runtime.handleInput({
+      kind: 'key',
+      key: 'p',
+      eventType: 'press',
+      location: 'standard',
+      modifiers: { ctrl: true, shift: false, alt: false, meta: false }
+    });
+    assert.equal(runtime.state().overlay.preferences.shortcuts.tools.key, 'p');
+    await runtime.dispatch({ type: 'preferences.reset-shortcut', action: 'commands' });
+    await runtime.dispatch({ type: 'preferences.save' });
+    assert.equal(runtime.state().overlay.kind, 'preferences');
+    assert.match(runtime.state().overlay.error, /Commands/i);
+    assert.equal(runtime.state().preferences.shortcuts.commands.key, 'k');
+    assert.equal(runtime.state().preferences.shortcuts.tools, undefined);
+  });
+}
+
 for (const agent of ['coding', 'writing'])
   for (const action of ['save', 'cancel'])
     test(`${agent} hidden queue ${action} finishes once without replacing a newer overlay`, async (t) => {

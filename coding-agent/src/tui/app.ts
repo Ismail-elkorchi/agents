@@ -51,7 +51,7 @@ import {
   suspensionMessage,
   suspensionPresentation,
   sessionNameView,
-  shortcutBindings,
+  createShortcuts,
   shortcutHelp,
   transitionCommandPicker,
   updateAttachments,
@@ -194,6 +194,275 @@ export function createCodingAgentTuiApp(
   const inspector = codingInspector(options.historyEntryReader);
   const configuration =
     options.configuration === undefined ? undefined : codingConfiguration(options.configuration);
+  const shortcuts = createShortcuts<CodingAgentTuiState, CodingAgentTuiMessage>(
+    [
+      ...[true, false].map((focused) => ({
+        id: `terminal-focus:${String(focused)}`,
+        triggers: [{ kind: 'focus' as const, focused }],
+        phase: 'beforeFocus' as const,
+        message: { type: 'terminal.focus' as const, focused }
+      })),
+      ...[
+        { key: 'arrowDown' as const, message: { type: 'resource.move' as const, delta: 1 } },
+        { key: 'arrowUp' as const, message: { type: 'resource.move' as const, delta: -1 } },
+        { key: 'enter' as const, message: { type: 'resource.accept' as const } },
+        { key: 'tab' as const, message: { type: 'resource.accept' as const } },
+        { key: 'escape' as const, message: { type: 'resource.close' as const } },
+        {
+          key: 'c' as const,
+          modifiers: { ctrl: true },
+          message: { type: 'resource.close' as const }
+        }
+      ].map(({ key, message, modifiers }) =>
+        binding(
+          `resource-${key}`,
+          key,
+          modifiers ?? {},
+          message,
+          ({ state }) => state.overlay.kind === 'none' && state.resourceCompletion !== undefined
+        )
+      ),
+      ...[
+        { key: 'arrowDown' as const, message: { type: 'completion.move' as const, delta: 1 } },
+        { key: 'arrowUp' as const, message: { type: 'completion.move' as const, delta: -1 } },
+        { key: 'enter' as const, message: { type: 'completion.accept' as const, open: true } },
+        { key: 'tab' as const, message: { type: 'completion.accept' as const, open: false } },
+        { key: 'escape' as const, message: { type: 'completion.close' as const } }
+      ].map(({ key, message }) =>
+        binding(
+          `completion-${key}`,
+          key,
+          {},
+          message,
+          ({ state }) => state.overlay.kind === 'none' && state.completion !== undefined
+        )
+      ),
+      binding(
+        'completion-cancel',
+        'c',
+        { ctrl: true },
+        { type: 'completion.close' },
+        ({ state }) =>
+          state.overlay.kind === 'none' &&
+          state.completion !== undefined &&
+          selectedSource(copyInput(state)) === undefined
+      ),
+      binding(
+        'copy-selected-source',
+        'c',
+        { ctrl: true },
+        { type: 'source.copy' },
+        ({ state }) => selectedSource(copyInput(state)) !== undefined
+      ),
+      binding(
+        'close-popup',
+        'c',
+        { ctrl: true },
+        { type: 'overlay.close' },
+        ({ state }) => state.overlay.kind !== 'none'
+      ),
+      binding(
+        'close-commands',
+        'p',
+        { ctrl: true },
+        { type: 'overlay.close' },
+        ({ state }) => state.overlay.kind === 'commands'
+      ),
+      binding(
+        'commands',
+        'p',
+        { ctrl: true },
+        { type: 'overlay.open', overlay: 'commands' },
+        ({ state }) => canOpenOverlay(state)
+      ),
+      binding('tool-output', 'o', { ctrl: true }, { type: 'tools.toggle' }, ({ state }) =>
+        canOpenOverlay(state)
+      ),
+      binding('reasoning', 't', { ctrl: true }, { type: 'reasoning.toggle' }, ({ state }) =>
+        canOpenOverlay(state)
+      ),
+      binding(
+        'exit',
+        'd',
+        { ctrl: true },
+        { type: 'application.exit' },
+        ({ state }) =>
+          canOpenOverlay(state) && textDocumentText(state.composer.input.document).length === 0
+      ),
+      binding(
+        'interrupt',
+        'escape',
+        {},
+        { type: 'work.interrupt' },
+        ({ state }) => canOpenOverlay(state) && state.run.kind === 'working'
+      ),
+      ...(
+        [
+          { key: 'f2', panel: 'sessions' },
+          { key: 'f5', panel: 'branches' },
+
+          { key: 'f7', panel: 'changes' }
+        ] as const
+      ).map(({ key, panel }) =>
+        binding(panel, key, {}, { type: 'panel.open', panel }, ({ state }) => canOpenOverlay(state))
+      ),
+      binding(
+        'search',
+        'f',
+        { ctrl: true },
+        { type: 'overlay.open', overlay: 'search' },
+        ({ state }) => canOpenOverlay(state)
+      ),
+      ...(['previous', 'next'] as const).map((direction) =>
+        binding(
+          `${direction}-message`,
+          direction === 'previous' ? 'pageUp' : 'pageDown',
+          { alt: true },
+          { type: 'conversation.message', direction },
+          ({ state }) => canOpenOverlay(state)
+        )
+      ),
+      ...(['previous', 'next'] as const).map((direction) =>
+        binding(
+          `${direction}-match`,
+          'f3',
+          direction === 'previous' ? { shift: true } : {},
+          { type: 'search.adjacent', direction },
+          ({ state }) => canOpenOverlay(state) && state.historyMatch !== undefined
+        )
+      ),
+      binding(
+        'more-search-results',
+        'f3',
+        {},
+        { type: 'search.more' },
+        ({ state }) => state.overlay.kind === 'search'
+      ),
+      binding('help', 'f1', {}, { type: 'overlay.open', overlay: 'help' }, ({ state }) =>
+        canOpenOverlay(state)
+      ),
+      binding(
+        'page-up',
+        'pageUp',
+        {},
+        { type: 'conversation.scroll', transition: { kind: 'scrollPages', rows: -1 } },
+        ({ state }) => canScroll(state)
+      ),
+      binding(
+        'page-down',
+        'pageDown',
+        {},
+        { type: 'conversation.scroll', transition: { kind: 'scrollPages', rows: 1 } },
+        ({ state }) => canScroll(state)
+      ),
+      binding(
+        'composer-history-previous',
+        'arrowUp',
+        {},
+        { type: 'composer.history', direction: 'previous' },
+        composerHistoryPreviousEnabled
+      ),
+      binding(
+        'composer-history-next',
+        'arrowDown',
+        {},
+        { type: 'composer.history', direction: 'next' },
+        composerHistoryNextEnabled
+      ),
+      binding('composer-submit', 'enter', {}, { type: 'composer.submit' }, composerBindingEnabled),
+      binding(
+        'steer-active-run',
+        's',
+        { alt: true },
+        { type: 'composer.submit', delivery: 'steer' },
+        composerBindingEnabled
+      ),
+      binding(
+        'queue-follow-up',
+        'enter',
+        { ctrl: true },
+        { type: 'composer.submit', delivery: 'follow_up' },
+        composerBindingEnabled
+      ),
+      binding(
+        'external-editor',
+        'g',
+        { ctrl: true },
+        { type: 'composer.external-editor' },
+        composerBindingEnabled
+      ),
+      binding(
+        'complete-command-or-path',
+        'space',
+        { ctrl: true },
+        { type: 'composer.complete' },
+        composerBindingEnabled
+      ),
+      binding(
+        'restore-instruction-draft',
+        'escape',
+        {},
+        { type: 'composer.cancel-command' },
+        (context) =>
+          composerBindingEnabled(context) && context.state.composer.commandReturnDraft !== undefined
+      ),
+      binding(
+        'interrupt-work',
+        'c',
+        { ctrl: true },
+        { type: 'work.interrupt' },
+        ({ state }) =>
+          state.run.kind === 'waiting_for_recovery' ||
+          (canOpenOverlay(state) && state.composer.input.selection === undefined)
+      ),
+      binding(
+        'older-history',
+        'pageUp',
+        { ctrl: true },
+        { type: 'history.load', direction: 'older' },
+        ({ state }) => canScroll(state)
+      ),
+      binding(
+        'newer-history',
+        'pageDown',
+        { ctrl: true },
+        { type: 'history.load', direction: 'newer' },
+        ({ state }) => canScroll(state)
+      ),
+      binding(
+        'follow-latest-output',
+        'end',
+        { ctrl: true },
+        { type: 'history.load', direction: 'tail' },
+        ({ state }) => canScroll(state)
+      ),
+      binding(
+        'composer-newline-shift-enter',
+        'enter',
+        { shift: true },
+        composerNewlineMessage(),
+        composerBindingEnabled
+      ),
+      binding(
+        'composer-newline-alt-enter',
+        'enter',
+        { alt: true },
+        composerNewlineMessage(),
+        composerBindingEnabled
+      )
+    ],
+    {
+      actions: CODING_SHORTCUTS,
+      overrides: (state) => state.preferences.shortcuts,
+      capturing: (state) =>
+        state.overlay.kind === 'preferences' && state.overlay.capture !== undefined
+          ? { action: state.overlay.capture, overrides: state.overlay.preferences.shortcuts }
+          : undefined,
+      captured: (action, shortcut) => ({ type: 'preferences.captured', action, shortcut }),
+      cancelled: () => ({ type: 'preferences.capture-cancel' }),
+      failed: (message) => ({ type: 'preferences.capture-failed', message })
+    }
+  );
   const app: import('@ismail-elkorchi/terminal-ui/tui').TuiApp<
     CodingAgentTuiState,
     CodingAgentTuiMessage
@@ -220,6 +489,11 @@ export function createCodingAgentTuiApp(
       };
     },
     update: (state, message, context) => {
+      if (message.type === 'preferences.save' && state.overlay.kind === 'preferences') {
+        const conflict = shortcuts.conflict(state.overlay.preferences.shortcuts);
+        if (conflict !== undefined)
+          message = { type: 'preferences.capture-failed', message: conflict };
+      }
       let result = withAttention(
         updateCodingAgentTui(state, message, context, options),
         message,
@@ -285,282 +559,7 @@ export function createCodingAgentTuiApp(
           }
         : result;
     },
-    inputBindings: shortcutBindings<CodingAgentTuiState, CodingAgentTuiMessage>(
-      [
-        ...[true, false].map((focused) => ({
-          id: `terminal-focus:${String(focused)}`,
-          triggers: [{ kind: 'focus' as const, focused }],
-          phase: 'beforeFocus' as const,
-          message: { type: 'terminal.focus' as const, focused }
-        })),
-        ...[
-          { key: 'arrowDown' as const, message: { type: 'resource.move' as const, delta: 1 } },
-          { key: 'arrowUp' as const, message: { type: 'resource.move' as const, delta: -1 } },
-          { key: 'enter' as const, message: { type: 'resource.accept' as const } },
-          { key: 'tab' as const, message: { type: 'resource.accept' as const } },
-          { key: 'escape' as const, message: { type: 'resource.close' as const } },
-          {
-            key: 'c' as const,
-            modifiers: { ctrl: true },
-            message: { type: 'resource.close' as const }
-          }
-        ].map(({ key, message, modifiers }) =>
-          binding(
-            `resource-${key}`,
-            key,
-            modifiers ?? {},
-            message,
-            ({ state }) => state.overlay.kind === 'none' && state.resourceCompletion !== undefined
-          )
-        ),
-        ...[
-          { key: 'arrowDown' as const, message: { type: 'completion.move' as const, delta: 1 } },
-          { key: 'arrowUp' as const, message: { type: 'completion.move' as const, delta: -1 } },
-          { key: 'enter' as const, message: { type: 'completion.accept' as const, open: true } },
-          { key: 'tab' as const, message: { type: 'completion.accept' as const, open: false } },
-          { key: 'escape' as const, message: { type: 'completion.close' as const } }
-        ].map(({ key, message }) =>
-          binding(
-            `completion-${key}`,
-            key,
-            {},
-            message,
-            ({ state }) => state.overlay.kind === 'none' && state.completion !== undefined
-          )
-        ),
-        binding(
-          'completion-cancel',
-          'c',
-          { ctrl: true },
-          { type: 'completion.close' },
-          ({ state }) =>
-            state.overlay.kind === 'none' &&
-            state.completion !== undefined &&
-            selectedSource(copyInput(state)) === undefined
-        ),
-        binding(
-          'copy-selected-source',
-          'c',
-          { ctrl: true },
-          { type: 'source.copy' },
-          ({ state }) => selectedSource(copyInput(state)) !== undefined
-        ),
-        binding(
-          'close-popup',
-          'c',
-          { ctrl: true },
-          { type: 'overlay.close' },
-          ({ state }) => state.overlay.kind !== 'none'
-        ),
-        binding(
-          'close-commands',
-          'p',
-          { ctrl: true },
-          { type: 'overlay.close' },
-          ({ state }) => state.overlay.kind === 'commands'
-        ),
-        binding(
-          'commands',
-          'p',
-          { ctrl: true },
-          { type: 'overlay.open', overlay: 'commands' },
-          ({ state }) => canOpenOverlay(state)
-        ),
-        binding('tool-output', 'o', { ctrl: true }, { type: 'tools.toggle' }, ({ state }) =>
-          canOpenOverlay(state)
-        ),
-        binding('reasoning', 't', { ctrl: true }, { type: 'reasoning.toggle' }, ({ state }) =>
-          canOpenOverlay(state)
-        ),
-        binding(
-          'exit',
-          'd',
-          { ctrl: true },
-          { type: 'application.exit' },
-          ({ state }) =>
-            canOpenOverlay(state) && textDocumentText(state.composer.input.document).length === 0
-        ),
-        binding(
-          'interrupt',
-          'escape',
-          {},
-          { type: 'work.interrupt' },
-          ({ state }) => canOpenOverlay(state) && state.run.kind === 'working'
-        ),
-        ...(
-          [
-            { key: 'f2', panel: 'sessions' },
-            { key: 'f5', panel: 'branches' },
-
-            { key: 'f7', panel: 'changes' }
-          ] as const
-        ).map(({ key, panel }) =>
-          binding(panel, key, {}, { type: 'panel.open', panel }, ({ state }) =>
-            canOpenOverlay(state)
-          )
-        ),
-        binding(
-          'search',
-          'f',
-          { ctrl: true },
-          { type: 'overlay.open', overlay: 'search' },
-          ({ state }) => canOpenOverlay(state)
-        ),
-        ...(['previous', 'next'] as const).map((direction) =>
-          binding(
-            `${direction}-message`,
-            direction === 'previous' ? 'pageUp' : 'pageDown',
-            { alt: true },
-            { type: 'conversation.message', direction },
-            ({ state }) => canOpenOverlay(state)
-          )
-        ),
-        ...(['previous', 'next'] as const).map((direction) =>
-          binding(
-            `${direction}-match`,
-            'f3',
-            direction === 'previous' ? { shift: true } : {},
-            { type: 'search.adjacent', direction },
-            ({ state }) => canOpenOverlay(state) && state.historyMatch !== undefined
-          )
-        ),
-        binding(
-          'more-search-results',
-          'f3',
-          {},
-          { type: 'search.more' },
-          ({ state }) => state.overlay.kind === 'search'
-        ),
-        binding('help', 'f1', {}, { type: 'overlay.open', overlay: 'help' }, ({ state }) =>
-          canOpenOverlay(state)
-        ),
-        binding(
-          'page-up',
-          'pageUp',
-          {},
-          { type: 'conversation.scroll', transition: { kind: 'scrollPages', rows: -1 } },
-          ({ state }) => canScroll(state)
-        ),
-        binding(
-          'page-down',
-          'pageDown',
-          {},
-          { type: 'conversation.scroll', transition: { kind: 'scrollPages', rows: 1 } },
-          ({ state }) => canScroll(state)
-        ),
-        binding(
-          'composer-history-previous',
-          'arrowUp',
-          {},
-          { type: 'composer.history', direction: 'previous' },
-          composerHistoryPreviousEnabled
-        ),
-        binding(
-          'composer-history-next',
-          'arrowDown',
-          {},
-          { type: 'composer.history', direction: 'next' },
-          composerHistoryNextEnabled
-        ),
-        binding(
-          'composer-submit',
-          'enter',
-          {},
-          { type: 'composer.submit' },
-          composerBindingEnabled
-        ),
-        binding(
-          'steer-active-run',
-          's',
-          { alt: true },
-          { type: 'composer.submit', delivery: 'steer' },
-          composerBindingEnabled
-        ),
-        binding(
-          'queue-follow-up',
-          'enter',
-          { ctrl: true },
-          { type: 'composer.submit', delivery: 'follow_up' },
-          composerBindingEnabled
-        ),
-        binding(
-          'external-editor',
-          'g',
-          { ctrl: true },
-          { type: 'composer.external-editor' },
-          composerBindingEnabled
-        ),
-        binding(
-          'complete-command-or-path',
-          'space',
-          { ctrl: true },
-          { type: 'composer.complete' },
-          composerBindingEnabled
-        ),
-        binding(
-          'restore-instruction-draft',
-          'escape',
-          {},
-          { type: 'composer.cancel-command' },
-          (context) =>
-            composerBindingEnabled(context) &&
-            context.state.composer.commandReturnDraft !== undefined
-        ),
-        binding(
-          'interrupt-work',
-          'c',
-          { ctrl: true },
-          { type: 'work.interrupt' },
-          ({ state }) =>
-            state.run.kind === 'waiting_for_recovery' ||
-            (canOpenOverlay(state) && state.composer.input.selection === undefined)
-        ),
-        binding(
-          'older-history',
-          'pageUp',
-          { ctrl: true },
-          { type: 'history.load', direction: 'older' },
-          ({ state }) => canScroll(state)
-        ),
-        binding(
-          'newer-history',
-          'pageDown',
-          { ctrl: true },
-          { type: 'history.load', direction: 'newer' },
-          ({ state }) => canScroll(state)
-        ),
-        binding(
-          'follow-latest-output',
-          'end',
-          { ctrl: true },
-          { type: 'history.load', direction: 'tail' },
-          ({ state }) => canScroll(state)
-        ),
-        binding(
-          'composer-newline-shift-enter',
-          'enter',
-          { shift: true },
-          composerNewlineMessage(),
-          composerBindingEnabled
-        ),
-        binding(
-          'composer-newline-alt-enter',
-          'enter',
-          { alt: true },
-          composerNewlineMessage(),
-          composerBindingEnabled
-        )
-      ],
-      {
-        actions: CODING_SHORTCUTS,
-        overrides: (state) => state.preferences.shortcuts,
-        capturing: (state) =>
-          state.overlay.kind === 'preferences' ? state.overlay.capture : undefined,
-        captured: (action, shortcut) => ({ type: 'preferences.captured', action, shortcut }),
-        cancelled: () => ({ type: 'preferences.capture-cancel' }),
-        failed: (message) => ({ type: 'preferences.capture-failed', message })
-      }
-    ),
+    inputBindings: shortcuts.inputBindings,
     subscriptions: (state, context) => [
       ...(state.run.kind === 'working'
         ? [intervalSource('activity-clock', 1000, { type: 'activity.tick' as const })]

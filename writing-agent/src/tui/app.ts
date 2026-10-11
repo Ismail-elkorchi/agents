@@ -47,7 +47,7 @@ import {
   searchResources,
   selectedSource,
   sessionConversationId,
-  shortcutBindings,
+  createShortcuts,
   shortcutHelp,
   suspensionMessage,
   updateAttachments,
@@ -113,6 +113,224 @@ export function createWritingAgentTuiApp(
     application.readHistoryEntry(boundary, entryId)
   );
   const configuration = writingConfiguration(application);
+  const shortcuts = createShortcuts<WritingTuiState, WritingTuiMessage>(
+    [
+      ...[true, false].map((focused) => ({
+        id: `terminal-focus:${String(focused)}`,
+        triggers: [{ kind: 'focus' as const, focused }],
+        phase: 'beforeFocus' as const,
+        message: { type: 'terminal.focus' as const, focused }
+      })),
+      ...[
+        { key: 'arrowDown' as const, message: { type: 'resource.move' as const, delta: 1 } },
+        { key: 'arrowUp' as const, message: { type: 'resource.move' as const, delta: -1 } },
+        { key: 'enter' as const, message: { type: 'resource.accept' as const } },
+        { key: 'tab' as const, message: { type: 'resource.accept' as const } },
+        { key: 'escape' as const, message: { type: 'resource.close' as const } },
+        {
+          key: 'c' as const,
+          modifiers: { ctrl: true },
+          message: { type: 'resource.close' as const }
+        }
+      ].map(({ key, message, modifiers }) => ({
+        ...binding(`Resource ${key}`, key, message, modifiers),
+        enabled: ({ state }: TuiInputBindingContext<WritingTuiState>) =>
+          state.overlay.kind === 'none' && state.resourceCompletion !== undefined
+      })),
+      ...[
+        { key: 'arrowDown' as const, message: { type: 'completion.move' as const, delta: 1 } },
+        { key: 'arrowUp' as const, message: { type: 'completion.move' as const, delta: -1 } },
+        { key: 'enter' as const, message: { type: 'completion.accept' as const, open: true } },
+        { key: 'tab' as const, message: { type: 'completion.accept' as const, open: false } },
+        { key: 'escape' as const, message: { type: 'completion.close' as const } }
+      ].map(({ key, message }) => ({
+        ...binding(`Completion ${key}`, key, message),
+        enabled: ({ state }: TuiInputBindingContext<WritingTuiState>) =>
+          state.overlay.kind === 'none' && state.completion !== undefined
+      })),
+      {
+        ...binding('Close commands', 'p', { type: 'overlay.close' }, { ctrl: true }),
+        enabled: ({ state }: TuiInputBindingContext<WritingTuiState>) =>
+          state.overlay.kind === 'picker' && state.overlay.subject === 'commands'
+      },
+      binding(
+        'Queue follow-up',
+        'enter',
+        { type: 'submit', delivery: 'follow_up' },
+        { ctrl: true }
+      ),
+      binding('Steer active run', 's', { type: 'submit', delivery: 'steer' }, { alt: true }),
+      {
+        ...binding('Interrupt active run', 'escape', { type: 'interrupt' }),
+        enabled: ({ state }: TuiInputBindingContext<WritingTuiState>) =>
+          state.overlay.kind === 'none' &&
+          state.application.status === 'running' &&
+          state.completion === undefined &&
+          state.resourceCompletion === undefined
+      },
+      binding('Commands', 'p', { type: 'commands.open' }, { ctrl: true }),
+      binding('Tool output', 'o', { type: 'tools.toggle' }, { ctrl: true }),
+      binding('Reasoning', 't', { type: 'reasoning.toggle' }, { ctrl: true }),
+      {
+        id: 'Copy selected source',
+        label: 'Copy selected source',
+        triggers: [{ kind: 'key', key: 'c', modifiers: { ctrl: true } }],
+        phase: 'beforeFocus',
+        toMessage: ({ state, focusPath }) => {
+          const text = selectedSource(copyInput(state, focusPath));
+          return text === undefined ? ignoreMessage() : { type: 'source.copy', text };
+        }
+      },
+      {
+        ...binding('Close popup', 'c', { type: 'overlay.close' }, { ctrl: true }),
+        enabled: ({ state }: TuiInputBindingContext<WritingTuiState>) =>
+          state.overlay.kind !== 'none'
+      },
+      {
+        ...binding('Exit', 'd', { type: 'exit' }, { ctrl: true }),
+        enabled: ({ state }: TuiInputBindingContext<WritingTuiState>) =>
+          state.overlay.kind === 'none' &&
+          textDocumentText(state.composer.input.document).length === 0
+      },
+      {
+        id: 'Help',
+        label: 'Help',
+        triggers: [{ kind: 'key', key: 'f1' }],
+        phase: 'beforeFocus',
+        enabled: ({ state }: TuiInputBindingContext<WritingTuiState>) =>
+          state.overlay.kind === 'none',
+        toMessage: ({ state }) => ({
+          type: 'source.loaded',
+          title: 'Keyboard controls',
+          content: shortcutHelp(tuiBindingHelp(app), state.preferences.shortcuts, WRITING_SHORTCUTS)
+            .map(
+              (item) =>
+                `${item.bindings.map((binding) => formatKeyboardBinding(binding.binding)).join(' / ')}  ${item.label}`
+            )
+            .join('\n')
+        })
+      },
+      binding('Resources', 'f2', { type: 'picker.open', subject: 'resources' }),
+      binding('Outline', 'f3', { type: 'picker.open', subject: 'outline' }, { alt: true }),
+      binding('Document source', 'f4', { type: 'document.toggle-source' }),
+      binding('Conversation', 'f5', { type: 'view', view: 'conversation' }),
+      binding('New conversation', 'f6', { type: 'session.new' }),
+      binding('Edit or review', 'f7', { type: 'mode.toggle' }),
+      binding('Use selected passage', 'f8', { type: 'document.use-passage' }),
+      binding('Model configuration', 'f10', { type: 'configuration.open', target: 'model' }),
+      binding('Sessions', 'f11', { type: 'picker.open', subject: 'sessions' }),
+      binding('Recovery', 'f12', { type: 'recovery.open' }),
+      {
+        ...binding('Find matches', 'enter', {
+          type: 'search.submit',
+          more: false
+        }),
+        enabled: ({ state }: TuiInputBindingContext<WritingTuiState>) =>
+          state.overlay.kind === 'search'
+      },
+      binding('Search history', 'f', { type: 'search.open' }, { ctrl: true }),
+      ...(['previous', 'next'] as const).map((direction) => ({
+        ...binding(
+          `${direction} match`,
+          'f3',
+          { type: 'search.adjacent', direction },
+          direction === 'previous' ? { shift: true } : {}
+        ),
+        enabled: ({ state }: TuiInputBindingContext<WritingTuiState>) =>
+          state.overlay.kind === 'none' && state.historyMatch !== undefined
+      })),
+      ...(['previous', 'next'] as const).map((direction) =>
+        binding(
+          `${direction} message`,
+          direction === 'previous' ? 'pageUp' : 'pageDown',
+          { type: 'conversation.message', direction },
+          { alt: true }
+        )
+      ),
+      binding('Recall prompt', 'r', { type: 'recall.open' }, { ctrl: true }),
+      ...(['older', 'newer'] as const).map((direction) => ({
+        ...binding(`${direction} prompt`, direction === 'older' ? 'arrowUp' : 'arrowDown', {
+          type: 'prompt.navigate',
+          direction
+        }),
+        enabled: ({ state, focusPath }: TuiInputBindingContext<WritingTuiState>) =>
+          state.overlay.kind === 'none' &&
+          state.completion === undefined &&
+          (focusPath?.includes('writing-composer') ?? false) &&
+          state.composer.input.caret.position.offset ===
+            (direction === 'older' ? 0 : textDocumentText(state.composer.input.document).length)
+      })),
+      binding('Saved drafts', 'd', { type: 'recall.open' }, { alt: true }),
+      binding('External instruction editor', 'g', { type: 'external-editor' }, { ctrl: true }),
+      binding(
+        'Older history',
+        'pageUp',
+        { type: 'history.load', direction: 'older' },
+        { ctrl: true }
+      ),
+      binding(
+        'Newer history',
+        'pageDown',
+        { type: 'history.load', direction: 'newer' },
+        { ctrl: true }
+      ),
+      binding('Latest history', 'end', { type: 'history.load', direction: 'tail' }, { ctrl: true }),
+      {
+        ...binding('Interrupt', 'c', { type: 'interrupt' }, { ctrl: true }),
+        enabled: ({ state, focusPath }: TuiInputBindingContext<WritingTuiState>) => {
+          const input = focusPath?.includes('writing-composer')
+            ? state.composer.input
+            : focusPath?.includes('writing-document-source')
+              ? state.document?.input
+              : focusPath?.includes('writing-source-reader')
+                ? state.source?.input
+                : undefined;
+          return (
+            state.overlay.kind === 'none' &&
+            (input?.selection === undefined ||
+              input.selection.anchor.offset === input.selection.focus.offset)
+          );
+        }
+      },
+      {
+        ...binding('Send instruction', 'enter', { type: 'submit' }),
+        enabled: ({ state, focusPath }: TuiInputBindingContext<WritingTuiState>) =>
+          state.overlay.kind === 'none' && (focusPath?.includes('writing-composer') ?? false)
+      },
+      ...(
+        [
+          { key: 'enter', modifiers: { shift: true } },
+          { key: 'enter', modifiers: { alt: true } }
+        ] as const
+      ).map(({ key, modifiers }) => ({
+        ...binding(
+          `New line (${'shift' in modifiers ? 'Shift' : 'Alt'}+${key})`,
+          key,
+          {
+            type: 'composer.edit',
+            transition: {
+              kind: 'edit',
+              operation: { kind: 'insert', text: '\n' }
+            }
+          },
+          modifiers
+        ),
+        enabled: ({ state, focusPath }: TuiInputBindingContext<WritingTuiState>) =>
+          state.overlay.kind === 'none' && (focusPath?.includes('writing-composer') ?? false)
+      }))
+    ],
+    {
+      actions: WRITING_SHORTCUTS,
+      overrides: (state) => state.preferences.shortcuts,
+      capturing: (state) =>
+        state.overlay.kind === 'preferences' && state.overlay.capture !== undefined
+          ? { action: state.overlay.capture, overrides: state.overlay.preferences.shortcuts }
+          : undefined,
+      captured: (action, shortcut) => ({ type: 'preferences.captured', action, shortcut }),
+      cancelled: () => ({ type: 'preferences.capture-cancel' }),
+      failed: (message) => ({ type: 'preferences.capture-failed', message })
+    }
+  );
   const app: import('@ismail-elkorchi/terminal-ui/tui').TuiApp<WritingTuiState, WritingTuiMessage> =
     defineTui<WritingTuiState, WritingTuiMessage>({
       id: 'writing-agent',
@@ -148,6 +366,11 @@ export function createWritingAgentTuiApp(
         );
       },
       update: (state, message, context) => {
+        if (message.type === 'preferences.save' && state.overlay.kind === 'preferences') {
+          const conflict = shortcuts.conflict(state.overlay.preferences.shortcuts);
+          if (conflict !== undefined)
+            message = { type: 'preferences.capture-failed', message: conflict };
+        }
         let result = withAttention(
           update(state, message, application, options, context),
           message,
@@ -239,231 +462,7 @@ export function createWritingAgentTuiApp(
               context
             ))
       ],
-      inputBindings: shortcutBindings<WritingTuiState, WritingTuiMessage>(
-        [
-          ...[true, false].map((focused) => ({
-            id: `terminal-focus:${String(focused)}`,
-            triggers: [{ kind: 'focus' as const, focused }],
-            phase: 'beforeFocus' as const,
-            message: { type: 'terminal.focus' as const, focused }
-          })),
-          ...[
-            { key: 'arrowDown' as const, message: { type: 'resource.move' as const, delta: 1 } },
-            { key: 'arrowUp' as const, message: { type: 'resource.move' as const, delta: -1 } },
-            { key: 'enter' as const, message: { type: 'resource.accept' as const } },
-            { key: 'tab' as const, message: { type: 'resource.accept' as const } },
-            { key: 'escape' as const, message: { type: 'resource.close' as const } },
-            {
-              key: 'c' as const,
-              modifiers: { ctrl: true },
-              message: { type: 'resource.close' as const }
-            }
-          ].map(({ key, message, modifiers }) => ({
-            ...binding(`Resource ${key}`, key, message, modifiers),
-            enabled: ({ state }: TuiInputBindingContext<WritingTuiState>) =>
-              state.overlay.kind === 'none' && state.resourceCompletion !== undefined
-          })),
-          ...[
-            { key: 'arrowDown' as const, message: { type: 'completion.move' as const, delta: 1 } },
-            { key: 'arrowUp' as const, message: { type: 'completion.move' as const, delta: -1 } },
-            { key: 'enter' as const, message: { type: 'completion.accept' as const, open: true } },
-            { key: 'tab' as const, message: { type: 'completion.accept' as const, open: false } },
-            { key: 'escape' as const, message: { type: 'completion.close' as const } }
-          ].map(({ key, message }) => ({
-            ...binding(`Completion ${key}`, key, message),
-            enabled: ({ state }: TuiInputBindingContext<WritingTuiState>) =>
-              state.overlay.kind === 'none' && state.completion !== undefined
-          })),
-          {
-            ...binding('Close commands', 'p', { type: 'overlay.close' }, { ctrl: true }),
-            enabled: ({ state }: TuiInputBindingContext<WritingTuiState>) =>
-              state.overlay.kind === 'picker' && state.overlay.subject === 'commands'
-          },
-          binding(
-            'Queue follow-up',
-            'enter',
-            { type: 'submit', delivery: 'follow_up' },
-            { ctrl: true }
-          ),
-          binding('Steer active run', 's', { type: 'submit', delivery: 'steer' }, { alt: true }),
-          {
-            ...binding('Interrupt active run', 'escape', { type: 'interrupt' }),
-            enabled: ({ state }: TuiInputBindingContext<WritingTuiState>) =>
-              state.overlay.kind === 'none' &&
-              state.application.status === 'running' &&
-              state.completion === undefined &&
-              state.resourceCompletion === undefined
-          },
-          binding('Commands', 'p', { type: 'commands.open' }, { ctrl: true }),
-          binding('Tool output', 'o', { type: 'tools.toggle' }, { ctrl: true }),
-          binding('Reasoning', 't', { type: 'reasoning.toggle' }, { ctrl: true }),
-          {
-            id: 'Copy selected source',
-            label: 'Copy selected source',
-            triggers: [{ kind: 'key', key: 'c', modifiers: { ctrl: true } }],
-            phase: 'beforeFocus',
-            toMessage: ({ state, focusPath }) => {
-              const text = selectedSource(copyInput(state, focusPath));
-              return text === undefined ? ignoreMessage() : { type: 'source.copy', text };
-            }
-          },
-          {
-            ...binding('Close popup', 'c', { type: 'overlay.close' }, { ctrl: true }),
-            enabled: ({ state }: TuiInputBindingContext<WritingTuiState>) =>
-              state.overlay.kind !== 'none'
-          },
-          {
-            ...binding('Exit', 'd', { type: 'exit' }, { ctrl: true }),
-            enabled: ({ state }: TuiInputBindingContext<WritingTuiState>) =>
-              state.overlay.kind === 'none' &&
-              textDocumentText(state.composer.input.document).length === 0
-          },
-          {
-            id: 'Help',
-            label: 'Help',
-            triggers: [{ kind: 'key', key: 'f1' }],
-            phase: 'beforeFocus',
-            enabled: ({ state }: TuiInputBindingContext<WritingTuiState>) =>
-              state.overlay.kind === 'none',
-            toMessage: ({ state }) => ({
-              type: 'source.loaded',
-              title: 'Keyboard controls',
-              content: shortcutHelp(
-                tuiBindingHelp(app),
-                state.preferences.shortcuts,
-                WRITING_SHORTCUTS
-              )
-                .map(
-                  (item) =>
-                    `${item.bindings.map((binding) => formatKeyboardBinding(binding.binding)).join(' / ')}  ${item.label}`
-                )
-                .join('\n')
-            })
-          },
-          binding('Resources', 'f2', { type: 'picker.open', subject: 'resources' }),
-          binding('Outline', 'f3', { type: 'picker.open', subject: 'outline' }, { alt: true }),
-          binding('Document source', 'f4', { type: 'document.toggle-source' }),
-          binding('Conversation', 'f5', { type: 'view', view: 'conversation' }),
-          binding('New conversation', 'f6', { type: 'session.new' }),
-          binding('Edit or review', 'f7', { type: 'mode.toggle' }),
-          binding('Use selected passage', 'f8', { type: 'document.use-passage' }),
-          binding('Model configuration', 'f10', { type: 'configuration.open', target: 'model' }),
-          binding('Sessions', 'f11', { type: 'picker.open', subject: 'sessions' }),
-          binding('Recovery', 'f12', { type: 'recovery.open' }),
-          {
-            ...binding('Find matches', 'enter', {
-              type: 'search.submit',
-              more: false
-            }),
-            enabled: ({ state }: TuiInputBindingContext<WritingTuiState>) =>
-              state.overlay.kind === 'search'
-          },
-          binding('Search history', 'f', { type: 'search.open' }, { ctrl: true }),
-          ...(['previous', 'next'] as const).map((direction) => ({
-            ...binding(
-              `${direction} match`,
-              'f3',
-              { type: 'search.adjacent', direction },
-              direction === 'previous' ? { shift: true } : {}
-            ),
-            enabled: ({ state }: TuiInputBindingContext<WritingTuiState>) =>
-              state.overlay.kind === 'none' && state.historyMatch !== undefined
-          })),
-          ...(['previous', 'next'] as const).map((direction) =>
-            binding(
-              `${direction} message`,
-              direction === 'previous' ? 'pageUp' : 'pageDown',
-              { type: 'conversation.message', direction },
-              { alt: true }
-            )
-          ),
-          binding('Recall prompt', 'r', { type: 'recall.open' }, { ctrl: true }),
-          ...(['older', 'newer'] as const).map((direction) => ({
-            ...binding(`${direction} prompt`, direction === 'older' ? 'arrowUp' : 'arrowDown', {
-              type: 'prompt.navigate',
-              direction
-            }),
-            enabled: ({ state, focusPath }: TuiInputBindingContext<WritingTuiState>) =>
-              state.overlay.kind === 'none' &&
-              state.completion === undefined &&
-              (focusPath?.includes('writing-composer') ?? false) &&
-              state.composer.input.caret.position.offset ===
-                (direction === 'older' ? 0 : textDocumentText(state.composer.input.document).length)
-          })),
-          binding('Saved drafts', 'd', { type: 'recall.open' }, { alt: true }),
-          binding('External instruction editor', 'g', { type: 'external-editor' }, { ctrl: true }),
-          binding(
-            'Older history',
-            'pageUp',
-            { type: 'history.load', direction: 'older' },
-            { ctrl: true }
-          ),
-          binding(
-            'Newer history',
-            'pageDown',
-            { type: 'history.load', direction: 'newer' },
-            { ctrl: true }
-          ),
-          binding(
-            'Latest history',
-            'end',
-            { type: 'history.load', direction: 'tail' },
-            { ctrl: true }
-          ),
-          {
-            ...binding('Interrupt', 'c', { type: 'interrupt' }, { ctrl: true }),
-            enabled: ({ state, focusPath }: TuiInputBindingContext<WritingTuiState>) => {
-              const input = focusPath?.includes('writing-composer')
-                ? state.composer.input
-                : focusPath?.includes('writing-document-source')
-                  ? state.document?.input
-                  : focusPath?.includes('writing-source-reader')
-                    ? state.source?.input
-                    : undefined;
-              return (
-                state.overlay.kind === 'none' &&
-                (input?.selection === undefined ||
-                  input.selection.anchor.offset === input.selection.focus.offset)
-              );
-            }
-          },
-          {
-            ...binding('Send instruction', 'enter', { type: 'submit' }),
-            enabled: ({ state, focusPath }: TuiInputBindingContext<WritingTuiState>) =>
-              state.overlay.kind === 'none' && (focusPath?.includes('writing-composer') ?? false)
-          },
-          ...(
-            [
-              { key: 'enter', modifiers: { shift: true } },
-              { key: 'enter', modifiers: { alt: true } }
-            ] as const
-          ).map(({ key, modifiers }) => ({
-            ...binding(
-              `New line (${'shift' in modifiers ? 'Shift' : 'Alt'}+${key})`,
-              key,
-              {
-                type: 'composer.edit',
-                transition: {
-                  kind: 'edit',
-                  operation: { kind: 'insert', text: '\n' }
-                }
-              },
-              modifiers
-            ),
-            enabled: ({ state, focusPath }: TuiInputBindingContext<WritingTuiState>) =>
-              state.overlay.kind === 'none' && (focusPath?.includes('writing-composer') ?? false)
-          }))
-        ],
-        {
-          actions: WRITING_SHORTCUTS,
-          overrides: (state) => state.preferences.shortcuts,
-          capturing: (state) =>
-            state.overlay.kind === 'preferences' ? state.overlay.capture : undefined,
-          captured: (action, shortcut) => ({ type: 'preferences.captured', action, shortcut }),
-          cancelled: () => ({ type: 'preferences.capture-cancel' }),
-          failed: (message) => ({ type: 'preferences.capture-failed', message })
-        }
-      ),
+      inputBindings: shortcuts.inputBindings,
       view: (state, context) =>
         writingView(
           state,
