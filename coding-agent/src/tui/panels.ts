@@ -149,8 +149,15 @@ export function openPanel(
             );
           else {
             if (operations === undefined) throw new Error('Session operations are unavailable.');
+            let sessions: Awaited<ReturnType<CodingNavigationOperations['listSessions']>>;
+            try {
+              sessions = await operations.listSessions();
+            } catch (error) {
+              if (error instanceof Error && error.name === 'AbortError') return { kind: 'none' };
+              throw error;
+            }
             items = await Promise.all(
-              (await operations.listSessions()).map(
+              sessions.map(
                 async (session): Promise<PanelItem> => ({
                   kind: 'session',
                   id: session.id,
@@ -346,7 +353,12 @@ function operation(
         concurrency: 'keep-first',
         async run() {
           if (service === undefined) throw new Error('Session operations are unavailable.');
-          await act(service);
+          try {
+            await act(service);
+          } catch (error) {
+            if (error instanceof Error && error.name === 'AbortError') return { kind: 'none' };
+            throw error;
+          }
           return { kind: 'message', message: { type: 'panel.done', message } };
         },
         onError: ({ diagnostic }) => ({

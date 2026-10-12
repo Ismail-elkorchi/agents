@@ -132,8 +132,7 @@ export interface CodingAgentTuiComposerState extends ComposerDraft {
 }
 
 export interface CodingAgentTuiState {
-  readonly historyRecoveryFailures?: Readonly<Record<string, string>>;
-  readonly historyRecoveryFailureOffset?: number;
+  readonly historyOpeningClock?: import('@agent-core/tui').ActivityClock | undefined;
   readonly historyRecovery?: Extract<CodingAgentTuiMessage, { readonly type: 'history.recovery' }>['progress'];
   readonly activityClock?: import('@agent-core/tui').ActivityClock | undefined;
   readonly queuePanel?: import('@ismail-elkorchi/terminal-ui/tui').TuiChildState<

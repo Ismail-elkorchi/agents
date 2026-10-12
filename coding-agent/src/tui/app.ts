@@ -299,7 +299,7 @@ export function createCodingAgentTuiApp(
         {},
         { type: 'work.interrupt' },
         ({ state }) =>
-          canOpenOverlay(state) && (state.historyRecovery !== undefined || state.run.kind === 'working')
+          canOpenOverlay(state) && state.run.kind === 'working'
       ),
       ...(
         [
@@ -522,7 +522,12 @@ export function createCodingAgentTuiApp(
             message.type === 'progress' && message.event.type === 'run.configured'
               ? undefined
               : state.activityClock,
-            result.state.historyRecovery !== undefined || result.state.run.kind === 'working',
+            result.state.run.kind === 'working',
+            context.clock.monotonicNow()
+          ),
+          historyOpeningClock: updateActivityClock(
+            state.historyOpeningClock,
+            result.state.historyRecovery !== undefined,
             context.clock.monotonicNow()
           )
         }
@@ -648,22 +653,12 @@ function updateCodingAgentTui(
   switch (message.type) {
     case 'activity.tick':
       return { state };
-    case 'history.recovery.scroll':
-      return { state: { ...state, historyRecoveryFailureOffset: message.offset } };
     case 'history.recovery': {
       if (message.progress.phase === 'started' || message.progress.phase === 'progress')
         return { state: { ...state, historyRecovery: message.progress } };
-      const failures = message.progress.phase === 'failed'
-        ? { ...state.historyRecoveryFailures, [message.progress.sessionId]: historyRecoveryMessage(message.progress) }
-        : { ...state.historyRecoveryFailures };
-      const retained = message.progress.phase === 'completed'
-        ? Object.fromEntries(Object.entries(failures).filter(([id]) => id !== message.progress.sessionId))
-        : failures;
-      const next = { ...state, historyRecoveryFailures: retained, historyRecoveryFailureOffset: 0 };
+      const next = { ...state };
       delete next.historyRecovery;
-      return updated(message.progress.phase === 'cancelled'
-        ? appendNotice(next, historyRecoveryMessage(message.progress), 'warning')
-        : next);
+      return updated(next);
     }
     case 'context.open':
     case 'context.fresh':
@@ -1062,7 +1057,11 @@ function updateCodingAgentTui(
             async run() {
               if (options.navigation === undefined)
                 throw new Error('Session navigation is unavailable.');
-              await options.navigation.newSession();
+              try {
+                await options.navigation.newSession();
+              } catch (error) {
+                if (!(error instanceof Error && error.name === 'AbortError')) throw error;
+              }
               return { kind: 'none' };
             },
             onError: ({ diagnostic }) => ({
@@ -1528,8 +1527,6 @@ function updateCodingAgentTui(
       };
     }
     case 'work.interrupt':
-      if (state.historyRecovery !== undefined)
-        return executeCommand(state, '/stop', options.commandHandler);
       if (state.run.kind === 'waiting_for_recovery')
         return updateCodingAgentTui(
           state,
@@ -1735,7 +1732,6 @@ function applyInteractiveState(
       requirements: interactive.requirements
     },
     runtimeDetails: interactive.runtimeDetails,
-    historyRecoveryFailures: interactive.historyRecoveryFailures ?? {},
     debug: {
       ...state.debug,
       ...(interactive.runtimeDetails.sessionLocation === undefined
@@ -1969,9 +1965,9 @@ function agentTuiView(
   childPanel?: Element<CodingAgentTuiMessage>
 ): Element<CodingAgentTuiMessage> {
   const limit = suggestionLimit(context.terminalSize.rows);
-  const recoveryFailures = Object.entries(state.historyRecoveryFailures ?? {}).map(
-    ([sessionId, message]) => `Unavailable session ${JSON.stringify(sessionId)}: ${message}`
-  ).join('\n');
+  const opening = state.historyRecovery !== undefined && state.historyOpeningClock !== undefined &&
+    state.historyOpeningClock.now - state.historyOpeningClock.startedAt >= 1000
+    ? historyRecoveryMessage(state.historyRecovery) : '';
   const workspace = conversationFrame({
     id: 'coding-agent-tui',
     terminalRows: context.terminalSize.rows,
@@ -1987,31 +1983,14 @@ function agentTuiView(
     slots: {
       status: statusChrome(state, context.terminalSize.columns),
       conversation: conversationView(state, context),
-      ...(recoveryFailures ? {
-        feedback: viewport(
-          richText({ segments: body(recoveryFailures), wrap: true }),
-          {
-            id: 'coding-history-recovery-feedback',
-            offset: { row: state.historyRecoveryFailureOffset ?? 0 },
-            scrollbar: { axis: 'vertical', visible: 'auto' },
-            onScroll: (request): CodingAgentTuiMessage => ({
-              type: 'history.recovery.scroll', offset: request.nextState.offsetRow
-            })
-          }
-        )
-      } : {}),
       activity: activityLine(
         [
-          state.historyRecovery === undefined
-            ? state.run.kind === 'working' ? state.progress.label : ''
-            : context.terminalSize.columns < 90
-              ? `History recovery${state.historyRecovery.phase === 'progress' ? ` · ${String(state.historyRecovery.records)} records` : ''}`
-              : historyRecoveryMessage(state.historyRecovery),
+          state.run.kind === 'working' ? state.progress.label : opening,
           state.conversation.unread ? 'New output · Ctrl+End' : ''
         ]
           .filter(Boolean)
           .join(' · '),
-        state.activityClock
+        state.run.kind === 'working' ? state.activityClock : undefined
       ),
       composer:
         context.terminalSize.rows < 8
@@ -2053,7 +2032,7 @@ function agentTuiView(
           label: 'Commands',
           onPress: () => ({ type: 'overlay.open', overlay: 'commands' })
         }),
-        ...(state.historyRecovery !== undefined || state.run.kind === 'working'
+        ...(state.run.kind === 'working'
           ? [
               button<CodingAgentTuiMessage>({
                 id: 'stop-work',

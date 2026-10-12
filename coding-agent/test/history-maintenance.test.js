@@ -146,6 +146,33 @@ for (const agent of ['coding-agent', 'writing-agent']) {
     assert.equal(application.state().session, undefined);
   });
 
+  for (const destination of ['new', 'healthy']) {
+    test(`${agent} ordinary navigation to ${destination} cancels opening and retains the destination`, integration, async t => {
+      const f = await fixture(t, agent);
+      await fs.writeFile(f.index, 'old index remains on navigation\n');
+      const original = await fs.readFile(f.file);
+      const application = await f.open(true);
+      t.after(() => application.close());
+      const progress = observe(application);
+      let navigation;
+      application.subscribe(event => {
+        if (event.type === 'history.recovery' && event.progress.phase === 'started')
+          navigation = destination === 'new' ? application.newSession() : application.selectSession(f.healthy.id);
+      }, error => assert.fail(error));
+      await assert.rejects(application.start(), error => error.name === 'AbortError');
+      await navigation;
+      await application.start();
+      assert.deepEqual(progress.filter(value => value.phase !== 'progress').map(value => value.phase), ['started', 'cancelled']);
+      assert.equal(await fs.readFile(f.index, 'utf8'), 'old index remains on navigation\n');
+      assert.deepEqual(await fs.readFile(f.file), original);
+      if (agent === 'writing-agent') {
+        if (destination === 'healthy') assert.equal(application.state().sessionId, f.healthy.id);
+        else assert.notEqual(application.state().sessionId, f.session.id);
+      }
+      assert.equal(application.state().status, agent === 'coding-agent' ? 'setup_required' : 'configuration_required');
+    });
+  }
+
   test(`${agent} closing during recovery cancels before resource teardown`, integration, async t => {
     const f = await fixture(t, agent);
     await fs.writeFile(f.index, 'old index remains on close\n');
@@ -171,7 +198,7 @@ for (const agent of ['coding-agent', 'writing-agent']) {
     const progress = observe(application);
     await assert.rejects(application.start(), error => error instanceof SessionHistorySourceError);
     assert.deepEqual(progress.filter(value => value.phase !== 'progress').map(value => value.phase), ['started', 'failed']);
-    assert.match(progress.at(-1).message, /original history could not be decoded or validated/u);
+    assert.match(progress.at(-1).message, /saved messages couldn’t be read/u);
     assert.equal(progress.filter(value => value.phase === 'started').length, 1);
     assert.deepEqual(await fs.readFile(f.file), original);
     assert.deepEqual(await fs.readFile(f.index), oldIndex);
@@ -189,8 +216,7 @@ for (const agent of ['coding-agent', 'writing-agent']) {
       WRITING_AGENT_PROVIDER: undefined, WRITING_AGENT_MODEL: undefined, HOME: path.join(f.root, 'no-credentials-here')
     });
     assert.equal(result.code, 1);
-    assert.match(result.stderr, /Restoring history index.*needs-recovery/u);
-    assert.match(result.stderr, /History index restored.*needs-recovery/u);
+    assert.doesNotMatch(result.stderr, /history index|restoring|recovery|needs-recovery|\d+ records|\d+ bytes/iu);
     assert.doesNotMatch(result.stderr, /history-repair/u);
     assert.equal((await new JsonlSessionRepository(f.sessionsDir).list()).length, 2);
     const help = await run(agent, ['--help']);
@@ -239,7 +265,7 @@ for (const agent of ['coding-agent', 'writing-agent']) {
     const progress = observe(application);
     await application.start();
     assert.equal(application.state().status, agent === 'coding-agent' ? 'setup_required' : 'configuration_required');
-    assert.match(application.state().historyRecoveryFailures[f.session.id], /original history could not be decoded or validated/u);
+    assert.match(application.state().historyRecoveryFailures[f.session.id], /saved messages couldn’t be read/u);
     assert.deepEqual((await application.listSessions()).map(session => session.id), [f.healthy.id]);
     assert.deepEqual(Object.keys(application.state().historyRecoveryFailures), [f.session.id]);
     assert.deepEqual(await fs.readFile(f.file), invalidOriginal);
@@ -277,5 +303,5 @@ test('a new coding session does not scan unrelated history before startup', inte
   assert.deepEqual(progress, []);
   assert.equal(application.state().historyRecoveryFailures, undefined);
   assert.deepEqual((await application.listSessions()).map(session => session.id), [f.healthy.id]);
-  assert.match(application.state().historyRecoveryFailures[f.session.id], /original history could not be decoded or validated/u);
+  assert.match(application.state().historyRecoveryFailures[f.session.id], /saved messages couldn’t be read/u);
 });

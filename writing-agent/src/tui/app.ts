@@ -1,4 +1,3 @@
-import { historyRecoveryMessage } from '@agent-core/tui';
 import { updateRecovery } from './recovery.js';
 import { splitPaneReducer } from '@ismail-elkorchi/terminal-ui/behavior';
 import { intervalSource } from '@ismail-elkorchi/terminal-ui/tui';
@@ -167,7 +166,7 @@ export function createWritingAgentTuiApp(
         ...binding('Interrupt active run', 'escape', { type: 'interrupt' }),
         enabled: ({ state }: TuiInputBindingContext<WritingTuiState>) =>
           state.overlay.kind === 'none' &&
-          (state.historyRecovery !== undefined || state.application.status === 'running') &&
+          state.application.status === 'running' &&
           state.completion === undefined &&
           state.resourceCompletion === undefined
       },
@@ -401,7 +400,12 @@ export function createWritingAgentTuiApp(
               message.type === 'progress' && message.event.type === 'run.configured'
                 ? undefined
                 : state.activityClock,
-              result.state.historyRecovery !== undefined || result.state.application.status === 'running',
+              result.state.application.status === 'running',
+              context.clock.monotonicNow()
+            ),
+            historyOpeningClock: updateActivityClock(
+              state.historyOpeningClock,
+              result.state.historyRecovery !== undefined,
               context.clock.monotonicNow()
             )
           }
@@ -519,22 +523,8 @@ function update(
       return { state };
     case 'history.recovery': {
       if (message.progress.phase === 'started' || message.progress.phase === 'progress')
-        return { state: {
-          ...state,
-          historyRecovery: message.progress,
-          ...(message.progress.phase === 'started' ? { notice: historyRecoveryMessage(message.progress) } : {})
-        } };
-      const failures = message.progress.phase === 'failed'
-        ? { ...state.application.historyRecoveryFailures, [message.progress.sessionId]: historyRecoveryMessage(message.progress) }
-        : { ...state.application.historyRecoveryFailures };
-      const retained = message.progress.phase === 'completed'
-        ? Object.fromEntries(Object.entries(failures).filter(([id]) => id !== message.progress.sessionId))
-        : failures;
-      const next = {
-        ...state,
-        application: { ...state.application, historyRecoveryFailures: retained },
-        notice: message.progress.phase === 'failed' ? '' : historyRecoveryMessage(message.progress)
-      };
+        return { state: { ...state, historyRecovery: message.progress } };
+      const next = { ...state };
       delete next.historyRecovery;
       return { state: next };
     }
@@ -1270,12 +1260,16 @@ function update(
                         ? { expectedRunId: state.sessionView.session.activeRunId }
                         : {})
                     }
-              );
+              ).catch((error: unknown) => {
+                if (error instanceof Error && error.name === 'AbortError') return undefined;
+                throw error;
+              });
+              if (result === undefined) return { type: 'submission.cancelled' };
               if (result.kind === 'rejected')
                 return { type: 'submitted', sessionId, draft, receipt: result };
               const { completion, ...receipt } = result;
               void completion.catch(() => undefined);
-              return { type: 'submitted', sessionId, draft, receipt };
+              return { type: 'submitted', sessionId: receipt.sessionId, draft, receipt };
             }),
             onError: ({ diagnostic }) => ({
               kind: 'message',
@@ -1289,6 +1283,8 @@ function update(
         ]
       };
     }
+    case 'submission.cancelled':
+      return { state: { ...state, submitting: false } };
     case 'submission.failed': {
       if (message.sessionId !== (state.application.sessionId ?? ':new'))
         return {
@@ -1696,7 +1692,7 @@ function update(
       };
     }
     case 'interrupt':
-      return state.historyRecovery !== undefined || ['running', 'suspended'].includes(state.application.status)
+      return ['running', 'suspended'].includes(state.application.status)
         ? {
             state,
             effects: [
@@ -1811,7 +1807,15 @@ function effect(
     id,
     concurrency: 'keep-first',
     async run() {
-      return { kind: 'message', message: await action() };
+      try {
+        return { kind: 'message', message: await action() };
+      } catch (error) {
+        if (
+          ['writing-refresh', 'writing-picker', 'writing-session', 'writing-new-session'].includes(id) &&
+          error instanceof Error && error.name === 'AbortError'
+        ) return { kind: 'none' };
+        throw error;
+      }
     },
     onError: ({ diagnostic }) => ({
       kind: 'message',

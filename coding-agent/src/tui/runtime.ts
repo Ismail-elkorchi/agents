@@ -78,6 +78,7 @@ export async function runCodingAgentTuiApp(
       try {
         await controller.start();
       } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') return;
         await emit({ type: 'failure', message: errorMessage(error) });
       }
       if (initialTask.length > 0) {

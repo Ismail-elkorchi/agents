@@ -18,7 +18,12 @@ import {
   type AgentSession,
   type SessionSubmissionInput
 } from '@agent-core/runtime';
-import { JsonlSessionRepository } from '@agent-core/runtime/node';
+import {
+  JsonlSessionRepository,
+  SessionHistoryIndexError,
+  SessionHistoryIndexPublicationError,
+  SessionHistorySourceError
+} from '@agent-core/runtime/node';
 import {
   DEFAULT_LOCAL_TOOL_CONFIGURATION,
   readRootedImage,
@@ -341,7 +346,17 @@ export class CodingApplication {
             ? `History index recovery cancelled for session ${JSON.stringify(failedSessionId)}. Original history is unchanged.`
             : error instanceof Error ? error.message : String(error)
       });
-      throw error;
+      if (
+        error instanceof SessionHistoryIndexError ||
+        error instanceof SessionHistorySourceError ||
+        error instanceof SessionHistoryIndexPublicationError ||
+        (error instanceof Error && error.name === 'AbortError')
+      ) throw error;
+      throw new SessionHistoryIndexError(
+        failedSessionId,
+        error instanceof Error ? error.message : String(error),
+        { cause: error }
+      );
     } finally {
       this.historyRecovery = undefined;
     }
@@ -864,6 +879,7 @@ export class CodingApplication {
   }
 
   newSession(): Promise<void> {
+    this.historyRecovery?.abort();
     return this.serial(async () => {
       await this.deactivateRuntime();
       this.selectedSessionId = undefined;
@@ -873,6 +889,7 @@ export class CodingApplication {
   }
 
   selectSession(sessionId: string): Promise<void> {
+    this.historyRecovery?.abort();
     return this.serial(async () => {
       await this.deactivateRuntime();
       this.selectedSessionId = sessionId;

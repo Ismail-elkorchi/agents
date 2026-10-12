@@ -29,7 +29,6 @@ import type {
 import type { PanelItem, PanelKind } from './panels.js';
 
 export type CodingAgentTuiMessage =
-  | { readonly type: 'history.recovery.scroll'; readonly offset: number }
   | Extract<import('../application/contracts.js').CodingApplicationEvent, { readonly type: 'history.recovery' }>
   | { readonly type: 'activity.tick' }
   | import('./panels.js').PanelQueryMessage

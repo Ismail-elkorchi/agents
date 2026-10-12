@@ -23,7 +23,12 @@ import {
   type SessionDescriptor,
   type SessionSubmissionInput
 } from '@agent-core/runtime';
-import { JsonlSessionRepository } from '@agent-core/runtime/node';
+import {
+  JsonlSessionRepository,
+  SessionHistoryIndexError,
+  SessionHistoryIndexPublicationError,
+  SessionHistorySourceError
+} from '@agent-core/runtime/node';
 import {
   DEFAULT_LOCAL_TOOL_CONFIGURATION,
   readRootedImage,
@@ -80,7 +85,8 @@ export type WritingApplicationEvent =
       readonly state: WritingApplicationState;
     };
 export type WritingSubmissionResult =
-  | AgentSessionSubmissionResult
+  | (Exclude<AgentSessionSubmissionResult, { readonly kind: 'rejected' }> & { readonly sessionId: string })
+  | Extract<AgentSessionSubmissionResult, { readonly kind: 'rejected' }>
   | { readonly kind: 'rejected'; readonly reason: 'configuration_required' };
 
 /** Coordinates workspace authority and a Core session; editorial decisions belong to the conversation. */
@@ -152,7 +158,8 @@ export class WritingApplication {
         : {}),
       status: this.closeCompletion
         ? 'closed'
-        : this.configuration === undefined
+        : this.composition === undefined &&
+          (this.descriptor !== undefined || (this.configuration === undefined && this.selection === undefined))
           ? 'configuration_required'
           : phase === 'running' || phase === 'suspended'
             ? phase
@@ -168,49 +175,19 @@ export class WritingApplication {
   }
 
   start(): Promise<void> {
-    return this.mutate(async () => {
-      if (this.descriptor) return;
-      const summaries = await this.recoverHistoryIndexes(this.initialSessionId);
-      this.assertOpen();
-      const id = this.initialSessionId ?? summaries[0]?.id;
-      this.descriptor =
-        id === undefined
-          ? await this.sessions.create({ binding: this.workspace.binding })
-          : await this.sessions.open(id, this.workspace.binding);
-      if (this.configuration === undefined) {
-        const replay = await this.sessions.loadReplayState(this.descriptor);
-        const recorded = recordedModelSelection(replay.branch);
-        let selection: ModelSelection | undefined =
-          this.selection ?? (recorded === undefined
-            ? undefined
-            : {
-                provider: recorded.provider,
-                model: recorded.model,
-                ...(recorded.reasoning === undefined ? {} : { reasoning: recorded.reasoning }),
-                ...(recorded.endpoint === undefined ? {} : { endpoint: recorded.endpoint }),
-                ...(recorded.temperature === undefined ? {} : { temperature: recorded.temperature })
-              });
-        if (selection === undefined) {
-          let encoded: string | undefined;
-          try {
-            encoded = await readFile(
-              path.join(this.workspace.stateDirectory, 'model-selection.json'),
-              'utf8'
-            );
-          } catch (error) {
-            if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT'))
-              throw error;
-          }
-          if (encoded !== undefined) selection = parseModelSelection(JSON.parse(encoded));
-        }
-        if (selection !== undefined) {
-          const provider = this.connectProvider(selection.provider, selection.endpoint);
-          this.selection = selection;
-          this.configuration = { ...selection, provider };
-        }
-      }
-      await this.connect();
-    });
+    return this.mutate(() => this.initializeSession());
+  }
+
+  private async initializeSession(): Promise<void> {
+    if (this.descriptor) return;
+    const summaries = await this.recoverHistoryIndexes(this.initialSessionId);
+    this.assertOpen();
+    const id = this.initialSessionId ?? summaries[0]?.id;
+    this.descriptor =
+      id === undefined
+        ? await this.sessions.create({ binding: this.workspace.binding })
+        : await this.sessions.open(id, this.workspace.binding);
+    await this.connect();
   }
 
   private publishHistoryRecovery(progress: import('@agent-core/runtime/node').HistoryIndexRecoveryProgress): void {
@@ -250,7 +227,17 @@ export class WritingApplication {
             ? `History index recovery cancelled for session ${JSON.stringify(failedSessionId)}. Original history is unchanged.`
             : error instanceof Error ? error.message : String(error)
       });
-      throw error;
+      if (
+        error instanceof SessionHistoryIndexError ||
+        error instanceof SessionHistorySourceError ||
+        error instanceof SessionHistoryIndexPublicationError ||
+        (error instanceof Error && error.name === 'AbortError')
+      ) throw error;
+      throw new SessionHistoryIndexError(
+        failedSessionId,
+        error instanceof Error ? error.message : String(error),
+        { cause: error }
+      );
     } finally {
       this.historyRecovery = undefined;
     }
@@ -438,22 +425,27 @@ export class WritingApplication {
       readonly expectedRunId?: string;
     } = {}
   ): Promise<WritingSubmissionResult> {
+    const { relationship, ...owned } = ownSessionSubmissionInput(input);
+    const submissionOptions = { ...options, ...(relationship === undefined ? {} : { relationship }) };
     return this.mutate(async () => {
+      if (this.descriptor === undefined) await this.initializeSession();
+      this.assertOpen();
       if (!this.composition) return { kind: 'rejected', reason: 'configuration_required' };
-      if (input.images?.length)
+      if (owned.images?.length)
         assertSessionImagesSupported(
-          input.images,
+          owned.images,
           await this.composition.provider.describeModel(
             this.composition.agent.state().configuration.model
           )
         );
       const runId = randomUUID();
       await recordWritingPermission(this.workspace, runId, this.mode);
-      const { relationship, ...owned } = ownSessionSubmissionInput(input);
-      return this.composition.agent.submit(
+      const sessionId = this.requireDescriptor().id;
+      const result = await this.composition.agent.submit(
         { ...owned, runId },
-        { ...options, ...(relationship === undefined ? {} : { relationship }) }
+        submissionOptions
       );
+      return result.kind === 'rejected' ? result : { ...result, sessionId };
     });
   }
 
@@ -482,6 +474,7 @@ export class WritingApplication {
   }
 
   selectSession(sessionId: string): Promise<void> {
+    this.historyRecovery?.abort();
     return this.mutate(async () => {
       this.requireIdle();
       await this.recoverHistoryIndexes(sessionId);
@@ -493,6 +486,7 @@ export class WritingApplication {
   }
 
   newSession(): Promise<void> {
+    this.historyRecovery?.abort();
     return this.mutate(async () => {
       this.requireIdle();
       await this.disconnect();
@@ -642,7 +636,40 @@ export class WritingApplication {
   }
 
   private async connect() {
-    if (!this.configuration || !this.descriptor) return;
+    if (!this.descriptor) return;
+    if (this.configuration === undefined) {
+      const replay = await this.sessions.loadReplayState(this.descriptor);
+      const recorded = recordedModelSelection(replay.branch);
+      let selection: ModelSelection | undefined =
+        this.selection ?? (recorded === undefined
+          ? undefined
+          : {
+              provider: recorded.provider,
+              model: recorded.model,
+              ...(recorded.reasoning === undefined ? {} : { reasoning: recorded.reasoning }),
+              ...(recorded.endpoint === undefined ? {} : { endpoint: recorded.endpoint }),
+              ...(recorded.temperature === undefined ? {} : { temperature: recorded.temperature })
+            });
+      if (selection === undefined) {
+        let encoded: string | undefined;
+        try {
+          encoded = await readFile(
+            path.join(this.workspace.stateDirectory, 'model-selection.json'),
+            'utf8'
+          );
+        } catch (error) {
+          if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT'))
+            throw error;
+        }
+        if (encoded !== undefined) selection = parseModelSelection(JSON.parse(encoded));
+      }
+      if (selection !== undefined) {
+        const provider = this.connectProvider(selection.provider, selection.endpoint);
+        this.selection = selection;
+        this.configuration = { ...selection, provider };
+      }
+    }
+    if (!this.configuration) return;
     const composition = createWritingSession(
       this.workspace,
       this.descriptor,

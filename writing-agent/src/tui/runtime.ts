@@ -63,6 +63,7 @@ export async function runWritingAgentTuiApp(
         await application.start();
         await emit({ type: 'refresh' });
       } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') return;
         await emit({ type: 'notice', message: error instanceof Error ? error.message : String(error) });
       }
     }

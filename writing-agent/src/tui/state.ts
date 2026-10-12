@@ -64,6 +64,7 @@ export type WritingTuiOverlay =
     };
 
 export interface WritingTuiState {
+  readonly historyOpeningClock?: import('@agent-core/tui').ActivityClock | undefined;
   readonly historyRecovery?: Extract<WritingTuiMessage, { readonly type: 'history.recovery' }>['progress'];
   readonly recoveryOperation?: { readonly id: string; readonly sessionId: string };
   readonly activityClock?: import('@agent-core/tui').ActivityClock | undefined;
@@ -182,6 +183,7 @@ export type WritingTuiMessage =
   | { readonly type: 'document.compare' | 'document.refresh' }
   | { readonly type: 'activity.tick' | 'notice.dismiss' }
   | import('./picker.js').WritingPickerQueryMessage
+  | { readonly type: 'submission.cancelled' }
   | { readonly type: 'submission.failed'; readonly sessionId: string; readonly message: string }
   | import('@agent-core/tui').ContextMessage
   | { readonly type: 'search.adjacent'; readonly direction: 'previous' | 'next' }

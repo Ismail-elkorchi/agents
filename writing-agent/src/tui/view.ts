@@ -63,12 +63,10 @@ export function writingView(
     state.completion === undefined ? 0 : Math.min(limit, state.completion.names.length) + 1;
   const fields = writingStatusFields(state);
   const title = responsiveStatusline('Writing', state.preferences, fields, columns);
-  const feedback = [
-    ...Object.entries(state.application.historyRecoveryFailures ?? {}).map(
-      ([sessionId, message]) => `Unavailable session ${JSON.stringify(sessionId)}: ${message}`
-    ),
-    state.notice
-  ].filter(Boolean).join('\n');
+  const feedback = state.notice;
+  const opening = state.historyRecovery !== undefined && state.historyOpeningClock !== undefined &&
+    state.historyOpeningClock.now - state.historyOpeningClock.startedAt >= 1000
+    ? historyRecoveryMessage(state.historyRecovery) : '';
   const main = conversationFrame({
     id: 'writing-workspace',
     terminalRows: rows,
@@ -76,12 +74,8 @@ export function writingView(
     slots: {
       status: text({ id: 'writing-status', content: title }),
       activity: activityLine(
-        state.historyRecovery === undefined
-          ? state.application.status === 'running' ? state.progress.label : ''
-          : columns < 90
-            ? `History recovery${state.historyRecovery.phase === 'progress' ? ` · ${String(state.historyRecovery.records)} records` : ''}`
-            : historyRecoveryMessage(state.historyRecovery),
-        state.activityClock
+        state.application.status === 'running' ? state.progress.label : opening,
+        state.application.status === 'running' ? state.activityClock : undefined
       ),
       ...(feedback
         ? {

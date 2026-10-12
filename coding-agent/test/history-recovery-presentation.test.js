@@ -10,6 +10,8 @@ import { runWritingRpc } from '@ismail-elkorchi/writing-agent/rpc';
 import { createCodingAgentTuiApp, runCodingAgentTuiApp } from '@ismail-elkorchi/coding-agent/tui';
 import { createWritingAgentTuiApp, runWritingAgentTuiApp } from '@ismail-elkorchi/writing-agent/tui';
 import { applicationEventSource } from '@agent-core/tui';
+import { SessionHistorySourceError } from '@agent-core/runtime/node';
+import { textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
 import { createTuiRuntime } from '@ismail-elkorchi/terminal-ui/tui';
 import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import { renderFramePlain } from '@ismail-elkorchi/terminal-ui/renderer';
@@ -18,9 +20,9 @@ for (const [agent, runTui, runRpc] of [
   ['coding', runCodingAgentTuiApp, runCodingRpc],
   ['writing', runWritingAgentTuiApp, runWritingRpc]
 ]) {
-  for (const [action, columns] of [['escape', 48], ['escape', 130], ['close', 130]]) {
-    test(`${agent} TUI shows startup recovery at ${columns} columns before a model exists and ${action} cancels it`, { timeout: 10_000 }, async (t) => {
-      const directory = await mkdtemp(path.join(tmpdir(), 'history-recovery-tui-'));
+  for (const columns of [48, 130]) {
+    test(`${agent} opens conversations quietly, shows only delayed loading, and closes normally at ${columns} columns`, { timeout: 10_000 }, async (t) => {
+      const directory = await mkdtemp(path.join(tmpdir(), 'conversation-opening-tui-'));
       const application = recoveringApplication(agent, directory);
       const host = createMemoryTerminalHost({ terminalSize: { columns, rows: 24 } });
       const running = runTui(application, { host });
@@ -33,40 +35,30 @@ for (const [agent, runTui, runRpc] of [
         const latest = host.frames().at(-1);
         return latest === undefined ? '' : renderFramePlain(latest);
       };
-      await until(() => /Restoring history index|History recovery/u.test(frame()), t.signal);
-      assert.equal(application.startCalls, 1);
-      assert.match(frame(), /Esc stop/u);
+      await until(() => application.startCalls === 1 && host.frames().length > 0, t.signal);
       await application.emit({ type: 'history.recovery', progress: {
         phase: 'progress', sessionId: 'recovering', records: 40, bytes: 512, totalBytes: 2048
       } });
-      await until(() => columns < 90 ? /40 records/u.test(frame()) : /40 records, 512\/2048 bytes/u.test(frame()), t.signal);
-      assert.match(frame(), /Esc stop/u);
-      if (action === 'escape') {
-        host.input('Keep this draft');
-        await until(() => /Keep this draft/u.test(frame()), t.signal);
-        host.input('\x1b');
-        // A standalone Escape is resolved after the input decoder's ambiguity window.
-        await setTimeout(10);
-        host.clock.advance(100);
-        await until(() => application.cancelled, t.signal);
-        await until(() => !/Esc stop/u.test(frame()), t.signal);
-        assert.match(frame(), /Keep this draft/u);
-        assert.equal(application.closed, false);
-        assert.equal(application.abortCalls, 1);
-        host.input('\x10');
-        await until(() => /Commands/u.test(frame()), t.signal);
-        host.input('exit\r');
-      } else {
-        host.input('\x04');
-      }
-      await running;
+      await setTimeout(10);
+      assert.doesNotMatch(frame(), /Opening conversation|recover|index|records|bytes|Esc stop/iu);
+      host.clock.advance(500);
+      await setTimeout(5);
+      assert.doesNotMatch(frame(), /Opening conversation/u);
+      host.clock.advance(500);
+      await until(() => /Opening conversation/u.test(frame()), t.signal);
+      assert.doesNotMatch(frame(), /recover|index|records|bytes|Esc stop/iu);
+      host.input('Keep this draft');
+      await until(() => /Keep this draft/u.test(frame()), t.signal);
+      host.endInput();
+      const result = await running;
+      const exit = agent === 'coding' ? result.exit : result;
+      assert.equal(textDocumentText(exit.state.composer.input.document), 'Keep this draft');
       assert.equal(application.cancelled, true);
       assert.equal(application.closed, true);
+      assert.doesNotMatch(frame(), /recover|index|records|bytes|cancelled|aborted/iu);
     });
-  }
 
-  for (const columns of [48, 130]) {
-    test(`${agent} keeps unavailable sessions visible through later recoveries at ${columns} columns`, { timeout: 10_000 }, async (t) => {
+    test(`${agent} keeps quick housekeeping and unrelated unavailable conversations out of the interface at ${columns} columns`, { timeout: 10_000 }, async (t) => {
       const application = recoveringApplication(agent, '/unused');
       const idleEvents = applicationEventSource('idle-test-events', {
         subscribe: () => () => {}, replacementKey: () => undefined,
@@ -82,37 +74,51 @@ for (const [agent, runTui, runRpc] of [
       await runtime.start();
       const progress = (value) => runtime.dispatch({ type: 'history.recovery', progress: value });
       const frame = () => renderFramePlain(runtime.frame());
-      const failure = { phase: 'failed', sessionId: 'bad', message: 'Original history is invalid.' };
+      const failure = { phase: 'failed', sessionId: 'unrelated', message: 'Raw index diagnostic must stay internal.' };
       await progress(failure);
-      assert.match(frame(), /Unavailable session "bad"/u);
       assert.ok(runtime.frame().focusPath.includes(agent === 'coding' ? 'composer' : 'writing-composer'));
       for (let index = 0; index < 6; index++) {
         const sessionId = `healthy-${index}`;
-        await progress({ phase: 'started', sessionId, totalBytes: 100 });
-        assert.match(frame(), /Unavailable session "bad"/u);
-        await progress({ phase: 'completed', sessionId, records: 3, bytes: 100, totalBytes: 100 });
-        assert.match(frame(), /Unavailable session "bad"/u);
+        await progress({ phase: 'started', sessionId });
+        await progress({ phase: 'progress', sessionId, records: 3, bytes: 100, totalBytes: 100 });
+        await progress({ phase: 'completed', sessionId });
+        assert.doesNotMatch(frame(), /Opening conversation|recover|index|records|bytes|unavailable|healthy-/iu);
       }
-      await progress(failure);
-      assert.equal((frame().match(/Unavailable session "bad"/gu) ?? []).length, 1);
-      if (agent === 'coding')
-        assert.equal(runtime.state().conversation.items.filter((item) => item.kind === 'notice' && item.text.includes(failure.message)).length, 0);
-      else {
-        await runtime.dispatch({ type: 'notice.dismiss' });
-        assert.match(frame(), /Unavailable session "bad"/u);
-      }
-      const state = { ...application.state(), historyRecoveryFailures: { bad: failure.message, other: 'Another invalid original.' } };
+      const state = { ...application.state(), historyRecoveryFailures: { unrelated: failure.message } };
       await runtime.dispatch(agent === 'coding'
         ? { type: 'application.state.changed', state }
         : { type: 'application', state });
-      await progress({ phase: 'completed', sessionId: 'bad', records: 3, bytes: 100, totalBytes: 100 });
-      assert.doesNotMatch(frame(), /Unavailable session "bad"/u);
-      assert.match(frame(), /Unavailable session "other"/u);
-      // A fresh authoritative listing can remove a session that no longer exists.
-      await runtime.dispatch(agent === 'coding'
-        ? { type: 'application.state.changed', state: application.state() }
-        : { type: 'application', state: application.state() });
-      assert.doesNotMatch(frame(), /Unavailable session/u);
+      assert.doesNotMatch(frame(), /Raw index diagnostic|unavailable|recover/iu);
+      if (agent === 'coding')
+        assert.equal(runtime.state().conversation.items.filter((item) => item.kind === 'notice' && item.text.includes(failure.message)).length, 0);
+      else assert.equal(runtime.state().notice, '');
+    });
+  }
+
+  for (const error of [
+    new SessionHistorySourceError('selected', 'Raw decoder details should stay internal.'),
+    new Error('Permission denied opening saved conversations.')
+  ]) {
+    test(`${agent} displays a blocking opening failure without suppressing real errors: ${error.name}`, { timeout: 10_000 }, async (t) => {
+      const directory = await mkdtemp(path.join(tmpdir(), 'conversation-opening-failure-'));
+      const application = recoveringApplication(agent, directory);
+      application.start = async () => { throw error; };
+      application.close = async () => { application.closed = true; };
+      const host = createMemoryTerminalHost({ terminalSize: { columns: 130, rows: 24 } });
+      const running = runTui(application, { host });
+      t.after(async () => {
+        host.endInput();
+        await running;
+        await rm(directory, { recursive: true, force: true });
+      });
+      const frame = () => {
+        const latest = host.frames().at(-1);
+        return latest === undefined ? '' : renderFramePlain(latest).replace(/\s+/gu, ' ');
+      };
+      await until(() => frame().includes(error.message), t.signal);
+      assert.doesNotMatch(frame(), /index|recover|Raw decoder/iu);
+      host.endInput();
+      await running;
     });
   }
 
