@@ -355,6 +355,8 @@ export type WritingTuiMessage =
   | { readonly type: 'document.failed'; readonly requestId: string; readonly message: string }
   | {
       readonly type: 'document.passage-loaded';
+      readonly documentPath: string;
+      readonly revisionSha256: string;
       readonly sessionId: string | undefined;
       readonly item: import('@agent-core/runtime').PromptContextItemInput;
     }

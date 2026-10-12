@@ -53,10 +53,9 @@ export async function runCodingAgentTuiApp(
             message: 'Display delivery skipped updates; refreshing recorded state.',
             tone: 'warning'
           });
-          await emit({
-            type: 'session.hydrated',
-            hydration: await controller.readSession()
-          });
+          const hydration = await controller.readSession();
+          await emit({ type: 'application.state.changed', state: controller.state() });
+          await emit({ type: 'session.hydrated', hydration });
           return;
         }
         result = await presentControllerEvent(

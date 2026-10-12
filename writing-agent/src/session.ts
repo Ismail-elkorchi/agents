@@ -9,9 +9,7 @@ import {
   HistoryReader,
   InferenceService,
   agentEventCodec,
-  createContextTools,
   createHistoryTools,
-  createWorkingStateTool,
   type AgentEvent,
   type AgentRunLimits,
   type AgentSessionConfiguration,
@@ -99,8 +97,7 @@ export function createWritingSession(
   });
   const sessionTools = [
     ...createHistoryTools({ history }),
-    createWorkingStateTool(context),
-    ...createContextTools({ context })
+    ...context.toolDefinitions()
   ];
   const agent: AgentSession = new AgentSession({
     descriptor,

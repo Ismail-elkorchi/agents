@@ -1,5 +1,4 @@
 import type { SessionBranchSearchRequest, SessionBranchSearchResult } from '@agent-core/runtime';
-import { findBranchMatches } from '@agent-core/runtime';
 import {
   adjacentHistoryMatch,
   diagnosticMessage,
@@ -146,11 +145,8 @@ export function searchHistory(
         concurrency: 'replace',
         async run({ signal }) {
           if (search === undefined) throw new Error('History search is unavailable.');
-          const result = await findBranchMatches(
-            search,
-            cursor === undefined ? { query } : { query, cursor },
-            signal
-          );
+          const result = await search({ query, signal, ...(cursor === undefined ? {} : { cursor }) });
+          signal.throwIfAborted();
           return { kind: 'message', message: { type: 'search.loaded', requestId: id, result } };
         },
         onError: ({ diagnostic }) => ({

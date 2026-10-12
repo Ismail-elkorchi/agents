@@ -93,3 +93,30 @@ test(
     await waitForState(runtime, t.signal, () => runtime.state().overlay.kind === 'none');
   }
 );
+
+test('an empty bounded search batch stays partial and waits for explicit continuation', { timeout: 10000 }, async t => {
+  let calls = 0;
+  const boundary = { sessionId: 'fixture', leafId: 'latest' };
+  const cursor = { boundary, entryId: 'older', query: 'needle' };
+  const host = createMemoryTerminalHost({ terminalSize: { columns: 90, rows: 28 } });
+  const runtime = createTuiRuntime({ host, app: createCodingAgentTuiApp('', {
+    historySearcher: async request => {
+      calls++;
+      if (calls === 1) return { boundary, matches: [], older: cursor, coverage: 'partial',
+        metadataVisited: 0, scannedBytes: 1, indexed: 1, indexBytes: 1, postings: 1, candidates: 1, bytes: 1 };
+      assert.deepEqual(request.cursor, cursor);
+      return { boundary, matches: [{ entryId: 'older', excerpt: 'needle' }], coverage: 'complete',
+        metadataVisited: 0, scannedBytes: 1, indexed: 1, indexBytes: 1, postings: 1, candidates: 1, bytes: 1 };
+    }
+  }) });
+  t.after(() => runtime.dispose());
+  await runtime.start();
+  await runtime.dispatch({ type: 'overlay.open', overlay: 'search' });
+  await runtime.dispatch({ type: 'search.transition', transition: { kind: 'setText', value: 'needle' } });
+  await waitForState(runtime, t.signal, () => runtime.state().overlay.result !== undefined);
+  assert.equal(calls, 1);
+  assert.match(renderFramePlain(runtime.frame()), /No matches in this batch; more history remains/);
+  await runtime.dispatch({ type: 'search.more' });
+  await waitForState(runtime, t.signal, () => runtime.state().overlay.result?.matches.length === 1);
+  assert.equal(calls, 2);
+});

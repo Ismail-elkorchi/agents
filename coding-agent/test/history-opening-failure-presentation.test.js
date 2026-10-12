@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { promises as fs } from 'node:fs';
+import sqlite from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setImmediate } from 'node:timers/promises';
@@ -11,7 +12,7 @@ import { openCodingApplication, openCodingWorkspace, codingWorkspaceSessionBindi
 import { openWritingApplication } from '@ismail-elkorchi/writing-agent';
 
 for (const agent of ['coding', 'writing']) {
-  for (const failure of ['staged-open', 'staged-sync', 'rename', 'lock-timeout']) {
+  for (const failure of ['sqlite-initialize', 'sqlite-commit', 'rename', 'lock-timeout']) {
     test(`${agent} keeps ${failure} opening details internal while reporting the real failure`, {
       skip: process.platform !== 'linux', timeout: 15_000
     }, async t => {
@@ -26,16 +27,18 @@ for (const agent of ['coding', 'writing']) {
         });
         return injected;
       };
-      if (failure === 'staged-open' || failure === 'staged-sync') {
-        const open = fs.open;
-        t.mock.method(fs, 'open', async function(target, flags, ...args) {
-          const staged = typeof target === 'string' &&
-            path.dirname(target) === path.dirname(f.index) &&
-            path.basename(target).startsWith(`.${path.basename(f.index)}.`) && target.endsWith('.tmp');
-          if (staged && failure === 'staged-open') throw failureFor(target);
-          const handle = await open.call(this, target, flags, ...args);
-          if (staged) t.mock.method(handle, 'sync', async () => { throw failureFor(target); });
-          return handle;
+      if (failure === 'sqlite-initialize' || failure === 'sqlite-commit') {
+        const exec = sqlite.DatabaseSync.prototype.exec;
+        t.mock.method(sqlite.DatabaseSync.prototype, 'exec', function(sql) {
+          // Exercise creation and FULL synchronous transaction publication in the
+          // staged SQLite database before it can replace the prior index.
+          const boundary = failure === 'sqlite-initialize'
+            ? sql.startsWith('CREATE TABLE ')
+            : sql === 'COMMIT';
+          if (this.location() === `${f.index}.rebuild` && boundary) {
+            throw failureFor(this.location());
+          }
+          return exec.call(this, sql);
         });
       } else if (failure === 'rename') {
         const rename = fs.rename;
@@ -69,11 +72,10 @@ for (const agent of ['coding', 'writing']) {
           if (failure === 'lock-timeout') {
             assert.match(error.cause.cause.message, /Timed out acquiring persistence lock/u);
             assert.match(error.cause.cause.message, /selected.*index\.lock/u);
-            assert.equal(error.cause.cause.cause.code, 'EEXIST');
           } else {
             assert.equal(error.cause.cause, injected);
             assert.equal(error.cause.cause.code, 'EIO');
-            assert.match(error.cause.cause.path, /\.index\..*\.tmp$/u);
+            assert.equal(error.cause.cause.path, `${f.index}.rebuild`);
           }
           return true;
         });

@@ -9,7 +9,6 @@ import { OpenAIProvider } from '@agent-core/provider-openai';
 import { OpenAICodexProvider, type OpenAICodexTransport } from '@agent-core/provider-openai-codex';
 import { OpenRouterProvider } from '@agent-core/provider-openrouter';
 import {
-  recordedModelSelection,
   type AgentSession,
   type SessionBindingInput,
   type SessionDescriptor
@@ -101,8 +100,7 @@ export async function persistedModelSettings(
   repository: JsonlSessionRepository,
   session: SessionDescriptor
 ): Promise<PersistedModelSettings> {
-  const replay = await repository.loadReplayState(session);
-  const settings = recordedModelSelection(replay.branch);
+  const settings = await repository.currentModelSettings(session);
   return (
     settings ?? {
       ...(session.header.provider ? { provider: session.header.provider } : {}),

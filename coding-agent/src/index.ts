@@ -10,7 +10,8 @@ export { readRecordedMutationPatches, readRunChangeReport } from './changes/run-
 export type {
   RunChangeReport,
   StructuredMutationReceipt,
-  WorkspaceChange
+  WorkspaceChange,
+  WorkspaceFileState
 } from './changes/run-change-report.js';
 export { loadCodingAgentConfiguration, parseCodingAgentConfiguration } from './configuration.js';
 export type {

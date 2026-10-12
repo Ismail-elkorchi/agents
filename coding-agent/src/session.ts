@@ -9,9 +9,7 @@ import {
   HistoryReader,
   InferenceService,
   agentEventCodec,
-  createContextTools,
   createHistoryTools,
-  createWorkingStateTool,
   type AgentEvent,
   type AgentSessionConfiguration,
   type AgentSessionOptions,
@@ -135,8 +133,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
   });
   const sessionTools = Object.freeze([
     ...createHistoryTools({ history }),
-    createWorkingStateTool(context),
-    ...createContextTools({ context })
+    ...context.toolDefinitions()
   ]);
   const sessionToolNames = new Set(sessionTools.map((tool) => tool.name));
 
@@ -516,7 +513,19 @@ async function openHostEnvironment(
 }
 
 export async function closeCodingSession(runtime: CodingSessionComposition): Promise<void> {
-  await runtime.closeResources();
+  const failures: unknown[] = [];
+  try {
+    await runtime.agent.close();
+  } catch (error) {
+    failures.push(error);
+  }
+  try {
+    await runtime.closeResources();
+  } catch (error) {
+    failures.push(error);
+  }
+  if (failures.length > 0)
+    throw new AggregateError(failures, 'Coding session cleanup failed.');
 }
 
 /** Application policy: reserve at most half the context and up to 16,384 output tokens. */

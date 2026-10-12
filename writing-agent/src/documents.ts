@@ -334,17 +334,15 @@ export class WritingDocuments {
   ): Promise<PromptContextItemInput> {
     const passage = await this.passage(input);
     const uri = pathToFileURL(path.join(this.root.identity.canonicalPath, passage.path));
+    const sourceUri = uri.href;
     uri.hash = new URLSearchParams({
       sha256: passage.expectedSha256,
       start: String(passage.sourceRange.start),
-      end: String(passage.sourceRange.end),
-      ...(passage.revision.artifactId === undefined
-        ? {}
-        : { revision: passage.revision.artifactId })
+      end: String(passage.sourceRange.end)
     }).toString();
     return {
-      id: `passage:${passage.expectedSha256}:${String(passage.sourceRange.start)}:${String(passage.sourceRange.end)}`,
-      title: `${passage.path} (${passage.sourceState} revision ${passage.expectedSha256.slice(0, 12)})`,
+      id: `passage:${hash(JSON.stringify([sourceUri, passage.expectedSha256, passage.sourceRange.start, passage.sourceRange.end]))}`,
+      title: `${passage.path} (revision ${passage.expectedSha256.slice(0, 12)})`,
       sourceUri: uri.href,
       sourceKind: 'user',
       integrity: 'verified',

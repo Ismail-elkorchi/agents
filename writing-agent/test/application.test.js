@@ -58,7 +58,7 @@ test(
     assert(!f.provider.requests[0].tools.some((tool) => tool.name === 'apply_patch'));
     assert(
       f.provider.requests[0].tools.some(
-        (tool) => tool.type === 'function' && tool.function.name === 'update_working_state'
+        (tool) => tool.type === 'function' && tool.function.name === 'context_transition'
       )
     );
   }
@@ -149,7 +149,7 @@ test(
     const first = f.provider.requests[0];
     assert(!JSON.stringify(first).includes('Only retrieve this when needed.'));
     assert(JSON.stringify(f.provider.requests[1]).includes('Only retrieve this when needed.'));
-    for (const name of ['history_read', 'update_working_state', 'context_transition'])
+    for (const name of ['history_read', 'context_inspect', 'context_transition'])
       assert(
         first.tools.some((tool) => tool.type === 'function' && tool.function.name === name),
         name
@@ -266,8 +266,8 @@ test(
     const f = await fixture('Original document.\n', {
       mode: 'review',
       responses: [
-        toolCall('update_working_state', {
-          text
+        toolCall('context_transition', {
+          workingState: text, reason: 'Preserve the current interpretation.'
         }),
         'Reviewed.',
         'Answered.'

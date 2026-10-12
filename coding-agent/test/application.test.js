@@ -253,8 +253,8 @@ test(
   async (t) => {
     const text = 'Change intent: explain first. Unresolved: verify repository guidance.';
     const provider = await scriptedOllama([
-      toolResponse('update_working_state', {
-        text
+      toolResponse('context_transition', {
+        workingState: text, reason: 'Preserve the current interpretation.'
       }),
       finalResponse('Explained.'),
       finalResponse('Continued.')

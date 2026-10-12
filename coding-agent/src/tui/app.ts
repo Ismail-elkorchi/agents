@@ -2274,7 +2274,9 @@ function overlayView(
                 (state.overlay.result?.oversizedEntry !== undefined
                   ? 'An oversized entry was not searched. Inspect it explicitly.'
                   : state.overlay.result?.matches.length === 0
-                    ? 'No matches in the searched history.'
+                    ? state.overlay.result.older === undefined
+                      ? 'No matches in the searched history.'
+                      : 'No matches in this batch; more history remains.'
                     : '')
             }),
             text({ content: 'Enter jump · F3 next matches · Esc close' }),

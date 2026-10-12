@@ -24,7 +24,7 @@ for (const permissionMode of ['read_only', 'full_host'])
     assert.ok(JSON.stringify(provider.chatRequests[0]).includes(JSON.stringify(content).slice(1, -1)));
     const declared = provider.chatRequests[0].tools.map(tool => tool.function.name);
     assert.deepEqual([...inspected.available.toolNames].sort(), [...declared].sort());
-    assert.ok(inspected.available.toolNames.includes('update_working_state'));
+    assert.ok(inspected.available.toolNames.includes('context_transition'));
     assert.equal(inspected.available.toolNames.includes('run_check'), permissionMode === 'full_host');
     assert.ok(!inspected.available.toolNames.includes('view_image'), 'The text-only model cannot view images.');
   });
@@ -38,17 +38,21 @@ test('reading source preserves identifiers and redacts credentials without inter
     toolResponse('read_files', { files: [{ path: 'source.ts' }] }),
     finalResponse('Source inspected.')
   ]);
-  t.after(() => provider.close());
-  const fixture = await createWorkspace({
+  let fixture;
+  let app;
+  t.after(async () => {
+    await app?.close();
+    await provider.close();
+    await fixture?.close();
+  });
+  fixture = await createWorkspace({
     endpoint: provider.endpoint, tools: ['read_files'], checks: [], files: { 'source.ts': source }
   });
-  t.after(() => fixture.close());
   await trust(fixture);
-  const app = await openCodingApplication({
+  app = await openCodingApplication({
     root: fixture.root, stateRoot: fixture.stateRoot,
     permissionMode: 'read_only', providerEndpoint: provider.endpoint
   });
-  t.after(() => app.close());
   await app.start();
   const submission = await app.submit({ task: 'Inspect source.ts.' });
   assert.equal(submission.kind, 'started');

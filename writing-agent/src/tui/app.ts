@@ -411,6 +411,8 @@ export function createWritingAgentTuiApp(
           }
         };
         const removedQueryEffects: string[] = [];
+        if (state.application.sessionId !== result.state.application.sessionId)
+          removedQueryEffects.push('writing-passage');
         if (
           state.overlay.kind !== result.state.overlay.kind ||
           state.application.sessionId !== result.state.application.sessionId
@@ -1427,17 +1429,34 @@ function update(
       return {
         state,
         effects: [
-          effect('writing-passage', async () => ({
-            type: 'document.passage-loaded',
-            sessionId: state.application.sessionId,
-            item: await app.readPassageContext(request)
-          }))
+          {
+            id: 'writing-passage', concurrency: 'enqueue',
+            async run({ signal }) {
+              const item = await app.readPassageContext(request);
+              signal.throwIfAborted();
+              return { kind: 'message', message: {
+                type: 'document.passage-loaded',
+                documentPath: request.revision.path,
+                revisionSha256: request.revision.expectedSha256,
+                sessionId: state.application.sessionId, item
+              } };
+            },
+            onError: ({ diagnostic }) => ({ kind: 'message',
+              message: { type: 'notice', message: diagnosticMessage(diagnostic) } })
+          }
         ]
       };
     }
     case 'document.passage-loaded': {
-      if (message.sessionId !== state.application.sessionId) return { state };
+      if (state.documentRequest?.kind === 'open' ||
+        message.sessionId !== state.application.sessionId ||
+        message.sessionId !== app.state().sessionId ||
+        message.documentPath !== state.document?.value.path ||
+        message.revisionSha256 !== state.document.value.sha256) return { state };
       const item = message.item;
+      if (state.composer.attachments.some((attachment) =>
+        attachment.kind === 'context' && attachment.item.id === item.id
+      )) return { state };
       return {
         state: {
           ...state,
@@ -1755,6 +1774,7 @@ function readDocument(
       documentRequest: { id, kind, sessionId: app.state().sessionId },
       ...(kind === 'open' ? { overlay: { kind: 'loading' as const, requestId: id } } : {})
     },
+    cancel: [{ kind: 'effect', id: 'writing-passage' }],
     effects: [
       {
         id: 'writing-document',
@@ -1948,6 +1968,7 @@ function acceptPicker(
     case 'sessions':
       return {
         state: { ...state, overlay: { kind: 'none' } },
+        cancel: [{ kind: 'effect', id: 'writing-passage' }],
         effects: [
           effect('writing-session', async () => {
             if (id === ':new') await app.newSession();

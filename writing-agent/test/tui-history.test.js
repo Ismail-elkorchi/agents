@@ -164,6 +164,11 @@ test(
       t.signal,
       () => runtime.state().overlay.kind === 'search' && runtime.state().overlay.result !== undefined
     );
+    while (runtime.state().overlay.result.matches.length === 0 && runtime.state().overlay.result.older) {
+      const previous = runtime.state().overlay.result;
+      await runtime.dispatch({ type: 'search.submit', more: true });
+      await waitForState(runtime, t.signal, () => runtime.state().overlay.result !== previous);
+    }
     assert.equal(runtime.state().overlay.result.matches[0].entryId, entries[0].id);
     await runtime.dispatch({ type: 'search.jump', entryId: entries[0].id });
     await waitForState(runtime, t.signal, () => runtime.state().overlay.kind === 'none');

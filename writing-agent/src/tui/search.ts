@@ -1,4 +1,3 @@
-import { findBranchMatches } from '@agent-core/runtime';
 import {
   adjacentHistoryMatch,
   diagnosticMessage,
@@ -131,11 +130,10 @@ export function updateHistorySearch(
         id: 'writing-history-search',
         concurrency: 'replace',
         async run({ signal }) {
-          const result = await findBranchMatches(
-            (request) => application.searchHistory(request),
-            { query, limit: 16, ...(cursor === undefined ? {} : { cursor }) },
-            signal
-          );
+          const result = await application.searchHistory({
+            query, signal, limit: 16, ...(cursor === undefined ? {} : { cursor })
+          });
+          signal.throwIfAborted();
           return { kind: 'message', message: { type: 'search.loaded', requestId, result } };
         },
         onError: ({ diagnostic }) => ({

@@ -486,7 +486,7 @@ export function panelView(
 
 function describeChange(item: Extract<PanelItem, { kind: 'change' }>): string {
   const change = item.change;
-  return `${change.path}${change.destinationPath ? ` → ${change.destinationPath}` : ''}\nSource: ${change.absolutePath}${change.destinationAbsolutePath ? ` → ${change.destinationAbsolutePath}` : ''}\n${change.kind} · ${change.state}\nRun: ${item.runId}\nBefore: ${change.beforeSha256 ?? 'absent'}\nAfter: ${change.afterSha256 ?? 'absent'}\nBytes: ${String(change.beforeBytes)} → ${String(change.afterBytes)}`;
+  return `${change.path}${change.destinationPath ? ` → ${change.destinationPath}` : ''}\nSource: ${change.absolutePath}${change.destinationAbsolutePath ? ` → ${change.destinationAbsolutePath}` : ''}\n${change.kind} · ${change.state}\nRun: ${item.runId}\nBefore: ${change.before.kind === 'present' ? change.before.sha256 : change.before.kind}\nAfter: ${change.after.kind === 'present' ? change.after.sha256 : change.after.kind}\nBytes: ${change.before.kind === 'present' ? String(change.before.bytes) : change.before.kind === 'absent' ? '0' : 'unknown'} → ${change.after.kind === 'present' ? String(change.after.bytes) : change.after.kind === 'absent' ? '0' : 'unknown'}`;
 }
 
 function acceptPanelItem(

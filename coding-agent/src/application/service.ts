@@ -73,6 +73,7 @@ export class CodingApplication {
   private workspace: OpenCodingWorkspace;
   private runtime: CodingAgentRuntimeComposition | undefined;
   private runtimeUnsubscribe: (() => void) | undefined;
+  private runtimeEventTask: Promise<void> | undefined;
   private selectedSessionId: string | undefined;
   private modelOverride:
     | { readonly selection: ModelSelection; readonly adapter: ModelProvider }
@@ -283,15 +284,9 @@ export class CodingApplication {
     await this.run.catch(() => undefined);
     const runtime = this.runtime;
     this.runtime = undefined;
-    this.runtimeUnsubscribe?.();
-    this.runtimeUnsubscribe = undefined;
+    await this.stopRuntimeEvents();
     const failures: unknown[] = [];
     if (runtime !== undefined) {
-      try {
-        await runtime.agent.close();
-      } catch (error) {
-        failures.push(error);
-      }
       try {
         await closeCodingSession(runtime);
       } catch (error) {
@@ -490,18 +485,23 @@ export class CodingApplication {
     this.selectedSessionId = runtime.session.id;
     delete this.options.branch;
     this.runtimeUnsubscribe = runtime.agent.subscribe(
-      (event) => this.onSessionEvent(runtime, event),
+      (event) => {
+        const task = this.onSessionEvent(runtime, event).finally(() => {
+          if (this.runtimeEventTask === task) this.runtimeEventTask = undefined;
+        });
+        this.runtimeEventTask = task;
+        return task;
+      },
       (error) => {
-        this.events.fail(error);
+        if (this.ownsRuntime(runtime)) this.events.fail(error);
       }
     );
     if (prepared === undefined)
       try {
         await runtime.agent.restore();
       } catch (error) {
-        this.runtimeUnsubscribe();
-        this.runtimeUnsubscribe = undefined;
         this.runtime = undefined;
+        await this.stopRuntimeEvents();
         await closeCodingSession(runtime);
         throw error;
       }
@@ -515,33 +515,51 @@ export class CodingApplication {
     if (runtime === undefined) return;
     requireIdleSession(runtime.agent);
     this.runtime = undefined;
+    await this.stopRuntimeEvents();
+    await closeCodingSession(runtime);
+  }
+
+  private async stopRuntimeEvents(): Promise<void> {
     this.runtimeUnsubscribe?.();
     this.runtimeUnsubscribe = undefined;
-    await closeCodingSession(runtime);
+    // Unsubscribe prevents new delivery; an already-running owned reader must finish
+    // before its repositories and file authority are released. External observers stay independent.
+    await this.runtimeEventTask?.catch(() => undefined);
+  }
+
+  private ownsRuntime(runtime: CodingAgentRuntimeComposition): boolean {
+    return !this.closed && this.runtime === runtime;
   }
 
   private async onSessionEvent(
     runtime: CodingAgentRuntimeComposition,
     event: import('@agent-core/runtime').AgentSessionEvent
   ): Promise<void> {
-    if (this.runtime !== runtime) return;
+    if (!this.ownsRuntime(runtime)) return;
     await this.emit(event);
+    if (!this.ownsRuntime(runtime)) return;
+    if (event.type === 'delivery.gap') {
+      const view = await readCodingSessionView(runtime);
+      if (!this.ownsRuntime(runtime)) return;
+      await this.emit({ type: 'session.restored', view });
+    }
     if (
       event.type === 'run.completed' ||
       (event.type === 'run.progress' &&
         event.event.type === 'tool.ended' &&
         event.event.toolName === 'run_check')
-    )
-      await this.emit({
-        type: 'verification.updated',
-        verification: await readConfiguredCheckResults(
-          runtime.events,
-          event.runId,
-          runtime.configuration,
-          runtime.fileRoot,
-          runtime.artifacts
-        )
-      });
+    ) {
+      const verification = await readConfiguredCheckResults(
+        runtime.events,
+        event.runId,
+        runtime.configuration,
+        runtime.fileRoot,
+        runtime.artifacts
+      );
+      if (!this.ownsRuntime(runtime)) return;
+      await this.emit({ type: 'verification.updated', verification });
+    }
+    if (!this.ownsRuntime(runtime)) return;
     if (event.type !== 'run.progress') await this.publishState('ready', []);
   }
 

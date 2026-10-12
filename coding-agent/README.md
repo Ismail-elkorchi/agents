@@ -52,7 +52,7 @@ Permission modes are:
 | `read_only` (default) | Read the selected host project; no edits or commands |
 | `full_host` | Edit the host project and run commands under the host account, with access to the rest of the system and network |
 
-Both modes use the selected host project directly. Run change reports describe recorded patches, not a complete inventory of command-created changes.
+Both modes use the selected host project directly. Run change reports fold recorded patch receipts into net file states, retaining explicit initial/final absence, presence, or uncertainty. Add-then-delete and restored contents have no net change; their receipts remain in history. Committed move provenance follows edits and chained moves without treating reused paths as the same original file. These reports are not a complete inventory of command-created changes.
 
 Runs, sessions, artifacts, journals, trust decisions, and user model settings live in the platform user-state directory. `--state-root` selects another dedicated state directory outside the workspace. Coding Agent does not create private state inside the project.
 
@@ -103,7 +103,7 @@ The optional `limits` object accepts Agent Core's current run limits. Project co
 
 Informational questions and editing tasks use the same Agent Core session contract. A user prompt does not create a separate revision workflow. Original contributions, corrections, tool observations, provider state, context selections, working state, branches, queued input, approvals, and uncertain effects remain durable.
 
-Core manages one current working-state revision per branch. Models select relevant original sources with `context_transition`, optionally replacing working state in the same atomic update. There is no automatic portable summary or oldest-source eviction. Indexed history retrieval verifies bounded originals and discloses incomplete coverage. State updates never establish verification or grant permission. Native reasoning stays separate; supported native compaction is a governed fallback for rejected capacity or required bound-prefix changes. Fitting ordinary requests trigger no maintenance call. Context controls provide an explicit fresh reasoning continuation over selected originals; RPC exposes `context.fresh`. Session authority, effects, resource lifetimes and budgets survive that operation.
+Core manages one current working-state revision per branch. Models select relevant original sources with `context_transition`, optionally replacing working state in the same atomic update. There is no automatic portable summary or oldest-source eviction. Indexed history retrieval verifies bounded originals and discloses incomplete coverage. Search presents one bounded batch per request; an empty partial batch can be continued explicitly. State updates never establish verification or grant permission. Native reasoning stays separate; supported native compaction is a governed fallback for rejected capacity or required bound-prefix changes. Fitting ordinary requests trigger no maintenance call. Context controls provide an explicit fresh reasoning continuation over selected originals; RPC exposes `context.fresh`. Session authority, effects, resource lifetimes and budgets survive that operation.
 
 An approval binds the exact tool input, effects, implementation, policy, and execution target. Changed facts invalidate it. Effects with an unknown outcome are not replayed automatically. `--resume` without a task drives only an unfinished accepted run.
 

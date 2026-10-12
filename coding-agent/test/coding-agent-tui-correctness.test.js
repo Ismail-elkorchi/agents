@@ -555,8 +555,8 @@ async function completedHydration() {
         path: 'src/app.ts',
         absolutePath: '/project/src/app.ts',
         kind: 'modified',
-        beforeBytes: 10,
-        afterBytes: 12,
+        before: { kind: 'present', sha256: 'a'.repeat(64), bytes: 10 },
+        after: { kind: 'present', sha256: 'b'.repeat(64), bytes: 12 },
         receiptSequences: [4],
         state: 'changed'
       }

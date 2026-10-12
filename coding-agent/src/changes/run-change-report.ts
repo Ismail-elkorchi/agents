@@ -20,16 +20,19 @@ export interface StructuredMutationReceipt {
   readonly rootState: ApplyPatchOutput['rootState'];
 }
 
+export type WorkspaceFileState =
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'present'; readonly sha256: string; readonly bytes: number }
+  | { readonly kind: 'unknown' };
+
 export interface WorkspaceChange {
   readonly path: string;
   readonly absolutePath: string;
   readonly kind: 'added' | 'modified' | 'deleted' | 'moved';
   readonly destinationPath?: string;
   readonly destinationAbsolutePath?: string;
-  readonly beforeSha256?: string;
-  readonly afterSha256?: string;
-  readonly beforeBytes: number;
-  readonly afterBytes: number;
+  readonly before: WorkspaceFileState;
+  readonly after: WorkspaceFileState;
   readonly receiptSequences: readonly number[];
   readonly state: 'changed' | 'uncertain';
 }
@@ -53,51 +56,73 @@ export async function readRunChangeReport(
   artifacts?: ArtifactRepository
 ): Promise<RunChangeReport> {
   const mutations = await readMutations(events, runId, artifacts);
-  const changes = new Map<string, WorkspaceChange>();
+  const paths = new Map<string, FoldedPath>();
+  // Undefined origins mark recreated/deleted paths, so path reuse cannot inherit
+  // the provenance of an earlier file that moved elsewhere.
+  const origins = new Map<string, { path: string | undefined; sequences: readonly number[] }>();
   for (const mutation of mutations) {
     for (const file of mutation.files) {
-      if (!file.plannedChange || file.finalState === 'unchanged') continue;
-      const key =
-        file.operation === 'move' && file.destinationPath
-          ? `${file.path}\0${file.destinationPath}`
-          : file.path;
-      const previous = changes.get(key);
-      const beforeSha256 = previous?.beforeSha256 ?? file.oldSha256;
-      changes.set(
-        key,
-        Object.freeze({
-          path: file.path,
-          absolutePath: workspacePath(workspaceRoot, file.path),
-          kind:
-            file.operation === 'update'
-              ? 'modified'
-              : file.operation === 'move'
-                ? 'moved'
-                : file.operation === 'add'
-                  ? 'added'
-                  : 'deleted',
-          ...(file.destinationPath === undefined ? {} : { destinationPath: file.destinationPath }),
-          ...(file.destinationPath === undefined
-            ? {}
-            : { destinationAbsolutePath: workspacePath(workspaceRoot, file.destinationPath) }),
-          ...(beforeSha256 === undefined ? {} : { beforeSha256 }),
-          ...(file.newSha256 === undefined ? {} : { afterSha256: file.newSha256 }),
-          beforeBytes: previous?.beforeBytes ?? file.oldBytes,
-          afterBytes: file.newBytes,
-          receiptSequences: Object.freeze([
-            ...(previous?.receiptSequences ?? []),
-            mutation.receipt.sequence
-          ]),
-          state:
-            mutation.receipt.rootState === 'known' &&
-            (mutation.receipt.transactionOutcome === 'committed' ||
-              mutation.receipt.transactionOutcome === 'committed_with_residue') &&
-            file.finalState === 'changed'
-              ? 'changed'
-              : 'uncertain'
-        })
-      );
+      const before = file.operation === 'add'
+        ? absent()
+        : present(file.oldSha256, file.oldBytes);
+      const committed = mutation.receipt.rootState === 'known' &&
+        (mutation.receipt.transactionOutcome === 'committed' ||
+          mutation.receipt.transactionOutcome === 'committed_with_residue') &&
+        file.finalState === 'changed';
+      const unchanged = file.finalState === 'unchanged';
+      const after = unchanged ? before : committed
+        ? file.operation === 'delete' || file.operation === 'move'
+          ? absent() : present(file.newSha256, file.newBytes)
+        : unknown();
+      foldPath(paths, file.path, before, after, mutation.receipt.sequence, file.plannedChange && !unchanged);
+      if (file.operation === 'move' && file.destinationPath !== undefined) {
+        foldPath(paths, file.destinationPath, absent(), unchanged ? absent() : committed
+          ? present(file.newSha256, file.newBytes) : unknown(), mutation.receipt.sequence, file.plannedChange && !unchanged);
+        if (committed) {
+          const priorOrigin = origins.get(file.path);
+          const origin = { path: priorOrigin === undefined ? file.path : priorOrigin.path,
+            sequences: [...new Set([...(priorOrigin?.sequences ?? []),
+              ...(paths.get(file.path)?.sequences ?? []), mutation.receipt.sequence])] };
+          origins.set(file.path, { path: undefined, sequences: [] });
+          origins.set(file.destinationPath, origin);
+          const destination = paths.get(file.destinationPath);
+          if (destination) {
+            for (const sequence of origin.sequences)
+              if (!destination.sequences.includes(sequence)) destination.sequences.push(sequence);
+            destination.sequences.sort((a, b) => a - b);
+          }
+        } else if (!unchanged) {
+          origins.set(file.path, { path: undefined, sequences: [] });
+          origins.set(file.destinationPath, { path: undefined, sequences: [] });
+        }
+      } else if (file.operation === 'add' || file.operation === 'delete') {
+        if (!unchanged) origins.set(file.path, { path: undefined, sequences: [] });
+      }
     }
+  }
+  const changes = new Map<string, WorkspaceChange>();
+  for (const [filePath, folded] of paths) {
+    if (!folded.affected || sameFileState(folded.before, folded.after)) continue;
+    changes.set(filePath, workspaceChange(workspaceRoot, filePath, folded));
+  }
+  // A move is a net removal and creation linked by committed receipts, not merely
+  // the last operation seen at either path. Intermediate paths disappear naturally.
+  for (const [destinationPath, origin] of origins) {
+    const sourcePath = origin.path;
+    if (sourcePath === undefined || sourcePath === destinationPath) continue;
+    const source = paths.get(sourcePath);
+    const destination = paths.get(destinationPath);
+    if (source?.before.kind !== 'present' || source.after.kind !== 'absent' ||
+      destination?.before.kind !== 'absent' || destination.after.kind !== 'present') continue;
+    changes.set(sourcePath, Object.freeze({
+      ...workspaceChange(workspaceRoot, sourcePath, {
+        before: source.before, after: destination.after, affected: true,
+        sequences: [...new Set([...origin.sequences, ...source.sequences, ...destination.sequences])].sort((a, b) => a - b)
+      }),
+      kind: 'moved', destinationPath,
+      destinationAbsolutePath: workspacePath(workspaceRoot, destinationPath)
+    }));
+    changes.delete(destinationPath);
   }
   return Object.freeze({
     runId,
@@ -105,6 +130,43 @@ export async function readRunChangeReport(
       [...changes.values()].sort((left, right) => left.path.localeCompare(right.path))
     ),
     mutationReceipts: Object.freeze(mutations.map((mutation) => mutation.receipt))
+  });
+}
+
+interface FoldedPath {
+  readonly before: WorkspaceFileState;
+  after: WorkspaceFileState;
+  affected: boolean;
+  readonly sequences: number[];
+}
+function absent(): WorkspaceFileState { return Object.freeze({ kind: 'absent' }); }
+function unknown(): WorkspaceFileState { return Object.freeze({ kind: 'unknown' }); }
+function present(sha256: string | undefined, bytes: number): WorkspaceFileState {
+  return sha256 === undefined ? unknown() : Object.freeze({ kind: 'present', sha256, bytes });
+}
+function sameFileState(left: WorkspaceFileState, right: WorkspaceFileState): boolean {
+  return left.kind === 'absent' && right.kind === 'absent' ||
+    left.kind === 'present' && right.kind === 'present' && left.sha256 === right.sha256;
+}
+function foldPath(paths: Map<string, FoldedPath>, filePath: string,
+  before: WorkspaceFileState, after: WorkspaceFileState, sequence: number, affected: boolean): void {
+  const previous = paths.get(filePath);
+  if (previous === undefined) paths.set(filePath, { before, after, affected, sequences: [sequence] });
+  else {
+    previous.after = after;
+    previous.affected ||= affected;
+    if (!previous.sequences.includes(sequence)) previous.sequences.push(sequence);
+  }
+}
+function workspaceChange(workspaceRoot: string, filePath: string, folded: FoldedPath): WorkspaceChange {
+  const { before, after } = folded;
+  return Object.freeze({
+    path: filePath, absolutePath: workspacePath(workspaceRoot, filePath),
+    kind: before.kind === 'absent' && after.kind === 'present' ? 'added'
+      : before.kind === 'present' && after.kind === 'absent' ? 'deleted' : 'modified',
+    before, after,
+    receiptSequences: Object.freeze([...folded.sequences]),
+    state: before.kind === 'unknown' || after.kind === 'unknown' ? 'uncertain' : 'changed'
   });
 }
 
@@ -192,22 +254,7 @@ async function readMutations(
           : {}),
         rootState: parsed.data.rootState
       }),
-      files: parsed.data.files.map((file) => ({
-        path: file.path,
-        operation: file.operation,
-        ...(file.destinationPath === undefined ? {} : { destinationPath: file.destinationPath }),
-        hunkCount: file.hunkCount,
-        additions: file.additions,
-        deletions: file.deletions,
-        ...(file.oldSha256 === undefined ? {} : { oldSha256: file.oldSha256 }),
-        ...(file.newSha256 === undefined ? {} : { newSha256: file.newSha256 }),
-        oldBytes: file.oldBytes,
-        newBytes: file.newBytes,
-        plannedChange: file.plannedChange,
-        finalState: file.finalState,
-        ...(file.matchModes === undefined ? {} : { matchModes: file.matchModes }),
-        ...(file.exact === undefined ? {} : { exact: file.exact })
-      }))
+      files: parsed.data.files
     });
     starts.delete(attemptKey(event));
   }

@@ -4,7 +4,6 @@ import type {
   AgentSessionEvent,
   AgentSessionState,
   AgentSessionSubmissionResult,
-  ApplicationDeliveryEvent,
   SessionBranchPage,
   SessionBranchPoint,
   SessionPendingSubmission
@@ -67,7 +66,6 @@ export type CodingApplicationEvent =
     }
   | { readonly type: 'history.recovery'; readonly progress: import('@agent-core/runtime/node').HistoryIndexRecoveryProgress }
   | AgentSessionEvent
-  | ApplicationDeliveryEvent
   | { readonly type: 'application.state.changed'; readonly state: CodingApplicationState }
   | { readonly type: 'session.restored'; readonly view: CodingSessionView }
   | { readonly type: 'verification.updated'; readonly verification: CodingRunVerification };

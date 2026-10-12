@@ -103,7 +103,7 @@ test(
       selector: { quote: 'Quotation 😀.' }
     });
     assert.equal(context.content, 'Quotation 😀.');
-    assert.match(context.title, /retained revision/);
+    assert.match(context.title, /revision/);
     assert.equal(
       new URLSearchParams(new URL(context.sourceUri).hash.slice(1)).get('sha256'),
       before.sha256
@@ -322,4 +322,41 @@ test('document passage edits preserve a BOM and can add paragraphs to a single-l
   const result = await submit(f.application, 'Revise this and add a second paragraph.');
   assert.equal(result.terminal.executionStatus, 'completed');
   assert.equal((await f.application.readDocument('document.txt')).content, '\ufeffRevised.\n\nA second paragraph.');
+});
+
+test('passage identities bind canonical source, content revision and range, coalescing repeated submissions', integration, async t => {
+  const f = await fixture('Same text.\n', { responses: ['Both originals are available.'] });
+  t.after(() => f.close());
+  await writeFile(path.join(f.root, 'copy.txt'), 'Same text.\n');
+  const first = await f.application.readDocument('document.txt');
+  const second = await f.application.readDocument('copy.txt');
+  const selection = revision => ({ revision, selector: { range: { start: 0, end: 4 } } });
+  const a = await f.application.readPassageContext(selection(first.revision));
+  const repeat = await f.application.readPassageContext(selection({ ...first.revision, path: './document.txt' }));
+  const b = await f.application.readPassageContext(selection(second.revision));
+  assert.deepEqual(a, repeat);
+  assert.notEqual(a.id, b.id);
+  const range = await f.application.readPassageContext({ revision: first.revision,
+    selector: { range: { start: 0, end: 5 } } });
+  assert.notEqual(a.id, range.id);
+  const original = await f.application.readDocumentSection({ path: 'document.txt', retain: true });
+  const retained = await f.application.readPassageContext(selection(original.revision));
+  assert.deepEqual(retained, a, 'artifact location is not a second source identity');
+  const current = await f.application.readDocumentSection({ path: 'document.txt' });
+  assert.deepEqual(await f.application.readPassageContext(selection(current.revision)), a,
+    'retained and current presentations share the original source identity');
+  await writeFile(path.join(f.root, 'document.txt'), 'Same text. New revision.\n');
+  const revised = await f.application.readDocument('document.txt');
+  const updated = await f.application.readPassageContext(selection(revised.revision));
+  assert.notEqual(updated.id, a.id, 'identical selection at a different revision remains distinct');
+  await f.application.start();
+  assert.throws(() => f.application.submit({ task: 'Invalid duplicate',
+    contextItems: [a, { ...a, content: 'Conflicting text' }] }), /duplicate|conflict/i);
+  assert.equal(f.provider.requests.length, 0, 'conflicts fail before any accepted inference');
+  const submission = await f.application.submit({ task: 'Compare the two originals.', contextItems: [a, repeat, b] });
+  assert.notEqual(submission.kind, 'rejected');
+  await submission.completion;
+  const input = (await f.application.readHistory()).entries.find(entry => entry.type === 'input');
+  assert.equal(input.originalInput.contextItems.length, 2);
+  assert.deepEqual(input.originalInput.contextItems.map(item => item.id), [a.id, b.id]);
 });

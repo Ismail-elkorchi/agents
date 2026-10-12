@@ -6,7 +6,7 @@ import type {
 import { projectToolDiagnostics, suspensionMessage } from '@agent-core/tui';
 import type { CodingSessionView } from '../application/contracts.js';
 import { upsertActivity, upsertConversationEntry } from './conversation.js';
-import { applySessionState } from './event-reducer.js';
+import { applyConfiguredChecks, applySessionState } from './event-reducer.js';
 import { presentHistoryPages } from './history.js';
 import type { CodingAgentTuiState } from './state.js';
 
@@ -61,6 +61,9 @@ export function hydrateCodingAgentTuiState(
             hydration.history.boundary.leafId
       }
     };
+  // A delivery gap may have lost check updates while the user browsed older pages.
+  // Keep their position, but reconcile the fresh authoritative check state.
+  for (const verification of hydration.verification) next = applyConfiguredChecks(next, verification);
   next = applySessionState(next, hydration.session);
   for (const diagnostic of projectToolDiagnostics(hydration.toolDiagnostics, next.conversation.items))
     next = upsertActivity(next, diagnostic);

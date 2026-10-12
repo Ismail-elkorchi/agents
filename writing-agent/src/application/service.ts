@@ -7,7 +7,6 @@ import {
 import { LocalArtifactRepository, atomicWritePrivateJson } from '@agent-core/persistence/node';
 import {
   ApplicationEvents,
-  recordedModelSelection,
   assertHistoryModelCompatibility,
   type ModelChangeOptions,
   assertSessionImagesSupported,
@@ -16,7 +15,6 @@ import {
   type AgentSession,
   type AgentSessionEvent,
   type AgentSessionSubmissionResult,
-  type ApplicationDeliveryEvent,
   type SessionBranchBoundary,
   type SessionBranchPageRequest,
   type SessionBranchSearchRequest,
@@ -79,7 +77,6 @@ export interface WritingApplicationState {
 export type WritingApplicationEvent =
   | { readonly type: 'history.recovery'; readonly progress: import('@agent-core/runtime/node').HistoryIndexRecoveryProgress }
   | AgentSessionEvent
-  | ApplicationDeliveryEvent
   | {
       readonly type: 'application.state.changed';
       readonly state: WritingApplicationState;
@@ -638,18 +635,8 @@ export class WritingApplication {
   private async connect() {
     if (!this.descriptor) return;
     if (this.configuration === undefined) {
-      const replay = await this.sessions.loadReplayState(this.descriptor);
-      const recorded = recordedModelSelection(replay.branch);
-      let selection: ModelSelection | undefined =
-        this.selection ?? (recorded === undefined
-          ? undefined
-          : {
-              provider: recorded.provider,
-              model: recorded.model,
-              ...(recorded.reasoning === undefined ? {} : { reasoning: recorded.reasoning }),
-              ...(recorded.endpoint === undefined ? {} : { endpoint: recorded.endpoint }),
-              ...(recorded.temperature === undefined ? {} : { temperature: recorded.temperature })
-            });
+      const recorded = await this.sessions.currentModelSettings(this.descriptor);
+      let selection: ModelSelection | undefined = this.selection ?? recorded;
       if (selection === undefined) {
         let encoded: string | undefined;
         try {

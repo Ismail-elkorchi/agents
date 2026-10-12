@@ -12,7 +12,7 @@ async function fixture(t, kind) {
   const session = await repository.create({
     binding: { schemaId: 'test/search', schemaVersion: 1, subject: {} }
   });
-  const first = await repository.appendInput(session, { runId: 'first', task: 'MATCH ONE' });
+  await repository.appendInput(session, { runId: 'first', task: 'MATCH ONE' });
   await repository.appendInput(session, { runId: 'second', task: 'MATCH TWO' });
   const page = await repository.readBranchPage(session);
   const pending = Promise.withResolvers();
@@ -109,6 +109,7 @@ async function fixture(t, kind) {
   );
   if (kind === 'writing') await runtime.dispatch({ type: 'search.submit', more: false });
   await settle();
+  const firstMatch = runtime.state().overlay.result.matches[0].entryId;
   return {
     runtime,
     settle,
@@ -124,8 +125,8 @@ async function fixture(t, kind) {
     jump: () =>
       runtime.dispatch(
         kind === 'coding'
-          ? { type: 'search.accept', event: { kind: 'commit', id: first.id } }
-          : { type: 'search.jump', entryId: first.id }
+          ? { type: 'search.accept', event: { kind: 'commit', id: firstMatch } }
+          : { type: 'search.jump', entryId: firstMatch }
       )
   };
 }

@@ -109,7 +109,7 @@ test(
     assert.equal(attachment.item.representation, 'excerpt');
     assert.equal(attachment.item.range.kind, 'byte');
     assert.match(attachment.item.sourceUri, /sha256=/);
-    assert.match(attachment.item.title, /retained revision/);
+    assert.match(attachment.item.title, /revision/);
   }
 );
 
