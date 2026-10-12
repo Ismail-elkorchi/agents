@@ -610,17 +610,24 @@ function update(
         context
       );
     case 'context.open':
-    case 'context.renew':
     case 'context.fresh':
     case 'context.apply':
     case 'context.page':
     case 'context.source':
     case 'context.scroll':
     case 'context.loaded':
+    case 'context.scheduled':
+    case 'context.applied':
+    case 'context.rejected':
     case 'context.failed': {
+      if (message.type === 'context.rejected') {
+        const notice = `Context selection rejected: ${message.message}`;
+        state = { ...state, notice, liveConversation: mergeConversationEntries(state.liveConversation, [{
+          id: `context-rejected:${message.idempotencyKey}`, kind: 'notice', tone: 'error', text: notice
+        }]) };
+      }
       if (
         message.type !== 'context.open' &&
-        message.type !== 'context.renew' &&
         state.overlay.kind !== 'context'
       )
         return { state };

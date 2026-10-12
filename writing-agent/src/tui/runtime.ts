@@ -40,12 +40,16 @@ export async function runWritingAgentTuiApp(
           case 'run.failed':
             await emit({ type: 'notice', message: event.error.message });
             return emit({ type: 'refresh' });
+          case 'context.transition.rejected':
+            return emit({ type: 'context.rejected', idempotencyKey: event.idempotencyKey, message: event.message });
+          case 'context.transitioned':
+            await emit({ type: 'context.applied', idempotencyKey: event.transition.idempotencyKey });
+            return emit({ type: 'refresh' });
           case 'delivery.gap':
           case 'configuration.changed':
           case 'input.queued':
           case 'input.revised':
           case 'input.cancelled':
-          case 'context.transitioned':
             return emit({ type: 'refresh' });
         }
       }, failed);

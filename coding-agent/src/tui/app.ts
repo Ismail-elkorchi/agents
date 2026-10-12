@@ -647,22 +647,24 @@ function updateCodingAgentTui(
     case 'activity.tick':
       return { state };
     case 'context.open':
-    case 'context.renew':
     case 'context.fresh':
     case 'context.apply':
     case 'context.page':
     case 'context.source':
     case 'context.scroll':
     case 'context.loaded':
+    case 'context.scheduled':
+    case 'context.applied':
+    case 'context.rejected':
     case 'context.failed': {
-      if (!options.context)
-        return { state: appendNotice(state, 'Open a session before inspecting context.', 'error') };
+      if (message.type === 'context.rejected') state = appendNotice(state, `Context selection rejected: ${message.message}`, 'error');
       if (
         message.type !== 'context.open' &&
-        message.type !== 'context.renew' &&
         state.overlay.kind !== 'context'
       )
         return { state };
+      if (!options.context)
+        return { state: appendNotice(state, 'Open a session before inspecting context.', 'error') };
       const current = state.overlay.kind === 'context' ? state.overlay.state : createContextState();
       const result = updateContext(current, message, options.context);
       return combineTuiResults(

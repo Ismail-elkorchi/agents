@@ -229,7 +229,11 @@ async function presentControllerEvent(
       message = { type: 'progress', runId: event.runId, event: event.event };
       break;
     case 'context.transitioned':
+      await emit({ type: 'context.applied', idempotencyKey: event.transition.idempotencyKey });
       message = { type: 'context.transitioned', window: event.window };
+      break;
+    case 'context.transition.rejected':
+      message = { type: 'context.rejected', idempotencyKey: event.idempotencyKey, message: event.message };
       break;
     case 'run.failed':
       message = suspension

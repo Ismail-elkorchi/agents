@@ -622,11 +622,11 @@ export class CodingApplication {
     });
   }
 
-  async renewContext(selection?: import('@agent-core/runtime').ContextSelection) {
+  async transitionContext(request: import('@agent-core/runtime').ContextTransitionRequest) {
     const agent = this.requireRuntime().agent;
-    const selected = await agent.renewContext(selection);
+    const selected = await agent.transitionContext(request);
     const suspension = agent.inspectSuspension();
-    if (suspension?.category === 'context_admission')
+    if (selected.kind === 'selected' && suspension?.category === 'context_admission')
       return { selection: selected, run: await agent.resumeContextAdmission(suspension.runId) };
     return { selection: selected };
   }

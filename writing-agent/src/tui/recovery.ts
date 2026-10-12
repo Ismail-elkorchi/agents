@@ -1,5 +1,5 @@
 import { diagnosticMessage, suspensionPresentation, suspensionMessage } from '@agent-core/tui';
-import { button, richText, text, type Element } from '@ismail-elkorchi/terminal-ui/components';
+import { button, richText, type Element } from '@ismail-elkorchi/terminal-ui/components';
 import { column } from '@ismail-elkorchi/terminal-ui/layout';
 import type { WritingTuiMessage, WritingTuiState } from './state.js';
 import type { WritingApplication } from '../application/service.js';
@@ -134,8 +134,9 @@ export function recoveryView(state: WritingTuiState): Element<WritingTuiMessage>
   const suspension = session?.session.suspension;
   const presentation = suspension ? suspensionPresentation(suspension.reason) : undefined;
   const children: Element<WritingTuiMessage>[] = [
-    text({
-      content:
+    richText({
+      wrap: true,
+      segments: [{ kind: 'text', text:
         state.overlay.kind === 'recovery' && state.overlay.loading
           ? 'Loading recorded run…'
           : state.recoveryOperation !== undefined
@@ -147,6 +148,7 @@ export function recoveryView(state: WritingTuiState): Element<WritingTuiMessage>
                     (value, index, values) => Boolean(value) && values.indexOf(value) === index
                   )
                   .join('\n')
+      }]
     })
   ];
   if (suspension !== undefined) {
@@ -184,8 +186,9 @@ export function recoveryView(state: WritingTuiState): Element<WritingTuiMessage>
         if (call.stage !== 'approval') continue;
         const approval = call.approval;
         children.push(
-          text({
-            content: `${approval.reason}\n${approval.toolName}\n${JSON.stringify(approval.input, null, 2)}\nFingerprint ${approval.fingerprint}`
+          richText({
+            wrap: true,
+            segments: [{ kind: 'text', text: `${approval.reason}\n${approval.toolName}\n${JSON.stringify(approval.input, null, 2)}\nFingerprint ${approval.fingerprint}` }]
           })
         );
         for (const decision of ['deny', 'allow'] as const)

@@ -13,7 +13,13 @@ test('context inspection and unchanged application preserve ordinary history; fr
   const inspected = await f.application.inspectContext();
   assert.equal(inspected.window, null);
   assert.equal(inspected.activeSelection.selection.retained.length, 4);
-  await f.application.renewContext(inspected.activeSelection.selection);
+  await f.application.transitionContext({
+    expectedWindowId: inspected.window?.windowId ?? null,
+    expectedSourceRevision: inspected.cut.sourceRevision,
+    idempotencyKey: 'unchanged-selection',
+    reason: 'Keep the inspected selection.',
+    selection: inspected.activeSelection.selection
+  });
   await submit(f.application, 'Third question.');
   assert.match(JSON.stringify(f.provider.requests.at(-1).messages), /ORIGINAL-MARKER-493/);
   const current = await f.application.inspectContext();

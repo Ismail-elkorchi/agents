@@ -43,11 +43,6 @@ export const WRITING_COMMANDS: readonly {
     message: { type: 'picker.open', subject: 'sessions' }
   },
   {
-    name: '/renew-context',
-    description: 'Renew working context, preserving active input and protected sources',
-    message: { type: 'context.renew' }
-  },
-  {
     name: '/context',
     description: 'Inspect available context and admitted sources',
     message: { type: 'context.open' }

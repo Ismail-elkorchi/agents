@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import { createTuiRuntime } from '@ismail-elkorchi/terminal-ui/tui';
-import { createCodingAgentTuiApp, runCodingAgentTuiApp } from '@ismail-elkorchi/coding-agent/tui';
+import { createCodingAgentTuiApp, runCodingAgentTuiApp, INTERACTIVE_COMMANDS, parseInteractiveCommandLine } from '@ismail-elkorchi/coding-agent/tui';
 import { latestFramePlain, waitFor } from './coding-agent-tui-test-helpers.js';
 
 test('Ctrl+P opens the concise command picker and executes a selected command', async () => {
@@ -17,6 +17,7 @@ test('Ctrl+P opens the concise command picker and executes a selected command', 
   await waitFor(() => /\/model/u.test(latestFramePlain(host)));
   assert.match(latestFramePlain(host), /\/provider/u);
   assert.doesNotMatch(latestFramePlain(host), /\/state\b/u);
+  assert.doesNotMatch(latestFramePlain(host), /renew-context/u);
   host.input('status\r');
   await waitFor(() => /Application status/u.test(latestFramePlain(host)));
   assert.match(latestFramePlain(host), /test-model/u);
@@ -254,7 +255,7 @@ test('closing a pending context inspection keeps the composer and rejects its la
       context: {
         inspectContext: () => result.promise,
         contextSources: async () => ({ items: [] }),
-        renewContext: async () => {}
+        transitionContext: async () => {}
       }
     })
   });
@@ -288,4 +289,10 @@ test('slash completion remains usable in a ten-row terminal', async (t) => {
   assert.match(latestFramePlain(host), /\/model/);
   await runtime.handleInput(key('escape'));
   assert.equal(runtime.state().completion, undefined);
+});
+
+test('context inspection remains available without a renewal command or alias', () => {
+  assert.equal(INTERACTIVE_COMMANDS.some(command => command.name === '/renew-context'), false);
+  assert.throws(() => parseInteractiveCommandLine('/renew-context'), /Unknown command/);
+  assert.deepEqual(parseInteractiveCommandLine('/context'), { kind: 'interface', message: { type: 'context.open' } });
 });

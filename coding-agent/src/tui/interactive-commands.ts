@@ -37,7 +37,6 @@ export type InteractiveCommandName =
   | '/source'
   | '/tools'
   | '/context'
-  | '/renew-context'
   | '/processes'
   | '/editor'
   | '/recovery'
@@ -161,11 +160,6 @@ export const INTERACTIVE_COMMAND_REGISTRY = {
   '/temperature': command('/temperature', 'Set supported provider temperature.', 'required'),
   '/steer': command('/steer', 'Steer the active run.', 'required'),
   '/follow': command('/follow', 'Queue a follow-up after active work.', 'required'),
-  '/renew-context': action(
-    '/renew-context',
-    'Renew the working context, preserving active input and protected sources.',
-    { type: 'context.renew' }
-  ),
   '/context': action('/context', 'Inspect effective context and available resources.', {
     type: 'context.open'
   }),
