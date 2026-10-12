@@ -1,3 +1,4 @@
+import { historyRecoveryMessage } from '@agent-core/tui';
 import { updateRecovery } from './recovery.js';
 import { splitPaneReducer } from '@ismail-elkorchi/terminal-ui/behavior';
 import { intervalSource } from '@ismail-elkorchi/terminal-ui/tui';
@@ -166,7 +167,7 @@ export function createWritingAgentTuiApp(
         ...binding('Interrupt active run', 'escape', { type: 'interrupt' }),
         enabled: ({ state }: TuiInputBindingContext<WritingTuiState>) =>
           state.overlay.kind === 'none' &&
-          state.application.status === 'running' &&
+          (state.historyRecovery !== undefined || state.application.status === 'running') &&
           state.completion === undefined &&
           state.resourceCompletion === undefined
       },
@@ -350,7 +351,7 @@ export function createWritingAgentTuiApp(
         const initial = initialWritingState(application.state(), options.presentation?.preferences);
         const sessionId = initial.application.sessionId ?? ':new';
         const result: Update =
-          application.state().status === 'configuration_required'
+          application.state().sessionId !== undefined && application.state().status === 'configuration_required'
             ? mountPanel(initial, 'configuration', configuration, context)
             : { state: initial };
         return combineTuiResults(
@@ -393,12 +394,14 @@ export function createWritingAgentTuiApp(
           ...result,
           state: {
             ...result.state,
-            noticeOffset: result.state.notice === state.notice ? state.noticeOffset : 0,
+            noticeOffset: result.state.notice === state.notice &&
+              result.state.application.historyRecoveryFailures === state.application.historyRecoveryFailures
+              ? state.noticeOffset : 0,
             activityClock: updateActivityClock(
               message.type === 'progress' && message.event.type === 'run.configured'
                 ? undefined
                 : state.activityClock,
-              result.state.application.status === 'running',
+              result.state.historyRecovery !== undefined || result.state.application.status === 'running',
               context.clock.monotonicNow()
             )
           }
@@ -463,7 +466,7 @@ export function createWritingAgentTuiApp(
       },
       resizeMessage: () => ({ type: 'terminal.resized' }),
       subscriptions: (state, context) => [
-        ...(state.application.status === 'running'
+        ...(state.historyRecovery !== undefined || state.application.status === 'running'
           ? [intervalSource('activity-clock', 1000, { type: 'activity.tick' as const })]
           : []),
         ...(events === undefined ? [] : [events]),
@@ -514,6 +517,27 @@ function update(
   switch (message.type) {
     case 'activity.tick':
       return { state };
+    case 'history.recovery': {
+      if (message.progress.phase === 'started' || message.progress.phase === 'progress')
+        return { state: {
+          ...state,
+          historyRecovery: message.progress,
+          ...(message.progress.phase === 'started' ? { notice: historyRecoveryMessage(message.progress) } : {})
+        } };
+      const failures = message.progress.phase === 'failed'
+        ? { ...state.application.historyRecoveryFailures, [message.progress.sessionId]: historyRecoveryMessage(message.progress) }
+        : { ...state.application.historyRecoveryFailures };
+      const retained = message.progress.phase === 'completed'
+        ? Object.fromEntries(Object.entries(failures).filter(([id]) => id !== message.progress.sessionId))
+        : failures;
+      const next = {
+        ...state,
+        application: { ...state.application, historyRecoveryFailures: retained },
+        notice: message.progress.phase === 'failed' ? '' : historyRecoveryMessage(message.progress)
+      };
+      delete next.historyRecovery;
+      return { state: next };
+    }
     case 'terminal.resized':
       return { state };
     case 'session-name.open': {
@@ -1064,8 +1088,15 @@ function update(
         effects: [loadDraft(options.drafts, sessionId, draft)]
       });
     }
-    case 'application':
-      return { state: { ...state, application: message.state } };
+    case 'application': {
+      const next = { ...state, application: message.state };
+      return state.application.sessionId === undefined &&
+        message.state.sessionId !== undefined &&
+        message.state.status === 'configuration_required' &&
+        state.overlay.kind === 'none'
+        ? update(next, { type: 'configuration.open' }, app, options, context)
+        : { state: next };
+    }
     case 'notice.scroll':
       return { state: { ...state, noticeOffset: message.offset } };
     case 'notice.dismiss':
@@ -1665,7 +1696,7 @@ function update(
       };
     }
     case 'interrupt':
-      return ['running', 'suspended'].includes(state.application.status)
+      return state.historyRecovery !== undefined || ['running', 'suspended'].includes(state.application.status)
         ? {
             state,
             effects: [

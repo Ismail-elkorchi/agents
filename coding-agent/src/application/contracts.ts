@@ -47,6 +47,7 @@ export interface CodingSessionView extends CodingHistoryPage {
 
 export type CodingSetupRequirement = 'workspace_trust' | 'provider' | 'model';
 export interface CodingApplicationState {
+  readonly historyRecoveryFailures?: Readonly<Record<string, string>>;
   readonly status: 'initializing' | 'setup_required' | 'ready';
   readonly requirements: readonly CodingSetupRequirement[];
   readonly runtimeDetails: CodingRuntimeDetails;
@@ -64,6 +65,7 @@ export type CodingApplicationEvent =
       readonly type: 'command.settled';
       readonly result: import('@agent-core/tools').CommandExecutionResult;
     }
+  | { readonly type: 'history.recovery'; readonly progress: import('@agent-core/runtime/node').HistoryIndexRecoveryProgress }
   | AgentSessionEvent
   | ApplicationDeliveryEvent
   | { readonly type: 'application.state.changed'; readonly state: CodingApplicationState }

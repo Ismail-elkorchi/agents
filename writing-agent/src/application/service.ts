@@ -58,10 +58,12 @@ export interface WritingApplicationOptions {
   readonly sessionId?: string;
   readonly mode?: WritingMode;
   readonly configuration?: WritingConfiguration;
+  readonly modelSelection?: ModelSelection;
   readonly freshContinuation?: boolean;
   readonly maxOutputTokens?: number;
 }
 export interface WritingApplicationState {
+  readonly historyRecoveryFailures?: Readonly<Record<string, string>>;
   readonly workspace: string;
   readonly sessionId?: string;
   readonly provider?: string;
@@ -70,6 +72,7 @@ export interface WritingApplicationState {
   readonly status: 'ready' | 'running' | 'suspended' | 'configuration_required' | 'closed';
 }
 export type WritingApplicationEvent =
+  | { readonly type: 'history.recovery'; readonly progress: import('@agent-core/runtime/node').HistoryIndexRecoveryProgress }
   | AgentSessionEvent
   | ApplicationDeliveryEvent
   | {
@@ -83,7 +86,9 @@ export type WritingSubmissionResult =
 /** Coordinates workspace authority and a Core session; editorial decisions belong to the conversation. */
 export class WritingApplication {
   private readonly events = new ApplicationEvents<WritingApplicationEvent>((event) =>
-    event.type === 'run.progress' ? progressReplacementKey(event.event) : undefined
+    event.type === 'run.progress' ? progressReplacementKey(event.event)
+      : event.type === 'history.recovery' && event.progress.phase === 'progress'
+        ? `history.recovery:${event.progress.sessionId}` : undefined
   );
   private readonly sessions: JsonlSessionRepository;
   private readonly documents: WritingDocuments;
@@ -98,6 +103,8 @@ export class WritingApplication {
   private readonly maxOutputTokens: number | undefined;
   private mutations: Promise<void> = Promise.resolve();
   private closeCompletion: Promise<void> | undefined;
+  private historyRecovery: AbortController | undefined;
+  private readonly historyRecoveryFailures = new Map<string, string>();
 
   constructor(
     private readonly workspace: WritingWorkspace,
@@ -115,6 +122,7 @@ export class WritingApplication {
     this.initialSessionId = options.sessionId;
     this.maxOutputTokens = options.maxOutputTokens;
     this.configuration = options.configuration;
+    this.selection = options.modelSelection;
     this.mode = options.mode ?? 'edit';
     this.freshContinuation = options.freshContinuation ?? false;
   }
@@ -131,6 +139,9 @@ export class WritingApplication {
     const phase = this.composition?.agent.state().phase;
     return {
       workspace: this.workspace.directory,
+      ...(this.historyRecoveryFailures.size === 0 ? {} : {
+        historyRecoveryFailures: Object.fromEntries(this.historyRecoveryFailures)
+      }),
       mode: this.mode,
       ...(this.descriptor ? { sessionId: this.descriptor.id } : {}),
       ...(this.configuration
@@ -159,7 +170,9 @@ export class WritingApplication {
   start(): Promise<void> {
     return this.mutate(async () => {
       if (this.descriptor) return;
-      const id = this.initialSessionId ?? (await this.listSessions())[0]?.id;
+      const summaries = await this.recoverHistoryIndexes(this.initialSessionId);
+      this.assertOpen();
+      const id = this.initialSessionId ?? summaries[0]?.id;
       this.descriptor =
         id === undefined
           ? await this.sessions.create({ binding: this.workspace.binding })
@@ -168,7 +181,7 @@ export class WritingApplication {
         const replay = await this.sessions.loadReplayState(this.descriptor);
         const recorded = recordedModelSelection(replay.branch);
         let selection: ModelSelection | undefined =
-          recorded === undefined
+          this.selection ?? (recorded === undefined
             ? undefined
             : {
                 provider: recorded.provider,
@@ -176,7 +189,7 @@ export class WritingApplication {
                 ...(recorded.reasoning === undefined ? {} : { reasoning: recorded.reasoning }),
                 ...(recorded.endpoint === undefined ? {} : { endpoint: recorded.endpoint }),
                 ...(recorded.temperature === undefined ? {} : { temperature: recorded.temperature })
-              };
+              });
         if (selection === undefined) {
           let encoded: string | undefined;
           try {
@@ -198,6 +211,49 @@ export class WritingApplication {
       }
       await this.connect();
     });
+  }
+
+  private publishHistoryRecovery(progress: import('@agent-core/runtime/node').HistoryIndexRecoveryProgress): void {
+    if (progress.phase === 'failed') this.historyRecoveryFailures.set(progress.sessionId, progress.message);
+    else if (progress.phase === 'completed') this.historyRecoveryFailures.delete(progress.sessionId);
+    this.events.publish({ type: 'history.recovery', progress });
+  }
+
+  private async recoverHistoryIndexes(sessionId?: string) {
+    const controller = new AbortController();
+    this.historyRecovery = controller;
+    let activeSessionId = sessionId;
+    const observedFailures = new Map<string, string>();
+    try {
+      const summaries = await this.sessions.recoverHistoryIndexes(this.workspace.binding, {
+          ...(sessionId === undefined ? {} : { sessionId }),
+          signal: controller.signal,
+          onProgress: (progress) => {
+            activeSessionId = progress.phase === 'started' || progress.phase === 'progress'
+              ? progress.sessionId : undefined;
+            if (progress.phase === 'failed') observedFailures.set(progress.sessionId, progress.message);
+            this.publishHistoryRecovery(progress);
+          }
+        });
+      if (sessionId === undefined) {
+        this.historyRecoveryFailures.clear();
+        for (const [id, message] of observedFailures) this.historyRecoveryFailures.set(id, message);
+      } else for (const summary of summaries) this.historyRecoveryFailures.delete(summary.id);
+      return summaries;
+    } catch (error) {
+      const failedSessionId = error instanceof Error && 'sessionId' in error && typeof error.sessionId === 'string'
+        ? error.sessionId : activeSessionId;
+      if (failedSessionId !== undefined) this.publishHistoryRecovery({
+          phase: controller.signal.aborted ? 'cancelled' : 'failed',
+          sessionId: failedSessionId,
+          message: controller.signal.aborted
+            ? `History index recovery cancelled for session ${JSON.stringify(failedSessionId)}. Original history is unchanged.`
+            : error instanceof Error ? error.message : String(error)
+      });
+      throw error;
+    } finally {
+      this.historyRecovery = undefined;
+    }
   }
 
   modelSelection(): ModelSelection | undefined {
@@ -422,12 +478,13 @@ export class WritingApplication {
   }
 
   listSessions() {
-    return this.sessions.list();
+    return this.mutate(() => this.recoverHistoryIndexes());
   }
 
   selectSession(sessionId: string): Promise<void> {
     return this.mutate(async () => {
       this.requireIdle();
+      await this.recoverHistoryIndexes(sessionId);
       const descriptor = await this.sessions.open(sessionId, this.workspace.binding);
       await this.disconnect();
       this.descriptor = descriptor;
@@ -545,7 +602,11 @@ export class WritingApplication {
   }
   abort(runId?: string) {
     this.assertOpen();
-    return this.requireAgent().abort('Stopped by the user.', runId);
+    if (runId === undefined && this.historyRecovery !== undefined) {
+      this.historyRecovery.abort();
+      return Promise.resolve(true);
+    }
+    return this.composition?.agent.abort('Stopped by the user.', runId) ?? Promise.resolve(false);
   }
   async resume(runId: string) {
     this.assertOpen();
@@ -562,6 +623,7 @@ export class WritingApplication {
   }
 
   close(): Promise<void> {
+    this.historyRecovery?.abort();
     this.closeCompletion ??= this.mutations.then(async () => {
       try {
         await this.disconnect();
@@ -664,7 +726,10 @@ export class WritingApplication {
   }
   private mutate<T>(operation: () => T | Promise<T>): Promise<T> {
     this.assertOpen();
-    const result = this.mutations.then(operation).finally(() => {
+    const result = this.mutations.then(() => {
+      this.assertOpen();
+      return operation();
+    }).finally(() => {
       this.events.publish({
         type: 'application.state.changed',
         state: this.state()

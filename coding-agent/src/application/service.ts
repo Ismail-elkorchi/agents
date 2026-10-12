@@ -60,7 +60,9 @@ import {
 
 export class CodingApplication {
   private readonly events = new ApplicationEvents<CodingApplicationEvent>((event) =>
-    event.type === 'run.progress' ? progressReplacementKey(event.event) : undefined
+    event.type === 'run.progress' ? progressReplacementKey(event.event)
+      : event.type === 'history.recovery' && event.progress.phase === 'progress'
+        ? `history.recovery:${event.progress.sessionId}` : undefined
   );
   private run: Promise<void> = Promise.resolve();
   private workspace: OpenCodingWorkspace;
@@ -73,6 +75,8 @@ export class CodingApplication {
   private resolvedSettings: RuntimeSettingsSelection = {};
   private configurationLoaded = false;
   private started = false;
+  private historyRecovery: AbortController | undefined;
+  private readonly historyRecoveryFailures = new Map<string, string>();
   private closed = false;
   private closeCompletion: Promise<void> | undefined;
   private applicationState: CodingApplicationState;
@@ -101,9 +105,13 @@ export class CodingApplication {
   }
 
   state(): CodingApplicationState {
-    return this.runtime === undefined
-      ? this.applicationState
-      : { ...this.applicationState, session: this.runtime.agent.state() };
+    return {
+      ...this.applicationState,
+      ...(this.runtime === undefined ? {} : { session: this.runtime.agent.state() }),
+      ...(this.historyRecoveryFailures.size === 0 ? {} : {
+        historyRecoveryFailures: Object.fromEntries(this.historyRecoveryFailures)
+      })
+    };
   }
 
   subscribe(
@@ -116,8 +124,8 @@ export class CodingApplication {
   start(): Promise<void> {
     return this.serial(async () => {
       if (this.started) return;
-      this.started = true;
       await this.refreshAndActivate();
+      this.started = true;
     });
   }
 
@@ -266,6 +274,7 @@ export class CodingApplication {
 
   private async closeOwnedResources(): Promise<void> {
     this.closed = true;
+    this.historyRecovery?.abort();
     await this.run.catch(() => undefined);
     const runtime = this.runtime;
     this.runtime = undefined;
@@ -294,7 +303,62 @@ export class CodingApplication {
       throw new AggregateError(failures, 'Coding application cleanup failed.');
   }
 
+  private publishHistoryRecovery(progress: import('@agent-core/runtime/node').HistoryIndexRecoveryProgress): void {
+    if (progress.phase === 'failed') this.historyRecoveryFailures.set(progress.sessionId, progress.message);
+    else if (progress.phase === 'completed') this.historyRecoveryFailures.delete(progress.sessionId);
+    this.events.publish({ type: 'history.recovery', progress });
+  }
+
+  private async recoverHistoryIndexes(sessionId?: string) {
+    const controller = new AbortController();
+    this.historyRecovery = controller;
+    let activeSessionId = sessionId;
+    const observedFailures = new Map<string, string>();
+    try {
+      const summaries = await new JsonlSessionRepository({ rootDir: this.workspace.layout.sessionsDir })
+        .recoverHistoryIndexes(codingWorkspaceSessionBinding(this.workspace.layout.identity), {
+          ...(sessionId === undefined ? {} : { sessionId }),
+          signal: controller.signal,
+          onProgress: (progress) => {
+            activeSessionId = progress.phase === 'started' || progress.phase === 'progress'
+              ? progress.sessionId : undefined;
+            if (progress.phase === 'failed') observedFailures.set(progress.sessionId, progress.message);
+            this.publishHistoryRecovery(progress);
+          }
+        });
+      if (sessionId === undefined) {
+        this.historyRecoveryFailures.clear();
+        for (const [id, message] of observedFailures) this.historyRecoveryFailures.set(id, message);
+      } else for (const summary of summaries) this.historyRecoveryFailures.delete(summary.id);
+      return summaries;
+    } catch (error) {
+      const failedSessionId = error instanceof Error && 'sessionId' in error && typeof error.sessionId === 'string'
+        ? error.sessionId : activeSessionId;
+      if (failedSessionId !== undefined) this.publishHistoryRecovery({
+          phase: controller.signal.aborted ? 'cancelled' : 'failed',
+          sessionId: failedSessionId,
+          message: controller.signal.aborted
+            ? `History index recovery cancelled for session ${JSON.stringify(failedSessionId)}. Original history is unchanged.`
+            : error instanceof Error ? error.message : String(error)
+      });
+      throw error;
+    } finally {
+      this.historyRecovery = undefined;
+    }
+  }
+
   private async refreshAndActivate(): Promise<void> {
+    this.assertOpen();
+    const sessionId = this.selectedSessionId ??
+      (this.options.sessionSelection.kind === 'existing' ? this.options.sessionSelection.id : undefined);
+    if (sessionId !== undefined || this.options.sessionSelection.kind === 'latest') {
+      const summaries = await this.recoverHistoryIndexes(sessionId);
+      if (sessionId === undefined) {
+        const latest = summaries[0];
+        if (latest === undefined) throw new Error('No existing session is available to resume.');
+        this.selectedSessionId = latest.id;
+      }
+    }
     this.assertOpen();
     if (!this.configurationLoaded) await this.loadConfiguration();
     this.resolvedSettings = await this.resolveSettings();
@@ -792,7 +856,11 @@ export class CodingApplication {
 
   listSessions() {
     this.assertOpen();
-    return new JsonlSessionRepository({ rootDir: this.workspace.layout.sessionsDir }).list();
+    return this.serial(async () => {
+      const summaries = await this.recoverHistoryIndexes();
+      await this.emit({ type: 'application.state.changed', state: this.state() });
+      return summaries;
+    });
   }
 
   newSession(): Promise<void> {
@@ -825,8 +893,13 @@ export class CodingApplication {
   }
 
   abort(reason?: string, expectedRunId?: string): Promise<boolean> {
-    const agent = this.requireRuntime().agent;
-    return agent.abort(reason, expectedRunId ?? agent.state().activeRunId);
+    if (expectedRunId === undefined && this.historyRecovery !== undefined) {
+      this.historyRecovery.abort();
+      return Promise.resolve(true);
+    }
+    const agent = this.runtime?.agent;
+    return agent === undefined ? Promise.resolve(false)
+      : agent.abort(reason, expectedRunId ?? agent.state().activeRunId);
   }
 
   async resumeSuspension(expectedRunId?: string): Promise<AgentRunResult> {
@@ -901,7 +974,7 @@ export class CodingApplication {
       runtimeDetails,
       ...(session === undefined ? {} : { session })
     });
-    await this.emit({ type: 'application.state.changed', state: this.applicationState });
+    await this.emit({ type: 'application.state.changed', state: this.state() });
   }
 
   private emit(event: CodingApplicationEvent): Promise<void> {

@@ -58,3 +58,18 @@ can exceed that amount; actual usage still counts against the continuing session
 budget. This default has structural coverage, not live-model quality validation.
 
 Model, reasoning, and account commands open directly. Escape closes the active popup or interrupts active work; it preserves the draft. Submission failures remain visible above the composer until dismissed.
+
+## Automatic history-index recovery
+
+Session restoration and listing automatically rebuild missing, stale, or damaged
+derived history indexes before loading sessions. Recovery needs no model credentials or
+workspace execution trust. The TUI shows progress and supports Escape to stop;
+non-interactive commands report progress on stderr and support Ctrl-C. Closing the
+TUI or RPC connection also cancels recovery; RPC clients receive `history.recovery`
+events and can use the existing `application.shutdown` request.
+
+Recovery validates the original history and atomically publishes only its derived
+index. Cancellation before publication preserves the previous index. A session whose
+original records cannot be decoded or validated stays unavailable with a visible
+diagnostic; other valid sessions remain usable. Explicitly opening that unavailable
+session fails safely. Original records are never skipped, migrated, or deleted.

@@ -31,6 +31,7 @@ import {
 import { CodingApplication } from './application/service.js';
 import type { CodingRunVerification } from './verification/configured-check-tool.js';
 import { openCodingWorkspace } from './workspace.js';
+import { HistoryRecoveryProgressRenderer } from '@agent-core/tui';
 
 type CliAuthProviderId = 'openai' | 'openai-codex';
 
@@ -109,9 +110,12 @@ export async function main(argv: string[]): Promise<void> {
     });
     let completed: AgentRunResult | undefined;
     let failure: Error | undefined;
+    const historyProgress = new HistoryRecoveryProgressRenderer(message => { process.stderr.write(`${message}\n`); });
     const unsubscribe = application.subscribe(
       (event) => {
-        if (event.type === 'run.progress') progress.handle(event.event);
+        if (event.type === 'history.recovery')
+          historyProgress.handle(event.progress);
+        else if (event.type === 'run.progress') progress.handle(event.event);
         else if (event.type === 'run.completed') completed = event.result;
         else if (event.type === 'run.failed') failure = event.error;
       },
@@ -119,8 +123,20 @@ export async function main(argv: string[]): Promise<void> {
         failure = error;
       }
     );
+    const cancellation = { interrupted: false };
+    const isInterrupted = () => cancellation.interrupted;
+    const cancel = (signal: NodeJS.Signals) => {
+      cancellation.interrupted = true;
+      process.exitCode = signal === 'SIGINT' ? 130 : 143;
+      void application.close().catch((error: unknown) => {
+        process.stderr.write(`${formatCliError(error)}\n`);
+      });
+    };
+    process.once('SIGINT', cancel);
+    process.once('SIGTERM', cancel);
     try {
       await application.start();
+      if (isInterrupted()) return;
       const state = application.state();
       if (state.status !== 'ready')
         throw new Error(
@@ -151,8 +167,12 @@ export async function main(argv: string[]): Promise<void> {
         await application.readVerification(runIdOf(result))
       );
       printPersistenceLocations(application, result);
-      process.exitCode = resultExitCode(result);
+      if (!isInterrupted()) process.exitCode = resultExitCode(result);
+    } catch (error) {
+      if (!isInterrupted()) throw error;
     } finally {
+      process.removeListener('SIGINT', cancel);
+      process.removeListener('SIGTERM', cancel);
       unsubscribe();
       await application.close();
     }
@@ -317,9 +337,12 @@ async function runApprovalCommand(args: string[]): Promise<void> {
   const application = new CodingApplication(parsed.options, workspace);
   const progress = new CodingAgentProgressRenderer({ showReasoning: parsed.options.showReasoning });
   let deliveryFailure: Error | undefined;
+  const historyProgress = new HistoryRecoveryProgressRenderer(message => { process.stderr.write(`${message}\n`); });
   const unsubscribe = application.subscribe(
     (event) => {
-      if (event.type === 'run.progress') progress.handle(event.event);
+      if (event.type === 'history.recovery')
+        historyProgress.handle(event.progress);
+      else if (event.type === 'run.progress') progress.handle(event.event);
     },
     (error) => {
       deliveryFailure = error;

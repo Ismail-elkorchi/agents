@@ -86,12 +86,30 @@ export async function runWritingRpc(
     readonly diagnostic: (message: string) => void;
   }
 ) {
+  let startup = Promise.resolve();
+  const lifecycle = { closing: false };
+  const methods = writingRpcMethods(application, () => {
+    lifecycle.closing = true;
+    connection.stop();
+  });
   const connection = new JsonlRpcConnection({
     ...streams,
-    methods: writingRpcMethods(application, () => {
-      connection.stop();
-    }),
-    onClose: () => application.close()
+    methods: Object.fromEntries(Object.entries(methods).map(([name, method]) => [
+      name,
+      {
+        ...method,
+        async invoke(params: unknown) {
+          // Cancellation remains available while startup restores history.
+          if (name !== 'application.shutdown')
+            await startup;
+          return method.invoke(params);
+        }
+      }
+    ])),
+    onClose: () => {
+      lifecycle.closing = true;
+      return application.close();
+    }
   });
   const unsubscribe = application.subscribe(
     (event) =>
@@ -109,11 +127,28 @@ export async function runWritingRpc(
       connection.stop();
     }
   );
+  const cancel = (signal: NodeJS.Signals) => {
+    lifecycle.closing = true;
+    process.exitCode = signal === 'SIGINT' ? 130 : 143;
+    connection.stop();
+  };
+  process.once('SIGINT', cancel);
+  process.once('SIGTERM', cancel);
+  startup = application.start();
+  const running = connection.run();
   try {
-    await application.start();
-    await connection.run();
+    await Promise.all([startup, running]);
+  } catch (error) {
+    if (!(lifecycle.closing && error instanceof Error && error.name === 'AbortError')) throw error;
   } finally {
-    unsubscribe();
-    await application.close();
+    process.removeListener('SIGINT', cancel);
+    process.removeListener('SIGTERM', cancel);
+    connection.stop();
+    try {
+      await running;
+    } finally {
+      unsubscribe();
+      await application.close();
+    }
   }
 }

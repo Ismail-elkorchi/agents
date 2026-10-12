@@ -1,3 +1,4 @@
+import { historyRecoveryMessage } from '@agent-core/tui';
 import { contextView } from '@agent-core/tui';
 import {
   attachmentsView,
@@ -62,6 +63,12 @@ export function writingView(
     state.completion === undefined ? 0 : Math.min(limit, state.completion.names.length) + 1;
   const fields = writingStatusFields(state);
   const title = responsiveStatusline('Writing', state.preferences, fields, columns);
+  const feedback = [
+    ...Object.entries(state.application.historyRecoveryFailures ?? {}).map(
+      ([sessionId, message]) => `Unavailable session ${JSON.stringify(sessionId)}: ${message}`
+    ),
+    state.notice
+  ].filter(Boolean).join('\n');
   const main = conversationFrame({
     id: 'writing-workspace',
     terminalRows: rows,
@@ -69,15 +76,19 @@ export function writingView(
     slots: {
       status: text({ id: 'writing-status', content: title }),
       activity: activityLine(
-        state.application.status === 'running' ? state.progress.label : '',
+        state.historyRecovery === undefined
+          ? state.application.status === 'running' ? state.progress.label : ''
+          : columns < 90
+            ? `History recovery${state.historyRecovery.phase === 'progress' ? ` · ${String(state.historyRecovery.records)} records` : ''}`
+            : historyRecoveryMessage(state.historyRecovery),
         state.activityClock
       ),
-      ...(state.notice
+      ...(feedback
         ? {
             feedback: row(
               [
                 viewport(
-                  richText({ segments: [{ kind: 'text', text: state.notice }], wrap: true }),
+                  richText({ segments: [{ kind: 'text', text: feedback }], wrap: true }),
                   {
                     id: 'writing-feedback',
                     offset: { row: state.noticeOffset },
@@ -88,9 +99,9 @@ export function writingView(
                     })
                   }
                 ),
-                action('dismiss-notice', 'Dismiss', { type: 'notice.dismiss' })
+                ...(state.notice ? [action('dismiss-notice', 'Dismiss', { type: 'notice.dismiss' })] : [])
               ],
-              { sizes: [{ kind: 'fill' }, { kind: 'content' }] }
+              { sizes: state.notice ? [{ kind: 'fill' }, { kind: 'content' }] : [{ kind: 'fill' }] }
             )
           }
         : {}),
@@ -158,6 +169,7 @@ export function writingView(
           })
         ],
         {
+          id: 'writing-composer-area',
           sizes: [
             ...(rows < 8 ? [] : [{ kind: 'fixed' as const, cells: 1 }]),
             ...(state.resourceCompletion === undefined

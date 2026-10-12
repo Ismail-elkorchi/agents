@@ -4,8 +4,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { openWritingApplication } from './application/service.js';
+import { HistoryRecoveryProgressRenderer } from '@agent-core/tui';
 import {
-  createWritingProvider,
   createWritingReasoningRequest,
   parseWritingProviderId
 } from './provider.js';
@@ -78,18 +78,38 @@ export async function main(argv: readonly string[]): Promise<void> {
     ...(provider === undefined || model === undefined
       ? {}
       : {
-          configuration: {
-            ...createWritingProvider({
-              provider: parseWritingProviderId(provider),
-              model,
-              ...(values.endpoint === undefined ? {} : { endpoint: values.endpoint })
-            }),
+          modelSelection: {
+            provider: parseWritingProviderId(provider),
+            model,
+            ...(values.endpoint === undefined ? {} : { endpoint: values.endpoint }),
             ...(reasoning === undefined ? {} : { reasoning })
           }
         })
   });
+  const cancellation = { interrupted: false };
+  const isInterrupted = () => cancellation.interrupted;
+  const cancel = (signal: NodeJS.Signals) => {
+    cancellation.interrupted = true;
+    process.exitCode = signal === 'SIGINT' ? 130 : 143;
+    void application.close().catch((error: unknown) => {
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    });
+  };
+  const historyProgress = new HistoryRecoveryProgressRenderer(message => { process.stderr.write(`${message}\n`); });
+  const unsubscribe = command === 'write' || command === 'review'
+    ? application.subscribe(
+        (event) => {
+          if (event.type === 'history.recovery')
+            historyProgress.handle(event.progress);
+        },
+        (error) => { process.stderr.write(`${error.message}\n`); }
+      )
+    : undefined;
+  if (unsubscribe !== undefined) {
+    process.once('SIGINT', cancel);
+    process.once('SIGTERM', cancel);
+  }
   try {
-    await application.start();
     if (command === 'tui') {
       const { runWritingAgentTuiApp } = await import('./tui/index.js');
       await runWritingAgentTuiApp(application);
@@ -103,6 +123,8 @@ export async function main(argv: readonly string[]): Promise<void> {
         }
       });
     } else {
+      await application.start();
+      if (isInterrupted()) return;
       const contextItems = await Promise.all(
         (values.passage ?? []).map((encoded) => {
           const input: unknown = JSON.parse(encoded);
@@ -123,10 +145,15 @@ export async function main(argv: readonly string[]): Promise<void> {
         process.stderr.write(
           `Run ${result.state === 'ended' ? result.terminal.executionStatus : 'suspended'}. Open the TUI to inspect recorded results and recovery actions.\n`
         );
-        process.exitCode = 1;
+        if (!isInterrupted()) process.exitCode = 1;
       }
     }
+  } catch (error) {
+    if (!isInterrupted()) throw error;
   } finally {
+    process.removeListener('SIGINT', cancel);
+    process.removeListener('SIGTERM', cancel);
+    unsubscribe?.();
     await application.close();
   }
 }

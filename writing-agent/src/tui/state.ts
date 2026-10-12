@@ -64,6 +64,7 @@ export type WritingTuiOverlay =
     };
 
 export interface WritingTuiState {
+  readonly historyRecovery?: Extract<WritingTuiMessage, { readonly type: 'history.recovery' }>['progress'];
   readonly recoveryOperation?: { readonly id: string; readonly sessionId: string };
   readonly activityClock?: import('@agent-core/tui').ActivityClock | undefined;
   readonly queuePanel?: import('@ismail-elkorchi/terminal-ui/tui').TuiChildState<
@@ -172,6 +173,7 @@ export function initialWritingState(
 }
 
 export type WritingTuiMessage =
+  | Extract<import('../application/service.js').WritingApplicationEvent, { readonly type: 'history.recovery' }>
   | { readonly type: 'notice.scroll'; readonly offset: number }
   | {
       readonly type: 'document.split';

@@ -1,3 +1,4 @@
+import { historyRecoveryMessage } from '@agent-core/tui';
 import { intervalSource } from '@ismail-elkorchi/terminal-ui/tui';
 import type { AgentApprovalRequest, AgentApprovalSuspension } from '@agent-core/runtime';
 import type { ConversationEntry } from '@agent-core/tui';
@@ -297,7 +298,8 @@ export function createCodingAgentTuiApp(
         'escape',
         {},
         { type: 'work.interrupt' },
-        ({ state }) => canOpenOverlay(state) && state.run.kind === 'working'
+        ({ state }) =>
+          canOpenOverlay(state) && (state.historyRecovery !== undefined || state.run.kind === 'working')
       ),
       ...(
         [
@@ -520,7 +522,7 @@ export function createCodingAgentTuiApp(
             message.type === 'progress' && message.event.type === 'run.configured'
               ? undefined
               : state.activityClock,
-            result.state.run.kind === 'working',
+            result.state.historyRecovery !== undefined || result.state.run.kind === 'working',
             context.clock.monotonicNow()
           )
         }
@@ -572,7 +574,7 @@ export function createCodingAgentTuiApp(
     },
     inputBindings: shortcuts.inputBindings,
     subscriptions: (state, context) => [
-      ...(state.run.kind === 'working'
+      ...(state.historyRecovery !== undefined || state.run.kind === 'working'
         ? [intervalSource('activity-clock', 1000, { type: 'activity.tick' as const })]
         : []),
       ...(eventSource === undefined ? [] : [eventSource]),
@@ -646,6 +648,23 @@ function updateCodingAgentTui(
   switch (message.type) {
     case 'activity.tick':
       return { state };
+    case 'history.recovery.scroll':
+      return { state: { ...state, historyRecoveryFailureOffset: message.offset } };
+    case 'history.recovery': {
+      if (message.progress.phase === 'started' || message.progress.phase === 'progress')
+        return { state: { ...state, historyRecovery: message.progress } };
+      const failures = message.progress.phase === 'failed'
+        ? { ...state.historyRecoveryFailures, [message.progress.sessionId]: historyRecoveryMessage(message.progress) }
+        : { ...state.historyRecoveryFailures };
+      const retained = message.progress.phase === 'completed'
+        ? Object.fromEntries(Object.entries(failures).filter(([id]) => id !== message.progress.sessionId))
+        : failures;
+      const next = { ...state, historyRecoveryFailures: retained, historyRecoveryFailureOffset: 0 };
+      delete next.historyRecovery;
+      return updated(message.progress.phase === 'cancelled'
+        ? appendNotice(next, historyRecoveryMessage(message.progress), 'warning')
+        : next);
+    }
     case 'context.open':
     case 'context.fresh':
     case 'context.apply':
@@ -1509,6 +1528,8 @@ function updateCodingAgentTui(
       };
     }
     case 'work.interrupt':
+      if (state.historyRecovery !== undefined)
+        return executeCommand(state, '/stop', options.commandHandler);
       if (state.run.kind === 'waiting_for_recovery')
         return updateCodingAgentTui(
           state,
@@ -1714,6 +1735,7 @@ function applyInteractiveState(
       requirements: interactive.requirements
     },
     runtimeDetails: interactive.runtimeDetails,
+    historyRecoveryFailures: interactive.historyRecoveryFailures ?? {},
     debug: {
       ...state.debug,
       ...(interactive.runtimeDetails.sessionLocation === undefined
@@ -1947,6 +1969,9 @@ function agentTuiView(
   childPanel?: Element<CodingAgentTuiMessage>
 ): Element<CodingAgentTuiMessage> {
   const limit = suggestionLimit(context.terminalSize.rows);
+  const recoveryFailures = Object.entries(state.historyRecoveryFailures ?? {}).map(
+    ([sessionId, message]) => `Unavailable session ${JSON.stringify(sessionId)}: ${message}`
+  ).join('\n');
   const workspace = conversationFrame({
     id: 'coding-agent-tui',
     terminalRows: context.terminalSize.rows,
@@ -1962,9 +1987,26 @@ function agentTuiView(
     slots: {
       status: statusChrome(state, context.terminalSize.columns),
       conversation: conversationView(state, context),
+      ...(recoveryFailures ? {
+        feedback: viewport(
+          richText({ segments: body(recoveryFailures), wrap: true }),
+          {
+            id: 'coding-history-recovery-feedback',
+            offset: { row: state.historyRecoveryFailureOffset ?? 0 },
+            scrollbar: { axis: 'vertical', visible: 'auto' },
+            onScroll: (request): CodingAgentTuiMessage => ({
+              type: 'history.recovery.scroll', offset: request.nextState.offsetRow
+            })
+          }
+        )
+      } : {}),
       activity: activityLine(
         [
-          state.run.kind === 'working' ? state.progress.label : '',
+          state.historyRecovery === undefined
+            ? state.run.kind === 'working' ? state.progress.label : ''
+            : context.terminalSize.columns < 90
+              ? `History recovery${state.historyRecovery.phase === 'progress' ? ` · ${String(state.historyRecovery.records)} records` : ''}`
+              : historyRecoveryMessage(state.historyRecovery),
           state.conversation.unread ? 'New output · Ctrl+End' : ''
         ]
           .filter(Boolean)
@@ -1985,7 +2027,7 @@ function agentTuiView(
                 }),
                 composerView(state, limit)
               ],
-              { sizes: [{ kind: 'fixed', cells: 1 }, { kind: 'fill' }] }
+              { id: 'coding-composer-area', sizes: [{ kind: 'fixed', cells: 1 }, { kind: 'fill' }] }
             ),
       footer: [
         ...(state.setup.status === 'setup_required'
@@ -2011,7 +2053,7 @@ function agentTuiView(
           label: 'Commands',
           onPress: () => ({ type: 'overlay.open', overlay: 'commands' })
         }),
-        ...(state.run.kind === 'working'
+        ...(state.historyRecovery !== undefined || state.run.kind === 'working'
           ? [
               button<CodingAgentTuiMessage>({
                 id: 'stop-work',

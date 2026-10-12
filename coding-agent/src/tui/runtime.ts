@@ -39,7 +39,11 @@ export async function runCodingAgentTuiApp(
   let result: AgentRunResult | undefined;
   const events = applicationEventSource<CodingAgentTuiMessage>('coding-agent-events', {
     replacementKey: (message) =>
-      message.type === 'progress' ? progressReplacementKey(message.event) : undefined,
+      message.type === 'progress'
+        ? progressReplacementKey(message.event)
+        : message.type === 'history.recovery' && message.progress.phase === 'progress'
+          ? `history-recovery:${message.progress.sessionId}`
+          : undefined,
     failureMessage: (message) => ({ type: 'delivery.failed', message }),
     subscribe: (emit, failed) => {
       return controller.subscribe(async (event) => {
@@ -209,6 +213,9 @@ async function presentControllerEvent(
     case 'input.revised':
     case 'input.cancelled':
       return currentResult;
+    case 'history.recovery':
+      message = event;
+      break;
     case 'application.state.changed':
       message = { type: 'application.state.changed', state: event.state };
       break;

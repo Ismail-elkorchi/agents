@@ -24,13 +24,17 @@ export async function runWritingAgentTuiApp(
     replacementKey: (message) =>
       message.type === 'progress'
         ? progressReplacementKey(message.event)
-        : message.type === 'refresh'
+        : message.type === 'history.recovery' && message.progress.phase === 'progress'
+          ? `history-recovery:${message.progress.sessionId}`
+          : message.type === 'refresh'
           ? 'session-refresh'
           : undefined,
     failureMessage: (message) => ({ type: 'notice', message }),
     subscribe: (emit, failed) => {
       return application.subscribe(async (event) => {
         switch (event.type) {
+          case 'history.recovery':
+            return emit(event);
           case 'application.state.changed':
             return emit({ type: 'application', state: application.state() });
           case 'run.progress':
@@ -55,7 +59,12 @@ export async function runWritingAgentTuiApp(
       }, failed);
     },
     start: async (emit) => {
-      await emit({ type: 'refresh' });
+      try {
+        await application.start();
+        await emit({ type: 'refresh' });
+      } catch (error) {
+        await emit({ type: 'notice', message: error instanceof Error ? error.message : String(error) });
+      }
     }
   });
   return runTerminalApplication({
