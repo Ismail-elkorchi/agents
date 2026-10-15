@@ -9,7 +9,7 @@ for (const permissionMode of ['read_only', 'full_host'])
     const fixture = await createWorkspace({ endpoint: provider.endpoint, tools: ['read_files', 'view_image'],
       checks: [{ id: 'test', command: 'npm test', coverage: 'full' }] });
     await trust(fixture);
-    const options = { root: fixture.root, stateRoot: fixture.stateRoot, permissionMode, providerEndpoint: provider.endpoint };
+    const options = { maxOutputTokens: fixture.maxOutputTokens, root: fixture.root, stateRoot: fixture.stateRoot, permissionMode, providerEndpoint: provider.endpoint };
     const app = await openCodingApplication(options);
     t.after(async () => { await app.close(); await provider.close(); await fixture.close(); });
     await app.start();
@@ -51,7 +51,7 @@ test('reading source preserves identifiers and redacts credentials without inter
   });
   await trust(fixture);
   app = await openCodingApplication({
-    root: fixture.root, stateRoot: fixture.stateRoot,
+    maxOutputTokens: fixture.maxOutputTokens, root: fixture.root, stateRoot: fixture.stateRoot,
     permissionMode: 'read_only', providerEndpoint: provider.endpoint
   });
   await app.start();

@@ -44,6 +44,7 @@ test(
     await trust(f);
     app = await openCodingApplication(
       {
+        maxOutputTokens: f.maxOutputTokens,
         root: f.root,
         stateRoot: f.stateRoot,
         providerEndpoint: provider.endpoint,

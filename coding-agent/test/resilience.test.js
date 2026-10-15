@@ -48,10 +48,29 @@ test('a question completes without mutating the workspace', async () => {
     ]);
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, /returns the number of values/u);
+    assert.equal(provider.chatRequests[0].options.num_predict, fixture.maxOutputTokens);
     assert.equal(
       await readFile(path.join(fixture.root, 'src/count.js'), 'utf8'),
       'export const count = (values) => values.length;\n'
     );
+  } finally {
+    await provider.close();
+    await fixture.close();
+  }
+});
+
+for (const outputArgs of [['--max-output-tokens', '2048'], ['--max-output-tokens=2048']])
+test(`an explicit CLI output cap overrides the short-reply fixture allowance: ${outputArgs.join(' ')}`, async () => {
+  const provider = await scriptedOllama([finalResponse('Inspection complete.')]);
+  const fixture = await createWorkspace({ tools: [], checks: [], endpoint: provider.endpoint });
+  try {
+    await trust(fixture);
+    const result = await runCli(fixture, [
+      'exec', 'Inspect the workspace.', ...outputArgs
+    ]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(provider.chatRequests.length, 1);
+    assert.equal(provider.chatRequests[0].options.num_predict, 2048);
   } finally {
     await provider.close();
     await fixture.close();

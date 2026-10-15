@@ -23,6 +23,7 @@ test(
     await trust(fixture);
     application = await openCodingApplication(
       { permissionMode: 'full_host',
+        maxOutputTokens: fixture.maxOutputTokens,
         root: fixture.root,
         stateRoot: fixture.stateRoot,
         providerEndpoint: provider.endpoint

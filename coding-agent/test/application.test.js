@@ -93,6 +93,7 @@ test(
     });
     await trust(fixture);
     const options = {
+      maxOutputTokens: fixture.maxOutputTokens,
       root: fixture.root,
       stateRoot: fixture.stateRoot,
       providerEndpoint: provider.endpoint
@@ -129,6 +130,7 @@ test(
       const result = await acceptance.completion;
       assert.equal(result.state, 'ended', JSON.stringify(result));
       assert.equal(result.terminal.runId, acceptance.runId);
+      assert.equal(provider.chatRequests[0].options.num_predict, fixture.maxOutputTokens);
       const view = await application.readSession();
       assert(
         view.history.entries.some(
@@ -215,6 +217,7 @@ test(
     await trust(fixture);
     const application = await openCodingApplication({
       permissionMode: 'full_host',
+      maxOutputTokens: fixture.maxOutputTokens,
       root: fixture.root,
       stateRoot: fixture.stateRoot,
       provider: 'ollama',
@@ -267,6 +270,7 @@ test(
     await trust(fixture);
     const options = {
       permissionMode: 'read_only',
+      maxOutputTokens: fixture.maxOutputTokens,
       root: fixture.root,
       stateRoot: fixture.stateRoot,
       provider: 'ollama',

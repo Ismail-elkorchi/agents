@@ -38,6 +38,8 @@ test(
       f.root,
       '--state-root',
       f.stateRoot,
+      '--max-output-tokens',
+      String(f.maxOutputTokens),
       '--provider-endpoint',
       provider.endpoint
     ];
@@ -128,6 +130,8 @@ test(
       f.root,
       '--state-root',
       f.stateRoot,
+      '--max-output-tokens',
+      String(f.maxOutputTokens),
       '--provider-endpoint',
       provider.endpoint
     ];
@@ -191,6 +195,8 @@ test(
       f.root,
       '--state-root',
       f.stateRoot,
+      '--max-output-tokens',
+      String(f.maxOutputTokens),
       '--provider-endpoint',
       provider.endpoint,
       '--permissions',

@@ -71,6 +71,7 @@ for (const action of ['poll', 'stop', 'settle'])
       await trust(fixture);
       application = await openCodingApplication(
         {
+          maxOutputTokens: fixture.maxOutputTokens,
           root: fixture.root,
           stateRoot: fixture.stateRoot,
           providerEndpoint: provider.endpoint,
@@ -141,6 +142,7 @@ test(
     await trust(fixture);
     application = await openCodingApplication(
       {
+        maxOutputTokens: fixture.maxOutputTokens,
         root: fixture.root,
         stateRoot: fixture.stateRoot,
         providerEndpoint: provider.endpoint,
@@ -172,7 +174,7 @@ for (const background of [false, true]) test(`closing a local session durably ac
   let application;
   t.after(async () => { try { await application?.close(); } finally { await provider.close(); await fixture.close(); } });
   await trust(fixture);
-  application = await openCodingApplication({ root: fixture.root, stateRoot: fixture.stateRoot,
+  application = await openCodingApplication({ maxOutputTokens: fixture.maxOutputTokens, root: fixture.root, stateRoot: fixture.stateRoot,
     providerEndpoint: provider.endpoint, permissionMode: 'full_host' });
   await application.start();
   const submitted = await application.submit({ task: 'Run the command.' });
@@ -198,7 +200,7 @@ test('a refused process lookup is recorded and the coding session continues', { 
   let application;
   t.after(async () => { await application?.close(); await provider.close(); await fixture.close(); });
   await trust(fixture);
-  application = await openCodingApplication({ root: fixture.root, stateRoot: fixture.stateRoot,
+  application = await openCodingApplication({ maxOutputTokens: fixture.maxOutputTokens, root: fixture.root, stateRoot: fixture.stateRoot,
     providerEndpoint: provider.endpoint, permissionMode: 'full_host' });
   await application.start();
   const submitted = await application.submit({ task: 'Stop the missing process and continue.' });

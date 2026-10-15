@@ -25,7 +25,7 @@ for (const operation of ['close', 'newSession'])
     });
     await trust(fixture);
     application = await openCodingApplication({
-      root: fixture.root, stateRoot: fixture.stateRoot,
+      maxOutputTokens: fixture.maxOutputTokens, root: fixture.root, stateRoot: fixture.stateRoot,
       permissionMode: 'read_only', providerEndpoint: provider.endpoint
     });
     await application.start();

@@ -15,7 +15,8 @@ export async function createWorkspace({
   checks,
   files = {},
   trustLevel = 'trusted',
-  limits
+  limits,
+  maxOutputTokens = 4096
 }) {
   const parent = await mkdtemp(path.join(tmpdir(), 'coding-agent-product-'));
   const root = path.join(parent, 'workspace');
@@ -47,6 +48,8 @@ export async function createWorkspace({
     stateRoot,
     endpoint,
     trustLevel,
+    // Short scripted replies need a feasible explicit cap on the 32K fixture model.
+    maxOutputTokens,
     async close() {
       await rm(parent, { recursive: true, force: true });
     }
@@ -239,6 +242,9 @@ function cliArguments(fixture, args) {
         fixture.stateRoot,
         '--provider-endpoint',
         fixture.endpoint,
+        ...(args.some((arg) => arg.split('=', 1)[0] === '--max-output-tokens')
+          ? []
+          : ['--max-output-tokens', String(fixture.maxOutputTokens)]),
         ...(args.includes('--permissions') ? [] : ['--permissions', 'full_host'])
       ];
 }

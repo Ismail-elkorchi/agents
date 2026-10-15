@@ -169,6 +169,7 @@ test(
     await trust(fixture);
     application = await openCodingApplication(
       {
+        maxOutputTokens: fixture.maxOutputTokens,
         root: fixture.root,
         stateRoot: fixture.stateRoot,
         providerEndpoint: provider.endpoint,
@@ -214,7 +215,7 @@ test('scoped reads discover guidance before the next effect without claiming sou
     let application;
     t.after(async () => { await application?.close(); await provider.close(); await fixture.close(); });
     await trust(fixture);
-    application = await openCodingApplication({ root: fixture.root, stateRoot: fixture.stateRoot,
+    application = await openCodingApplication({ maxOutputTokens: fixture.maxOutputTokens, root: fixture.root, stateRoot: fixture.stateRoot,
       providerEndpoint: provider.endpoint, permissionMode: 'full_host' });
     await application.start();
     const submitted = await application.submit({ task: 'Read the source, then inspect its directory.' });
@@ -411,6 +412,7 @@ test(
     await trust(fixture);
     application = await openCodingApplication(
       { permissionMode: 'full_host',
+        maxOutputTokens: fixture.maxOutputTokens,
         root: fixture.root,
         stateRoot: fixture.stateRoot,
         providerEndpoint: provider.endpoint
