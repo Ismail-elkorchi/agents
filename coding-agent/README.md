@@ -29,7 +29,7 @@ Escape closes the top interaction. Ctrl+C copies an active selection, otherwise 
 
 `/attach` adds, inspects, or removes authorized file and passage context and supported native images. `@` completes workspace references. `/drafts` recalls earlier or recovered prompts without sending them. Drafts retain text, caret, selection, and attachments across session switches and controlled restart. `/editor` or Ctrl+G uses `VISUAL` or `EDITOR`, suspends terminal ownership, and preserves the draft on failure.
 
-`/sessions`, `/new`, `/name`, `/queue`, and `/branches` manage conversation navigation. Queue controls distinguish editing/canceling accepted pending input from composing a new request; steering is an explicit action. Branching history does not revert files. `/source` inspects messages, code, and tool results; `/export` writes the loaded history coverage locally. `/context` distinguishes available resources and the unsent draft from the latest admitted request and shows the current generated working state. `/processes` inspects session-owned commands and authority-wide recovery blockers. Input and termination require the current session owner; recovery decisions bind the current evidence revision. `/changes` shows recorded patches; `/recovery` handles pending approvals and uncertain outcomes.
+`/sessions`, `/new`, `/name`, `/queue`, and `/branches` manage conversation navigation. Queue controls distinguish editing/canceling accepted pending input from composing a new request; steering is an explicit action. Branching history does not revert files. `/source` inspects messages, code, and tool results; `/export` writes the loaded history coverage locally. `/context` distinguishes available resources and the unsent draft from the latest admitted request and shows the current generated session state. `/processes` inspects session-owned commands and authority-wide recovery blockers. Input and termination require the current session owner; recovery decisions bind the current evidence revision. `/changes` shows recorded patches; `/recovery` handles pending approvals and uncertain outcomes.
 
 Clipboard transport preserves selected source text, including tabs and line endings. Terminal capabilities are negotiated by terminal-ui; unsupported operations are reported explicitly.
 
@@ -101,9 +101,9 @@ The optional `limits` object accepts Agent Core's current run limits. Project co
 
 ## Durable conversation and recovery
 
-Informational questions and editing tasks use the same Agent Core session contract. A user prompt does not create a separate revision workflow. Original contributions, corrections, tool observations, provider state, context selections, working state, branches, queued input, approvals, and uncertain effects remain durable.
+Informational questions and editing tasks use the same Agent Core session contract. A user prompt does not create a separate revision workflow. Original contributions, corrections, tool observations, provider state, context selections, session state, branches, queued input, approvals, and uncertain effects remain durable.
 
-Core manages one current working-state revision per branch. Models select relevant original sources with `context_transition`, optionally replacing working state in the same atomic update. There is no automatic portable summary or oldest-source eviction. Indexed history retrieval verifies bounded originals and discloses incomplete coverage. Search presents one bounded batch per request; an empty partial batch can be continued explicitly. State updates never establish verification or grant permission. Native reasoning stays separate; supported native compaction is a governed fallback for rejected capacity or required bound-prefix changes. Fitting ordinary requests trigger no maintenance call. Context controls provide an explicit fresh reasoning continuation over selected originals; RPC exposes `context.fresh`. Session authority, effects, resource lifetimes and budgets survive that operation.
+Core manages one structured session-state revision per branch with optional interaction, understanding, working, and trajectory sections. Models select relevant original sources and update state atomically with `context_transition`; every renewal starts fresh inference. History remains the source of truth, with bounded `history_latest`, search, and read tools for retrieving originals. State is interpretation, not verification or authority. Fitting ordinary requests trigger no maintenance call. Session identity, authority, effects, resource lifetimes, budgets, and original history survive renewal.
 
 An approval binds the exact tool input, effects, implementation, policy, and execution target. Changed facts invalidate it. Effects with an unknown outcome are not replayed automatically. `--resume` without a task drives only an unfinished accepted run.
 
@@ -129,11 +129,8 @@ The repository pins exact Agent Core, terminal-ui, and markspan revisions. Run t
 npm run verify:release
 ```
 
-When a model cannot use selected native state, the model selector offers **Continue fresh in this session** as an explicit second action. This preserves the session and original history, continuing from selected portable user contributions, answers, complete tool observations and working state. Pending or uncertain work must be resolved first; unsupported selected images remain a conflict. Continuing processes retain their original controls.
 
-For a resumed CLI session, use `--fresh-continuation --session ID --provider PROVIDER --model MODEL` (or `--resume` in place of `--session ID`). RPC `configuration.set` accepts the usual flat model selection plus `"continuation": "fresh"`. The option applies to that command only. Ordinary compatible model changes do not require it.
 
-RPC error `-32010` means the selected native context requires an explicit fresh-continuation choice. Image and unresolved-work conflicts remain separate errors.
 
 Generation allowance is an application decision. The default reserves up to 16,384
 output tokens, bounded by advertised output capacity and half the context window;

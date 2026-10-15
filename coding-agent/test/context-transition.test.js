@@ -11,7 +11,7 @@ test('context selection resumes admission only after a committed selection', asy
   const request = {
     expectedWindowId: null, expectedSourceRevision: 3,
     idempotencyKey: 'explicit-selection', reason: 'Apply selected originals.',
-    selection: { strategy: 'sources', retained: [] }
+    selection: { retained: [] }
   };
   let result = { kind: 'scheduled', requestId: 'pending' };
   const agent = {
@@ -33,8 +33,8 @@ test('context selection resumes admission only after a committed selection', asy
 test('coding context panel preserves a queued draft and exposes its rejected outcome', async t => {
   const inspection = {
     cut: { sourceRevision: 3 }, window: null,
-    activeSelection: { status: 'available', selection: { strategy: 'sources', retained: [] } },
-    protectedSources: [], pendingWork: []
+    activeSelection: { status: 'available', selection: { retained: [] } },
+    protectedSources: [], pendingWork: [{ state: 'claimed', runId: 'active-run' }]
   };
   const runtime = createTuiRuntime({ host: createMemoryTerminalHost(), app: createCodingAgentTuiApp('', {
     context: {

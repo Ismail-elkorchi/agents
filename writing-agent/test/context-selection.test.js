@@ -4,33 +4,24 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fixture, submit, toolCall } from './helpers/runtime.js';
 
-test('context inspection and unchanged application preserve ordinary history; fresh context honors an explicit selection', { skip: process.platform !== 'linux', timeout: 30_000 }, async (t) => {
-  const f = await fixture('', { responses: ['First answer.', 'Second answer.', 'Third answer.', 'Fresh answer.'] });
+test('idle context selection cannot publish without an actual successor request', { skip: process.platform !== 'linux', timeout: 30_000 }, async t => {
+  const f = await fixture('', { responses: ['First answer.', 'Second answer.'] });
   t.after(() => f.close());
   await f.application.start();
   await submit(f.application, 'Remember ORIGINAL-MARKER-493.');
-  await submit(f.application, 'Second question.');
   const inspected = await f.application.inspectContext();
   assert.equal(inspected.window, null);
-  assert.equal(inspected.activeSelection.selection.retained.length, 4);
-  await f.application.transitionContext({
-    expectedWindowId: inspected.window?.windowId ?? null,
+  await assert.rejects(f.application.transitionContext({
+    expectedWindowId: null,
     expectedSourceRevision: inspected.cut.sourceRevision,
-    idempotencyKey: 'unchanged-selection',
-    reason: 'Keep the inspected selection.',
-    selection: inspected.activeSelection.selection
-  });
-  await submit(f.application, 'Third question.');
+    idempotencyKey: 'idle-selection',
+    reason: 'Attempt an idle selection.',
+    selection: { retained: [] }
+  }), /compiled next-request admission/);
+  assert.equal((await f.application.inspectContext()).window, null);
+  await submit(f.application, 'Second question.');
   assert.match(JSON.stringify(f.provider.requests.at(-1).messages), /ORIGINAL-MARKER-493/);
-  const current = await f.application.inspectContext();
-  assert.equal(current.activeSelection.selection.retained.length, 6, 'the selected window includes subsequent originals');
-  await f.application.freshContext([]);
-  await submit(f.application, 'Independent question.');
-  const request = JSON.stringify(f.provider.requests.at(-1).messages);
-  assert.doesNotMatch(request, /ORIGINAL-MARKER-493|Second question|Third question/);
-  assert.match(request, /Independent question/);
 });
-
 
 test('review mode exposes protected live context without acquiring document edit authority',
   { skip: process.platform !== 'linux', timeout: 30_000 }, async (t) => {
@@ -51,5 +42,27 @@ test('review mode exposes protected live context without acquiring document edit
     const result = await submit(f.application, 'Inspect the current context for this review.');
     assert.equal(result.terminal?.executionStatus, 'completed', JSON.stringify(result));
     assert.equal(await readFile(path.join(f.root, 'document.txt'), 'utf8'), 'Original document.\n');
+  }
+);
+
+test('history_latest retrieves recent user contributions after a fresh context selection',
+  { skip: process.platform !== 'linux', timeout: 30_000 }, async t => {
+    const f = await fixture('', { mode: 'review', responses: [
+      'First answer.',
+      toolCall('context_transition', { retain: [], sessionState: { working: [{ id: 'retrieve-recent', text: 'Recover recent original user instructions.' }] }, reason: 'Recover original history in fresh inference.' }),
+      toolCall('history_latest', { limit: 10, maxBytes: 8192 }),
+      request => {
+        const latest = request.messages.filter(item => item.role === 'tool').at(-1);
+        assert.ok(latest, 'history_latest must return original contributions');
+        assert.match(JSON.stringify(latest), /RECENT-USER-CONSTRAINT-493/);
+        assert.match(JSON.stringify(latest), /Recover my recent instructions/);
+        return 'Recovered the original instructions.';
+      }
+    ] });
+    t.after(() => f.close());
+    await f.application.start();
+    await submit(f.application, 'Remember RECENT-USER-CONSTRAINT-493.');
+    const result = await submit(f.application, 'Recover my recent instructions.');
+    assert.equal(result.terminal?.executionStatus, 'completed', JSON.stringify(result));
   }
 );

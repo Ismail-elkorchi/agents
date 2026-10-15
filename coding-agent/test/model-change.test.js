@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ModelContinuationRequiredError } from '@agent-core/runtime';
 import { codingRpcMethods } from '@ismail-elkorchi/coding-agent/rpc';
 import { writingRpcMethods } from '@ismail-elkorchi/writing-agent/rpc';
 
@@ -8,7 +7,7 @@ for (const [name, methods] of [
   ['coding', codingRpcMethods],
   ['writing', writingRpcMethods]
 ]) {
-  test(`${name} RPC forwards explicit fresh continuation separately from persisted model settings`, async () => {
+  test(`${name} RPC forwards model selection and rejects removed continuation configuration`, async () => {
     const calls = [];
     const adapter = { id: 'fixture' };
     const selection = { provider: 'fixture', model: 'target' };
@@ -23,32 +22,17 @@ for (const [name, methods] of [
       { get: (target, key) => target[key] ?? (() => undefined) }
     );
     const rpc = methods(application, () => undefined)['configuration.set'];
-    assert.deepEqual(await rpc.invoke({ ...selection, continuation: 'fresh' }), selection);
-    assert.deepEqual(calls, [[selection, adapter, { continuation: 'fresh' }]]);
-    await assert.rejects(rpc.invoke({ ...selection, continuation: 'automatic' }), /continuation/u);
+    assert.deepEqual(await rpc.invoke(selection), selection);
+    assert.deepEqual(calls, [[selection, adapter]]);
+    await assert.rejects(rpc.invoke({ ...selection, continuation: 'fresh' }), /Unknown model selection field/u);
     await assert.rejects(rpc.invoke({ ...selection, unexpected: true }), /Unknown/u);
     assert.equal(calls.length, 1);
-    application.configureModel = async () => {
-      throw new ModelContinuationRequiredError('native state');
-    };
-    await assert.rejects(
-      rpc.invoke(selection),
-      (error) => error.code === -32010 && /fresh continuation/u.test(error.message)
-    );
   });
 }
 
 for (const [name, methods] of [['coding', codingRpcMethods], ['writing', writingRpcMethods]]) {
-  test(`${name} RPC exposes same-model fresh context without a configuration command`, async () => {
-    const calls = [];
-    const application = new Proxy({ freshContext: async (retained) => { calls.push(retained); return { selected: true }; } },
-      { get: (target, key) => target[key] ?? (() => { throw new Error(`Unexpected operation: ${String(key)}`); }) });
-    const rpc = methods(application, () => undefined)['context.fresh'];
-    assert.deepEqual(await rpc.invoke({}), { selected: true });
-    assert.deepEqual(calls, [undefined]);
-    const retained = [{ sessionId: 'session', entryId: 'entry', sha256: 'a'.repeat(64) }];
-    await rpc.invoke({ retained });
-    assert.deepEqual(calls[1], retained);
-    await assert.rejects(rpc.invoke({ provider: 'unexpected' }), /Unrecognized/);
+  test(`${name} RPC has no manual context renewal command`, () => {
+    const application = new Proxy({}, { get: () => () => undefined });
+    assert.equal(methods(application, () => undefined)['context.fresh'], undefined);
   });
 }

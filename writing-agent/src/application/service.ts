@@ -8,7 +8,6 @@ import { LocalArtifactRepository, atomicWritePrivateJson } from '@agent-core/per
 import {
   ApplicationEvents,
   assertHistoryModelCompatibility,
-  type ModelChangeOptions,
   assertSessionImagesSupported,
   ownSessionSubmissionInput,
   progressReplacementKey,
@@ -62,7 +61,6 @@ export interface WritingApplicationOptions {
   readonly mode?: WritingMode;
   readonly configuration?: WritingConfiguration;
   readonly modelSelection?: ModelSelection;
-  readonly freshContinuation?: boolean;
   readonly maxOutputTokens?: number;
 }
 export interface WritingApplicationState {
@@ -101,7 +99,6 @@ export class WritingApplication {
   private selection: ModelSelection | undefined;
   private configuration: WritingConfiguration | undefined;
   private mode: WritingMode;
-  private freshContinuation: boolean;
   private unsubscribe: (() => void) | undefined;
   private readonly maxOutputTokens: number | undefined;
   private mutations: Promise<void> = Promise.resolve();
@@ -127,7 +124,6 @@ export class WritingApplication {
     this.configuration = options.configuration;
     this.selection = options.modelSelection;
     this.mode = options.mode ?? 'edit';
-    this.freshContinuation = options.freshContinuation ?? false;
   }
 
   draftDirectory(): string {
@@ -267,8 +263,7 @@ export class WritingApplication {
 
   configureModel(
     selection: ModelSelection,
-    provider: ModelProvider,
-    change: ModelChangeOptions = {}
+    provider: ModelProvider
   ): Promise<void> {
     const owned = parseModelSelection(selection);
     return this.mutate(async () => {
@@ -277,7 +272,7 @@ export class WritingApplication {
       delete configuration.temperature;
       if (owned.reasoning !== undefined) configuration.reasoning = owned.reasoning;
       if (owned.temperature !== undefined) configuration.temperature = owned.temperature;
-      await this.replaceConfiguration(configuration, owned, change);
+      await this.replaceConfiguration(configuration, owned);
     });
   }
 
@@ -287,8 +282,7 @@ export class WritingApplication {
 
   private async replaceConfiguration(
     configuration: WritingConfiguration,
-    selection?: ModelSelection,
-    change: ModelChangeOptions = {}
+    selection?: ModelSelection
   ): Promise<void> {
     this.requireIdle();
     if (selection !== undefined && selection.provider !== configuration.provider.id)
@@ -328,8 +322,7 @@ export class WritingApplication {
             : { temperature: configuration.temperature })
         },
         profile,
-        artifacts: prepared.artifacts,
-        ...change
+        artifacts: prepared.artifacts
       });
     } catch (error) {
       await prepared.close();
@@ -562,16 +555,6 @@ export class WritingApplication {
     if (!this.composition) throw new Error('Open a session before inspecting context.');
     return this.composition.history.search(request);
   }
-  async freshContext(retained?: readonly import('@agent-core/runtime').HistorySourceRef[]) {
-    this.assertOpen();
-    const runtime = this.composition;
-    if (!runtime) throw new Error('Configure a session before changing context.');
-    return runtime.agent.freshContinuation({
-      ...(retained === undefined ? {} : { retained }),
-      profile: await runtime.provider.describeModel(runtime.agent.state().configuration.model)
-    });
-  }
-
   async transitionContext(request: import('@agent-core/runtime').ContextTransitionRequest) {
     const agent = this.requireAgent();
     const selected = await agent.transitionContext(request);
@@ -664,22 +647,11 @@ export class WritingApplication {
     );
     try {
       const profile = await this.configuration.provider.describeModel(this.configuration.model);
-      if (this.freshContinuation) {
-        const selection = this.modelSelection();
-        if (!selection) throw new Error('Fresh continuation requires a target model selection.');
-        await composition.agent.changeModel({
-          selection,
-          profile,
-          artifacts: composition.artifacts,
-          continuation: 'fresh'
-        });
-        this.freshContinuation = false;
-      } else
-        await assertHistoryModelCompatibility({
-          history: composition.history,
-          artifacts: composition.artifacts,
-          profile
-        });
+      await assertHistoryModelCompatibility({
+        history: composition.history,
+        artifacts: composition.artifacts,
+        profile
+      });
       this.composition = composition;
       this.subscribeComposition();
       await composition.agent.restore();

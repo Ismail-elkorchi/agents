@@ -12,7 +12,7 @@ test('context selection resumes admission only after a committed selection', asy
   const request = {
     expectedWindowId: null, expectedSourceRevision: 3,
     idempotencyKey: 'explicit-selection', reason: 'Apply selected originals.',
-    selection: { strategy: 'sources', retained: [] }
+    selection: { retained: [] }
   };
   let result = { kind: 'scheduled', requestId: 'pending' };
   const agent = {
@@ -33,6 +33,8 @@ test('context selection resumes admission only after a committed selection', asy
 
 test('writing context panel preserves a queued draft and keeps rejection visible after closure', { skip: process.platform !== 'linux', timeout: 30_000 }, async t => {
   const f = await fixture('');
+  const inspectContext = f.application.inspectContext.bind(f.application);
+  f.application.inspectContext = async () => ({ ...await inspectContext(), pendingWork: [{ state: 'claimed', runId: 'active-run' }] });
   f.application.transitionContext = async () => ({ selection: { kind: 'scheduled', requestId: 'active-selection' } });
   const runtime = createTuiRuntime({ host: createMemoryTerminalHost(), app: createWritingAgentTuiApp(f.application) });
   t.after(async () => { await runtime.dispose(); await f.close(); });

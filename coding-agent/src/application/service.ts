@@ -9,10 +9,8 @@ import {
   agentEventCodec,
   ApplicationEvents,
   assertHistoryModelCompatibility,
-  type ModelChangeOptions,
   assertSessionImagesSupported,
   progressReplacementKey,
-  sourceRef,
   type AgentEvent,
   type AgentRunResult,
   type AgentSession,
@@ -29,7 +27,6 @@ import {
   readRootedImage,
   readRootedText
 } from '@agent-core/tools-local';
-import { randomUUID } from 'node:crypto';
 import { readRecordedMutationPatches, readRunChangeReport } from '../changes/run-change-report.js';
 import { resolveCodingAuthority, type CodingPermissionMode } from '../security/permission-mode.js';
 import { createTrustDecision } from '../security/workspace-trust.js';
@@ -450,32 +447,11 @@ export class CodingApplication {
     if (prepared === undefined) {
       try {
         const profile = await runtime.provider.describeModel(model);
-        if (this.options.freshContinuation) {
-          await runtime.agent.changeModel({
-            selection: {
-              provider,
-              model,
-              ...(this.resolvedSettings.providerEndpoint === undefined
-                ? {}
-                : { endpoint: this.resolvedSettings.providerEndpoint }),
-              ...(this.resolvedSettings.reasoning === undefined
-                ? {}
-                : { reasoning: this.resolvedSettings.reasoning }),
-              ...(this.resolvedSettings.temperature === undefined
-                ? {}
-                : { temperature: this.resolvedSettings.temperature })
-            },
-            profile,
-            artifacts: runtime.artifacts,
-            continuation: 'fresh'
-          });
-          delete this.options.freshContinuation;
-        } else
-          await assertHistoryModelCompatibility({
-            history: runtime.history,
-            artifacts: runtime.artifacts,
-            profile
-          });
+        await assertHistoryModelCompatibility({
+          history: runtime.history,
+          artifacts: runtime.artifacts,
+          profile
+        });
       } catch (error) {
         await closeCodingSession(runtime);
         throw error;
@@ -585,8 +561,7 @@ export class CodingApplication {
 
   configureModel(
     selection: ModelSelection,
-    adapter: ModelProvider,
-    change: ModelChangeOptions = {}
+    adapter: ModelProvider
   ): Promise<void> {
     const owned = parseModelSelection(selection);
     return this.serial(async () => {
@@ -619,8 +594,7 @@ export class CodingApplication {
           await prepared.agent.changeModel({
             selection: owned,
             profile,
-            artifacts: prepared.artifacts,
-            ...change
+            artifacts: prepared.artifacts
           });
         }
       } catch (error) {
@@ -711,14 +685,6 @@ export class CodingApplication {
   contextSources(request: import('@agent-core/runtime').HistorySearchRequest) {
     return this.requireRuntime().history.search(request);
   }
-  async freshContext(retained?: readonly import('@agent-core/runtime').HistorySourceRef[]) {
-    const runtime = this.requireRuntime();
-    return runtime.agent.freshContinuation({
-      ...(retained === undefined ? {} : { retained }),
-      profile: await runtime.provider.describeModel(runtime.agent.state().configuration.model)
-    });
-  }
-
   async transitionContext(request: import('@agent-core/runtime').ContextTransitionRequest) {
     const agent = this.requireRuntime().agent;
     const selected = await agent.transitionContext(request);
@@ -744,56 +710,6 @@ export class CodingApplication {
     action: import('../execution/process-controls.js').CodingProcessAction
   ) {
     return this.requireRuntime().controlProcess(target, action);
-  }
-
-  async retainHistory() {
-    const runtime = this.requireRuntime();
-    const cut = await runtime.history.capture();
-    const window = await runtime.history.selectedContext(cut);
-    const retained: import('@agent-core/runtime').HistorySourceRef[] = [];
-    let cursor: string | undefined;
-    let bytes = 0;
-    do {
-      const page = await runtime.history.page({
-        cut,
-        ...(cursor ? { cursor } : {}),
-        limit: 1000,
-        maxBytes: 8 * 1024 * 1024 - bytes
-      });
-      bytes += page.bytes;
-      if (page.unread?.length)
-        throw new Error(
-          'Original history exceeds the bounded source read. Select specific original sources.'
-        );
-      retained.push(
-        ...page.entries
-          .filter(
-            (entry) =>
-              entry.type !== 'context_transition' &&
-              entry.type !== 'model_settings' &&
-              entry.type !== 'branch'
-          )
-          .map((entry) => sourceRef(cut.sessionId, entry))
-      );
-      cursor = page.cursor;
-      if (retained.length > 10000 || (cursor && bytes >= 8 * 1024 * 1024))
-        throw new Error(
-          'Original history exceeds the bounded selection. Select specific original sources.'
-        );
-    } while (cursor);
-    return runtime.agent.transitionContext({
-      expectedWindowId: window?.windowId ?? null,
-      expectedSourceRevision: cut.sourceRevision,
-      idempotencyKey: randomUUID(),
-      reason: 'User requested original history retention.',
-      selection: {
-        strategy: 'sources',
-        retained,
-        ...(window?.selection.continuity === undefined
-          ? {}
-          : { continuity: window.selection.continuity })
-      }
-    });
   }
 
   readPendingSubmissions() {

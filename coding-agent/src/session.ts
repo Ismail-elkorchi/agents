@@ -272,7 +272,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
               return {
                 decision: 'allow',
                 reason:
-                  'The tool is bound to this session history, working state, or context service.'
+                  'The tool is bound to this session history, session state, or context service.'
               };
             const workspaceDecision = openedWorkspace.security.authorizeTool(request);
             if (workspaceDecision.decision === 'deny') return workspaceDecision;

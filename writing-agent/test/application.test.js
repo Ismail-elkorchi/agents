@@ -134,7 +134,7 @@ test(
 );
 
 test(
-  'history and working state are available as model tools without preselected document excerpts',
+  'history and session state are available as model tools without preselected document excerpts',
   integration,
   async (t) => {
     const f = await fixture('Only retrieve this when needed.\n', {
@@ -149,7 +149,7 @@ test(
     const first = f.provider.requests[0];
     assert(!JSON.stringify(first).includes('Only retrieve this when needed.'));
     assert(JSON.stringify(f.provider.requests[1]).includes('Only retrieve this when needed.'));
-    for (const name of ['history_read', 'context_inspect', 'context_transition'])
+    for (const name of ['history_read', 'history_latest', 'context_inspect', 'context_transition'])
       assert(
         first.tools.some((tool) => tool.type === 'function' && tool.function.name === name),
         name
@@ -224,7 +224,7 @@ test(
 );
 
 test(
-  'explicit fresh model configuration continues the same writing session and original sources',
+  'model configuration continues the same writing session and original sources',
   integration,
   async (t) => {
     const f = await fixture('Original prose.\n', { responses: ['An initial answer.'] });
@@ -233,17 +233,8 @@ test(
     await submit(f.application, 'Keep the wording “café” exactly.');
     const sessionId = f.application.state().sessionId;
     const target = new ScriptedWritingProvider(['Still café.']);
-    await f.application.configureModel({ provider: target.id, model: 'writing-test' }, target, {
-      continuation: 'fresh'
-    });
+    await f.application.configureModel({ provider: target.id, model: 'writing-test' }, target);
     assert.equal(f.application.state().sessionId, sessionId);
-    const before = await f.application.readHistory();
-    assert(
-      before.entries.some(
-        (entry) =>
-          entry.type === 'context_transition' && entry.window.selection.continuity?.kind === 'fresh'
-      )
-    );
     await submit(f.application, 'Continue.');
     assert(
       target.requests[0].messages.some((message) =>
@@ -259,7 +250,7 @@ test(
 );
 
 test(
-  'review mode retains working state without gaining document mutation authority',
+  'review mode retains session state without gaining document mutation authority',
   integration,
   async (t) => {
     const text = 'Audience: researchers. Preserve source uncertainty.';
@@ -267,7 +258,7 @@ test(
       mode: 'review',
       responses: [
         toolCall('context_transition', {
-          workingState: text, reason: 'Preserve the current interpretation.'
+          sessionState: { understanding: [{ id: 'interpretation', text }] }, reason: 'Preserve the current interpretation.'
         }),
         'Reviewed.',
         'Answered.'
@@ -281,9 +272,11 @@ test(
       'completed'
     );
     const inspected = await f.application.inspectContext();
-    assert.equal(inspected.workingState.text, text);
+    assert.equal(inspected.sessionState.content.understanding?.[0]?.text, text, JSON.stringify(inspected.sessionState));
+    assert.equal(inspected.sessionState.complete, true);
+    assert.ok(inspected.sessionState.revisionId);
     const original = await f.application.readHistorySource({
-      source: inspected.workingState.source,
+      source: inspected.sessionState.source,
       maxBytes: 16
     });
     assert.equal(original.status, 'available');
@@ -298,17 +291,23 @@ test(
   }
 );
 
-test('review sessions can restart reasoning without maintenance inference or document authority', integration, async (t) => {
+test('review sessions reject idle renewal without changing document authority', integration, async (t) => {
   const f = await fixture('Original document.\n', { mode: 'review', responses: ['Reviewed.', 'Still reviewing.'] });
   t.after(() => f.close());
   await f.application.start();
   await submit(f.application, 'Review the original document without editing.');
   const selection = f.application.modelSelection();
-  await f.application.freshContext();
+  await assert.rejects(f.application.transitionContext({
+    expectedWindowId: (await f.application.inspectContext()).window?.windowId ?? null,
+    expectedSourceRevision: (await f.application.inspectContext()).cut.sourceRevision,
+    idempotencyKey: 'renew-inspected-context',
+    reason: 'Continue with the inspected originals.',
+    selection: (await f.application.inspectContext()).activeSelection.selection
+  }), /compiled next-request admission/);
   assert.deepEqual(f.application.modelSelection(), selection);
   assert.equal(f.provider.requests.length, 1);
   const context = await f.application.inspectContext();
-  assert.equal(context.window.selection.continuity.kind, 'fresh');
+  assert.equal(context.window, null);
   await submit(f.application, 'Discuss the review.');
   assert.equal(f.provider.requests.length, 2);
   const tools = f.provider.requests[1].tools.map(tool => tool.function?.name ?? tool.name);

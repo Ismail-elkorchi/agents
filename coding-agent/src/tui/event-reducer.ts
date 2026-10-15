@@ -39,7 +39,7 @@ export function applyProgress(
         id: `session:${event.window.windowId}`,
         kind: 'notice',
         tone: 'info',
-        text: `Context changed · ${event.window.selection.strategy} · ${event.window.windowId}\n${event.window.reason}`
+        text: `Context changed · ${event.window.windowId}\n${event.window.reason}`
       });
     case 'context.replay.restored':
       return reduceReplayRestored(state, event);

@@ -1,3 +1,4 @@
+import { conservativeProtocolCapabilities } from '@agent-core/model';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -18,6 +19,7 @@ export class ScriptedWritingProvider {
       id: 'writing-test',
       provider: this.id,
       capabilities: {
+        protocol: conservativeProtocolCapabilities('writing-test', { contextReset: 'fresh_request' }),
         streaming: false,
         toolCalling: true,
         supportedToolInputs: [{ kind: 'json' }, { kind: 'text' }],

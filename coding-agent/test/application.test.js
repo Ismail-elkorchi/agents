@@ -127,7 +127,7 @@ test(
       assert.equal(acceptance.kind, 'started');
       assert(acceptance.completion instanceof Promise);
       const result = await acceptance.completion;
-      assert.equal(result.state, 'ended');
+      assert.equal(result.state, 'ended', JSON.stringify(result));
       assert.equal(result.terminal.runId, acceptance.runId);
       const view = await application.readSession();
       assert(
@@ -140,9 +140,15 @@ test(
       assert.equal(input.originalInput.contextItems[0].sourceUri, 'test://request/context');
       assert.equal(input.originalInput.relationship.kind, 'side_question');
       const configuration = application.modelSelection();
-      await application.freshContext();
+      await assert.rejects(application.transitionContext({
+        expectedWindowId: (await application.inspectContext()).window?.windowId ?? null,
+        expectedSourceRevision: (await application.inspectContext()).cut.sourceRevision,
+        idempotencyKey: 'renew-inspected-context',
+        reason: 'Continue with the inspected originals.',
+        selection: (await application.inspectContext()).activeSelection.selection
+      }), /compiled next-request admission/);
       assert.deepEqual(application.modelSelection(), configuration);
-      assert.equal((await application.inspectContext()).window.selection.continuity.kind, 'fresh');
+      assert.equal((await application.inspectContext()).window, null);
     } finally {
       await application.close();
     }
@@ -198,7 +204,7 @@ test(
 );
 
 test(
-  'fresh model configuration preserves the coding session and selected original constraints',
+  'model configuration preserves the coding session and selected original constraints',
   { skip: process.platform !== 'linux', timeout: 30000 },
   async (t) => {
     const provider = await scriptedOllama([
@@ -227,16 +233,9 @@ test(
     const selection = { provider: 'ollama', model: 'v0-scripted', endpoint: provider.endpoint };
     await application.configureModel(
       selection,
-      application.connectProvider(selection.provider, selection.endpoint),
-      { continuation: 'fresh' }
+      application.connectProvider(selection.provider, selection.endpoint)
     );
     assert.equal(application.state().session.sessionId, sessionId);
-    assert(
-      (await application.readHistory()).history.entries.some(
-        (entry) =>
-          entry.type === 'context_transition' && entry.window.selection.continuity?.kind === 'fresh'
-      )
-    );
     const next = await application.submit({ task: 'Continue.' });
     assert.equal((await next.completion).terminal.executionStatus, 'completed');
     assert(
@@ -254,7 +253,7 @@ test(
     const text = 'Change intent: explain first. Unresolved: verify repository guidance.';
     const provider = await scriptedOllama([
       toolResponse('context_transition', {
-        workingState: text, reason: 'Preserve the current interpretation.'
+        sessionState: { understanding: [{ id: 'interpretation', text }] }, reason: 'Preserve the current interpretation.'
       }),
       finalResponse('Explained.'),
       finalResponse('Continued.')
@@ -282,11 +281,14 @@ test(
     });
     await app.start();
     const first = await app.submit({ task: 'Explain the change intent without changing files.' });
-    assert.equal((await first.completion).terminal.executionStatus, 'completed');
+    const completed = await first.completion;
+    assert.equal(completed.terminal?.executionStatus, 'completed', JSON.stringify(completed));
     const state = await app.inspectContext();
-    assert.equal(state.workingState.text, text);
+    assert.equal(state.sessionState.content.understanding?.[0]?.text, text, JSON.stringify(state.sessionState));
+    assert.equal(state.sessionState.complete, true);
+    assert.ok(state.sessionState.revisionId);
     const original = await app.readHistorySource({
-      source: state.workingState.source,
+      source: state.sessionState.source,
       maxBytes: 16
     });
     assert.equal(original.status, 'available');
@@ -296,8 +298,8 @@ test(
     app = await openCodingApplication({ ...options, sessionSelection: { kind: 'existing', id: state.cut.sessionId } });
     await app.start();
     assert.equal(
-      (await app.inspectContext()).workingState.revisionId,
-      state.workingState.revisionId
+      (await app.inspectContext()).sessionState.revisionId,
+      state.sessionState.revisionId
     );
     const next = await app.submit({ task: 'What remains uncertain?' });
     assert.equal((await next.completion).terminal.executionStatus, 'completed');

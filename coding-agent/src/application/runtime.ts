@@ -40,7 +40,6 @@ export interface CodingApplicationOptions {
   root: string;
   provider?: CodingAgentProviderId;
   model?: string;
-  freshContinuation?: boolean;
   providerEndpoint?: string;
   codexTransport?: OpenAICodexTransport;
   maxOutputTokens?: number;

@@ -1,6 +1,5 @@
-import { ModelContinuationRequiredError, parseModelChangeRequest } from '@agent-core/runtime';
+import { parseModelSelection } from '@agent-core/model';
 import {
-  RpcError,
   historyRpcMethods,
   contextRpcMethods,
   inputRpcMethods,
@@ -34,16 +33,10 @@ export function writingRpcMethods(application: WritingApplication, shutdown: () 
     }),
     'configuration.read': rpcMethod(empty, () => application.modelSelection()),
     'configuration.set': rpcMethod(
-      z.unknown().transform(parseModelChangeRequest),
-      async ({ selection, options }) => {
+      z.unknown().transform(parseModelSelection),
+      async (selection) => {
         const provider = application.connectProvider(selection.provider, selection.endpoint);
-        try {
-          await application.configureModel(selection, provider, options);
-        } catch (error) {
-          if (error instanceof ModelContinuationRequiredError)
-            throw new RpcError(-32010, error.message);
-          throw error;
-        }
+        await application.configureModel(selection, provider);
         return application.modelSelection();
       }
     ),

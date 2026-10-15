@@ -122,8 +122,8 @@ export async function runCodingAgentTuiApp(
           })),
           current: () => controller.modelSelection(),
           connect: (provider, endpoint) => controller.connectProvider(provider, endpoint),
-          save: (selection, provider, options) =>
-            controller.configureModel(selection, provider, options)
+          save: (selection, provider) =>
+            controller.configureModel(selection, provider)
         },
         resources: {
           async search(query, signal) {

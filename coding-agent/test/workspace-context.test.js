@@ -25,6 +25,7 @@ for (const permissionMode of ['read_only', 'full_host'])
     const declared = provider.chatRequests[0].tools.map(tool => tool.function.name);
     assert.deepEqual([...inspected.available.toolNames].sort(), [...declared].sort());
     assert.ok(inspected.available.toolNames.includes('context_transition'));
+    assert.ok(inspected.available.toolNames.includes('history_latest'));
     assert.equal(inspected.available.toolNames.includes('run_check'), permissionMode === 'full_host');
     assert.ok(!inspected.available.toolNames.includes('view_image'), 'The text-only model cannot view images.');
   });

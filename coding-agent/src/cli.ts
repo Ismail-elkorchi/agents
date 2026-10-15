@@ -64,15 +64,6 @@ export async function main(argv: string[]): Promise<void> {
     return;
   }
   const parsed = parseOptions(exec || rpc ? argv.slice(1) : argv);
-  if (
-    parsed.options.freshContinuation &&
-    (parsed.options.sessionSelection.kind === 'new' ||
-      parsed.options.provider === undefined ||
-      parsed.options.model === undefined)
-  )
-    throw new Error(
-      '--fresh-continuation requires --session or --resume and explicit --provider and --model.'
-    );
   let task = parsed.positionals.join(' ');
   if (exec && (task === '-' || (task.length === 0 && !process.stdin.isTTY)))
     task = await readStandardInput();
@@ -224,9 +215,6 @@ const CLI_OPTION_SPECS = {
   }),
   '--state-root': valued((options, value) => {
     options.stateRoot = value;
-  }),
-  '--fresh-continuation': flagged((options) => {
-    options.freshContinuation = true;
   }),
   '--model': valued((options, value) => {
     options.model = value;
@@ -970,7 +958,7 @@ Common options:
   --state-root <dir>     Coding Agent private state root. Default: the platform user-state directory.
   --config <path>        Load a project configuration proposal. coding-agent.config.json is discovered when present.
   --provider <name>      Model provider. Supported: ollama, openrouter, openai, openai-codex.
-  --fresh-continuation  Explicitly reset native inference using selected portable originals in the same session.\n  --model <name>         Model name. No provider or model is selected implicitly.
+  --model <name>         Model name. No provider or model is selected implicitly.
   --provider-endpoint <url>
                          Provider endpoint override. Ollama host or provider base URL.
   --codex-transport <http_sse|websocket>

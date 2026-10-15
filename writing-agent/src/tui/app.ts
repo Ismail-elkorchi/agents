@@ -626,7 +626,6 @@ function update(
         context
       );
     case 'context.open':
-    case 'context.fresh':
     case 'context.apply':
     case 'context.page':
     case 'context.source':
@@ -1984,7 +1983,7 @@ export function writingConfigurationOperations(app: WritingApplication): Configu
     providers: WRITING_PROVIDER_IDS.map((id) => ({ id, label: id })),
     openBrowser,
     connect: (provider, endpoint) => app.connectProvider(provider, endpoint),
-    save: (selection, provider, options) => app.configureModel(selection, provider, options)
+    save: (selection, provider) => app.configureModel(selection, provider)
   };
 }
 

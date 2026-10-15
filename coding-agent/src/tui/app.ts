@@ -661,7 +661,6 @@ function updateCodingAgentTui(
       return updated(next);
     }
     case 'context.open':
-    case 'context.fresh':
     case 'context.apply':
     case 'context.page':
     case 'context.source':
@@ -1253,7 +1252,7 @@ function updateCodingAgentTui(
           id: `session:${message.window.windowId}`,
           kind: 'notice',
           tone: 'info',
-          text: `Context changed · ${message.window.selection.strategy} · ${message.window.windowId}\n${message.window.reason}`
+          text: `Context changed · ${message.window.windowId}\n${message.window.reason}`
         })
       );
     case 'verification.updated':

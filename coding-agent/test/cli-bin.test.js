@@ -294,7 +294,7 @@ function run(file, args, options = {}) {
 }
 
 for (const agent of ['coding-agent', 'writing-agent'])
-  test(`${agent} CLI requires an explicit target and existing session for fresh continuation`, async () => {
+  test(`${agent} CLI rejects the removed manual continuation option`, async () => {
     const child = spawn(process.execPath, [`${agent}/dist/cli.js`, 'rpc', '--fresh-continuation'], {
       stdio: ['ignore', 'pipe', 'pipe']
     });
@@ -305,5 +305,5 @@ for (const agent of ['coding-agent', 'writing-agent'])
     });
     const code = await new Promise((resolve) => child.on('exit', resolve));
     assert.equal(code, 1);
-    assert.match(diagnostic, /--fresh-continuation requires/u);
+    assert.match(diagnostic, /Unknown.*fresh-continuation/iu);
   });

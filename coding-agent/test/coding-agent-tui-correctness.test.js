@@ -769,7 +769,7 @@ test('restored and live context transitions share the exact window identity', as
       throughEntryId: 'assistant-1',
       sourceRevision: 1
     },
-    selection: { strategy: 'sources', retained: [] },
+    selection: { retained: [] },
     reason: 'Retain the original conversation.',
     createdAt: '2026-09-07T00:00:00.000Z'
   };
