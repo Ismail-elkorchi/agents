@@ -11,9 +11,10 @@ import {
   trust
 } from './fixtures/scripted-cli.js';
 
+// Both cases require the package-owned Linux root-bound file authority.
 for (const reconsideredTool of ['read_files', 'exec_command']) test(
   `Codex reasoning survives guidance and reopen after reconsidering with ${reconsideredTool}`,
-  { skip: reconsideredTool === 'exec_command' && process.platform !== 'linux', timeout: 30_000 },
+  { skip: process.platform !== 'linux', timeout: 30_000 },
   async (t) => {
     const reasoning = ['original', 'reconsidered'].map((id) => ({
       type: 'reasoning',
