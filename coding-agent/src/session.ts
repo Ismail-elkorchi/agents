@@ -1,8 +1,9 @@
-import { RequestTokenEstimator, type ModelProvider } from '@agent-core/model';
+import { assertModelRequestSupported, RequestTokenEstimator, type ModelProvider } from '@agent-core/model';
 import { hashJson } from '@agent-core/persistence';
 import { JsonlEventRepository, LocalArtifactRepository } from '@agent-core/persistence/node';
 import {
   AgentRunCoordinator,
+  assertSessionImagesSupported,
   AgentRuntime,
   AgentSession,
   ContextService,
@@ -49,6 +50,7 @@ import { codingWorkspaceSessionBinding, type OpenCodingWorkspace } from './works
 export interface CodingSessionOptions {
   readonly workspace: OpenCodingWorkspace;
   readonly provider: ModelProvider;
+  readonly resolveProvider?: (configuration: AgentSessionConfiguration) => ModelProvider;
   readonly settings: AgentSessionConfiguration;
   readonly permissionMode: CodingPermissionMode;
   readonly descriptor?: SessionDescriptor;
@@ -102,6 +104,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
   await fs.mkdir(workspace.artifactsDir, { recursive: true, mode: 0o700 });
   const artifacts = new LocalArtifactRepository({ rootDir: workspace.artifactsDir });
   let provider = options.provider;
+  let providerBinding = settings;
   const ownerId = `coding-session:${session.id}`;
   const inferenceRepository = new JsonlInferenceRepository({
     rootDir: path.join(workspace.runtimeDir, 'inference')
@@ -225,15 +228,37 @@ export async function createCodingSession(options: CodingSessionOptions) {
       configuration: {
         provider: options.provider.id,
         model: settings.model,
+        ...(settings.endpoint === undefined ? {} : { endpoint: settings.endpoint }),
         ...(settings.temperature === undefined ? {} : { temperature: settings.temperature }),
         ...(settings.reasoning === undefined ? {} : { reasoning: settings.reasoning }),
         ...(settings.responseFormat === undefined
           ? {}
           : { responseFormat: settings.responseFormat })
       },
+      async prepareConfiguration(configuration, input) {
+        const { responseFormat: ignored, ...binding } = configuration;
+        const { responseFormat: ignoredBound, ...bound } = providerBinding;
+        void ignored;
+        void ignoredBound;
+        if (hashJson(binding) !== hashJson(bound)) {
+          if (!options.resolveProvider)
+            throw new Error('Session model configuration changed in another client. Select the model again before submitting.');
+          const next = options.resolveProvider(configuration);
+          if (next.id !== configuration.provider) throw new Error('The resolved provider does not match the session configuration.');
+          const profile = await next.describeModel(configuration.model);
+          if (profile.provider !== configuration.provider || profile.id !== configuration.model)
+            throw new Error('The resolved model profile does not match the session configuration.');
+          assertModelRequestSupported(profile, { model: configuration.model, messages: [],
+            ...(configuration.reasoning === undefined ? {} : { reasoning: configuration.reasoning }),
+            ...(configuration.temperature === undefined ? {} : { temperature: configuration.temperature }) });
+          provider = next;
+          providerBinding = configuration;
+          inference = createInference();
+        }
+        if (input.images?.length)
+          assertSessionImagesSupported(input.images, await provider.describeModel(configuration.model));
+      },
       async createRuntime(runtimeSettings, onProgress) {
-        if (runtimeSettings.provider !== provider.id)
-          throw new Error(`Provider ${runtimeSettings.provider} is unavailable in this session.`);
         const guidance = RepositoryGuidanceSession.open({
           root: environment.files,
           security: openedWorkspace.security,
@@ -350,8 +375,9 @@ export async function createCodingSession(options: CodingSessionOptions) {
       get provider() {
         return provider;
       },
-      setProvider(next: ModelProvider) {
+      setProvider(next: ModelProvider, binding: AgentSessionConfiguration) {
         provider = next;
+        providerBinding = binding;
         inference = createInference();
       },
       history,

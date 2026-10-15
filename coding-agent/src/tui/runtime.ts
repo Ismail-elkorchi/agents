@@ -160,7 +160,7 @@ export async function runCodingAgentTuiApp(
           }
           const result = await controller.resumeSuspension(suspension.runId);
           return result.state === 'suspended'
-            ? `${suspensionMessage(result)}\n${suspensionPresentation(result.reason).waitingMessage}`
+            ? `${suspensionMessage(result)}\n${suspensionPresentation(result).waitingMessage}`
             : 'The run has finished.';
         },
         approvalHandler: async (suspension, decision) => {

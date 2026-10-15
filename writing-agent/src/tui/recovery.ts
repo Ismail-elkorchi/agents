@@ -132,7 +132,7 @@ export function recoveryView(state: WritingTuiState): Element<WritingTuiMessage>
     state.recoveryOperation !== undefined ||
     (state.overlay.kind === 'recovery' && state.overlay.loading);
   const suspension = session?.session.suspension;
-  const presentation = suspension ? suspensionPresentation(suspension.reason) : undefined;
+  const presentation = suspension ? suspensionPresentation(suspension) : undefined;
   const children: Element<WritingTuiMessage>[] = [
     richText({
       wrap: true,
@@ -159,7 +159,7 @@ export function recoveryView(state: WritingTuiState): Element<WritingTuiMessage>
         button({
           id: 'writing-recovery-resume',
           disabled: pending,
-          label: suspensionPresentation(suspension.reason).resumeLabel ?? 'Continue',
+          label: suspensionPresentation(suspension).resumeLabel ?? 'Continue',
           onPress: () => ({ type: 'recovery.resume' })
         })
       );

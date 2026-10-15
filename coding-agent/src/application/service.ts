@@ -9,7 +9,6 @@ import {
   agentEventCodec,
   ApplicationEvents,
   assertHistoryModelCompatibility,
-  assertSessionImagesSupported,
   progressReplacementKey,
   type AgentEvent,
   type AgentRunResult,
@@ -203,11 +202,6 @@ export class CodingApplication {
           reason: 'setup_required',
           requirements: this.applicationState.requirements
         };
-      if (input.images?.length)
-        assertSessionImagesSupported(
-          input.images,
-          await this.runtime.provider.describeModel(this.runtime.agent.state().configuration.model)
-        );
       const { relationship, ...runInput } = input;
       return this.runtime.agent.submit(runInput, {
         ...options,
@@ -540,6 +534,11 @@ export class CodingApplication {
   }
 
   modelSelection(): ModelSelection | undefined {
+    if (this.runtime !== undefined) {
+      const { responseFormat: ignored, ...selection } = this.runtime.agent.state().configuration;
+      void ignored;
+      return selection;
+    }
     const settings = this.resolvedSettings;
     if (settings.provider === undefined || settings.model === undefined) return undefined;
     return {
@@ -604,7 +603,7 @@ export class CodingApplication {
       this.modelOverride = { selection: owned, adapter };
       this.resolvedSettings = settings;
       if (prepared !== undefined) {
-        prepared.setProvider(adapter);
+        prepared.setProvider(adapter, owned);
         if (prepared !== this.runtime) await this.activateRuntime(prepared);
       }
       await this.publishState(

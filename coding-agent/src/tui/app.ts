@@ -2021,7 +2021,7 @@ function agentTuiView(
           ? [
               button<CodingAgentTuiMessage>({
                 id: 'review-decision',
-                label: suspensionPresentation(state.run.suspension.reason).title,
+                label: suspensionPresentation(state.run.suspension).title,
                 onPress: () => ({ type: 'recovery.open' })
               })
             ]

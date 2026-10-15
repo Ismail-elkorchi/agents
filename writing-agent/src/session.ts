@@ -1,8 +1,9 @@
-import { RequestTokenEstimator, type ModelProvider } from '@agent-core/model';
+import { assertModelRequestSupported, RequestTokenEstimator, type ModelProvider } from '@agent-core/model';
 import { hashJson } from '@agent-core/persistence';
 import { JsonlEventRepository, LocalArtifactRepository } from '@agent-core/persistence/node';
 import {
   AgentRunCoordinator,
+  assertSessionImagesSupported,
   AgentRuntime,
   AgentSession,
   ContextService,
@@ -52,9 +53,16 @@ const readTools = ['read_files', 'list_directory', 'search_text', 'read_artifact
 export function createWritingSession(
   workspace: WritingWorkspace,
   descriptor: SessionDescriptor,
-  configuration: WritingConfiguration
+  configuration: WritingConfiguration,
+  resolveProvider?: (configuration: AgentSessionConfiguration) => ModelProvider
 ) {
-  const { provider } = configuration;
+  let { provider } = configuration;
+  let providerBinding: AgentSessionConfiguration = {
+    provider: provider.id, model: configuration.model,
+    ...(configuration.endpoint === undefined ? {} : { endpoint: configuration.endpoint }),
+    ...(configuration.reasoning === undefined ? {} : { reasoning: configuration.reasoning }),
+    ...(configuration.temperature === undefined ? {} : { temperature: configuration.temperature })
+  };
   const sessions = new JsonlSessionRepository({
     rootDir: path.join(workspace.stateDirectory, 'sessions')
   });
@@ -72,7 +80,7 @@ export function createWritingSession(
     events,
     artifacts
   });
-  const inference = new InferenceService({
+  const createInference = () => new InferenceService({
     provider,
     artifacts,
     repository: new JsonlInferenceRepository({
@@ -82,6 +90,7 @@ export function createWritingSession(
       ? {}
       : { budget: configuration.inferenceBudget })
   });
+  let inference = createInference();
   const ownerId = `writing-session:${descriptor.id}`;
   const hosts = new Set<ReturnType<typeof createLocalToolHost>>();
   const context: ContextService = new ContextService({
@@ -109,6 +118,7 @@ export function createWritingSession(
     configuration: {
       provider: provider.id,
       model: configuration.model,
+      ...(configuration.endpoint === undefined ? {} : { endpoint: configuration.endpoint }),
       ...(configuration.reasoning === undefined ? {} : { reasoning: configuration.reasoning }),
       ...(configuration.temperature === undefined
         ? {}
@@ -117,12 +127,31 @@ export function createWritingSession(
         ? {}
         : { responseFormat: configuration.responseFormat })
     },
+    async prepareConfiguration(settings, input) {
+      const { responseFormat: ignored, ...binding } = settings;
+      void ignored;
+      if (hashJson(binding) !== hashJson(providerBinding)) {
+        if (!resolveProvider)
+          throw new Error('Session model configuration changed in another client. Select the model again before submitting.');
+        const next = resolveProvider(settings);
+        if (next.id !== settings.provider) throw new Error('The resolved provider does not match the session configuration.');
+        const profile = await next.describeModel(settings.model);
+        if (profile.provider !== settings.provider || profile.id !== settings.model)
+          throw new Error('The resolved model profile does not match the session configuration.');
+        assertModelRequestSupported(profile, { model: settings.model, messages: [],
+          ...(settings.reasoning === undefined ? {} : { reasoning: settings.reasoning }),
+          ...(settings.temperature === undefined ? {} : { temperature: settings.temperature }) });
+        provider = next;
+        providerBinding = binding;
+        inference = createInference();
+      }
+      if (input.images?.length)
+        assertSessionImagesSupported(input.images, await provider.describeModel(settings.model));
+    },
     async createRuntime(settings, onProgress, run) {
       const { mode } = z
         .strictObject({ mode: z.enum(['edit', 'review']) })
         .parse(JSON.parse(await readFile(permissionPath(workspace, run.runId), 'utf8')));
-      if (settings.provider !== provider.id)
-        throw new Error(`Provider ${settings.provider} is unavailable.`);
       const root = workspace.root.derive();
       let host: ReturnType<typeof createLocalToolHost>;
       try {
@@ -204,7 +233,7 @@ export function createWritingSession(
     }
   });
   return {
-    provider,
+    get provider() { return provider; },
     agent,
     history,
     artifacts,

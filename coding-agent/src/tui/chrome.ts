@@ -92,7 +92,7 @@ function runStatus(state: CodingAgentTuiState): string {
     case 'waiting_for_approval':
       return 'Approval required';
     case 'waiting_for_recovery':
-      return suspensionPresentation(state.run.suspension.reason).title;
+      return suspensionPresentation(state.run.suspension).title;
     case 'failed':
       return 'Failed';
     case 'ended':

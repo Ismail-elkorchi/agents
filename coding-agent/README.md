@@ -19,7 +19,7 @@ coding-agent --session SESSION_ID
 coding-agent exec --resume
 ```
 
-Interactive startup shows the missing workspace-trust and model decisions as controls. Trust and execution permissions are separate choices. `/model` opens provider and model pickers, authentication, supported reasoning settings, and temperature. Selection is applied together and saved for future submissions; an active run retains its admitted configuration. Cancel keeps the previous selection and unsent draft.
+Interactive startup shows the missing workspace-trust and model decisions as controls. Trust and execution permissions are separate choices. `/model` opens provider and model pickers, authentication, supported reasoning settings, and temperature. Selection is applied together and saved for future submissions; an active run retains its admitted configuration. Other open clients reconcile the complete saved provider, model, and endpoint before accepting their next input. If the selected connection cannot be prepared, the input remains unsubmitted and the client remains usable. Cancel keeps the previous selection and unsent draft.
 
 Type `/` for command suggestions or press Ctrl+P for the searchable command menu. Enter sends; Shift+Enter or Alt+Enter inserts a newline. Ctrl+O toggles tool details; Ctrl+T toggles provider-exposed reasoning. Ctrl+F searches recorded history; F3/Shift+F3 move between search matches; Alt+PageUp/PageDown move between messages. Ctrl+PageUp/PageDown load history, and Ctrl+End returns to live output. F1 shows the actual current bindings, including saved overrides.
 

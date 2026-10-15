@@ -271,11 +271,18 @@ export async function createRuntime(
   const composition = await createCodingSession({
     workspace: openedWorkspace,
     provider: providerRuntime.provider,
+    resolveProvider: (configuration) => createProviderRuntime({
+      provider: parseProviderId(configuration.provider),
+      model: configuration.model,
+      ...(configuration.endpoint === undefined ? {} : { providerEndpoint: configuration.endpoint }),
+      ...(settings.codexTransport === undefined ? {} : { codexTransport: settings.codexTransport })
+    }).provider,
     descriptor: session,
     ...(onCommandSettlement ? { onCommandSettlement } : {}),
     settings: {
       provider: settings.provider,
       model: settings.model,
+      ...(settings.providerEndpoint === undefined ? {} : { endpoint: settings.providerEndpoint }),
       ...(settings.temperature === undefined ? {} : { temperature: settings.temperature }),
       ...(settings.reasoning === undefined ? {} : { reasoning: settings.reasoning })
     },

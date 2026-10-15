@@ -8,7 +8,6 @@ import { LocalArtifactRepository, atomicWritePrivateJson } from '@agent-core/per
 import {
   ApplicationEvents,
   assertHistoryModelCompatibility,
-  assertSessionImagesSupported,
   ownSessionSubmissionInput,
   progressReplacementKey,
   type AgentSession,
@@ -145,8 +144,8 @@ export class WritingApplication {
       ...(this.descriptor ? { sessionId: this.descriptor.id } : {}),
       ...(this.configuration
         ? {
-            provider: this.configuration.provider.id,
-            model: this.configuration.model
+            provider: this.composition?.agent.state().configuration.provider ?? this.configuration.provider.id,
+            model: this.composition?.agent.state().configuration.model ?? this.configuration.model
           }
         : {}),
       status: this.closeCompletion
@@ -237,6 +236,11 @@ export class WritingApplication {
   }
 
   modelSelection(): ModelSelection | undefined {
+    if (this.composition !== undefined) {
+      const { responseFormat: ignored, ...selection } = this.composition.agent.state().configuration;
+      void ignored;
+      return selection;
+    }
     return (
       this.selection ??
       (this.configuration === undefined
@@ -244,6 +248,7 @@ export class WritingApplication {
         : {
             provider: this.configuration.provider.id,
             model: this.configuration.model,
+            ...(this.configuration.endpoint === undefined ? {} : { endpoint: this.configuration.endpoint }),
             ...(this.configuration.reasoning === undefined
               ? {}
               : { reasoning: this.configuration.reasoning }),
@@ -268,6 +273,8 @@ export class WritingApplication {
     const owned = parseModelSelection(selection);
     return this.mutate(async () => {
       const configuration = { ...this.configuration, provider, model: owned.model };
+      delete configuration.endpoint;
+      if (owned.endpoint !== undefined) configuration.endpoint = owned.endpoint;
       delete configuration.reasoning;
       delete configuration.temperature;
       if (owned.reasoning !== undefined) configuration.reasoning = owned.reasoning;
@@ -309,13 +316,15 @@ export class WritingApplication {
     const prepared = createWritingSession(
       this.workspace,
       this.requireDescriptor(),
-      this.generationConfiguration(configuration)
+      this.generationConfiguration(configuration),
+      (selection) => this.connectProvider(selection.provider, selection.endpoint)
     );
     try {
       await prepared.agent.changeModel({
         selection: selection ?? {
           provider: configuration.provider.id,
           model: configuration.model,
+          ...(configuration.endpoint === undefined ? {} : { endpoint: configuration.endpoint }),
           ...(configuration.reasoning === undefined ? {} : { reasoning: configuration.reasoning }),
           ...(configuration.temperature === undefined
             ? {}
@@ -421,13 +430,6 @@ export class WritingApplication {
       if (this.descriptor === undefined) await this.initializeSession();
       this.assertOpen();
       if (!this.composition) return { kind: 'rejected', reason: 'configuration_required' };
-      if (owned.images?.length)
-        assertSessionImagesSupported(
-          owned.images,
-          await this.composition.provider.describeModel(
-            this.composition.agent.state().configuration.model
-          )
-        );
       const runId = randomUUID();
       await recordWritingPermission(this.workspace, runId, this.mode);
       const sessionId = this.requireDescriptor().id;
@@ -643,7 +645,8 @@ export class WritingApplication {
     const composition = createWritingSession(
       this.workspace,
       this.descriptor,
-      this.generationConfiguration(this.configuration)
+      this.generationConfiguration(this.configuration),
+      (selection) => this.connectProvider(selection.provider, selection.endpoint)
     );
     try {
       const profile = await this.configuration.provider.describeModel(this.configuration.model);

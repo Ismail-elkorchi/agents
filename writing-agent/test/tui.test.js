@@ -306,3 +306,40 @@ test('document visibility is explicit and refresh compares the two observed revi
   assert.match(renderFramePlain(runtime.frame()), /compared with/);
   assert.ok(comparison.segments.some((segment) => segment.style?.strikethrough));
 });
+
+test('preparation suspension offers retry and resumes the preserved writing request',
+  { skip: process.platform !== 'linux', timeout: 30000 }, async t => {
+    const { compileModelRequest, ModelProviderError } = await import('@agent-core/model');
+    const f = await fixture('Document.\n');
+    let unavailable = true;
+    f.provider.compileRequest = async request => {
+      if (unavailable && request.messages.some(item => item.content.includes('Prepare a fresh context for the same ongoing work')))
+        throw new ModelProviderError({ provider: f.provider.id, code: 'provider_unavailable', message: 'Temporary compiler outage.', retryable: true });
+      const { signal: _signal, ...body } = request;
+      return compileModelRequest({ request, body, profile: await f.provider.describeModel(), endpoint: 'writing-test', providerInputTokens: 100 });
+    };
+    const app = f.application;
+    const runtime = createTuiRuntime({ host: createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 32 } }), app: createWritingAgentTuiApp(app) });
+    const detach = app.subscribe(event => {
+      if (event.type === 'run.completed') return runtime.dispatch({ type: 'result', result: event.result });
+      if (event.type === 'run.progress') return runtime.dispatch({ type: 'progress', runId: event.runId, event: event.event });
+      if (event.type === 'application.state.changed') return runtime.dispatch({ type: 'application', state: event.state });
+    }, error => { throw error; });
+    t.after(async () => { detach(); await runtime.dispose(); await f.close(); });
+    await runtime.start();
+    await waitForState(runtime, t.signal, () => runtime.state().history.length > 0);
+    const submission = await app.submit({ task: 'Review the document.' });
+    assert.equal((await submission.completion).state, 'suspended');
+    await waitForState(runtime, t.signal, () => runtime.state().sessionView?.session.suspension !== undefined);
+    await runtime.dispatch({ type: 'recovery.open' });
+    await waitForState(runtime, t.signal, () => runtime.state().overlay.kind === 'recovery' && !runtime.state().overlay.loading);
+    const frame = renderFramePlain(runtime.frame());
+    assert.match(frame, /Request preparation unavailable/);
+    assert.match(frame, /Retry request/);
+    assert.doesNotMatch(frame, /does not fit|Context needs adjustment|Check for a recorded result/);
+    assert.equal(f.provider.requests.length, 0);
+    unavailable = false;
+    await runtime.dispatch({ type: 'recovery.resume' });
+    await waitForState(runtime, t.signal, () => f.provider.requests.length === 1 && runtime.state().recoveryOperation === undefined);
+    assert.ok(f.provider.requests[0].messages.some(item => item.content.includes('Review the document.')));
+});

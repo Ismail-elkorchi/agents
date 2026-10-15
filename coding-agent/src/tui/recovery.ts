@@ -49,7 +49,7 @@ export function recoveryDialog(
   offsetRow: number
 ): Element<CodingAgentTuiMessage> {
   const { suspension } = run;
-  const presentation = suspensionPresentation(suspension.reason);
+  const presentation = suspensionPresentation(suspension);
   const actions: Element<CodingAgentTuiMessage>[] = [
     button({ id: 'recovery-close', label: 'Close', onPress: () => ({ type: 'overlay.close' }) }),
     button({
@@ -79,7 +79,7 @@ export function recoveryDialog(
     run.operation === 'stop'
       ? 'Stopping…'
       : run.operation === 'resume'
-        ? suspension.reason === 'context_admission' ? 'Checking request capacity…' : 'Checking…'
+        ? suspension.reason === 'context_admission' ? 'Preparing request…' : 'Checking…'
         : (run.message ?? '');
   return dialog({
     id: 'recovery-dialog',

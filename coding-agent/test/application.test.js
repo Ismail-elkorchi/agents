@@ -289,6 +289,7 @@ test(
     assert.equal(completed.terminal?.executionStatus, 'completed', JSON.stringify(completed));
     const state = await app.inspectContext();
     assert.equal(state.sessionState.content.understanding?.[0]?.text, text, JSON.stringify(state.sessionState));
+    assert.equal(app.modelSelection().endpoint, provider.endpoint, 'Context state publication preserves the selected base endpoint');
     assert.equal(state.sessionState.complete, true);
     assert.ok(state.sessionState.revisionId);
     const original = await app.readHistorySource({
@@ -306,6 +307,7 @@ test(
       state.sessionState.revisionId
     );
     const next = await app.submit({ task: 'What remains uncertain?' });
+    assert.equal(app.modelSelection().endpoint, provider.endpoint, 'Restart preserves the selected base endpoint');
     assert.equal((await next.completion).terminal.executionStatus, 'completed');
     assert.ok(JSON.stringify(provider.chatRequests.at(-1)).includes(text));
     const { readFile } = await import('node:fs/promises');

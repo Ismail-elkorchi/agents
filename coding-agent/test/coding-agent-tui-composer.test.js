@@ -306,3 +306,28 @@ test('context suspension shows its actual conflict and context actions instead o
   await runtime.handleInput(key('escape'));
   assert.equal(runtime.state().overlay.kind, 'none');
 });
+
+test('preparation suspension offers ordinary retry without claiming context overflow', async t => {
+  const { renderFramePlain } = await import('@ismail-elkorchi/terminal-ui/renderer');
+  const calls = [];
+  const runtime = createTuiRuntime({ host: createMemoryTerminalHost({ terminalSize: { columns: 100, rows: 32 } }),
+    app: createCodingAgentTuiApp('', { recoveryHandler: async (suspension, action) => { calls.push({ suspension, action }); return 'Retried'; } }) });
+  t.after(() => runtime.dispose());
+  await runtime.start();
+  await runtime.dispatch({ type: 'run.suspended', suspension: {
+    runId: 'prepare-run', submissionId: 'input', category: 'context_admission', reason: 'context_admission',
+    actions: ['resume', 'context', 'abort'], contextAdmission: {
+      kind: 'request_preparation', recovery: 'request_unavailable', message: 'Temporary compiler outage.', actions: ['retry', 'change_model', 'cancel']
+    }
+  } });
+  await runtime.dispatch({ type: 'recovery.open' });
+  const dialog = renderFramePlain(runtime.frame());
+  assert.match(dialog, /Request preparation unavailable/);
+  assert.match(dialog, /Retry request/);
+  assert.doesNotMatch(dialog, /does not fit|Context needs adjustment|Check for a recorded result/);
+  await runtime.dispatch({ type: 'recovery.act', action: 'resume' });
+  const { waitFor } = await import('./coding-agent-tui-test-helpers.js');
+  await waitFor(() => calls.length === 1);
+  assert.equal(calls[0].action, 'resume');
+  assert.equal(calls[0].suspension.runId, 'prepare-run');
+});

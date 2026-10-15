@@ -192,7 +192,7 @@ export function writingView(
           : [
               action(
                 'writing-pending-decision',
-                suspensionPresentation(state.sessionView.session.suspension.reason).title,
+                suspensionPresentation(state.sessionView.session.suspension).title,
                 {
                   type: 'recovery.open'
                 }
@@ -414,7 +414,7 @@ function modalView(
       break;
     case 'recovery':
       title = state.sessionView?.session.suspension
-        ? suspensionPresentation(state.sessionView.session.suspension.reason).title
+        ? suspensionPresentation(state.sessionView.session.suspension).title
         : 'Paused run';
       focusId = 'writing-modal-close';
       content = scrollable(state, 'writing-recovery', recoveryView(state));
