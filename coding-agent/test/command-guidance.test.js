@@ -11,9 +11,9 @@ import {
   trust
 } from './fixtures/scripted-cli.js';
 
-test(
-  'Codex reasoning survives newly discovered guidance without starting the deferred command',
-  { skip: process.platform !== 'linux', timeout: 30_000 },
+for (const reconsideredTool of ['read_files', 'exec_command']) test(
+  `Codex reasoning survives guidance and reopen after reconsidering with ${reconsideredTool}`,
+  { skip: reconsideredTool === 'exec_command' && process.platform !== 'linux', timeout: 30_000 },
   async (t) => {
     const reasoning = ['original', 'reconsidered'].map((id) => ({
       type: 'reasoning',
@@ -27,8 +27,10 @@ test(
       {
         type: 'function_call',
         call_id: id,
-        name: 'exec_command',
-        arguments: JSON.stringify({ command: 'printf inspected', workdir: 'subproject' })
+        name: id === 'discover-guidance' ? 'exec_command' : reconsideredTool,
+        arguments: JSON.stringify(id !== 'discover-guidance' && reconsideredTool === 'read_files'
+          ? { files: [{ path: 'subproject/AGENTS.md' }] }
+          : { command: 'printf inspected', workdir: 'subproject' })
       }
     ];
     const provider = await offlineCodex(t, async (request) => {
@@ -61,7 +63,7 @@ test(
           const result = request.input.find(
             (item) => item.type === 'function_call_output' && item.call_id === 'execute-after-guidance'
           );
-          assert.match(result.output, /inspected/);
+          assert.match(result.output, reconsideredTool === 'read_files' ? /GUIDANCE-BEFORE-DISPATCH/ : /inspected/);
         }
         return 'Inspection complete.';
       } catch (error) {
@@ -70,7 +72,7 @@ test(
       }
     });
     const fixture = await createWorkspace({
-      tools: ['exec_command'],
+      tools: ['exec_command', 'read_files'],
       checks: [],
       files: { 'subproject/AGENTS.md': 'GUIDANCE-BEFORE-DISPATCH: preserve unrelated files.\n' }
     });
@@ -109,7 +111,8 @@ test(
     await application.start();
     assert.equal(application.state().session.sessionId, sessionId);
     const followup = await application.submit({ task: 'Explain the result.' });
-    assert.equal((await followup.completion).terminal?.executionStatus, 'completed');
+    const followedUp = await followup.completion;
+    assert.equal(followedUp.terminal?.executionStatus, 'completed', JSON.stringify(followedUp));
     assert.equal(requests, 4);
   }
 );
