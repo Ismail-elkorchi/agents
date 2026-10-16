@@ -34,13 +34,13 @@ The five source-audit probes are narrower than actual project work. Exact answer
 
 All sources come from the shipped data-only `fixtures/continuation-baseline.json`: four exact regression files from Agents baseline `040f5c496dfa87ad2ebb556c5d75c0b9451d43ff`. The 21 KB corpus preserves original line offsets and context, with path/revision provenance plus verified corpus/per-file SHA-256 hashes. Historical test text is never executed. Preparation needs no Git history, credentials or network, including in shallow CI checkouts.
 
-Run the deterministic preparation and actual existing-evaluator integration checks with:
+Run the portable deterministic preparation checks on every supported platform:
 
 ```sh
 node --test coding-agent/test/continuation-comparison.test.js
 ```
 
-These tests run the evaluator against the existing loopback scripted Ollama server, including real file reads, an actual settings patch, and resource replacement. They make no paid provider calls. The evaluator accepts `--max-output-tokens N` to keep generation reservations explicit and matched across builds; the scripted 32K fixture uses 4096.
+The six integration scenarios are in `coding-agent/test/continuation-comparison-host.test.js`; run that file directly on Linux. The standard suite routes it through its existing Linux rooted-file-capability test group because the real `RootedFileAuthority` explicitly does not support macOS/Windows. Portable preparation and oracle tests remain enabled everywhere. No runtime security fallback is used. These six tests run the evaluator against the existing loopback scripted Ollama server, including real file reads, an actual settings patch, and resource replacement. They make no paid provider calls. The evaluator accepts `--max-output-tokens N` to keep generation reservations explicit and matched across builds; the scripted 32K fixture uses 4096.
 
 `prepareComparison` takes `[primaryTaskScenario(), ...comparisonFixtures()]`, separately qualified A/B/C build declarations, explicit model/tool settings, per-trial and total charge caps, token/preparation/time budgets, and repetitions. It returns counterbalanced A→B and B→C ordinary-workload trials. A is the original Core/Agents pair; B must be the qualified original-schema continuation commit, C the later narrative-block commit. B/C are required inputs. The declaration does not verify qualification claims or enforce live budgets: exact clean heads, dependency pins, qualification receipts and hard budget enforcement must be checked before paid execution.
 

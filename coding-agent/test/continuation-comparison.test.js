@@ -1,18 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, readFile, rm, mkdir, copyFile } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, mkdir, copyFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { execFile, execFileSync } from 'node:child_process';
-import { promisify } from 'node:util';
-import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 import { comparisonFixtures, prepareComparison, primaryTaskScenario, baseline, mechanicsCases }
   from '../../validation/continuation-comparison.mjs';
-import { scriptedOllama, toolResponse, finalResponse } from './fixtures/scripted-cli.js';
 
-const execute = promisify(execFile);
 const fixtures = comparisonFixtures();
-const root = fileURLToPath(new URL('../../', import.meta.url));
 const configuration = () => ({
   builds: {
     A: { ...baseline, directory: '/comparison/A', qualified: true, schema: 'original', policy: 'reset-on-state-update' },
@@ -94,50 +89,6 @@ test('paired preparation separates ordinary live tasks from existing determinist
   }
 });
 
-for (const scenario of [primaryTaskScenario(), ...fixtures]) test(`existing evaluator executes ${scenario.id} against scripted local model`,
-  { timeout: 30000 }, async () => {
-    const directory = await mkdtemp(path.join(tmpdir(), 'comparison-evaluator-'));
-    const script = [];
-    if (scenario.kind === 'primary-project-task') {
-      script.push(toolResponse('read_files', { files: [{ path: 'math.mjs', startLine: 1, lineCount: 5 }] }), finalResponse('Empty input throws.'),
-        toolResponse('apply_patch', { patch: '*** Begin Patch\n*** Update File: settings.json\n@@\n-{"port":3000,"theme":"dark"}\n+{"port":9090}\n*** End Patch' }),
-        finalResponse('Updated the settings.'), finalResponse('The port is 9090.'));
-    } else {
-      for (let index = 0; index < scenario.steps.length; index++) {
-        const file = scenario.id === 'changed-external-resource' ? 'resource.json'
-          : scenario.id === 'deep-tool-evidence' ? 'diagnostic.txt' : scenario.immutableFiles[0];
-        script.push(toolResponse('read_files', { files: [{ path: file, startLine: scenario.id === 'deep-tool-evidence' ? 4097 : 1, lineCount: 100 }] }),
-          finalResponse(index === scenario.steps.length - 1 ? answer(scenario) : 'Initial inspection complete.'));
-      }
-    }
-    const provider = await scriptedOllama(script);
-    let report;
-    try {
-      const output = path.join(directory, 'report.json');
-      await execute(process.execPath, ['validation/coding-agent-evaluation.mjs', '--live', '--provider', 'ollama', '--model', 'v0-scripted',
-        '--endpoint', provider.endpoint, '--max-output-tokens', '4096', '--output', output, '--scenario', scenario.id], { cwd: root, timeout: 25000, maxBuffer: 1024 * 1024 });
-      report = JSON.parse(await readFile(output, 'utf8'));
-      assert.equal(report.passed, true);
-      assert.equal(report.trials[0].steps.length, scenario.steps.length);
-      assert.deepEqual(report.trials[0].measurementErrors, []);
-      const allRequests = JSON.stringify(provider.chatRequests);
-      for (const step of scenario.steps) assert(allRequests.includes(JSON.stringify(step.task).slice(1, -1)));
-      if (scenario.id === 'changed-external-resource') {
-        assert(allRequests.includes('v0-scripted-next'), 'Actual changed file bytes reached the model through read_files');
-        assert(allRequests.includes('old'), 'Initial resource was also observed');
-      }
-      if (scenario.id === 'deep-tool-evidence') assert(allRequests.includes('requiredBytes'));
-      assert(Object.values(report.trials[0].runMetrics).every(metrics => metrics.generationRequests > 0));
-    } catch (error) {
-      try { report = JSON.parse(await readFile(path.join(directory, 'report.json'), 'utf8')); } catch {}
-      throw error;
-    } finally {
-      await provider.close();
-      if (report?.directory) await rm(report.directory, { recursive: true, force: true });
-      await rm(directory, { recursive: true, force: true });
-    }
-  });
-
 test('fixture preparation requires no Git or provider access in shallow checkouts', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'comparison-no-git-'));
   try {
@@ -149,4 +100,33 @@ test('fixture preparation requires no Git or provider access in shallow checkout
       { cwd: directory, env: { ...process.env, PATH: '' }, encoding: 'utf8' });
     assert.equal(output.trim(), '5 3');
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+
+test('suite routes only real rooted-file host scenarios to Linux and keeps preparation portable', () => {
+  const runner = new URL('../../scripts/run-test-suite.mjs', import.meta.url).href;
+  // Execute the actual discovery/filter code, intercepting only its final spawn.
+  // No test suite or provider is launched by this enumeration check.
+  const mockSpawn = `import { EventEmitter } from 'node:events';
+    export function spawn(command, args) {
+      process.stdout.write(JSON.stringify(args));
+      const child = new EventEmitter();
+      queueMicrotask(() => child.emit('exit', 0, null));
+      return child;
+    }`;
+  const mockUrl = `data:text/javascript,${encodeURIComponent(mockSpawn)}`;
+  for (const platform of ['linux', 'darwin', 'win32']) {
+    const program = `import { registerHooks } from 'node:module';
+      Object.defineProperty(process, 'platform', { value: ${JSON.stringify(platform)} });
+      registerHooks({ resolve(specifier, context, next) {
+        return specifier === 'node:child_process'
+          ? { url: ${JSON.stringify(mockUrl)}, shortCircuit: true } : next(specifier, context);
+      } });
+      await import(${JSON.stringify(runner)});`;
+    const args = JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', program], { encoding: 'utf8' })).map(value => value.replaceAll('\\', '/'));
+    assert(args.some(file => file.endsWith('/coding-agent/test/continuation-comparison.test.js')));
+    assert.equal(args.some(file => file.endsWith('/coding-agent/test/continuation-comparison-host.test.js')), platform === 'linux');
+    for (const existing of ['project.test.js', 'resilience.test.js', 'tool-composition.test.js'])
+      assert.equal(args.some(file => file.endsWith(`/coding-agent/test/${existing}`)), platform === 'linux');
+  }
 });
