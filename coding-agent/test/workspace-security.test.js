@@ -158,3 +158,91 @@ test('provider admission rejects credentials before I/O and accepts redacted sou
   await invoke(redactJson('API_TOKEN=private-value').value);
   assert.equal(calls, 3);
 });
+
+test('provider admission preserves native encrypted reasoning and still screens every plaintext channel', async () => {
+  const { OpenAIProvider } = await import('@agent-core/provider-openai');
+  const { createProviderContextState } = await import('@agent-core/model');
+  const provider = new OpenAIProvider({ apiKey: 'test-key' });
+  const model = 'gpt-5.6-sol';
+  const profile = await provider.describeModel(model);
+  const secret = 'sk-' + 'SYNTHETIC_NOT_A_REAL_KEY_1234567890';
+  const opaque = `synthetic-opaque.${secret}.not-real-ciphertext`;
+  const makeRequest = async (summary = 'safe summary', extraMessages = []) => {
+    const prefix = [{ role: 'user', content: 'hello' }];
+    const state = await createProviderContextState({
+      provider: provider.id, endpoint: 'https://api.openai.com/v1/responses',
+      protocolRevision: profile.capabilities.protocol.revision,
+      request: { model, messages: prefix }, requestId: 'synthetic-response',
+      kind: 'responses.reasoning', requiresExactPrefix: false,
+      data: { items: [{ type: 'reasoning', id: 'synthetic-reasoning',
+        encrypted_content: opaque, summary: [{ type: 'summary_text', text: summary }] }] }
+    });
+    return { model, maxOutputTokens: 100, messages: [...prefix, { role: 'protocol', content: '', state }, ...extraMessages] };
+  };
+  const request = await makeRequest();
+  const compiled = await provider.compileRequest(request, { outputReservation: 100 });
+  const before = JSON.stringify(compiled.body);
+  assert.ok(redactJson(compiled.body).redactions > 0, 'fixture reproduces the opaque-byte false positive');
+  assert.doesNotThrow(() => admitProviderEgress(compiled, 'trusted'));
+  assert.equal(compiled.body.input[1].encrypted_content, opaque);
+  assert.equal(JSON.stringify(compiled.body), before, 'inspection never mutates provider bytes');
+  assert.throws(() => admitProviderEgress({ ...compiled }, 'trusted'), /unredacted credentials/u,
+    'copied metadata cannot claim compiler provenance');
+  assert.throws(() => admitProviderEgress({ body: { input: [{ type: 'reasoning', id: 'forged', encrypted_content: secret }] } }, 'trusted'), /unredacted credentials/u);
+  assert.throws(() => admitProviderEgress({ body: { encrypted_content: secret } }, 'trusted'), /unredacted credentials/u);
+  const poisonedSummary = await provider.compileRequest(await makeRequest(secret), { outputReservation: 100 });
+  assert.throws(() => admitProviderEgress(poisonedSummary, 'trusted'), /unredacted credentials/u);
+  for (const message of [
+    { role: 'user', content: JSON.stringify({ encrypted_content: secret }) },
+    { role: 'assistant', content: '', toolCalls: [{ id: 'call-synthetic', name: 'test', type: 'function', input: { kind: 'json', value: { encrypted_content: secret } } }] }
+  ]) {
+    const plaintext = await provider.compileRequest(await makeRequest('safe summary', [message]), { outputReservation: 100 });
+    assert.throws(() => admitProviderEgress(plaintext, 'trusted'), /unredacted credentials/u);
+  }
+  const retained = await provider.compileNativeFrame(request, { input: [] }, { input: compiled.body.input }, 0);
+  assert.doesNotThrow(() => admitProviderEgress(retained, 'trusted'));
+  assert.equal(retained.retainedBody.input[1].encrypted_content, opaque);
+  const poisonedRetained = await provider.compileNativeFrame(request, { input: [] }, {
+    input: compiled.body.input, extra: { encrypted_content: secret }
+  }, 0);
+  assert.throws(() => admitProviderEgress(poisonedRetained, 'trusted'), /unredacted credentials/u);
+  const alteredNative = await provider.compileNativeFrame(request, {
+    input: [{ ...compiled.body.input[1], encrypted_content: secret }]
+  }, { input: [] }, 0);
+  assert.throws(() => admitProviderEgress(alteredNative, 'trusted'), /unredacted credentials/u,
+    'a protocol lookalike without exact logical-state provenance remains plaintext');
+  const large = await provider.compileRequest(await makeRequest('safe summary', [
+    { role: 'user', content: 'x'.repeat(1024 * 1024 + 1), images: [
+      { type: 'base64', mediaType: 'image/png', data: 'A'.repeat(1024 * 1024 + 4) }
+    ] }
+  ]), { outputReservation: 100 });
+  assert.doesNotThrow(() => admitProviderEgress(large, 'trusted'), 'classification does not reparse unrelated large text/media');
+  const wrongProvider = structuredClone(request);
+  wrongProvider.messages[1].state.provider = 'forged-provider';
+  await assert.rejects(provider.compileRequest(wrongProvider), /Incompatible provider context/u);
+});
+
+test('Codex compiled reasoning receives the same narrow plaintext inspection policy', async () => {
+  const { OpenAICodexProvider } = await import('@agent-core/provider-openai-codex');
+  const { createProviderContextState } = await import('@agent-core/model');
+  const provider = new OpenAICodexProvider({
+    auth: { async getBearerToken() { throw new Error('No network authentication expected'); } }
+  });
+  const model = 'gpt-5.6';
+  const profile = await provider.describeModel(model);
+  const secret = 'sk-' + 'SYNTHETIC_NOT_A_REAL_KEY_1234567890';
+  const state = await createProviderContextState({
+    provider: provider.id, endpoint: 'https://chatgpt.com/backend-api/codex/responses',
+    protocolRevision: profile.capabilities.protocol.revision,
+    request: { model, messages: [{ role: 'user', content: 'hello' }] },
+    requestId: 'synthetic-codex-response', kind: 'responses.reasoning', requiresExactPrefix: false,
+    data: { items: [{ type: 'reasoning', id: 'synthetic-codex-reasoning', encrypted_content: `opaque.${secret}.payload`, summary: [] }] }
+  });
+  const request = { model, messages: [{ role: 'protocol', content: '', state }] };
+  const compiled = await provider.compileRequest(request, { outputReservation: 100 });
+  assert.doesNotThrow(() => admitProviderEgress(compiled, 'trusted'));
+  const visible = structuredClone(request);
+  visible.messages[0].state.data.items[0].summary = [{ type: 'summary_text', text: secret }];
+  const poisoned = await provider.compileRequest(visible, { outputReservation: 100 });
+  assert.throws(() => admitProviderEgress(poisoned, 'trusted'), /unredacted credentials/u);
+});

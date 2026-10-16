@@ -1,4 +1,4 @@
-import type { CompiledModelRequest } from '@agent-core/model';
+import { compiledRequestPlaintext, type CompiledModelRequest } from '@agent-core/model';
 import { redactJson } from '@agent-core/persistence';
 import { decideWorkspaceAction, type WorkspaceTrustLevel } from './workspace-trust.js';
 
@@ -9,9 +9,7 @@ export function admitProviderEgress(
 ): void {
   const decision = decideWorkspaceAction(trustLevel, 'provider_egress');
   if (decision.kind !== 'allowed') throw new Error(decision.reason);
-  const material = request.retainedBody === undefined
-    ? request.body
-    : { body: request.body, retainedBody: request.retainedBody };
+  const material = compiledRequestPlaintext(request);
   if (redactJson(material).redactions > 0)
     throw new Error('Provider request contains unredacted credentials.');
 }
