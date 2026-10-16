@@ -1,0 +1,2 @@
+# The baseline corpus is byte-hashed evaluation data, including its JSON wrapper.
+validation/fixtures/continuation-baseline.json -text
