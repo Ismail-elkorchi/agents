@@ -239,6 +239,9 @@ async function presentControllerEvent(
       await emit({ type: 'context.applied', idempotencyKey: event.transition.idempotencyKey });
       message = { type: 'context.transitioned', window: event.window };
       break;
+    case 'context.transition.unchanged':
+      message = { type: 'context.applied', idempotencyKey: event.idempotencyKey, status: 'unchanged' };
+      break;
     case 'context.transition.rejected':
       message = { type: 'context.rejected', idempotencyKey: event.idempotencyKey, message: event.message };
       break;

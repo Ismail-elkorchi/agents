@@ -301,6 +301,7 @@ test('review sessions reject idle renewal without changing document authority', 
     expectedWindowId: (await f.application.inspectContext()).window?.windowId ?? null,
     expectedSourceRevision: (await f.application.inspectContext()).cut.sourceRevision,
     idempotencyKey: 'renew-inspected-context',
+    renewal: true,
     reason: 'Continue with the inspected originals.',
     selection: (await f.application.inspectContext()).activeSelection.selection
   }), /compiled next-request admission/);

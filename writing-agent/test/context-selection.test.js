@@ -49,7 +49,7 @@ test('history_latest retrieves recent user contributions after a fresh context s
   { skip: process.platform !== 'linux', timeout: 30_000 }, async t => {
     const f = await fixture('', { mode: 'review', responses: [
       'First answer.',
-      toolCall('context_transition', { retain: [], sessionState: { working: [{ id: 'retrieve-recent', text: 'Recover recent original user instructions.' }] }, reason: 'Recover original history in fresh inference.' }),
+      toolCall('context_transition', { renewal: true, retain: [], sessionState: { working: [{ id: 'retrieve-recent', text: 'Recover recent original user instructions.' }] }, reason: 'Recover original history in fresh inference.' }),
       toolCall('history_latest', { limit: 10, maxBytes: 8192 }),
       request => {
         const latest = request.messages.filter(item => item.role === 'tool').at(-1);
@@ -64,5 +64,31 @@ test('history_latest retrieves recent user contributions after a fresh context s
     await submit(f.application, 'Remember RECENT-USER-CONSTRAINT-493.');
     const result = await submit(f.application, 'Recover my recent instructions.');
     assert.equal(result.terminal?.executionStatus, 'completed', JSON.stringify(result));
+  }
+);
+
+test('ordinary state replacements append once and identical replacements preserve the revision',
+  { skip: process.platform !== 'linux', timeout: 30_000 }, async t => {
+    const sessionState = { working: [{ id: 'current-work', text: 'Preserve the author’s uncertainty.' }] };
+    const f = await fixture('', { mode: 'review', responses: [
+      toolCall('context_transition', { sessionState, reason: 'Record the current editorial interpretation.' }),
+      'State recorded.',
+      toolCall('context_transition', { sessionState, reason: 'Keep the same editorial interpretation.' }),
+      'State unchanged.'
+    ] });
+    t.after(() => f.close());
+    await f.application.start();
+    assert.equal((await submit(f.application, 'Review the draft.')).terminal.executionStatus, 'completed');
+    const before = await f.application.inspectContext();
+    const firstHistory = await f.application.readHistory();
+    const transitions = firstHistory.entries.filter(entry => entry.type === 'context_transition');
+    assert.equal(transitions.length, 1);
+    assert.equal(transitions[0].transition.strategy, 'append');
+    assert.equal((await submit(f.application, 'Keep that interpretation.')).terminal.executionStatus, 'completed');
+    const after = await f.application.inspectContext();
+    assert.equal(after.sessionState.revisionId, before.sessionState.revisionId);
+    assert.equal(after.window.windowId, before.window.windowId);
+    assert.equal((await f.application.readHistory()).entries.filter(entry => entry.type === 'context_transition').length, 1);
+    assert.ok(JSON.stringify(f.provider.requests.at(-1)).includes('Keep that interpretation.'));
   }
 );

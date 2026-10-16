@@ -41,3 +41,18 @@ test('admission estimates do not substitute for provider token usage', () => {
   assert.equal(measured.estimatedGenerationToolSchemaTokens, 45);
   assert.equal(measured.promptTokens, undefined);
 });
+
+test('continuation metrics distinguish appended state, unchanged updates and fresh renewal', () => {
+  const metrics = new EvaluationMetrics();
+  metrics.record({ type: 'context.transitioned', transition: { strategy: 'append', cause: 'state_update' } });
+  metrics.record({ type: 'context.transition.unchanged', idempotencyKey: 'same', windowId: 'window' });
+  metrics.record({ type: 'context.transitioned', transition: { strategy: 'fresh', cause: 'explicit_renewal', requestedRenewal: true } });
+  const measured = metrics.toJSON();
+  assert.equal(measured.contextRenewals, 1);
+  assert.equal(measured.contextAppends, 1);
+  assert.equal(measured.contextUnchanged, 1);
+  assert.deepEqual(measured.contextTransitions, [
+    { strategy: 'append', cause: 'state_update', requestedRenewal: false },
+    { strategy: 'fresh', cause: 'explicit_renewal', requestedRenewal: true }
+  ]);
+});

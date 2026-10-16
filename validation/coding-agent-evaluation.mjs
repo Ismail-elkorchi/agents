@@ -5,6 +5,7 @@ import path from 'node:path';
 import { parseArgs, promisify } from 'node:util';
 import { openCodingApplication } from '@ismail-elkorchi/coding-agent';
 import { EvaluationMetrics } from './evaluation-metrics.mjs';
+import { primaryTaskScenario, comparisonFixtures } from './continuation-comparison.mjs';
 
 const execute = promisify(execFile);
 const { values } = parseArgs({
@@ -13,6 +14,7 @@ const { values } = parseArgs({
     provider: { type: 'string' },
     model: { type: 'string' },
     reasoning: { type: 'string' },
+    'max-output-tokens': { type: 'string' },
     endpoint: { type: 'string' },
     output: { type: 'string' },
     scenario: { type: 'string' },
@@ -22,6 +24,9 @@ const { values } = parseArgs({
 
 // These are evaluation fixtures, never application tools or instructions.
 const scenarios = [
+  ...(values.scenario === 'project-task-continuity'
+    ? [primaryTaskScenario()] : []),
+  ...comparisonFixtures().filter(scenario => scenario.id === values.scenario),
   {
     id: 'module-repair',
     files: {
@@ -126,6 +131,7 @@ if (
   !values.provider ||
   !values.model ||
   !values.output ||
+  (values['max-output-tokens'] !== undefined && (!Number.isSafeInteger(Number(values['max-output-tokens'])) || Number(values['max-output-tokens']) < 1)) ||
   selected.length === 0 ||
   !Number.isSafeInteger(trials) ||
   trials < 1
@@ -142,6 +148,7 @@ const directory = await mkdtemp(
 const settings = {
   provider: values.provider,
   model: values.model,
+  ...(values['max-output-tokens'] === undefined ? {} : { maxOutputTokens: Number(values['max-output-tokens']) }),
   ...(values.reasoning
     ? {
         reasoning:
@@ -163,8 +170,10 @@ try {
     for (let trial = 1; trial <= trials; trial++) {
       const root = path.join(directory, `${scenario.id}-${trial}`, 'workspace');
       await mkdir(root, { recursive: true });
-      for (const [file, content] of Object.entries(scenario.files))
+      for (const [file, content] of Object.entries(scenario.files)) {
+        await mkdir(path.dirname(path.join(root, file)), { recursive: true });
         await writeFile(path.join(root, file), content);
+      }
       const app = await openCodingApplication({
         ...settings,
         permissionMode: scenario.id === 'read-only-review' ? 'read_only' : 'full_host',
@@ -194,6 +203,7 @@ try {
         await app.start();
         await app.selectWorkspaceTrust('trusted');
         for (const step of scenario.steps) {
+          await step.before?.(root);
           const startedAt = performance.now();
           const accepted = await app.submit({ task: step.task });
           if (accepted.kind !== 'started')
@@ -213,7 +223,7 @@ try {
           }
           let checks;
           try {
-            checks = await step.check(root, scenario);
+            checks = await step.check(root, scenario, result.state === 'ended' ? result.terminal?.modelOutput.message : undefined);
           } catch (error) {
             checks = { fixtureCheck: false, diagnostic: error.message };
           }

@@ -4,6 +4,9 @@ export class EvaluationMetrics {
   estimatedGenerationPromptTokens = 0;
   estimatedGenerationToolSchemaTokens = 0;
   contextRenewals = 0;
+  contextAppends = 0;
+  contextUnchanged = 0;
+  contextTransitions = [];
   modelInterruptions = 0;
   #calls = new Map();
 
@@ -12,7 +15,15 @@ export class EvaluationMetrics {
       this.generationRequests++;
       this.estimatedGenerationPromptTokens += event.estimate.totalPromptTokens;
       this.estimatedGenerationToolSchemaTokens += event.estimate.toolSchemaTokens;
-    } else if (event.type === 'context.transitioned') this.contextRenewals++;
+    } else if (event.type === 'context.transitioned') {
+      if (event.transition.strategy === 'fresh') this.contextRenewals++;
+      else if (event.transition.strategy === 'append') this.contextAppends++;
+      this.contextTransitions.push({
+        strategy: event.transition.strategy,
+        cause: event.transition.cause,
+        requestedRenewal: event.transition.requestedRenewal === true
+      });
+    } else if (event.type === 'context.transition.unchanged') this.contextUnchanged++;
     else if (event.type === 'assistant.interrupted') this.modelInterruptions++;
     else if (['tool.call.received', 'tool.started', 'tool.ended'].includes(event.type)) {
       const identity = {
@@ -63,7 +74,9 @@ export class EvaluationMetrics {
       generationRequests: this.generationRequests,
       estimatedGenerationPromptTokens: this.estimatedGenerationPromptTokens,
       estimatedGenerationToolSchemaTokens: this.estimatedGenerationToolSchemaTokens,
-      contextRenewals: this.contextRenewals, modelInterruptions: this.modelInterruptions,
+      contextRenewals: this.contextRenewals, contextAppends: this.contextAppends,
+      contextUnchanged: this.contextUnchanged, contextTransitions: [...this.contextTransitions],
+      modelInterruptions: this.modelInterruptions,
       toolCallCount: toolCalls.length,
       invocationAttemptCount: attempts.length,
       invokedAttemptCount: attempts.filter(attempt => attempt.invoked).length,
