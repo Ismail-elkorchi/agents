@@ -49,7 +49,7 @@ test('history_latest retrieves recent user contributions after a fresh context s
   { skip: process.platform !== 'linux', timeout: 30_000 }, async t => {
     const f = await fixture('', { mode: 'review', responses: [
       'First answer.',
-      toolCall('context_transition', { renewal: true, retain: [], sessionState: { working: [{ id: 'retrieve-recent', text: 'Recover recent original user instructions.' }] }, reason: 'Recover original history in fresh inference.' }),
+      toolCall('context_transition', { renewal: true, retain: [], sessionState: { blocks: [{ text: 'Recover recent original user instructions.' }] }, reason: 'Recover original history in fresh inference.' }),
       toolCall('history_latest', { limit: 10, maxBytes: 8192 }),
       request => {
         const latest = request.messages.filter(item => item.role === 'tool').at(-1);
@@ -69,7 +69,7 @@ test('history_latest retrieves recent user contributions after a fresh context s
 
 test('ordinary state replacements append once and identical replacements preserve the revision',
   { skip: process.platform !== 'linux', timeout: 30_000 }, async t => {
-    const sessionState = { working: [{ id: 'current-work', text: 'Preserve the author’s uncertainty.' }] };
+    const sessionState = { blocks: [{ text: 'Preserve the author’s uncertainty.' }] };
     const f = await fixture('', { mode: 'review', responses: [
       toolCall('context_transition', { sessionState, reason: 'Record the current editorial interpretation.' }),
       'State recorded.',

@@ -258,7 +258,7 @@ test(
       mode: 'review',
       responses: [
         toolCall('context_transition', {
-          sessionState: { understanding: [{ id: 'interpretation', text }] }, reason: 'Preserve the current interpretation.'
+          sessionState: { blocks: [{ text }] }, reason: 'Preserve the current interpretation.'
         }),
         'Reviewed.',
         'Answered.'
@@ -272,7 +272,7 @@ test(
       'completed'
     );
     const inspected = await f.application.inspectContext();
-    assert.equal(inspected.sessionState.content.understanding?.[0]?.text, text, JSON.stringify(inspected.sessionState));
+    assert.equal(inspected.sessionState.content.blocks[0]?.text, text, JSON.stringify(inspected.sessionState));
     assert.equal(inspected.sessionState.complete, true);
     assert.ok(inspected.sessionState.revisionId);
     const original = await f.application.readHistorySource({

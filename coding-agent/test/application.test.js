@@ -256,7 +256,7 @@ test(
     const text = 'Change intent: explain first. Unresolved: verify repository guidance.';
     const provider = await scriptedOllama([
       toolResponse('context_transition', {
-        sessionState: { understanding: [{ id: 'interpretation', text }] }, reason: 'Preserve the current interpretation.'
+        sessionState: { blocks: [{ text }] }, reason: 'Preserve the current interpretation.'
       }),
       finalResponse('Explained.'),
       finalResponse('Continued.')
@@ -288,7 +288,7 @@ test(
     const completed = await first.completion;
     assert.equal(completed.terminal?.executionStatus, 'completed', JSON.stringify(completed));
     const state = await app.inspectContext();
-    assert.equal(state.sessionState.content.understanding?.[0]?.text, text, JSON.stringify(state.sessionState));
+    assert.equal(state.sessionState.content.blocks[0]?.text, text, JSON.stringify(state.sessionState));
     assert.equal(app.modelSelection().endpoint, provider.endpoint, 'Context state publication preserves the selected base endpoint');
     assert.equal(state.sessionState.complete, true);
     assert.ok(state.sessionState.revisionId);
