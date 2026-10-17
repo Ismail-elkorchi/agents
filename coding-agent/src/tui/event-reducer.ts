@@ -223,7 +223,7 @@ export function applyConfiguredChecks(
             : check.status === 'failed'
               ? 'failed'
               : 'warning',
-        summary: `${check.requirement} · ${check.receipt ? 'historical ' : ''}${check.status} · ${check.coverage} · applicability ${check.applicability.status}${check.outputComplete === false ? ' · output incomplete' : ''}`,
+        summary: `${check.requirement} · ${check.receipt ? 'historical ' : ''}${check.status}${check.finalizationPending ? ' · finalization pending' : ''} · ${check.coverage} · applicability ${check.applicability.status}${check.outputComplete === false ? ' · output incomplete' : ''}`,
         details: [
           {
             id: 'check-definition',

@@ -687,3 +687,52 @@ test('verification retains its captured history boundary when a check settles du
     assert(settled.checks[0].settlementReceipt.sequence <= settled.history.nextSequence);
     assert.equal(execution.calls.filter(([name]) => name === 'start').length, 1);
   });
+
+test('steering during terminal finalization preserves pending evidence until its durable receipt',
+  { skip: process.platform !== 'linux' }, async (t) => {
+    const { root, directory } = await fixture(t);
+    await writeFile(path.join(directory, 'dirty.txt'), 'tested');
+    const steering = new AbortController();
+    let queries = 0;
+    const execution = executor({ status: 'running', exitCode: null,
+      query: async (processId, _budget, _wait, _cursor, requester, observationSignal) => {
+        queries += 1;
+        assert.deepEqual(requester, owner);
+        assert.equal(observationSignal, steering.signal);
+        steering.abort();
+        const combined = { segments: ['terminal output'], observedBytes: 15, capturedBytes: 15,
+          omittedBytes: 0, startsAtOutputStart: true, endsAtOutputEnd: true };
+        return { processId, owner, status: 'exited', exitCode: 0, finalizationPending: true,
+          cursorStart: 0, cursorEnd: 15, stdout: combined, stderr: combined, combined };
+      }
+    });
+    const { observation } = await run(root, execution, undefined,
+      { ...context, observationSignal: steering.signal });
+    assert.equal(queries, 1, 'do not start an uninterruptible final query after steering');
+    assert.equal(observation.execution.state, 'active');
+    assert.equal(observation.output.status, 'passed');
+    assert.equal(observation.output.processStatus, 'exited');
+    assert.equal(observation.output.finalizationPending, true);
+    assert.equal(observation.output.outputComplete, false);
+    assert.equal(observation.output.testedState.afterCapture, 'interrupted');
+    const events = repository();
+    await record(events, observation);
+    let report = await readConfiguredCheckResults(events, owner.runId, undefined, root);
+    assert.equal(report.checks[0].finalizationPending, true);
+    assert.equal(report.checks[0].settlementReceipt, undefined);
+    const terminal = await events.append(owner.runId, {
+      type: 'resource.released', runId: owner.runId, resourceId: 'process-1',
+      outcome: 'released', details: { owner, status: 'exited', exitCode: 0,
+        diagnostic: 'Final output storage diagnostic' }
+    }, { idempotencyKey: `${owner.runId}:command:process-1:terminal` });
+    await writeFile(path.join(directory, 'dirty.txt'), 'later mutation');
+    report = await readConfiguredCheckResults(events, owner.runId, undefined, root);
+    assert.equal(report.checks[0].status, 'passed');
+    assert.equal(report.checks[0].finalizationPending, undefined);
+    assert.equal(report.checks[0].observation.finalizationPending, undefined);
+    assert.equal(report.checks[0].settlementReceipt.hash, terminal.hash);
+    assert.equal(report.checks[0].observation.diagnostic, 'Final output storage diagnostic');
+    assert.equal(report.checks[0].applicability.status, 'stale');
+    assert.deepEqual(report.checks[0].observation.testedState, observation.output.testedState);
+    assert.equal(execution.calls.filter(([name]) => name === 'start').length, 1);
+  });

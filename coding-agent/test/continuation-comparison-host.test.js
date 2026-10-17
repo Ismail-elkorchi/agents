@@ -7,6 +7,7 @@ import { inventory, sandboxArgs, launch, readFrozen } from '../../validation/eva
 import { freezeBuild, verifyBuild, verifyBuildPreparation } from '../../validation/evaluation-build.mjs';
 import { runAttempt, runComparison, recoverComparisonReport } from '../../validation/coding-agent-evaluation.mjs';
 import { qualificationTask, qualificationSettings, qualificationScript, archiveFiles } from '../../validation/qualify-evaluation.mjs';
+import { checkedCommandScript } from './fixtures/checked-command-script.js';
 import { scriptedOllama, toolResponse, finalResponse } from './fixtures/scripted-cli.js';
 
 let directory, task, build, counter = 0;
@@ -68,6 +69,22 @@ test('multiple follow-ups at the same boundary are submitted in order, not overw
   assert.equal(result.outcome, 'success', result.error);
   assert.equal(result.runs.length, 3);
   assert.deepEqual(result.interventions.map(item => item.instruction), ['first', 'second']);
+});
+
+test('a completed read-only no-edit stage is proven by actual run-scoped progress', async () => {
+  const result = await attempt([
+    toolResponse('read_files', { files: [{ path: 'repo/math.mjs' }] }),
+    finalResponse('Inspected without edits'), patch(), finalResponse('Done')
+  ], input => {
+    input.constraints.stages = [{ id: 'inspect-only', completedRun: 1, rule: 'no-edit', mutationAttempts: 'record-only' }];
+    input.checkpoints = [{ id: 'apply-after-inspection', after: { type: 'run.completed', occurrence: 1 },
+      action: 'follow', instruction: 'Now apply the requested settings correction' }];
+  });
+  assert.equal(result.outcome, 'success', JSON.stringify(result));
+  assert.equal(result.phaseEvidence[0].status, 'passed');
+  assert.deepEqual(result.phaseEvidence[0].uncertainties, []);
+  assert(result.phaseEvidence[0].tools.some(tool => tool.toolName === 'read_files'));
+  assert.equal(result.qualification.qualified, true);
 });
 
 test('an early edit remains a no-edit violation after successful shared-boundary follow-ups', async () => {
@@ -181,7 +198,7 @@ test('wrong patch and agent claims cannot pass independent checks', async () => 
 
 test('hidden checks, parent filesystem, build writes, Git history and network are isolated', async () => {
   const command = `node -e 'const fs=require("fs"); for (const p of ["/checks","/work/repo/.git",${JSON.stringify(directory)}]) {if(fs.existsSync(p))process.exit(8);} try{fs.writeFileSync("/build/build.json","tampered");process.exit(9)}catch(e){if(e.code!=="EROFS")throw e} if(process.env.OPENAI_API_KEY)process.exit(10); console.log("isolated")'`;
-  const result = await attempt([toolResponse('exec_command', { command }), patch(), finalResponse('Done')]);
+  const result = await attempt(checkedCommandScript(command, /isolated/u, patch()));
   assert.equal(result.outcome, 'success', result.error);
   assert(result.metrics.toolCalls.some(call => call.attempts.some(value => value.domain?.exitCode === 0)));
   assert.equal((await inventory(build.directory))['build.json'].sha256.length, 64);
@@ -189,10 +206,8 @@ test('hidden checks, parent filesystem, build writes, Git history and network ar
 });
 
 test('readable installed Core bounds historical tasks to contaminated diagnostics, not blind holdouts', async () => {
-  const result = await attempt([
-    toolResponse('exec_command', { command: `node -e 'const fs=require("fs");const p="/build/node_modules/@agent-core/persistence/dist/jsonl.js";if(!fs.readFileSync(p,"utf8").includes("function"))process.exit(1);console.log("compiled-Core-readable")'` }),
-    patch(), finalResponse('Done')
-  ]);
+  const command = `node -e 'const fs=require("fs");const p="/build/node_modules/@agent-core/persistence/dist/jsonl.js";if(!fs.readFileSync(p,"utf8").includes("function"))process.exit(1);console.log("compiled-Core-readable")'`;
+  const result = await attempt(checkedCommandScript(command, /compiled-Core-readable/u, patch()));
   assert.equal(result.outcome, 'success', result.error);
   assert(result.metrics.toolCalls.some(call => call.attempts.some(value => value.domain?.exitCode === 0)));
 });

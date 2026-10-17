@@ -35,6 +35,13 @@ test('TUI separates historical check passes, applicability and exact definitions
     entry.details[0].content,
     /original command.*Timeout: 60000ms.*dirty.txt.*event-1/su
   );
+  const pending = applyConfiguredChecks(state, {
+    ...report,
+    checks: [{ ...report.checks[0], finalizationPending: true }]
+  });
+  const pendingEntry = pending.conversation.items.find((item) => item.id === entry.id);
+  assert.equal(pendingEntry.status, 'warning');
+  assert.match(pendingEntry.summary, /historical passed · finalization pending/u);
   const changed = applyConfiguredChecks(state, {
     ...report,
     checks: [

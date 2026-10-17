@@ -14,10 +14,13 @@ import { acceptanceStatus, pairedReport, providerMeasurements, projectAttempt, c
 
 export async function saveJson(file, value) {
   const temporary = `${file}.pending`;
-  await writeFile(temporary, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
+  const serialized = JSON.stringify(value, null, 2) + '\n';
+  await writeFile(temporary, serialized, { mode: 0o600 });
   const fd = openSync(temporary, 'r+');
   try { fsyncSync(fd); } finally { closeSync(fd); }
   await rename(temporary, file);
+  // The persisted JSON is the authoritative public result, including recovery.
+  return JSON.parse(serialized);
 }
 
 function changedFiles(before, after) {
@@ -51,7 +54,7 @@ export async function runAttempt({ task, build, settings, directory, endpoint, s
   const state = path.join(temporary, 'state');
   const metrics = new EvaluationMetrics();
   const events = openSync(path.join(directory, 'events.jsonl'), 'wx', 0o600);
-  let app, transport, before, phases, runId, phase = 'infrastructure', processResult;
+  let app, transport, before, phases, runId, phase = 'infrastructure', processResult, persistedResult;
   try {
     signal?.throwIfAborted();
     if (Object.entries(await runtimeIdentity()).some(([key, value]) => task.environment.runtime[key] !== value))
@@ -94,7 +97,7 @@ export async function runAttempt({ task, build, settings, directory, endpoint, s
         writeSync(events, JSON.stringify({ observedAt: new Date().toISOString(), type, event }) + '\n');
         if (type === 'run.progress') {
           metrics.record(event.event);
-          phases.record(event.event);
+          phases.record(event.event, event.runId);
           if (event.event.type === 'run.configured')
             (result.effectiveConfigurations ??= []).push(event.event.configuration);
           if (event.event.type === 'run.configured' && task.environment.contextTokens &&
@@ -255,9 +258,9 @@ export async function runAttempt({ task, build, settings, directory, endpoint, s
     result.elapsedMs = performance.now() - started;
     result.status = 'finished';
     Object.assign(result, projectAttempt(result));
-    await saveJson(path.join(directory, 'result.json'), result);
+    persistedResult = await saveJson(path.join(directory, 'result.json'), result);
   }
-  return result;
+  return persistedResult;
 }
 
 export async function runComparison(input, { output, provider, signal } = {}) {
@@ -386,8 +389,7 @@ export async function runComparison(input, { output, provider, signal } = {}) {
   report.finishedAt = new Date().toISOString();
   report.elapsedMs = performance.now() - started;
   report.paired = pairedReport(report.attempts, comparison.builds);
-  await saveJson(path.join(output, 'report.json'), report);
-  return report;
+  return saveJson(path.join(output, 'report.json'), report);
 }
 
 export async function recoverComparisonReport(directory) {
@@ -405,8 +407,7 @@ export async function recoverComparisonReport(directory) {
   report.attempts = report.attempts.map(projectAttempt);
   report.status = comparisonStatus(report.attempts, report.cancelled);
   report.paired = pairedReport(report.attempts, report.comparison.builds);
-  await saveJson(file, report);
-  return report;
+  return saveJson(file, report);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

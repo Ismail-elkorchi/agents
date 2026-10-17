@@ -76,6 +76,7 @@ export const configuredCheckObservationSchema = z
     diagnostic: z.string().optional(),
     output: z.string(),
     outputComplete: z.boolean(),
+    finalizationPending: z.literal(true).optional(),
     testedState: z.strictObject({
       before: testedStateSchema,
       after: testedStateSchema,
@@ -109,6 +110,7 @@ export interface ConfiguredCheckResult {
   readonly settlementReceipt?: EventReference;
   readonly observation?: CheckObservation;
   readonly processStatus?: CheckObservation['processStatus'];
+  readonly finalizationPending?: true;
   readonly exitCode?: number | null;
   readonly output?: string;
   readonly outputComplete?: boolean;
@@ -279,6 +281,7 @@ async function readCheckResults(
         observation,
         outputArtifacts,
         processStatus: observation.processStatus,
+        ...(observation.finalizationPending ? { finalizationPending: true as const } : {}),
         ...(observation.exitCode === undefined ? {} : { exitCode: observation.exitCode }),
         output: observation.output,
         outputComplete: observation.outputComplete
@@ -337,7 +340,8 @@ async function settleRecordedCheck(
   throughSequence: number
 ): Promise<RecordedCheck & { readonly settlementReceipt?: EventReference }> {
   const original = recorded.observation;
-  if (original.status !== 'running' || !original.processId) return recorded;
+  if ((original.status !== 'running' && !original.finalizationPending) || !original.processId)
+    return recorded;
   const settlementReceipt = await events.referenceByKey(
     runId, `${runId}:command:${original.processId}:terminal`
   );
@@ -362,6 +366,7 @@ async function settleRecordedCheck(
       ...original,
       status: checkOutcome(details.status, details.exitCode),
       processStatus: details.status,
+      finalizationPending: undefined,
       exitCode: details.exitCode,
       signal: details.signal,
       diagnostic: details.diagnostic,
@@ -421,6 +426,7 @@ export function createConfiguredCheckTool(input: {
           text: [
             `Check ${result.definition.id}: ${result.status}; process ${result.processStatus}${result.exitCode === undefined ? '' : `, exit ${String(result.exitCode)}`}.`,
             ...(result.processId ? [`Process handle: ${result.processId}.`] : []),
+            ...(result.finalizationPending ? ['Process termination is observed; output and settlement receipt finalization are still pending.'] : []),
             ...(result.diagnostic ? [`Execution diagnostic: ${result.diagnostic}`] : []),
             `Command: ${result.definition.command}\nTimeout: ${String(result.definition.timeoutMs)}ms; ${result.definition.requirement}; declared coverage: ${result.definition.coverage}.`,
             `Applicability: ${applicability.status}: ${applicability.reasons.join(', ')}.`,
@@ -495,15 +501,18 @@ export function createConfiguredCheckTool(input: {
               let observedLater = false;
               // A check normally waits for its terminal result. Steering releases
               // observation waiting without cancelling or restarting the check.
-              while (result.status === 'running' && !executionContext.observationSignal?.aborted) {
+              while ((result.status === 'running' || result.finalizationPending) && !executionContext.observationSignal?.aborted) {
                 observedLater = true;
                 result = await input.commandExecution.query(
                   result.processId, 8192, check.definition.timeoutMs,
                   result.cursorEnd, check.owner, executionContext.observationSignal
                 );
               }
-              if (observedLater && result.status !== 'running')
-                result = await input.commandExecution.query(result.processId, 8192, 0, 0, check.owner);
+              if (observedLater && result.status !== 'running' && !result.finalizationPending &&
+                  !executionContext.observationSignal?.aborted)
+                result = await input.commandExecution.query(
+                  result.processId, 8192, 0, 0, check.owner, executionContext.observationSignal
+                );
             }
           } catch (error) {
             executionError = error instanceof Error ? error.message : String(error);
@@ -512,6 +521,7 @@ export function createConfiguredCheckTool(input: {
           const outputComplete =
             executionError === undefined &&
             result !== undefined &&
+            !result.finalizationPending &&
             result.combined.startsAtOutputStart &&
             result.combined.endsAtOutputEnd &&
             result.combined.omittedBytes === 0;
@@ -521,7 +531,7 @@ export function createConfiguredCheckTool(input: {
           return {
             kind: 'result' as const,
             execution: {
-              state: notStarted ? ('not_started' as const) : processStatus === 'running' ? ('active' as const) : processStatus === 'unknown' ? ('unknown' as const) : ('settled' as const)
+              state: notStarted ? ('not_started' as const) : processStatus === 'running' || result?.finalizationPending ? ('active' as const) : processStatus === 'unknown' ? ('unknown' as const) : ('settled' as const)
             },
             summary: `Configured check ${check.definition.id} ${status}.`,
             scope: {
@@ -536,6 +546,7 @@ export function createConfiguredCheckTool(input: {
               definition: check.definition,
               status,
               processStatus,
+              ...(result?.finalizationPending ? { finalizationPending: true as const } : {}),
               ...(result ? { processId: result.processId } : {}),
               owner: check.owner,
               executionIdentity: digest(reservation.authorization),
@@ -546,7 +557,7 @@ export function createConfiguredCheckTool(input: {
                 : { diagnostic: executionError ?? result?.diagnostic }),
               output: result ? renderCommandOutput(result.combined) : '',
               outputComplete,
-              testedState: { before, after, afterCapture: processStatus === 'running' || processStatus === 'unknown' ? 'interrupted' as const : 'terminal' as const }
+              testedState: { before, after, afterCapture: processStatus === 'running' || processStatus === 'unknown' || result?.finalizationPending ? 'interrupted' as const : 'terminal' as const }
             }
           };
         }

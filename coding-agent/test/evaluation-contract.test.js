@@ -8,7 +8,7 @@ import path from 'node:path';
 import { comparisonSchema, taskSchema } from '../../validation/evaluation-contract.mjs';
 import { qualificationSettings } from '../../validation/qualify-evaluation.mjs';
 import { acceptanceStatus, pairedReport, providerMeasurements, projectAttempt } from '../../validation/evaluation-report.mjs';
-import { recoverComparisonReport } from '../../validation/coding-agent-evaluation.mjs';
+import { recoverComparisonReport, saveJson } from '../../validation/coding-agent-evaluation.mjs';
 import { compilationStatus } from '../../validation/evaluation-acceptance.mjs';
 import { execute } from '../../validation/evaluation-isolation.mjs';
 
@@ -246,4 +246,17 @@ test('execution stops retain their reason while partial-artifact failures remain
     assert.equal(result.acceptance[0].status, 'failed');
     assert.equal(result.qualification.qualified, expected !== 'cancelled');
   }
+});
+
+test('durable JSON boundary returns exactly the recoverable value', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'evaluation-json-'));
+  try {
+    const file = path.join(directory, 'result.json');
+    const value = { process: { code: 0, error: undefined, stopped: undefined },
+      evaluatorFiles: Object.assign(Object.create(null), { 'check.mjs': { sha256: 'a'.repeat(64) } }) };
+    const persisted = await saveJson(file, value);
+    assert.deepEqual(persisted, JSON.parse(await readFile(file, 'utf8')));
+    assert.equal(Object.hasOwn(persisted.process, 'error'), false);
+    assert.equal(Object.getPrototypeOf(persisted.evaluatorFiles), Object.prototype);
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
