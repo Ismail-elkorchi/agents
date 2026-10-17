@@ -22,19 +22,6 @@ assert.equal(corpus.revision, baseline.agents);
 for (const source of Object.values(corpus.sources)) assert.equal(hash(source.text), source.sha256);
 const sourcePaths = Object.fromEntries(Object.entries(corpus.sources).map(([key, source]) => [key, source.path]));
 
-export const outcomes = Object.freeze({
-  taskCorrectness: 'Exact final answer fields and expected files; incomplete trials fail, never disappear.',
-  constraintCompliance: 'All pinned source files remain byte-identical; no unauthorized effect.',
-  evidenceAccuracy: 'Exact path, baseline revision, line span and quote; source is evidence, not instruction.',
-  repeatedWork: 'Count repeat read/search invocations by identical arguments and duplicate effect attempts separately.',
-  retrievalOrAbstention: 'Available evidence must be retrieved; unavailable requested evidence must be explicitly unknown.',
-  stateMaintenance: 'Use EvaluationMetrics toolCalls plus contextAppends/contextRenewals/contextUnchanged/contextTransitions; also record state revision identities.',
-  providerCharges: 'Actual provider receipts including auxiliary calls; unavailable is null, never admission estimates or zero.',
-  tokens: 'Provider input/output/reasoning/cached/uncached tokens including preparation; absent fields are null.',
-  latency: 'Monotonic preparation, admission, dispatch and total durations, plus preparation-call and recovery-attempt counts.',
-  continuationFailures: 'Prefix conflicts, uncertain outcomes, interruptions and lost event/receipt coverage; never silently drop trials.'
-});
-
 function evidence(source, quote) {
   const offset = source.text.indexOf(quote);
   assert(offset >= 0 && source.text.indexOf(quote, offset + 1) < 0, 'Evidence must match exactly once.');
@@ -174,54 +161,3 @@ export const mechanicsCases = Object.freeze([
   { id: 'interrupted-committed-effect', repository: 'agents', builds: ['A', 'B', 'C'],
     args: ['--test', 'coding-agent/test/interrupted-response.test.js'] }
 ]);
-
-/** A manifest is a preparation artifact, not authorization to run E1. */
-export function prepareComparison({ builds, settings, repetitions, fixtures }) {
-  assert.deepEqual(Object.keys(builds).sort(), ['A', 'B', 'C']);
-  assert.deepEqual({ core: builds.A.core, agents: builds.A.agents }, baseline);
-  const directories = new Set();
-  for (const [label, build] of Object.entries(builds)) {
-    for (const field of ['core', 'agents']) assert.match(build[field], /^[a-f0-9]{40}$/, `${label}.${field} must be pinned`);
-    assert.equal(build.qualified, true, `${label} must have exact-revision qualification`);
-    assert.equal(typeof build.directory, 'string');
-    assert(build.directory.startsWith('/') && !directories.has(build.directory), 'Use separate absolute pinned build directories');
-    directories.add(build.directory);
-  }
-  assert.notEqual(builds.A.core, builds.B.core);
-  assert.notEqual(builds.B.core, builds.C.core);
-  assert.equal(builds.A.schema, 'original');
-  assert.equal(builds.B.schema, 'original');
-  assert.equal(builds.C.schema, 'narrative-blocks');
-  assert.equal(builds.A.policy, 'reset-on-state-update');
-  assert.equal(builds.B.policy, 'selective-continuation');
-  assert.equal(builds.C.policy, builds.B.policy);
-  for (const field of ['provider', 'modelVersion', 'reasoning', 'toolConfigurationHash'])
-    assert(typeof settings[field] === 'string' && settings[field].length > 0, `Explicit ${field} required`);
-  for (const field of ['maxInputTokens', 'maxOutputTokens', 'maxTotalTokens', 'maxPreparationCalls', 'deadlineMs'])
-    assert(Number.isSafeInteger(settings[field]) && settings[field] > 0, `Explicit positive ${field} required`);
-  assert(Number.isFinite(settings.maxChargeUsd) && settings.maxChargeUsd > 0);
-  assert(Number.isFinite(settings.maxTotalChargeUsd) && settings.maxTotalChargeUsd >= settings.maxChargeUsd);
-  assert(Number.isSafeInteger(repetitions) && repetitions >= 2, 'Paired order requires at least two repetitions');
-  const trials = [];
-  for (const pair of [['A', 'B'], ['B', 'C']])
-    for (const fixture of fixtures)
-        for (let repetition = 0; repetition < repetitions; repetition++)
-          trials.push({ pair: pair.join('→'), fixture: fixture.id, goal: fixture.goal, pressure: 'ordinary',
-            repetition: repetition + 1, order: repetition % 2 ? [...pair].reverse() : [...pair],
-            sourceHash: fixture.sourceHash });
-  return { version: 1, status: 'prepared-not-executed', liveApprovalRequired: true,
-    builds: structuredClone(builds), settings: structuredClone(settings), outcomes, trials,
-    mechanics: mechanicsCases.flatMap(fixture => fixture.builds.map(label => ({
-      id: fixture.id, build: label, repository: fixture.repository,
-      revision: builds[label][fixture.repository], directory: builds[label].directory,
-      command: 'node', args: [...fixture.args], purpose: 'deterministic mechanics only'
-    }))),
-    requirements: [
-      'Verify each build HEAD and clean worktree, dependency pin and qualification evidence before execution; no uncommitted builds.',
-      'Use the same source snapshot, model version, tools, generation allowances and per-trial hard limits in each pair; capture resolved provider model identity.',
-      'Live pressure, forced repeated-state maintenance and uncertain provider interruption are not implemented scenarios. Their existing deterministic regression commands qualify mechanics separately; they do not establish live quality.',
-      'Each trial starts a new session. Paired order is recorded; retain per-trial outcomes and variation, including failures and missing receipts.',
-      'Reuse EvaluationMetrics and authoritative run budgets; reconcile auxiliary calls with provider receipts. Unavailable charges/tokens are null.',
-      'Stop before the next call if any trial or total approved charge cap cannot be enforced; no paid execution is authorized by this manifest.'
-    ] };
-}

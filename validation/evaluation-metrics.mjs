@@ -1,3 +1,9 @@
+import { createHash } from 'node:crypto';
+
+const canonical = value => JSON.stringify(value, (_key, entry) => entry &&
+  typeof entry === 'object' && !Array.isArray(entry)
+  ? Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a.localeCompare(b))) : entry);
+
 /** Measurements distinguish received calls, invocation attempts, effects, and domain facts. */
 export class EvaluationMetrics {
   generationRequests = 0;
@@ -21,7 +27,8 @@ export class EvaluationMetrics {
       this.contextTransitions.push({
         strategy: event.transition.strategy,
         cause: event.transition.cause,
-        requestedRenewal: event.transition.requestedRenewal === true
+        requestedRenewal: event.transition.requestedRenewal === true,
+        ...(event.window ? { window: event.window } : {})
       });
     } else if (event.type === 'context.transition.unchanged') this.contextUnchanged++;
     else if (event.type === 'assistant.interrupted') this.modelInterruptions++;
@@ -38,7 +45,12 @@ export class EvaluationMetrics {
           ...(callId === undefined ? {} : { callId }), received: false, attempts: new Map() };
         this.#calls.set(key, call);
       }
-      if (event.type === 'tool.call.received') call.received = true;
+      if (event.type === 'tool.call.received') {
+        call.received = true;
+        const input = event.toolCall?.arguments ?? event.toolCall?.input;
+        if (input !== undefined)
+          call.inputSha256 = createHash('sha256').update(canonical(input)).digest('hex');
+      }
       else {
         let attempt = call.attempts.get(event.toolAttempt);
         if (!attempt) {
@@ -70,6 +82,20 @@ export class EvaluationMetrics {
       ...call, attempts: [...call.attempts.values()]
     }));
     const attempts = toolCalls.flatMap(call => call.attempts);
+    const repeated = new Map();
+    let repeatedInputs = 0, repeatedFailedInputs = 0, repeatedEffectInputs = 0;
+    for (const call of toolCalls) {
+      if (!call.inputSha256) continue;
+      const key = `${call.toolName}:${call.inputSha256}`;
+      const previous = repeated.get(key);
+      if (previous) {
+        repeatedInputs++;
+        if (previous.attempts.some(attempt => attempt.observationKind === 'failure' || attempt.domain?.exitCode > 0))
+          repeatedFailedInputs++;
+        if (['exec_command', 'apply_patch', 'write_stdin'].includes(call.toolName)) repeatedEffectInputs++;
+      }
+      repeated.set(key, call);
+    }
     return {
       generationRequests: this.generationRequests,
       estimatedGenerationPromptTokens: this.estimatedGenerationPromptTokens,
@@ -77,6 +103,8 @@ export class EvaluationMetrics {
       contextRenewals: this.contextRenewals, contextAppends: this.contextAppends,
       contextUnchanged: this.contextUnchanged, contextTransitions: [...this.contextTransitions],
       modelInterruptions: this.modelInterruptions,
+      repeatedInputs, repeatedFailedInputs, repeatedEffectInputs,
+      evidenceRetrievalCalls: toolCalls.filter(call => ['history_read', 'history_search', 'history_latest'].includes(call.toolName)).length,
       toolCallCount: toolCalls.length,
       invocationAttemptCount: attempts.length,
       invokedAttemptCount: attempts.filter(attempt => attempt.invoked).length,

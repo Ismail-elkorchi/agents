@@ -4,21 +4,11 @@ import { mkdtemp, writeFile, rm, mkdir, copyFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { comparisonFixtures, prepareComparison, primaryTaskScenario, baseline, mechanicsCases }
+import { comparisonFixtures, primaryTaskScenario, baseline, mechanicsCases }
   from '../../validation/continuation-comparison.mjs';
+import { schedule } from '../../validation/evaluation-contract.mjs';
 
 const fixtures = comparisonFixtures();
-const configuration = () => ({
-  builds: {
-    A: { ...baseline, directory: '/comparison/A', qualified: true, schema: 'original', policy: 'reset-on-state-update' },
-    B: { core: 'b'.repeat(40), agents: 'd'.repeat(40), directory: '/comparison/B', qualified: true, schema: 'original', policy: 'selective-continuation' },
-    C: { core: 'c'.repeat(40), agents: 'e'.repeat(40), directory: '/comparison/C', qualified: true, schema: 'narrative-blocks', policy: 'selective-continuation' }
-  },
-  settings: { provider: 'offline-test-only', modelVersion: 'scripted-fixed-version', reasoning: 'disabled',
-    toolConfigurationHash: 'test-tools', maxInputTokens: 16000, maxOutputTokens: 2000,
-    maxTotalTokens: 18000, maxPreparationCalls: 8, deadlineMs: 300000, maxChargeUsd: 1, maxTotalChargeUsd: 20 },
-  repetitions: 2, fixtures: [primaryTaskScenario(), ...fixtures]
-});
 async function materialize(fixture, directory) {
   for (const [file, text] of Object.entries(fixture.files)) {
     await mkdir(path.dirname(path.join(directory, file)), { recursive: true });
@@ -68,25 +58,13 @@ test('valid expanded/reordered evidence is accepted; unsupported quotes are reje
 });
 
 test('paired preparation separates ordinary live tasks from existing deterministic mechanics', () => {
-  const input = configuration();
-  const plan = prepareComparison(input);
-  assert.equal(plan.liveApprovalRequired, true);
-  assert.equal(plan.trials.length, 24);
-  assert(plan.trials.every(trial => trial.pressure === 'ordinary'));
-  for (let i = 0; i < plan.trials.length; i += 2)
-    assert.deepEqual(plan.trials[i].order, [...plan.trials[i + 1].order].reverse());
-  assert.equal(plan.mechanics.length, 8);
-  assert(plan.mechanics.every(entry => entry.revision === input.builds[entry.build][entry.repository]));
+  const plan = schedule({ builds: [{ label: 'A' }, { label: 'B' }], repetitions: 2 },
+    [primaryTaskScenario(), ...fixtures]);
+  assert.equal(plan.length, 12);
+  for (let i = 0; i < plan.length; i += 2)
+    assert.deepEqual(plan[i].order, [...plan[i + 1].order].reverse());
+  assert.equal(mechanicsCases.length, 3);
   assert.equal(mechanicsCases.find(entry => entry.id === 'repeated-state-growth').builds.includes('A'), false);
-  for (const mutate of [
-    c => { c.builds.B.core = 'pending'; }, c => { c.builds.B.qualified = false; },
-    c => { c.builds.C.directory = c.builds.B.directory; }, c => { c.builds.B.schema = 'narrative-blocks'; },
-    c => { delete c.settings.modelVersion; }, c => { delete c.settings.maxPreparationCalls; },
-    c => { c.settings.maxChargeUsd = 0; }, c => { delete c.settings.maxTotalChargeUsd; }
-  ]) {
-    const configurationToReject = configuration(); mutate(configurationToReject);
-    assert.throws(() => prepareComparison(configurationToReject));
-  }
 });
 
 test('fixture preparation requires no Git or provider access in shallow checkouts', async () => {

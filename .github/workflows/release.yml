@@ -39,9 +39,9 @@ jobs:
       - name: Build Agent Core
         working-directory: agent-core
         run: npm ci && npm run build
-      - name: Install ripgrep
+      - name: Install Linux tool and evaluation prerequisites
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep bubblewrap
       - name: Verify agents
         working-directory: agents
         run: npm ci && npm run verify:release

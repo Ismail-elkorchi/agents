@@ -1,311 +1,408 @@
-import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, writeFile, open } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile, rename, rm, cp, readdir } from 'node:fs/promises';
+import { openSync, writeSync, closeSync, fsyncSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { parseArgs, promisify } from 'node:util';
-import { openCodingApplication } from '@ismail-elkorchi/coding-agent';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+import { parseArgs } from 'node:util';
+import { taskSchema, comparisonSchema, settingsSchema, schedule } from './evaluation-contract.mjs';
+import { inventory, unpack, verifyBuild, launch, sandboxArgs, runAcceptanceCheck, sha256, readFrozen, runtimeIdentity, execute } from './evaluation-isolation.mjs';
+import { codingAgent, providerSocket } from './evaluation-rpc.mjs';
 import { EvaluationMetrics } from './evaluation-metrics.mjs';
-import { primaryTaskScenario, comparisonFixtures } from './continuation-comparison.mjs';
+import { acceptanceStatus, pairedReport, providerMeasurements } from './evaluation-report.mjs';
 
-const execute = promisify(execFile);
-const { values } = parseArgs({
-  options: {
-    live: { type: 'boolean' },
-    provider: { type: 'string' },
-    model: { type: 'string' },
-    reasoning: { type: 'string' },
-    'max-output-tokens': { type: 'string' },
-    endpoint: { type: 'string' },
-    output: { type: 'string' },
-    scenario: { type: 'string' },
-    trials: { type: 'string', default: '1' }
-  }
-});
+export async function saveJson(file, value) {
+  const temporary = `${file}.pending`;
+  await writeFile(temporary, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
+  const fd = openSync(temporary, 'r+');
+  try { fsyncSync(fd); } finally { closeSync(fd); }
+  await rename(temporary, file);
+}
 
-// These are evaluation fixtures, never application tools or instructions.
-const scenarios = [
-  ...(values.scenario === 'project-task-continuity'
-    ? [primaryTaskScenario()] : []),
-  ...comparisonFixtures().filter(scenario => scenario.id === values.scenario),
-  {
-    id: 'module-repair',
-    files: {
-      'math.mjs':
-        'export const sum = (values) => values.reduce((total, value) => total + value);\nexport const label = "unchanged";\n',
-      'check.mjs':
-        'import assert from "node:assert/strict"; import { sum, label } from "./math.mjs"; assert.equal(sum([]), 0); assert.equal(sum([2, -3, 4]), 3); assert.equal(label, "unchanged");\n',
-      'unrelated.txt': 'User-owned content.\n'
-    },
-    steps: [
-      {
-        task: 'Fix sum in math.mjs so it handles an empty array and preserves existing behavior. Run check.mjs. Leave other files unchanged.',
-        async check(root, scenario) {
-          await execute(process.execPath, ['check.mjs'], { cwd: root });
-          return {
-            behavior: true,
-            unrelated: await unchanged(root, scenario, [
-              'check.mjs',
-              'unrelated.txt'
-            ])
-          };
-        }
-      }
-    ]
-  },
-  {
-    id: 'changing-requirements',
-    files: {
-      'settings.json': '{"port":3000,"theme":"dark","languages":["en","fr"]}\n'
-    },
-    steps: [
-      {
-        task: 'Set the port in settings.json to 8080 and theme to light. Preserve the languages.',
-        async check(root) {
-          return {
-            settings: equal(await json(root, 'settings.json'), {
-              port: 8080,
-              theme: 'light',
-              languages: ['en', 'fr']
-            })
-          };
-        }
-      },
-      {
-        task: 'Actually, use port 9090 and remove the theme setting. Keep the languages.',
-        async check(root) {
-          return {
-            settings: equal(await json(root, 'settings.json'), {
-              port: 9090,
-              languages: ['en', 'fr']
-            })
-          };
-        }
-      }
-    ]
-  },
-  {
-    id: 'read-only-review',
-    files: {
-      'notes.md': '# Notes\n\nThe cache expires after one hour.\n',
-      'cache.json': '{"ttlSeconds":3600}\n',
-      'style.css': 'body { color: navy; }\n'
-    },
-    steps: [
-      {
-        task: 'Explain what these three files contain and whether the cache duration agrees. Do not edit files.',
-        async check(root, scenario) {
-          return {
-            filesUnchanged: await unchanged(
-              root,
-              scenario,
-              Object.keys(scenario.files)
-            )
-          };
-        }
-      }
-    ]
-  },
-  {
-    id: 'process-lifecycle',
-    files: {},
-    steps: [
-      {
-        task: 'Use a Node shell command that waits one second, writes ready.txt containing ready, and exits. Wait for it to finish, then read the saved file and report the result.',
-        async check(root) {
-          return {
-            savedResult:
-              (await readFile(path.join(root, 'ready.txt'), 'utf8')) === 'ready'
-          };
-        }
-      }
-    ]
-  }
-];
+function changedFiles(before, after) {
+  return [...new Set([...Object.keys(before), ...Object.keys(after)])].sort()
+    .filter(file => JSON.stringify(before[file]) !== JSON.stringify(after[file]));
+}
 
-const selected = values.scenario
-  ? scenarios.filter(({ id }) => id === values.scenario)
-  : scenarios;
-const trials = Number(values.trials);
-if (
-  !values.live ||
-  !values.provider ||
-  !values.model ||
-  !values.output ||
-  (values['max-output-tokens'] !== undefined && (!Number.isSafeInteger(Number(values['max-output-tokens'])) || Number(values['max-output-tokens']) < 1)) ||
-  selected.length === 0 ||
-  !Number.isSafeInteger(trials) ||
-  trials < 1
-)
-  throw new Error(
-    `Usage: node validation/coding-agent-evaluation.mjs --live --provider PROVIDER --model MODEL --output FILE [--reasoning EFFORT] [--endpoint URL] [--trials N] [--scenario ${scenarios.map(({ id }) => id).join('|')}]`
-  );
+function executionOutcome(result) {
+  if (result?.state !== 'ended') return 'agent_failure';
+  if (result.terminal.executionStatus === 'completed')
+    return result.terminal.modelOutput.status === 'complete' && !result.deliveryDiagnostics.length ? 'completed' : 'incomplete';
+  return /limit|budget/.test(JSON.stringify(result.terminal.terminationReason)) ? 'budget_exhaustion' : 'agent_failure';
+}
 
-await mkdir(path.dirname(path.resolve(values.output)), { recursive: true });
-const output = await open(values.output, 'wx', 0o600);
-const directory = await mkdtemp(
-  path.join(tmpdir(), 'coding-agent-evaluation-')
-);
-const settings = {
-  provider: values.provider,
-  model: values.model,
-  ...(values['max-output-tokens'] === undefined ? {} : { maxOutputTokens: Number(values['max-output-tokens']) }),
-  ...(values.reasoning
-    ? {
-        reasoning:
-          values.reasoning === 'none'
-            ? { strategy: 'disabled' }
-            : { strategy: 'effort', effort: values.reasoning }
-      }
-    : {}),
-  ...(values.endpoint ? { providerEndpoint: values.endpoint } : {})
-};
-const report = {
-  startedAt: new Date().toISOString(),
-  settings,
-  directory,
-  trials: []
-};
-try {
-  for (const scenario of selected)
-    for (let trial = 1; trial <= trials; trial++) {
-      const root = path.join(directory, `${scenario.id}-${trial}`, 'workspace');
-      await mkdir(root, { recursive: true });
-      for (const [file, content] of Object.entries(scenario.files)) {
-        await mkdir(path.dirname(path.join(root, file)), { recursive: true });
-        await writeFile(path.join(root, file), content);
-      }
-      const app = await openCodingApplication({
-        ...settings,
-        permissionMode: scenario.id === 'read-only-review' ? 'read_only' : 'full_host',
-        root,
-        stateRoot: path.join(root, '..', 'state'),
-        sessionSelection: { kind: 'new' }
-      });
-      const measured = new Map();
-      const measurementErrors = [];
-      const unsubscribe = app.subscribe(event => {
-        if (event.type === 'delivery.gap') {
-          measurementErrors.push('Application event delivery lost events; metrics are incomplete.');
-          return;
-        }
-        if (event.type !== 'run.progress') return;
-        let metrics = measured.get(event.runId);
-        if (!metrics) {
-          metrics = new EvaluationMetrics();
-          measured.set(event.runId, metrics);
-        }
-        metrics.record(event.event);
-      }, error => { measurementErrors.push(error.message); });
-      const steps = [];
-      const trialRecord = { scenario: scenario.id, trial, steps, measurementErrors };
-      report.trials.push(trialRecord);
-      try {
-        await app.start();
-        await app.selectWorkspaceTrust('trusted');
-        for (const step of scenario.steps) {
-          await step.before?.(root);
-          const startedAt = performance.now();
-          const accepted = await app.submit({ task: step.task });
-          if (accepted.kind !== 'started')
-            throw new Error(`Submission was ${accepted.kind}.`);
-          const deadline = setTimeout(() => {
-            void app
-              .abort('Evaluation deadline.', accepted.runId)
-              .catch((error) => {
-                console.error(String(error));
-              });
-          }, 300_000);
-          let result;
-          try {
-            result = await accepted.completion;
-          } finally {
-            clearTimeout(deadline);
-          }
-          let checks;
-          try {
-            checks = await step.check(root, scenario, result.state === 'ended' ? result.terminal?.modelOutput.message : undefined);
-          } catch (error) {
-            checks = { fixtureCheck: false, diagnostic: error.message };
-          }
-          const terminal =
-            result.state === 'ended' ? result.terminal : undefined;
-          const record = {
-            task: step.task,
-            runId: accepted.runId,
-            state: result.state,
-            response: terminal?.modelOutput.message,
-            budget: terminal?.budget,
-            terminationReason: terminal?.terminationReason,
-            elapsedMs: performance.now() - startedAt,
-            checks,
-            passed:
-              terminal?.executionStatus === 'completed' &&
-              Object.values(checks).every((value) => value === true)
-          };
-          steps.push(record);
-          console.log(
-            JSON.stringify({ scenario: scenario.id, trial, ...record })
-          );
-          if (result.state !== 'ended') break;
-        }
-      } catch (error) {
-        steps.push({
-          passed: false,
-          error: error instanceof Error ? error.message : String(error)
-        });
-      } finally {
-        unsubscribe();
-        trialRecord.runMetrics = Object.fromEntries(measured);
-        await app.close();
-      }
-      await saveReport();
-    }
-  report.finishedAt = new Date().toISOString();
-  report.passed =
-    report.trials.length === selected.length * trials &&
-    report.trials.every(
-      (trial) =>
-        trial.steps.length ===
-          selected.find(({ id }) => id === trial.scenario).steps.length &&
-        trial.steps.every(({ passed }) => passed)
-    );
-  if (!report.passed) process.exitCode = 1;
-} finally {
+export async function runAttempt({ task, build, settings, directory, endpoint, signal }) {
+  task = taskSchema.parse(task);
+  settings = settingsSchema.parse(settings);
+  const started = performance.now();
+  const result = {
+    format: 'agents.attempt/1', task: task.id, build: build.label,
+    status: 'running', outcome: null, contextMode: task.contextMode,
+    interventions: [], runs: [], acceptance: [], constraintViolations: [],
+    humanReview: task.humanReview.map(criterion => ({ criterion, status: 'pending' })),
+    measurementErrors: []
+  };
+  await mkdir(directory, { recursive: false });
+  await saveJson(path.join(directory, 'result.json'), result);
+  const temporary = await mkdtemp(path.join(tmpdir(), 'agents-task-'));
+  const workspace = path.join(temporary, 'workspace');
+  const state = path.join(temporary, 'state');
+  const metrics = new EvaluationMetrics();
+  const events = openSync(path.join(directory, 'events.jsonl'), 'wx', 0o600);
+  let app, transport, before, phase = 'infrastructure', processResult;
   try {
-    await saveReport();
+    signal?.throwIfAborted();
+    if (Object.entries(await runtimeIdentity()).some(([key, value]) => task.environment.runtime[key] !== value))
+      throw new Error('Task runtime identity differs from this host.');
+    await mkdir(workspace);
+    await mkdir(state);
+    for (const repository of task.repositories)
+      await unpack(repository.snapshot, path.join(workspace, repository.name));
+    if (task.environment.overlay) await unpack(task.environment.overlay, workspace);
+    if (task.environment.setup) {
+      result.environmentSetup = await launch([...sandboxArgs({ workspace }), ...task.environment.setup],
+        { timeoutMs: task.limits.wallMs, signal }).done;
+      if (result.environmentSetup.code !== 0 || result.environmentSetup.stopped)
+        throw new Error('Offline environment setup failed.');
+    }
+    // Core remains the budget owner. Separate runs receive disjoint portions of
+    // the task allowance; corrections within a run do not reset it.
+    const runs = 1 + task.checkpoints.filter(point => point.action !== 'steer').length;
+    const limits = Object.fromEntries(Object.entries(task.limits).filter(([key]) => key !== 'wallMs')
+      .map(([key, value]) => [key, Math.floor(value / runs)]));
+    if (Object.values(limits).some(value => value < 1)) throw new Error('Task budget cannot cover its scripted runs.');
+    const config = path.join(workspace, 'evaluation.config.json');
+    await writeFile(config, JSON.stringify({
+      version: 1, provider: settings.provider, model: settings.model,
+      instructions: [], tools: { enabled: settings.tools },
+      verification: { required: [], advisory: [] },
+      limits: { ...limits, elapsedMs: task.limits.wallMs }
+    }));
+    before = await inventory(workspace);
+    signal?.throwIfAborted();
+    const socket = path.join(temporary, 'provider.sock');
+    transport = await providerSocket({ endpoint, socket, model: settings.model,
+      maxOutputTokens: settings.maxOutputTokens, maxRequests: task.limits.modelTurns, signal });
+    const queue = [];
+    let wake;
+    app = codingAgent({ workspace, state, build: build.directory, socket, settings, signal,
+      timeoutMs: Math.max(1, task.limits.wallMs - (performance.now() - started)),
+      onEvent(type, event) {
+        writeSync(events, JSON.stringify({ observedAt: new Date().toISOString(), type, event }) + '\n');
+        if (type === 'run.progress') {
+          metrics.record(event.event);
+          if (event.event.type === 'run.configured')
+            (result.effectiveConfigurations ??= []).push(event.event.configuration);
+          if (event.event.type === 'run.configured' && task.environment.contextTokens &&
+              event.event.configuration.model.limits.contextTokens !== task.environment.contextTokens)
+            result.measurementErrors.push('Observed model context bound differs from the task environment.');
+        }
+        if (type === 'delivery.gap') result.measurementErrors.push('RPC delivery gap; evidence is incomplete.');
+        queue.push({ type, event });
+        wake?.();
+      }
+    });
+    app.done.then(value => { processResult = value; queue.push({ type: 'process.closed' }); wake?.(); });
+    const ready = await app.request('application.read');
+    if (ready.status !== 'ready') throw new Error(`Application not ready: ${ready.status}`);
+    result.application = ready;
+    phase = 'agent';
+    const prompt = `${task.instructions}\n\nEnvironment: ${task.environment.description}\n` +
+      `Starting snapshots (no Git history): ${task.repositories.map(repo => `${repo.name} at ${repo.revision}`).join(', ')}.\n` +
+      `Network: ${task.network}; no Internet or dependency downloads.`;
+    const receipt = await app.request('input.submit', { task: prompt });
+    if (receipt.kind !== 'started') throw new Error(`Submission ${receipt.kind}`);
+    let runId = receipt.runId;
+    const follows = [];
+    const counts = new Map(), triggered = new Set();
+    for (;;) {
+      if (!queue.length) await new Promise(resolve => { wake = resolve; });
+      wake = undefined;
+      const item = queue.shift();
+      if (item.type === 'process.closed') throw new Error('Application process exited before completion.');
+      const event = item.type === 'run.progress' ? item.event.event : item.event;
+      for (const checkpoint of task.checkpoints) {
+        if (triggered.has(checkpoint.id) || event?.type !== checkpoint.after.type ||
+            (checkpoint.after.toolName && event.toolName !== checkpoint.after.toolName)) continue;
+        const count = (counts.get(checkpoint.id) ?? 0) + 1;
+        counts.set(checkpoint.id, count);
+        if (count !== checkpoint.after.occurrence) continue;
+        triggered.add(checkpoint.id);
+        const intervention = { id: checkpoint.id, action: checkpoint.action, after: checkpoint.after,
+          observedRunId: runId, instruction: checkpoint.instruction };
+        result.interventions.push(intervention);
+        if (checkpoint.action === 'steer')
+          intervention.receipt = await app.request('input.steer', { expectedRunId: runId, input: { task: checkpoint.instruction } });
+        else if (checkpoint.action === 'abort-follow') {
+          follows.push(checkpoint.instruction);
+          intervention.receipt = await app.request('run.abort', { runId, reason: `Evaluation checkpoint: ${checkpoint.id}` });
+        } else follows.push(checkpoint.instruction);
+      }
+      if (item.type === 'run.failed') throw new Error(item.event.error.message);
+      if (item.type !== 'run.completed') continue;
+      result.runs.push(item.event.result);
+      await saveJson(path.join(directory, 'result.json'), result);
+      if (follows.length) {
+        const accepted = await app.request('input.submit', { task: follows.shift() });
+        if (accepted.kind !== 'started') throw new Error(`Follow-up ${accepted.kind}`);
+        runId = accepted.runId;
+        continue;
+      }
+      result.execution = executionOutcome(item.event.result);
+      if (result.runs.some(run => executionOutcome(run) !== 'completed' &&
+          !(run.terminal?.executionStatus === 'aborted' && result.interventions.some(intervention => intervention.action === 'abort-follow' &&
+            intervention.observedRunId === run.terminal?.runId))))
+        result.execution = result.runs.some(run => executionOutcome(run) === 'budget_exhaustion') ? 'budget_exhaustion'
+          : result.runs.some(run => executionOutcome(run) === 'incomplete') ? 'incomplete' : 'agent_failure';
+      result.missingCheckpoints = task.checkpoints.filter(point => !triggered.has(point.id)).map(point => point.id);
+      for (const intervention of result.interventions) {
+        if (intervention.action === 'abort-follow')
+          intervention.interrupted = intervention.receipt === true && result.runs.some(run =>
+            run.terminal?.runId === intervention.observedRunId && run.terminal.executionStatus === 'aborted');
+      }
+      break;
+    }
+    await app.request('application.shutdown');
+    processResult = await app.done;
+    // Namespace exit is the boundary: no candidate process survives into checks.
+    phase = 'artifact';
+    const after = await inventory(workspace);
+    result.changedFiles = changedFiles(before, after);
+    result.constraintViolations = result.changedFiles.filter(file =>
+      !task.constraints.writable.some(allowed => file === allowed || (allowed.endsWith('/') && file.startsWith(allowed))));
+    await cp(workspace, path.join(directory, 'artifact'), { recursive: true, verbatimSymlinks: true });
+    result.artifactSha256 = sha256(JSON.stringify(after));
+    phase = 'evaluator';
+    for (const check of task.acceptance) {
+      const checkRoot = path.join(temporary, `check-${result.acceptance.length}`);
+      const checkWorkspace = path.join(checkRoot, 'workspace');
+      const verifier = path.join(checkRoot, 'verifier');
+      await cp(workspace, checkWorkspace, { recursive: true, verbatimSymlinks: true });
+      await unpack(check.verifier, verifier);
+      const observed = await runAcceptanceCheck({ workspace: checkWorkspace, verifier, check, signal });
+      result.acceptance.push({
+        id: check.id, description: check.description,
+        status: acceptanceStatus(observed),
+        process: observed
+      });
+    }
+    result.outcome = result.execution !== 'completed' ? result.execution
+      : result.acceptance.some(check => check.status === 'error') ? 'evaluator_failure'
+      : result.constraintViolations.length || result.acceptance.some(check => check.status === 'failed') ? 'incorrect_solution'
+      : result.missingCheckpoints.length || result.measurementErrors.length ||
+        result.interventions.some(item => item.receipt?.kind === 'rejected' || item.interrupted === false) ? 'incomplete'
+      : result.humanReview.length ? 'pending_review' : 'success';
+  } catch (error) {
+    result.error = error.message;
+    result.outcome = phase === 'infrastructure' ? 'infrastructure_failure'
+      : phase === 'evaluator' ? 'evaluator_failure'
+      : phase === 'artifact' ? 'incorrect_solution' : 'agent_failure';
   } finally {
-    await output.close();
+    if (app) {
+      app.stop('cleanup');
+      processResult = await app.done;
+      result.process = processResult;
+      if (processResult.stopped === 'timeout') result.outcome = 'timeout';
+      if (processResult.stopped === 'cancelled') result.outcome = 'cancelled';
+    }
+    if (signal?.aborted) result.outcome = 'cancelled';
+    else if (result.environmentSetup?.stopped === 'timeout') result.outcome = 'timeout';
+    result.metrics = metrics.toJSON();
+    if (transport) {
+      try { await transport.close(); }
+      catch (error) {
+        (result.cleanupErrors ??= []).push(`Transport teardown: ${error.message}`);
+        if (['success', 'pending_review'].includes(result.outcome)) result.outcome = 'infrastructure_failure';
+      }
+      result.measurements = providerMeasurements(transport.receipts, transport.metadataRequests);
+      if (result.measurements.usageSource !== 'provider') {
+        result.measurementErrors.push('Provider usage is unavailable or partial; consumption is not fully measured.');
+        if (['success', 'pending_review'].includes(result.outcome)) result.outcome = 'incomplete';
+      }
+      if (transport.receipts.length !== result.metrics.generationRequests) {
+        result.measurementErrors.push('Provider request count differs from Core request events; runtime attribution is incomplete.');
+        if (['success', 'pending_review'].includes(result.outcome)) result.outcome = 'incomplete';
+      }
+      result.providerAdmissionClosedReason = transport.admissionClosedReason;
+      if (result.outcome === 'agent_failure') {
+        if (transport.admissionClosedReason === 'request_limit') result.outcome = 'budget_exhaustion';
+        else if (transport.admissionClosedReason === 'usage_unavailable') result.outcome = 'incomplete';
+        else if (transport.admissionClosedReason === 'provider_failure') result.outcome = 'infrastructure_failure';
+      }
+    }
+    // Preserve partial source and normal application state even on killed attempts.
+    const cleanup = [
+      ['Partial artifact', async () => {
+        if (!result.artifactSha256) await cp(workspace, path.join(directory, 'partial-artifact'), { recursive: true, verbatimSymlinks: true });
+      }],
+      ['Application state', () => cp(state, path.join(directory, 'state'), { recursive: true, verbatimSymlinks: true })],
+      ['Event persistence', () => { try { fsyncSync(events); } finally { closeSync(events); } }],
+      ['Workspace teardown', () => rm(temporary, { recursive: true, force: true })]
+    ];
+    for (const [label, operation] of cleanup) {
+      try { await operation(); }
+      catch (error) {
+        (result.cleanupErrors ??= []).push(`${label}: ${error.message}`);
+        if (['success', 'pending_review'].includes(result.outcome)) result.outcome = 'infrastructure_failure';
+      }
+    }
+    result.elapsedMs = performance.now() - started;
+    result.status = 'finished';
+    await saveJson(path.join(directory, 'result.json'), result);
   }
+  return result;
 }
 
-async function saveReport() {
-  await output.truncate(0);
-  const data = Buffer.from(`${JSON.stringify(report, null, 2)}\n`);
-  let offset = 0;
-  while (offset < data.length)
-    offset += (await output.write(data, offset, data.length - offset, offset))
-      .bytesWritten;
+export async function runComparison(input, { output, provider, signal } = {}) {
+  const started = performance.now();
+  const startedAt = new Date().toISOString();
+  output = path.resolve(output);
+  const comparison = comparisonSchema.parse(input);
+  const tasks = await Promise.all(comparison.tasks.map(async file =>
+    taskSchema.parse(JSON.parse(await readFile(file, 'utf8')))));
+  if (new Set(tasks.map(task => task.id)).size !== tasks.length) throw new Error('Duplicate task IDs.');
+  if (comparison.builds[0].label === comparison.builds[1].label) throw new Error('Duplicate build labels.');
+  const builds = await Promise.all(comparison.builds.map(verifyBuild));
+  const runtime = await runtimeIdentity();
+  if (builds.some(build => Object.entries(runtime).some(([key, value]) => build[key] !== value)))
+    throw new Error('Build runtime identity differs from this host.');
+  if (comparison.purpose !== 'machinery-qualification' && builds.some(build => build.qualification))
+    throw new Error('Uncommitted qualification builds cannot establish revision comparisons.');
+  for (const task of tasks) for (const check of task.acceptance) await readFrozen(check.verifier);
+  await mkdir(output, { recursive: false });
+  // A result bundle owns its exact inputs, including a dirty qualification build.
+  // It remains reproducible after preparation directories disappear.
+  const inputs = path.join(output, 'inputs');
+  await mkdir(inputs);
+  const evaluator = path.join(inputs, 'evaluator');
+  await mkdir(evaluator);
+  const sourceDirectory = fileURLToPath(new URL('./', import.meta.url));
+  for (const file of await readdir(sourceDirectory))
+    if (file.endsWith('.mjs') && /^(evaluation-|coding-agent-evaluation|continuation-comparison|prepare-evaluation|project-tasks|qualify-)/.test(file))
+      await cp(path.join(sourceDirectory, file), path.join(evaluator, file));
+  await cp(path.join(sourceDirectory, 'fixtures'), path.join(evaluator, 'fixtures'), { recursive: true });
+  await cp(path.resolve(sourceDirectory, '../coding-agent/test/fixtures/scripted-cli.js'), path.join(evaluator, 'scripted-cli.js'));
+  const copied = new Map();
+  for (const build of comparison.builds) {
+    const destination = path.join(inputs, `build-${build.sha256}`);
+    if (!copied.has(destination)) await cp(build.directory, destination, { recursive: true, verbatimSymlinks: true });
+    copied.set(destination, true);
+    build.directory = destination;
+    await verifyBuild(build);
+  }
+  comparison.tasks = [];
+  for (const task of tasks) {
+    const frozen = [...task.repositories.map(repo => repo.snapshot), ...task.acceptance.map(check => check.verifier),
+      ...(task.environment.overlay ? [task.environment.overlay] : [])];
+    for (const input of frozen) {
+      const destination = path.join(inputs, `${input.sha256}.tar`);
+      if (!copied.has(destination)) await writeFile(destination, await readFrozen(input), { mode: 0o600 });
+      copied.set(destination, true);
+      input.path = destination;
+    }
+    const taskFile = path.join(inputs, `${task.id}.json`);
+    await saveJson(taskFile, task);
+    comparison.tasks.push(taskFile);
+  }
+  await saveJson(path.join(output, 'manifest.json'), comparison);
+  const plan = schedule(comparison, tasks);
+  const report = {
+    format: 'agents.comparison-result/1', startedAt, preparationMs: performance.now() - started,
+    comparison, builds, tasks, status: 'running', evaluatorFiles: await inventory(evaluator),
+    hostEnvironment: {
+      runtime,
+      osRelease: await readFile('/etc/os-release', 'utf8'),
+      bubblewrap: (await execute('bwrap', ['--version'])).stdout.trim(),
+      tar: (await execute('tar', ['--version'])).stdout.split('\n')[0]
+    },
+    order: plan.map(item => ({ task: item.task.id, repetition: item.repetition, order: item.order.map(build => build.label) })),
+    attempts: plan.flatMap((item, index) => item.order.map(build => ({
+      task: item.task.id, repetition: item.repetition, build: build.label,
+      directory: path.join(output, `${index + 1}-${build.label}`),
+      status: 'not-started', outcome: 'not_run'
+    })))
+  };
+  await saveJson(path.join(output, 'report.json'), report);
+  let cursor = 0, cleanupFailed = false;
+  await Promise.all(Array.from({ length: Math.min(comparison.concurrency, plan.length) }, async () => {
+    for (;;) {
+      const index = cursor++;
+      if (index >= plan.length || signal?.aborted || cleanupFailed) return;
+      const item = plan[index];
+      for (const build of item.order) {
+        if (signal?.aborted || cleanupFailed) return;
+        const directory = path.join(output, `${index + 1}-${build.label}`);
+        let source, attempt;
+        try {
+          source = await provider({ task: item.task, build, repetition: item.repetition });
+          // Provider setup is asynchronous: admission can close while it waits.
+          if (signal?.aborted || cleanupFailed) {
+            attempt = { task: item.task.id, build: build.label, status: 'not-started', outcome: 'not_run' };
+            await mkdir(directory);
+          } else attempt = await runAttempt({ task: item.task, build, settings: comparison.settings, directory, endpoint: source.endpoint, signal });
+        } catch (error) {
+          attempt = { task: item.task.id, build: build.label, status: 'finished', outcome: 'infrastructure_failure', error: error.message };
+          await mkdir(directory, { recursive: true });
+          await saveJson(path.join(directory, 'result.json'), attempt);
+        } finally {
+          try { await source?.close?.(); }
+          catch (error) {
+            cleanupFailed = true;
+            (attempt.cleanupErrors ??= []).push(`Provider teardown: ${error.message}`);
+            if (['success', 'pending_review'].includes(attempt.outcome)) attempt.outcome = 'infrastructure_failure';
+          }
+        }
+        if (attempt.cleanupErrors?.length) cleanupFailed = true;
+        attempt = { ...attempt, repetition: item.repetition, directory };
+        await saveJson(path.join(directory, 'result.json'), attempt);
+        const position = report.attempts.findIndex(value => value.directory === directory);
+        report.attempts[position] = attempt;
+      }
+    }
+  }));
+  report.status = signal?.aborted ? 'cancelled' : cleanupFailed ? 'incomplete' : 'finished';
+  report.finishedAt = new Date().toISOString();
+  report.elapsedMs = performance.now() - started;
+  report.paired = pairedReport(report.attempts, comparison.builds);
+  await saveJson(path.join(output, 'report.json'), report);
+  return report;
 }
 
-async function json(root, file) {
-  return JSON.parse(await readFile(path.join(root, file), 'utf8'));
+export async function recoverComparisonReport(directory) {
+  const file = path.join(directory, 'report.json');
+  const report = JSON.parse(await readFile(file, 'utf8'));
+  if (report.format !== 'agents.comparison-result/1') throw new Error('Incompatible evaluation report.');
+  for (let index = 0; index < report.attempts.length; index++) {
+    const planned = report.attempts[index];
+    try {
+      const recorded = JSON.parse(await readFile(path.join(planned.directory, 'result.json'), 'utf8'));
+      report.attempts[index] = { ...planned, ...recorded,
+        ...(recorded.status !== 'finished' ? { outcome: recorded.status === 'not-started' ? 'not_run' : 'incomplete' } : {}) };
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+  report.status = report.status === 'cancelled' || report.attempts.some(attempt => attempt.outcome === 'cancelled') ? 'cancelled'
+    : report.attempts.every(attempt => attempt.status === 'finished' && !attempt.cleanupErrors?.length) ? 'finished' : 'incomplete';
+  report.paired = pairedReport(report.attempts, report.comparison.builds);
+  await saveJson(file, report);
+  return report;
 }
-function equal(actual, expected) {
-  return (
-    Object.keys(actual).length === Object.keys(expected).length &&
-    Object.entries(expected).every(
-      ([key, value]) => JSON.stringify(actual[key]) === JSON.stringify(value)
-    )
-  );
-}
-async function unchanged(root, scenario, files) {
-  return (
-    await Promise.all(
-      files.map(
-        async (file) =>
-          (await readFile(path.join(root, file), 'utf8')) ===
-          scenario.files[file]
-      )
-    )
-  ).every(Boolean);
+
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  const { values } = parseArgs({ options: {
+    manifest: { type: 'string' }, output: { type: 'string' }, endpoint: { type: 'string' },
+    recover: { type: 'string' }
+  } });
+  if (values.recover) {
+    const report = await recoverComparisonReport(path.resolve(values.recover));
+    console.log(JSON.stringify({ status: report.status, paired: report.paired }));
+  } else {
+    if (!values.manifest || !values.output || !values.endpoint)
+      throw new Error('Usage: node validation/coding-agent-evaluation.mjs --manifest FILE --output NEW_DIRECTORY --endpoint http://127.0.0.1:PORT (no-paid-calls only)');
+    const controller = new AbortController();
+    for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => controller.abort());
+    const report = await runComparison(JSON.parse(await readFile(values.manifest, 'utf8')), {
+      output: values.output, signal: controller.signal, provider: async () => ({ endpoint: values.endpoint })
+    });
+    console.log(JSON.stringify({ status: report.status, paired: report.paired }));
+    if (report.attempts.some(attempt => attempt.outcome !== 'success')) process.exitCode = 1;
+  }
 }

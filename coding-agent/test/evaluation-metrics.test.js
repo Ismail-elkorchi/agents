@@ -42,6 +42,22 @@ test('admission estimates do not substitute for provider token usage', () => {
   assert.equal(measured.promptTokens, undefined);
 });
 
+test('repeated failed inputs are observable without claiming duplicate side effects', () => {
+  const metrics = new EvaluationMetrics();
+  for (let index = 0; index < 2; index++) {
+    const identity = { turnId: `turn-${index}`, toolBatchId: 'batch', requestAttempt: 1, callIndex: 0, toolAttempt: 1 };
+    metrics.record({ ...identity, type: 'tool.call.received',
+      toolCall: { name: 'exec_command', arguments: index ? { workdir: '.', command: 'false' } : { command: 'false', workdir: '.' } } });
+    metrics.record({ ...identity, type: 'tool.ended', observation: {
+      kind: 'result', execution: { state: 'settled' }, scope: { coverage: 'complete' }, output: { exitCode: 1 }
+    } });
+  }
+  const observed = metrics.toJSON();
+  assert.equal(observed.repeatedInputs, 1);
+  assert.equal(observed.repeatedFailedInputs, 1);
+  assert.equal(observed.repeatedEffectInputs, 1);
+});
+
 test('continuation metrics distinguish appended state, unchanged updates and fresh renewal', () => {
   const metrics = new EvaluationMetrics();
   metrics.record({ type: 'context.transitioned', transition: { strategy: 'append', cause: 'state_update' } });

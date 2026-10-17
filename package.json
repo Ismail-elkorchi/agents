@@ -12,7 +12,7 @@
   ],
   "agentCore": {
     "path": "../agent-core",
-    "commit": "1a708405a00f32e060ec3e5ea73ae89f6379e1a9"
+    "commit": "1bfb36ee3ab430462eee9414f29dc52f025286e9"
   },
   "scripts": {
     "build": "node scripts/verify-source-dependencies.mjs && tsc -b && node scripts/post-build.mjs",
