@@ -1,16 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { readFilesTool, applyPatchTool, execCommandTool, RootedFileAuthority, TextPatchJournal, DEFAULT_LOCAL_TOOL_CONFIGURATION } from '@agent-core/tools-local';
+import { planToolCall, validateToolEffects } from '@agent-core/tools';
+import { invokePlannedForTest, jsonToolCall } from './tool-call-helpers.js';
 import { EvaluationPhases } from '../../validation/evaluation-phases.mjs';
 import { projectTasks } from '../../validation/project-tasks.mjs';
 
 const stages = projectTasks.find(task => task.id === 'resource-coverage-correction').stages;
 const initial = { 'core/source.ts': { sha256: 'original' } };
 const edited = { 'core/source.ts': { sha256: 'fixed' } };
-function tool(phases, name, accesses, output = {}, state = 'settled', callIndex = 0, runId = 'inspection') {
+function tool(phases, name, accesses, output = {}, state = undefined, callIndex = 0, runId = 'inspection') {
   const identity = { turnIndex: 0, turnId: 'turn', requestAttempt: 1, toolBatchId: 'batch', callIndex, toolAttempt: 1, toolName: name };
-  phases.record({ type: 'tool.started', ...identity, effects: { accesses } }, runId);
+  phases.record({ type: 'tool.started', ...identity, effects: { accesses, lockScopes: [], recovery: { kind: 'unknown' } } }, runId);
   phases.record({ type: 'tool.ended', ...identity, observation: {
-    kind: 'result', execution: { state }, scope: { coverage: 'complete' }, output
+    kind: 'result', ...(state === undefined ? {} : { execution: { state } }), scope: { coverage: 'complete' }, output
   } }, runId);
 }
 
@@ -67,7 +73,7 @@ test('rejected mutation attempts are distinct from actual mutations and follow f
     const phases = new EvaluationPhases([{ ...stages[0], mutationAttempts }], initial);
     phases.record({ type: 'tool.ended', turnIndex: 0, turnId: 'turn', requestAttempt: 1,
       toolBatchId: 'batch', callIndex: 0, toolAttempt: 1, toolName: 'apply_patch', observation: {
-      kind: 'failure', execution: { state: 'not_started' }, output: { reason: 'denied' }
+      kind: 'failure', execution: { state: 'not_started' }, output: { reason: 'policy' }
     } }, 'inspection');
     const result = phases.completeRun('inspection', initial);
     assert.equal(result.mutations.length, 0);
@@ -116,7 +122,7 @@ test('different request attempts cannot pair a read start with another attempt e
   const phases = new EvaluationPhases(stages.slice(0, 1), initial);
   const base = { turnIndex: 0, turnId: 'turn', toolBatchId: 'batch', callIndex: 0, callId: 'call', toolAttempt: 1, toolName: 'read_files' };
   phases.record({ ...base, type: 'tool.started', requestAttempt: 1,
-    effects: { accesses: [{ mode: 'read', scope: 'files/core' }] } }, 'inspection');
+    effects: { accesses: [{ mode: 'read', scope: 'files/core' }], lockScopes: [], recovery: { kind: 'unknown' } } }, 'inspection');
   phases.record({ ...base, type: 'tool.ended', requestAttempt: 2,
     observation: { kind: 'result', execution: { state: 'settled' } } }, 'inspection');
   const result = phases.completeRun('inspection', initial);
@@ -130,8 +136,81 @@ test('mixed-run or unidentified progress cannot prove no-edit compliance', () =>
     const phases = new EvaluationPhases(stages.slice(0, 1), initial);
     const base = { turnIndex: 0, turnId: 'turn', requestAttempt: 1, toolBatchId: 'batch', callIndex: 0,
       callId: 'call', toolAttempt: 1, toolName: 'read_files' };
-    phases.record({ ...base, type: 'tool.started', effects: { accesses: [{ mode: 'read', scope: 'files/core' }] } }, runId);
+    phases.record({ ...base, type: 'tool.started', effects: { accesses: [{ mode: 'read', scope: 'files/core' }], lockScopes: [], recovery: { kind: 'unknown' } } }, runId);
     phases.record({ ...base, type: 'tool.ended', observation: { kind: 'result', execution: { state: 'settled' } } }, runId);
+    assert.equal(phases.completeRun('inspection', initial).status, 'unproven');
+  }
+});
+
+test('public read_files and no-mutation patch invocations preserve canonical optional execution semantics',
+  { skip: process.platform !== 'linux' }, async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'evaluation-phase-public-'));
+  let authority, journal;
+  try {
+    await writeFile(path.join(root, 'source.txt'), 'original\n');
+    await mkdir(path.join(root, 'journal'), { mode: 0o700 });
+    authority = RootedFileAuthority.adopt(root);
+    journal = TextPatchJournal.adopt(path.join(root, 'journal'));
+    const context = {
+      policy: { allowedRisks: ['read', 'write', 'destructive'] },
+      services: { rootedFileAuthority: authority, localToolConfiguration: DEFAULT_LOCAL_TOOL_CONFIGURATION,
+        patchJournal: journal },
+      signal: new AbortController().signal,
+      boundary: { authorizationPolicyId: 'tests/evaluation-phase@1', executionTargetId: root }
+    };
+    const calls = [
+      [readFilesTool, { files: [{ path: 'source.txt' }] }],
+      [applyPatchTool, { dryRun: true, patch: '*** Begin Patch\n*** Update File: source.txt\n@@\n-original\n+changed\n*** End Patch' }],
+      [applyPatchTool, { patch: '*** Begin Patch\n*** Update File: source.txt\n@@\n-original\n+original\n*** End Patch' }]
+    ];
+    for (const [definition, input] of calls) {
+      const planned = await planToolCall(jsonToolCall(definition.name, input), [definition], context);
+      assert.equal(planned.ok, true);
+      const effects = validateToolEffects(planned.plan.effects);
+      const observation = await invokePlannedForTest(planned.plan, context);
+      assert.equal(observation.kind, 'result');
+      if (definition.name === 'read_files') {
+        assert.equal(observation.execution, undefined);
+        assert.deepEqual(effects.accesses, [{ mode: 'read', scope: 'files/source.txt' }]);
+        assert.deepEqual(effects.recovery, { kind: 'unknown' });
+      } else {
+        assert.equal(observation.output.applicationStatus, input.dryRun ? 'dry_run' : 'no_change');
+        assert.deepEqual(observation.execution, { state: 'settled' });
+      }
+      const phases = new EvaluationPhases(stages.slice(0, 1), initial);
+      const identity = { turnIndex: 0, turnId: 'turn', requestAttempt: 1, toolBatchId: 'batch',
+        callIndex: 0, toolAttempt: 1, toolName: definition.name };
+      phases.record({ ...identity, type: 'tool.started', effects }, 'inspection');
+      phases.record({ ...identity, type: 'tool.ended', observation }, 'inspection');
+      assert.equal(phases.completeRun('inspection', initial).status, 'passed');
+      assert.equal(await readFile(path.join(root, 'source.txt'), 'utf8'), 'original\n');
+    }
+  } finally {
+    try { journal?.close(); }
+    finally {
+      try { authority?.close(); }
+      finally { await rm(root, { recursive: true, force: true }); }
+    }
+  }
+});
+
+test('malformed effects and explicit uncertain lifecycle never inherit read-only completion', () => {
+  const readEffects = readFilesTool.deriveEffects({ files: [{ path: 'source.txt' }] });
+  for (const [effects, execution] of [
+    [undefined, undefined], [[], undefined], [{ accesses: [] }, undefined],
+    [{ ...readEffects, accesses: [{ mode: 'read' }] }, undefined],
+    [{ ...readEffects, accesses: [{ mode: 'unknown', scope: 'files' }] }, undefined],
+    [readEffects, { state: 'unknown' }], [readEffects, { state: 'active' }], [readEffects, {}],
+    [{ ...readEffects, accesses: execCommandTool.effectEnvelope.accesses }, undefined],
+    [{ ...readEffects, accesses: [{ mode: 'network', scope: 'network' }] }, undefined]
+  ]) {
+    const phases = new EvaluationPhases(stages.slice(0, 1), initial);
+    const identity = { turnIndex: 0, turnId: 'turn', requestAttempt: 1, toolBatchId: 'batch',
+      callIndex: 0, toolAttempt: 1, toolName: 'read_files' };
+    phases.record({ ...identity, type: 'tool.started', effects }, 'inspection');
+    phases.record({ ...identity, type: 'tool.ended', observation: {
+      kind: 'result', ...(execution === undefined ? {} : { execution }), output: {}
+    } }, 'inspection');
     assert.equal(phases.completeRun('inspection', initial).status, 'unproven');
   }
 });

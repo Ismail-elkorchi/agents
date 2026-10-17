@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { validateToolEffects } from '@agent-core/tools';
 
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const changed = (before, after) => [...new Set([...Object.keys(before), ...Object.keys(after)])]
@@ -38,6 +39,13 @@ export class EvaluationPhases {
       if (call.started) this.gap('Duplicate tool start.');
       call.started = true;
       call.effects = structuredClone(event.effects);
+      try {
+        validateToolEffects(event.effects);
+        call.effectsValid = true;
+      } catch {
+        call.effectsValid = false;
+        this.gap('Tool start has missing or invalid canonical effects.');
+      }
     } else {
       if (call.observation) this.gap('Duplicate tool end.');
       call.observation = structuredClone(event.observation);
@@ -55,7 +63,12 @@ export class EvaluationPhases {
     const mutations = [], attempts = [], tools = [];
     for (const call of this.#calls.values()) {
       const observation = call.observation;
-      const accesses = call.effects?.accesses;
+      const accesses = call.effectsValid ? call.effects.accesses : undefined;
+      // Successful reads and patch results may omit Core's optional lifecycle.
+      // Explicit active/unknown states remain uncertain; omission on a result
+      // does not manufacture a settled receipt in the retained evidence.
+      const completedResult = observation?.execution?.state === 'settled' ||
+        (observation?.kind === 'result' && observation.execution === undefined);
       const writing = Array.isArray(accesses) && accesses.some(access => ['write', 'delete'].includes(access.mode));
       const mutationAttempt = writing || call.toolName === 'apply_patch';
       const evidence = { identity: call.identity, toolName: call.toolName,
@@ -78,12 +91,12 @@ export class EvaluationPhases {
       // Only explicit host effect envelopes establish that executed work cannot
       // write. Execute/network/unknown access remains opaque even when it exits 0.
       if (Array.isArray(accesses) && accesses.every(access => access.mode === 'read') &&
-          observation.execution?.state === 'settled') continue;
+          completedResult) continue;
       // A dry run/no-op is a structured tool result; rolled-back transactions are
       // deliberately excluded because transient changes cannot be ruled out.
       if (call.toolName === 'apply_patch' && observation.kind === 'result' &&
           ['dry_run', 'no_change'].includes(observation.output?.applicationStatus) &&
-          observation.execution?.state === 'settled') continue;
+          completedResult) continue;
       uncertainties.push(`Executed tool does not prove absence of mutations: ${call.identity}`);
     }
     const changedFiles = changed(this.#before, after);
