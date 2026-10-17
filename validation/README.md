@@ -11,7 +11,9 @@ boundary and keep the task/result contracts; there is no plugin loader.
 
 Requirements: Linux with working unprivileged user/PID/network namespaces,
 `bwrap`, Git, tar, Node matching the repositories, and already-installed
-dependencies. There is **no unsandboxed fallback** and no dependency download.
+dependencies or an npm cache containing the locked packages. There is **no
+unsandboxed evaluation fallback**. Trusted build preparation can explicitly
+retrieve locked dependencies; candidate execution and task checks remain offline.
 
 ```sh
 cd ../agent-core && npm run verify:release
@@ -36,10 +38,12 @@ and the old in-process/full-host evaluator were removed.
 
 The oracle command runs the development checks on each actual starting revision
 and recorded fixing revision, outside any agent. The former must report a named
-assertion failure and the latter completed passing tests. Both require a
-structured verifier receipt with the matching exit status. Syntax/import errors,
-uncaught exceptions, incomplete/skipped tests, compiler failure and timeouts
-never qualify an oracle. It does not compare candidate patches to reference patches.
+criterion failure and the latter completed passing tests. Both require a
+structured verifier receipt with the matching exit status. Candidate TypeScript
+diagnostic failures are failed compilation criteria in the qualified environment.
+Compiler launch/signal failures, test-loader crashes, uncaught exceptions,
+incomplete/skipped tests and timeouts remain verification errors. It does not
+compare candidate patches to reference patches.
 Two explicit, recorded oracle adaptations make task requirements assertions:
 provider completion must not reject when usage is incomplete, and resource
 completion must accept the coverage-bearing `result` contract declared in the
@@ -82,22 +86,46 @@ The initial implementation rejects Git submodules and symlinks in source
 archives rather than guessing how to flatten them. Offline setup can create
 workspace-internal package links.
 
-Build each exact Agents/Core pair in separate checkouts, run its normal release
-gates, then export its executable packages:
+Prepare each exact Agents/Core pair from source:
 
 ```sh
 node validation/prepare-evaluation.mjs build /absolute/agents-A /absolute/core-A /absolute/build-A
+# Explicitly permit retrieving locked dependencies during trusted preparation:
+node validation/prepare-evaluation.mjs build /absolute/agents-A /absolute/core-A /absolute/build-A --allow-downloads
 ```
 
-The export checks the Core dependency pin, installed Core package metadata and
-distribution bytes against the declared compiled checkout, and clean tracked
-source. It records both commits and hashes every executable/dependency file
-(including executable flags and link targets). The build pin covers the
-complete provenance/runtime record as well as its file inventory. Re-export
-builds made with the earlier executable-only digest; those pins are rejected,
-not silently upgraded. Keep old result bundles unchanged. Qualification explicitly
-permits dirty source and records its diff hashes; it cannot masquerade as a
-clean revision comparison. No TypeScript or dependency versions were changed.
+Preparation captures exact source inputs, runs Core npm ci and build, then Agents
+npm ci and build in a new temporary sibling layout. It packs the newly built
+packages through the same archive helper as the packed-consumer release check.
+Existing checkout dist and node_modules are never used as executable inputs,
+and preparation does not rebuild or reinstall in the original repositories.
+Temporary genuine detached Git metadata preserves the normal Core source-pin
+checker, including for older exact revisions. It is excluded from retained source
+archives and the runtime export. The Core source pin and both lockfiles are checked. The npm/Node implementation,
+installed compiler bytes, complete input inventories and output inventories are
+part of the build identity. A failed preparation emits no qualified build.json.
+This is source-build provenance, not a claim that release gates passed.
+
+Normal preparation requires clean tracked and nonignored untracked source and
+uses committed bytes. Machinery qualification captures complete dirty snapshots,
+including relevant added files, deleted files, binary inputs and executable bits.
+Generated output, dependencies and ignored private files do not enter sources;
+source symlinks and submodules are rejected. Qualification is explicitly labelled
+and cannot masquerade as a clean revision comparison.
+
+Keep BUILD.preparation alongside BUILD: it retains exact source archives,
+preparation implementation, input manifests, command logs and the success/failure
+receipt. Only BUILD is mounted in the candidate sandbox, so these source archives
+and preparation logs are not exposed there. Receipt timestamps and storage paths
+are separate from the canonical build identity. verifyBuild checks the frozen
+artifact's integrity; verifyBuildPreparation separately checks the retained
+source archives, packing archives, preparer code and successful receipt against
+the pinned provenance. Comparison bundles retain this evidence outside the
+candidate mount. Hashing an arbitrary existing dist is not source-build proof. Older build formats are rejected; old result bundles should stay intact.
+Default dependency retrieval is offline with a shared temporary npm cache; set
+npm_config_cache for a retained cache, or EVALUATION_DEPENDENCY_RETRIEVAL=online
+for programmatic qualification preparation. This changes no dependency versions.
+
 
 Exact continuation pairs are in `continuationBuilds` in `project-tasks.mjs`:
 A is prior behavior, B selective continuation with the original state schema,
@@ -190,11 +218,17 @@ events must not be treated as complete runtime accounting. There is no cgroup
 CPU/memory/disk quota, no frozen OS image, and no remote-host support. Use a
 dedicated host for hostile/untrusted tasks and record the host environment.
 
-Results distinguish `success`, `incorrect_solution`, `agent_failure`,
+One pure projection interprets the preserved attempt facts after application
+shutdown and outer provider teardown. A shutdown RPC acknowledgement does not
+establish a clean process exit. Results distinguish `success`, `incorrect_solution`, `agent_failure`,
 `timeout`, `budget_exhaustion`, `infrastructure_failure`, `evaluator_failure`,
 `cancelled`, `incomplete`, `not_run` and `pending_review`. A failed earlier run
 cannot be hidden by a later successful claim. Expected scripted aborts are
-recorded separately. A verifier must end stdout with JSON of the form
+recorded separately. Outcome and comparison qualification are independent: a
+demonstrably incorrect solution remains incorrect when a missed correction,
+failed cleanup or incomplete evidence makes its comparison unqualified. Live
+finalization, report recovery and paired reporting use the same projection.
+A verifier must end stdout with JSON of the form
 `{"format":"agents.acceptance/1","status":"passed","evidence":"named criterion observations"}`
 and exit 0; `status:"failed"` requires exit 1 and evidence of failed criteria.
 An exit code alone is never sufficient. Missing/mismatched receipts, other
@@ -207,7 +241,8 @@ evasion.
 ## Read and recover reports
 
 `report.json` includes exact inputs/build inventories, scheduled order and every
-attempt. `inputs/` retains frozen task/check/build bytes. Each attempt has a
+attempt. Task, attempt and comparison-result formats are `/2`; old inputs and reports are
+rejected rather than reinterpreted. `inputs/` retains frozen task/check/build bytes. Each attempt has a
 durable `result.json`, external RPC trace, normal application state and final
 or partial artifact. These are private local artifacts; do not commit them.
 Final artifacts are hashed file inventories, not reference-patch similarities.
@@ -230,7 +265,19 @@ before aggregates; inspect errors and constraint violations individually.
 Pending human review makes a pair incomplete, not an improvement or regression.
 So do unfinished attempts, missing usage and measurement attribution errors,
 even when the other attempt succeeded or the artifact failed a criterion.
+Missing or ineffective interventions, abnormal application shutdown and failed
+cleanup disqualify either direction of a paired comparison.
 There is no statistical superiority claim from a tiny pilot.
+
+`constraints.stages` freezes initial no-edit run requirements. At each required
+completed-run boundary the evaluator retains before/after inventories and the
+host tool-effect/observation evidence. Applied mutations violate the stage even
+if a later edit restores the bytes. Opaque shell execution, rolled-back writes,
+missing observations or other insufficient evidence remain unproven; final
+snapshot equality cannot turn them into success. Rejected mutation attempts
+remain distinct from mutations and follow the task's explicit attempt policy.
+These behavioral stages retain normal capabilities; they do not silently switch
+the application to read-only mode or rebuild its runtime between prompts.
 
 Checkpoints trigger on observed tool completion, context transition or run
 completion, with occurrence and optional tool name, never sleeps. Corrections

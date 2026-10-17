@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, symlink, writeFile, readFile, readlink, cp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { freezeBuild, verifyBuild, inventory, sandboxArgs, launch, readFrozen } from '../../validation/evaluation-isolation.mjs';
+import { inventory, sandboxArgs, launch, readFrozen } from '../../validation/evaluation-isolation.mjs';
+import { freezeBuild, verifyBuild, verifyBuildPreparation } from '../../validation/evaluation-build.mjs';
 import { runAttempt, runComparison, recoverComparisonReport } from '../../validation/coding-agent-evaluation.mjs';
 import { qualificationTask, qualificationSettings, qualificationScript, archiveFiles } from '../../validation/qualify-evaluation.mjs';
 import { scriptedOllama, toolResponse, finalResponse } from './fixtures/scripted-cli.js';
@@ -67,6 +68,30 @@ test('multiple follow-ups at the same boundary are submitted in order, not overw
   assert.equal(result.outcome, 'success', result.error);
   assert.equal(result.runs.length, 3);
   assert.deepEqual(result.interventions.map(item => item.instruction), ['first', 'second']);
+});
+
+test('an early edit remains a no-edit violation after successful shared-boundary follow-ups', async () => {
+  const result = await attempt([patch(), finalResponse('First'), finalResponse('Second'), finalResponse('Third')], input => {
+    input.constraints.stages = [{ id: 'inspect-only', completedRun: 1, rule: 'no-edit', mutationAttempts: 'record-only' }];
+    input.checkpoints = ['first', 'second'].map(id => ({
+      id, after: { type: 'run.completed', occurrence: 1 }, action: 'follow', instruction: id
+    }));
+  });
+  assert.equal(result.runs.length, 3);
+  assert.equal(result.acceptance[0].status, 'passed');
+  assert.equal(result.phaseEvidence[0].status, 'violated');
+  assert(result.phaseEvidence[0].changedFiles.includes('repo/settings.json'));
+  assert.equal(result.outcome, 'incorrect_solution');
+});
+
+test('a wrong final patch stays visible when the required correction checkpoint never occurs', async () => {
+  const result = await attempt([finalResponse('Done')], input => {
+    input.checkpoints = [{ id: 'missing', after: { type: 'tool.ended', toolName: 'apply_patch', occurrence: 1 },
+      action: 'follow', instruction: 'Correct the answer' }];
+  });
+  assert.equal(result.outcome, 'incorrect_solution');
+  assert.equal(result.qualification.qualified, false);
+  assert(result.qualification.reasons.includes('missing_checkpoints'));
 });
 
 test('a requested interruption that misses the active run cannot count as successful coverage', async () => {
@@ -142,6 +167,10 @@ test('complete paired comparison uses actual CLI, keeps all attempts and alterna
   assert(report.attempts.every(item => item.interventions.length === 2 && item.runs.length === 3));
   assert(report.attempts.every(item => item.measurements.requests === 5 && item.metrics.generationRequests === 5));
   assert(report.attempts.every(item => item.metrics.contextRenewals === 0 && item.measurements.cost.amount === null));
+  const retained = report.comparison.builds[0];
+  assert.notEqual(retained.directory, build.directory);
+  assert.equal((await verifyBuildPreparation(retained)).sha256, build.sha256);
+  assert((await readFile(`${retained.directory}.preparation/core.tar`)).length > 0);
 });
 
 test('wrong patch and agent claims cannot pass independent checks', async () => {
@@ -250,6 +279,26 @@ test('provider teardown failure retains outcomes and a recoverable comparison re
   assert.equal(attempt.acceptance[0].status, 'passed');
   assert.equal(unstarted.outcome, 'not_run');
   assert.equal((await recoverComparisonReport(output)).status, 'incomplete');
+});
+
+test('wrong solution plus provider teardown failure retains evidence and disqualifies the pair', async () => {
+  const input = structuredClone(task);
+  input.checkpoints = [];
+  const file = path.join(directory, 'wrong-teardown-task.json');
+  await writeFile(file, JSON.stringify(input));
+  const output = path.join(directory, 'wrong-teardown-comparison');
+  const report = await runComparison({
+    format: 'agents.comparison/1', purpose: 'machinery-qualification',
+    builds: [build, { ...build, label: 'B' }], tasks: [file], repetitions: 1, concurrency: 1,
+    settings: qualificationSettings, spending: { mode: 'no-paid-calls' }
+  }, { output, provider: async () => {
+    const source = await scriptedOllama([finalResponse('Done')]);
+    return { ...source, close: async () => { await source.close(); throw new Error('teardown failed'); } };
+  } });
+  assert.equal(report.attempts[0].outcome, 'incorrect_solution');
+  assert.equal(report.attempts[0].qualification.qualified, false);
+  assert.equal(report.paired.pairs[0].change, 'incomplete');
+  assert.deepEqual(await recoverComparisonReport(output), report);
 });
 
 test('cancellation stops admitting the next build in a pair', async () => {

@@ -58,7 +58,7 @@ Runs, sessions, artifacts, journals, trust decisions, and user model settings li
 
 ## Command execution
 
-Read-only mode starts no command executor. Full Host mode uses Agent Core's supervised local command executor with the host account's environment and network access. Commands stream until exit or timeout; explicitly background commands return session-owned process handles. `write_stdin` and `stop_process` operate across model runs. Closing the application stops session jobs and records their original-owner terminal results.
+Read-only mode starts no command executor. Full Host mode uses Agent Core's supervised local command executor with the host account's environment and network access. Commands are supervised for their admitted lifetime. Observation waits yield on output, completion, their bounded wait deadline, or steering; running results retain session-owned process handles and resource authority. `write_stdin` and `stop_process` operate across model runs. Closing the application stops session jobs and records their original-owner terminal results.
 
 Captured output buffers have bounded retention. Terminal identity, ownership, status, and artifact references remain queryable after buffer expiration and application restart. Stopping an already completed owned process returns its original terminal outcome. Output availability and execution uncertainty remain separate facts; accepting uncertainty never certifies success or replays a command.
 

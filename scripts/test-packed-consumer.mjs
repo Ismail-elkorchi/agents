@@ -1,3 +1,4 @@
+import { packPackages } from './pack-packages.mjs';
 import { execFile } from 'node:child_process';
 import { glob, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -32,26 +33,7 @@ try {
     path.join(root, 'node_modules/markspan'),
     ...agentsManifest.workspaces.map((workspace) => path.join(root, workspace))
   ];
-  for (const directory of directories) {
-    const manifest = JSON.parse(await readFile(path.join(directory, 'package.json'), 'utf8'));
-    const { stdout } = await exec(
-      process.execPath,
-      [npmCli, 'pack', '--json', '--ignore-scripts', '--pack-destination', packs],
-      { cwd: directory, maxBuffer: 10 * 1024 * 1024 }
-    );
-    const packed = JSON.parse(stdout)[0];
-    if (!packed.files.some((file) => file.path.startsWith('dist/')))
-      throw new Error(`${manifest.name} archive has no compiled output.`);
-    if (
-      manifest.name === '@ismail-elkorchi/coding-agent' ||
-      manifest.name === '@ismail-elkorchi/writing-agent'
-    ) {
-      for (const entry of ['index.js', 'cli.js', 'tui/index.js', 'rpc/index.js'])
-        if (!packed.files.some((file) => file.path === `dist/${entry}`))
-          throw new Error(`${manifest.name} archive is missing ${entry}.`);
-    }
-    dependencies[manifest.name] = `file:${path.join(packs, packed.filename)}`;
-  }
+  Object.assign(dependencies, await packPackages(directories, packs, npmCli));
   await mkdir(consumer, { recursive: true });
   await writeFile(
     path.join(consumer, 'package.json'),

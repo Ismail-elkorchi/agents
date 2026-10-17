@@ -5,10 +5,12 @@ import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { taskSchema, comparisonSchema, settingsSchema, schedule } from './evaluation-contract.mjs';
-import { inventory, unpack, verifyBuild, launch, sandboxArgs, runAcceptanceCheck, sha256, readFrozen, runtimeIdentity, execute } from './evaluation-isolation.mjs';
+import { inventory, unpack, launch, sandboxArgs, runAcceptanceCheck, sha256, readFrozen, runtimeIdentity, execute } from './evaluation-isolation.mjs';
+import { verifyBuildPreparation } from './evaluation-build.mjs';
 import { codingAgent, providerSocket } from './evaluation-rpc.mjs';
+import { EvaluationPhases } from './evaluation-phases.mjs';
 import { EvaluationMetrics } from './evaluation-metrics.mjs';
-import { acceptanceStatus, pairedReport, providerMeasurements } from './evaluation-report.mjs';
+import { acceptanceStatus, pairedReport, providerMeasurements, projectAttempt, comparisonStatus } from './evaluation-report.mjs';
 
 export async function saveJson(file, value) {
   const temporary = `${file}.pending`;
@@ -30,13 +32,14 @@ function executionOutcome(result) {
   return /limit|budget/.test(JSON.stringify(result.terminal.terminationReason)) ? 'budget_exhaustion' : 'agent_failure';
 }
 
-export async function runAttempt({ task, build, settings, directory, endpoint, signal }) {
+export async function runAttempt({ task, build, settings, directory, endpoint, signal, providerCleanupPending = false }) {
   task = taskSchema.parse(task);
   settings = settingsSchema.parse(settings);
   const started = performance.now();
   const result = {
-    format: 'agents.attempt/1', task: task.id, build: build.label,
+    format: 'agents.attempt/2', task: task.id, build: build.label,
     status: 'running', outcome: null, contextMode: task.contextMode,
+    providerCleanup: providerCleanupPending ? 'pending' : 'not_required',
     interventions: [], runs: [], acceptance: [], constraintViolations: [],
     humanReview: task.humanReview.map(criterion => ({ criterion, status: 'pending' })),
     measurementErrors: []
@@ -48,7 +51,7 @@ export async function runAttempt({ task, build, settings, directory, endpoint, s
   const state = path.join(temporary, 'state');
   const metrics = new EvaluationMetrics();
   const events = openSync(path.join(directory, 'events.jsonl'), 'wx', 0o600);
-  let app, transport, before, phase = 'infrastructure', processResult;
+  let app, transport, before, phases, runId, phase = 'infrastructure', processResult;
   try {
     signal?.throwIfAborted();
     if (Object.entries(await runtimeIdentity()).some(([key, value]) => task.environment.runtime[key] !== value))
@@ -78,6 +81,7 @@ export async function runAttempt({ task, build, settings, directory, endpoint, s
       limits: { ...limits, elapsedMs: task.limits.wallMs }
     }));
     before = await inventory(workspace);
+    phases = new EvaluationPhases(task.constraints.stages, before);
     signal?.throwIfAborted();
     const socket = path.join(temporary, 'provider.sock');
     transport = await providerSocket({ endpoint, socket, model: settings.model,
@@ -90,13 +94,17 @@ export async function runAttempt({ task, build, settings, directory, endpoint, s
         writeSync(events, JSON.stringify({ observedAt: new Date().toISOString(), type, event }) + '\n');
         if (type === 'run.progress') {
           metrics.record(event.event);
+          phases.record(event.event);
           if (event.event.type === 'run.configured')
             (result.effectiveConfigurations ??= []).push(event.event.configuration);
           if (event.event.type === 'run.configured' && task.environment.contextTokens &&
               event.event.configuration.model.limits.contextTokens !== task.environment.contextTokens)
             result.measurementErrors.push('Observed model context bound differs from the task environment.');
         }
-        if (type === 'delivery.gap') result.measurementErrors.push('RPC delivery gap; evidence is incomplete.');
+        if (type === 'delivery.gap') {
+          phases.gap('RPC delivery gap');
+          result.measurementErrors.push('RPC delivery gap; evidence is incomplete.');
+        }
         queue.push({ type, event });
         wake?.();
       }
@@ -111,7 +119,7 @@ export async function runAttempt({ task, build, settings, directory, endpoint, s
       `Network: ${task.network}; no Internet or dependency downloads.`;
     const receipt = await app.request('input.submit', { task: prompt });
     if (receipt.kind !== 'started') throw new Error(`Submission ${receipt.kind}`);
-    let runId = receipt.runId;
+    runId = receipt.runId;
     const follows = [];
     const counts = new Map(), triggered = new Set();
     for (;;) {
@@ -140,6 +148,12 @@ export async function runAttempt({ task, build, settings, directory, endpoint, s
       if (item.type === 'run.failed') throw new Error(item.event.error.message);
       if (item.type !== 'run.completed') continue;
       result.runs.push(item.event.result);
+      if (item.event.result.deliveryDiagnostics?.length) phases.gap('Run delivery diagnostics reported incomplete evidence.');
+      phase = 'artifact';
+      phases.completeRun(runId, await inventory(workspace));
+      result.phaseEvidence = phases.toJSON();
+      runId = undefined;
+      phase = 'agent';
       await saveJson(path.join(directory, 'result.json'), result);
       if (follows.length) {
         const accepted = await app.request('input.submit', { task: follows.shift() });
@@ -163,6 +177,8 @@ export async function runAttempt({ task, build, settings, directory, endpoint, s
     }
     await app.request('application.shutdown');
     processResult = await app.done;
+    if (processResult.code !== 0 || processResult.signal || processResult.stopped || processResult.error)
+      throw new Error('Application shutdown did not exit cleanly: ' + JSON.stringify(processResult));
     // Namespace exit is the boundary: no candidate process survives into checks.
     phase = 'artifact';
     const after = await inventory(workspace);
@@ -185,49 +201,41 @@ export async function runAttempt({ task, build, settings, directory, endpoint, s
         process: observed
       });
     }
-    result.outcome = result.execution !== 'completed' ? result.execution
-      : result.acceptance.some(check => check.status === 'error') ? 'evaluator_failure'
-      : result.constraintViolations.length || result.acceptance.some(check => check.status === 'failed') ? 'incorrect_solution'
-      : result.missingCheckpoints.length || result.measurementErrors.length ||
-        result.interventions.some(item => item.receipt?.kind === 'rejected' || item.interrupted === false) ? 'incomplete'
-      : result.humanReview.length ? 'pending_review' : 'success';
   } catch (error) {
     result.error = error.message;
-    result.outcome = phase === 'infrastructure' ? 'infrastructure_failure'
-      : phase === 'evaluator' ? 'evaluator_failure'
-      : phase === 'artifact' ? 'incorrect_solution' : 'agent_failure';
+    result.failurePhase = phase;
+    if (phase === 'artifact' && error.code === 'INVALID_ARTIFACT') result.invalidArtifact = true;
   } finally {
     if (app) {
       app.stop('cleanup');
       processResult = await app.done;
       result.process = processResult;
-      if (processResult.stopped === 'timeout') result.outcome = 'timeout';
-      if (processResult.stopped === 'cancelled') result.outcome = 'cancelled';
     }
-    if (signal?.aborted) result.outcome = 'cancelled';
-    else if (result.environmentSetup?.stopped === 'timeout') result.outcome = 'timeout';
+    if (phases && runId) {
+      try { phases.completeRun(runId, await inventory(workspace), { complete: false }); }
+      catch (error) {
+        phases.gap('Partial artifact inspection: ' + error.message);
+        if (error.code === 'INVALID_ARTIFACT') result.invalidArtifact = true;
+        else (result.cleanupErrors ??= []).push('Partial artifact inspection: ' + error.message);
+      }
+    }
+    if (phases) result.phaseEvidence = phases.toJSON();
+    result.cancelled = Boolean(signal?.aborted);
     result.metrics = metrics.toJSON();
     if (transport) {
       try { await transport.close(); }
       catch (error) {
         (result.cleanupErrors ??= []).push(`Transport teardown: ${error.message}`);
-        if (['success', 'pending_review'].includes(result.outcome)) result.outcome = 'infrastructure_failure';
       }
       result.measurements = providerMeasurements(transport.receipts, transport.metadataRequests);
       if (result.measurements.usageSource !== 'provider') {
         result.measurementErrors.push('Provider usage is unavailable or partial; consumption is not fully measured.');
-        if (['success', 'pending_review'].includes(result.outcome)) result.outcome = 'incomplete';
       }
       if (transport.receipts.length !== result.metrics.generationRequests) {
         result.measurementErrors.push('Provider request count differs from Core request events; runtime attribution is incomplete.');
-        if (['success', 'pending_review'].includes(result.outcome)) result.outcome = 'incomplete';
       }
       result.providerAdmissionClosedReason = transport.admissionClosedReason;
-      if (result.outcome === 'agent_failure') {
-        if (transport.admissionClosedReason === 'request_limit') result.outcome = 'budget_exhaustion';
-        else if (transport.admissionClosedReason === 'usage_unavailable') result.outcome = 'incomplete';
-        else if (transport.admissionClosedReason === 'provider_failure') result.outcome = 'infrastructure_failure';
-      }
+
     }
     // Preserve partial source and normal application state even on killed attempts.
     const cleanup = [
@@ -242,11 +250,11 @@ export async function runAttempt({ task, build, settings, directory, endpoint, s
       try { await operation(); }
       catch (error) {
         (result.cleanupErrors ??= []).push(`${label}: ${error.message}`);
-        if (['success', 'pending_review'].includes(result.outcome)) result.outcome = 'infrastructure_failure';
       }
     }
     result.elapsedMs = performance.now() - started;
     result.status = 'finished';
+    Object.assign(result, projectAttempt(result));
     await saveJson(path.join(directory, 'result.json'), result);
   }
   return result;
@@ -261,7 +269,12 @@ export async function runComparison(input, { output, provider, signal } = {}) {
     taskSchema.parse(JSON.parse(await readFile(file, 'utf8')))));
   if (new Set(tasks.map(task => task.id)).size !== tasks.length) throw new Error('Duplicate task IDs.');
   if (comparison.builds[0].label === comparison.builds[1].label) throw new Error('Duplicate build labels.');
-  const builds = await Promise.all(comparison.builds.map(verifyBuild));
+  const verified = new Map();
+  const builds = await Promise.all(comparison.builds.map(build => {
+    const key = JSON.stringify([path.resolve(build.directory), build.sha256]);
+    if (!verified.has(key)) verified.set(key, verifyBuildPreparation(build));
+    return verified.get(key);
+  }));
   const runtime = await runtimeIdentity();
   if (builds.some(build => Object.entries(runtime).some(([key, value]) => build[key] !== value)))
     throw new Error('Build runtime identity differs from this host.');
@@ -281,13 +294,18 @@ export async function runComparison(input, { output, provider, signal } = {}) {
       await cp(path.join(sourceDirectory, file), path.join(evaluator, file));
   await cp(path.join(sourceDirectory, 'fixtures'), path.join(evaluator, 'fixtures'), { recursive: true });
   await cp(path.resolve(sourceDirectory, '../coding-agent/test/fixtures/scripted-cli.js'), path.join(evaluator, 'scripted-cli.js'));
+  await mkdir(path.join(inputs, 'scripts'));
+  await cp(path.resolve(sourceDirectory, '../scripts/pack-packages.mjs'), path.join(inputs, 'scripts/pack-packages.mjs'));
   const copied = new Map();
   for (const build of comparison.builds) {
     const destination = path.join(inputs, `build-${build.sha256}`);
-    if (!copied.has(destination)) await cp(build.directory, destination, { recursive: true, verbatimSymlinks: true });
+    if (!copied.has(destination)) {
+      await cp(build.directory, destination, { recursive: true, verbatimSymlinks: true });
+      await cp(`${build.directory}.preparation`, `${destination}.preparation`, { recursive: true, verbatimSymlinks: true });
+      await verifyBuildPreparation({ ...build, directory: destination });
+    }
     copied.set(destination, true);
     build.directory = destination;
-    await verifyBuild(build);
   }
   comparison.tasks = [];
   for (const task of tasks) {
@@ -306,7 +324,7 @@ export async function runComparison(input, { output, provider, signal } = {}) {
   await saveJson(path.join(output, 'manifest.json'), comparison);
   const plan = schedule(comparison, tasks);
   const report = {
-    format: 'agents.comparison-result/1', startedAt, preparationMs: performance.now() - started,
+    format: 'agents.comparison-result/2', startedAt, preparationMs: performance.now() - started,
     comparison, builds, tasks, status: 'running', evaluatorFiles: await inventory(evaluator),
     hostEnvironment: {
       runtime,
@@ -316,7 +334,7 @@ export async function runComparison(input, { output, provider, signal } = {}) {
     },
     order: plan.map(item => ({ task: item.task.id, repetition: item.repetition, order: item.order.map(build => build.label) })),
     attempts: plan.flatMap((item, index) => item.order.map(build => ({
-      task: item.task.id, repetition: item.repetition, build: build.label,
+      format: 'agents.attempt/2', task: item.task.id, repetition: item.repetition, build: build.label,
       directory: path.join(output, `${index + 1}-${build.label}`),
       status: 'not-started', outcome: 'not_run'
     })))
@@ -336,30 +354,35 @@ export async function runComparison(input, { output, provider, signal } = {}) {
           source = await provider({ task: item.task, build, repetition: item.repetition });
           // Provider setup is asynchronous: admission can close while it waits.
           if (signal?.aborted || cleanupFailed) {
-            attempt = { task: item.task.id, build: build.label, status: 'not-started', outcome: 'not_run' };
+            attempt = { format: 'agents.attempt/2', task: item.task.id, build: build.label, status: 'not-started' };
             await mkdir(directory);
-          } else attempt = await runAttempt({ task: item.task, build, settings: comparison.settings, directory, endpoint: source.endpoint, signal });
+          } else attempt = await runAttempt({ task: item.task, build, settings: comparison.settings, directory, endpoint: source.endpoint, signal, providerCleanupPending: true });
         } catch (error) {
-          attempt = { task: item.task.id, build: build.label, status: 'finished', outcome: 'infrastructure_failure', error: error.message };
+          attempt = { format: 'agents.attempt/2', task: item.task.id, build: build.label, status: 'finished', providerCleanup: 'pending', failurePhase: 'infrastructure', error: error.message };
           await mkdir(directory, { recursive: true });
           await saveJson(path.join(directory, 'result.json'), attempt);
         } finally {
-          try { await source?.close?.(); }
+          try {
+            await source?.close?.();
+            attempt.providerCleanup = 'completed';
+          }
           catch (error) {
             cleanupFailed = true;
+            attempt.providerCleanup = 'failed';
             (attempt.cleanupErrors ??= []).push(`Provider teardown: ${error.message}`);
-            if (['success', 'pending_review'].includes(attempt.outcome)) attempt.outcome = 'infrastructure_failure';
           }
         }
         if (attempt.cleanupErrors?.length) cleanupFailed = true;
-        attempt = { ...attempt, repetition: item.repetition, directory };
+        attempt = projectAttempt({ ...attempt, repetition: item.repetition, directory });
         await saveJson(path.join(directory, 'result.json'), attempt);
         const position = report.attempts.findIndex(value => value.directory === directory);
         report.attempts[position] = attempt;
       }
     }
   }));
-  report.status = signal?.aborted ? 'cancelled' : cleanupFailed ? 'incomplete' : 'finished';
+  report.attempts = report.attempts.map(projectAttempt);
+  report.cancelled = Boolean(signal?.aborted);
+  report.status = comparisonStatus(report.attempts, report.cancelled);
   report.finishedAt = new Date().toISOString();
   report.elapsedMs = performance.now() - started;
   report.paired = pairedReport(report.attempts, comparison.builds);
@@ -370,17 +393,17 @@ export async function runComparison(input, { output, provider, signal } = {}) {
 export async function recoverComparisonReport(directory) {
   const file = path.join(directory, 'report.json');
   const report = JSON.parse(await readFile(file, 'utf8'));
-  if (report.format !== 'agents.comparison-result/1') throw new Error('Incompatible evaluation report.');
+  if (report.format !== 'agents.comparison-result/2') throw new Error('Incompatible evaluation report.');
   for (let index = 0; index < report.attempts.length; index++) {
     const planned = report.attempts[index];
     try {
       const recorded = JSON.parse(await readFile(path.join(planned.directory, 'result.json'), 'utf8'));
-      report.attempts[index] = { ...planned, ...recorded,
-        ...(recorded.status !== 'finished' ? { outcome: recorded.status === 'not-started' ? 'not_run' : 'incomplete' } : {}) };
+      if (recorded.format !== 'agents.attempt/2') throw new Error('Incompatible evaluation attempt.');
+      report.attempts[index] = projectAttempt({ ...planned, ...recorded });
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
-  report.status = report.status === 'cancelled' || report.attempts.some(attempt => attempt.outcome === 'cancelled') ? 'cancelled'
-    : report.attempts.every(attempt => attempt.status === 'finished' && !attempt.cleanupErrors?.length) ? 'finished' : 'incomplete';
+  report.attempts = report.attempts.map(projectAttempt);
+  report.status = comparisonStatus(report.attempts, report.cancelled);
   report.paired = pairedReport(report.attempts, report.comparison.builds);
   await saveJson(file, report);
   return report;

@@ -22,6 +22,10 @@ export const projectTasks = [
   },
   {
     id: 'resource-coverage-correction', split: 'development',
+    stages: [
+      { id: 'inspect-without-editing', completedRun: 1, rule: 'no-edit', mutationAttempts: 'record-only' },
+      { id: 'review-without-editing', completedRun: 2, rule: 'no-edit', mutationAttempts: 'record-only' }
+    ],
     fix: 'a022634d06d03b641fc0922e288d036b3471f403',
     start: '2ec82c15b03862b8d8a53106846b688e9d3cb2a9',
     instructions: 'In core, inspect resource completion and describe how an empty search is displayed. Do not edit yet. Record the relevant source locations for later work. Preserve resource quoting, replacement ranges and selection behavior throughout this task.',

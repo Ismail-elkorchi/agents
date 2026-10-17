@@ -2,7 +2,8 @@ import { mkdir, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { execute, freezeBuild, freezeRepository, sha256, runtimeIdentity } from './evaluation-isolation.mjs';
+import { execute, freezeRepository, sha256, runtimeIdentity } from './evaluation-isolation.mjs';
+import { freezeBuild } from './evaluation-build.mjs';
 import { normalTools } from './evaluation-contract.mjs';
 import { runComparison } from './coding-agent-evaluation.mjs';
 import { primaryTaskScenario, baseline } from './continuation-comparison.mjs';
@@ -49,7 +50,7 @@ const criteria = await scenario.steps.at(-1).check('/work/repo');
 reportAcceptance(Object.values(criteria).every(value => value === true) ? 'passed' : 'failed', JSON.stringify(criteria));
 ` });
   return {
-    format: 'agents.task/1', id: fixture.id, split: 'qualification',
+    format: 'agents.task/2', id: fixture.id, split: 'qualification',
     provenance: { description: 'Synthetic workspace from the real pinned continuation regression; machinery qualification, NOT a real project benchmark.', exposure: 'implementation-visible', sourceCommits: [baseline.agents] },
     repositories: [{ name: 'repo', ...snapshot }],
     instructions: 'In repo/: ' + fixture.steps[0].task,
@@ -61,7 +62,7 @@ reportAcceptance(Object.values(criteria).every(value => value === true) ? 'passe
       id: `correction-${index + 1}`, after: { type: 'run.completed', occurrence: index + 1 },
       action: 'follow', instruction: 'In repo/: ' + step.task
     })),
-    constraints: { writable: ['repo/settings.json'] },
+    constraints: { writable: ['repo/settings.json'], stages: [] },
     acceptance: [{ id: 'corrected-configuration', description: 'Later requirement supersedes original task; math remains unchanged.',
       verifier, argv: ['/runtime/node', '/checks/check.mjs'], cwd: 'repo', timeoutMs: 5000 }],
     humanReview: []

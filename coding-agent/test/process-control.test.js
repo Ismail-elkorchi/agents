@@ -53,7 +53,7 @@ for (const action of ['poll', 'stop', 'settle'])
         return poll;
       };
       const provider = await scriptedOllama([
-        toolResponse('exec_command', { command, workdir: '.', background: true, timeoutMs: 20_000 }),
+        toolResponse('exec_command', { command, workdir: '.', yieldMs: 1, timeoutMs: 20_000 }),
         ...Array.from({ length: 8 }, () => next)
       ]);
       const fixture = await createWorkspace({
@@ -116,20 +116,29 @@ for (const action of ['poll', 'stop', 'settle'])
   );
 
 test(
-  'foreground host commands report completion and deadlines without process-control turns',
+  'supervised host commands report observed completion and deadlines',
   { skip: process.platform !== 'linux', timeout: 45_000 },
   async (t) => {
+    let settled = 0;
+    const next = (request) => {
+      const result = JSON.parse(request.messages.at(-1).content.split('\n\n', 1)[0]);
+      if (result.status === 'running') return toolResponse('write_stdin', {
+        processId: result.processId, yieldMs: 2000, afterCursor: 0
+      });
+      if (++settled === 1)
+        return toolResponse('exec_command', { command: 'sleep 2', yieldMs: 2000, timeoutMs: 500 });
+      return finalResponse('The command timed out.');
+    };
     const provider = await scriptedOllama([
       toolResponse('exec_command', {
-        command: 'printf first; sleep 1; printf last',
-        timeoutMs: 20_000
+        command: 'sleep 1; printf firstlast',
+        yieldMs: 20_000, timeoutMs: 20_000
       }),
-      toolResponse('exec_command', { command: 'sleep 2', timeoutMs: 500 }),
-      finalResponse('The command timed out.')
+      ...Array.from({ length: 8 }, () => next)
     ]);
     const fixture = await createWorkspace({
       endpoint: provider.endpoint,
-      tools: ['exec_command'],
+      tools: ['exec_command', 'write_stdin'],
       checks: [],
       files: {}
     });
@@ -159,15 +168,18 @@ test(
       (entry) => entry.type === 'observation' && entry.toolName === 'exec_command'
     );
     assert.equal(commands.length, 2);
-    assert.equal(commands[0].output.status, 'exited');
-    assert.match(commands[0].output.combined.segments.join(''), /firstlast/u);
-    assert.equal(commands[1].output.status, 'timed_out');
+    const terminal = commands.map(command => history.entries.filter(entry =>
+      entry.type === 'observation' && entry.output?.processId === command.output.processId &&
+      entry.output.status !== 'running').at(-1).output);
+    assert.equal(terminal[0].status, 'exited');
+    assert.match(terminal[0].combined.segments.join(''), /firstlast/u);
+    assert.equal(terminal[1].status, 'timed_out');
   }
 );
 
-for (const background of [false, true]) test(`closing a local session durably acknowledges its ${background ? 'background' : 'foreground'} command`, { skip: process.platform !== 'linux' }, async (t) => {
+for (const pending of [false, true]) test(`closing a local session durably acknowledges its ${pending ? 'running' : 'completed'} command`, { skip: process.platform !== 'linux' }, async (t) => {
   const provider = await scriptedOllama([
-    toolResponse('exec_command', { command: background ? 'sleep 30' : 'printf done', background }),
+    toolResponse('exec_command', { command: pending ? 'sleep 30' : 'true', yieldMs: pending ? 1 : 1000 }),
     finalResponse('Command started.')
   ]);
   const fixture = await createWorkspace({ endpoint: provider.endpoint, tools: ['exec_command'], checks: [] });
@@ -188,7 +200,7 @@ for (const background of [false, true]) test(`closing a local session durably ac
   for await (const { event } of events.read(submitted.runId)) if (event.type === 'resource.released') released.push(event);
   assert.equal(released.length, 1);
   assert.equal(released[0].outcome, 'released');
-  assert.equal(released[0].details.status, background ? 'stopped' : 'exited');
+  assert.equal(released[0].details.status, pending ? 'stopped' : 'exited');
 });
 
 test('a refused process lookup is recorded and the coding session continues', { skip: process.platform !== 'linux' }, async (t) => {

@@ -8,7 +8,7 @@ const relative = text.refine(value => !value.startsWith('/') &&
   !value.includes('\\') && value.split('/').every(part => part && part !== '.' && part !== '..'));
 const frozen = z.strictObject({ path: text, sha256: hash });
 export const taskSchema = z.strictObject({
-  format: z.literal('agents.task/1'),
+  format: z.literal('agents.task/2'),
   id: z.string().regex(/^[a-z0-9-]+$/),
   split: z.enum(['development', 'held-out', 'qualification']),
   provenance: z.strictObject({
@@ -48,7 +48,12 @@ export const taskSchema = z.strictObject({
   constraints: z.strictObject({
     // Exact files or directory prefixes ending in /. Everything else is immutable.
     writable: z.array(text.refine(value =>
-      relative.safeParse(value.endsWith('/') ? value.slice(0, -1) : value).success))
+      relative.safeParse(value.endsWith('/') ? value.slice(0, -1) : value).success)),
+    // Initial completed-run boundaries only; these evaluate behavior, not permissions.
+    stages: z.array(z.strictObject({
+      id: text, completedRun: positive, rule: z.literal('no-edit'),
+      mutationAttempts: z.enum(['record-only', 'forbidden'])
+    }))
   }),
   acceptance: z.array(z.strictObject({
     id: text, description: text,
@@ -59,6 +64,11 @@ export const taskSchema = z.strictObject({
   })).min(1),
   humanReview: z.array(text)
 }).superRefine((task, ctx) => {
+  if (task.constraints.stages.some((stage, index) => stage.completedRun !== index + 1) ||
+      new Set(task.constraints.stages.map(stage => stage.id)).size !== task.constraints.stages.length)
+    ctx.addIssue({ code: 'custom', message: 'No-edit stages must have unique IDs and consecutive initial completed-run boundaries.' });
+  if (task.constraints.stages.length > 1 + task.checkpoints.filter(point => point.action !== 'steer').length)
+    ctx.addIssue({ code: 'custom', message: 'No-edit stages exceed the scripted run count.' });
   if (new Set(task.repositories.map(repo => repo.name)).size !== task.repositories.length)
     ctx.addIssue({ code: 'custom', message: 'Repository names must be unique.' });
   if (task.split === 'held-out' && task.provenance.exposure !== 'reserved-not-run')

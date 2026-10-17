@@ -1,7 +1,8 @@
 import { mkdir, readFile, readdir, cp, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { execute, freezeBuild, freezeRepository, sha256, runtimeIdentity } from './evaluation-isolation.mjs';
+import { execute, freezeRepository, sha256, runtimeIdentity } from './evaluation-isolation.mjs';
+import { freezeBuild } from './evaluation-build.mjs';
 import { projectTasks } from './project-tasks.mjs';
 import { taskSchema } from './evaluation-contract.mjs';
 import { saveJson } from './coding-agent-evaluation.mjs';
@@ -102,13 +103,15 @@ function updateResourceCompletion(...args) {
     await writeFile(path.join(verifier, 'check.mjs'), `
 import { cp } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
-import { checkTests, reportAcceptance } from './evaluation-acceptance.mjs';
+import { checkTests, reportAcceptance, compilationStatus } from './evaluation-acceptance.mjs';
 const tests = ${JSON.stringify(specification.tests)};
 for (const file of tests) await cp('/checks/' + file, '/work/core/' + file);
 const compiled = spawnSync('/runtime/node', ['node_modules/typescript/bin/tsc', '-b', '--force'],
-  { cwd: '/work/core', stdio: 'inherit' });
-if (compiled.error || compiled.signal || compiled.status !== 0)
-  reportAcceptance('error', 'Compilation did not complete successfully.');
+  { cwd: '/work/core', encoding: 'utf8' });
+process.stderr.write((compiled.stdout ?? '') + (compiled.stderr ?? ''));
+const compilation = compilationStatus(compiled);
+if (compilation !== 'passed')
+  reportAcceptance(compilation, 'Compilation: ' + JSON.stringify({ status: compiled.status, signal: compiled.signal, error: compiled.error?.message, stdout: compiled.stdout, stderr: compiled.stderr }));
 else await checkTests(tests);
 `);
     const archive = path.join(parent, 'checks.tar');
@@ -117,7 +120,7 @@ else await checkTests(tests);
     const generated = packageFiles.filter(file => /\/tsconfig.json$/.test(file))
       .flatMap(file => [`core/${path.dirname(file)}/dist/`, `core/${path.dirname(file)}/tsconfig.tsbuildinfo`]);
     const task = taskSchema.parse({
-      format: 'agents.task/1', id: specification.id, split: specification.split,
+      format: 'agents.task/2', id: specification.id, split: specification.split,
       provenance: { description: `Real project change ${specification.fix}; evaluation instructions authored for this task, not a historical user transcript. ${specification.split === 'held-out' ? 'Reserved, not run or tuned; not claimed unseen to the author.' : 'Implementation-visible development task.'} NOT a blind holdout: the readable application build contains compiled Core implementations that may include this historical answer.${specification.oracleNote ? ` Oracle adaptation: ${specification.oracleNote}` : ''}`,
         exposure: specification.split === 'held-out' ? 'reserved-not-run' : 'implementation-visible',
         sourceCommits: [specification.fix] },
@@ -125,7 +128,7 @@ else await checkTests(tests);
       environment, network: 'provider-only',
       limits: { wallMs: 900000, modelTurns: 80, promptTokens: 800000, completionTokens: 80000, totalToolCalls: 240 },
       contextMode: 'natural', checkpoints: specification.checkpoints,
-      constraints: { writable: [...specification.writable, ...generated] },
+      constraints: { writable: [...specification.writable, ...generated], stages: specification.stages ?? [] },
       acceptance: [{ id: 'independent-regressions', description: 'Compile all packages and run immutable upstream regression checks; no patch similarity grading.',
         verifier: { path: archive, sha256: sha256(await readFile(archive)) },
         argv: ['/runtime/node', '/checks/check.mjs'], cwd: 'core', timeoutMs: 180000 }],
@@ -141,9 +144,9 @@ else await checkTests(tests);
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   const [command, ...args] = process.argv.slice(2);
   const root = fileURLToPath(new URL('../', import.meta.url));
-  if (command === 'build' && args.length === 3) {
-    console.log(JSON.stringify(await freezeBuild(path.resolve(args[0]), path.resolve(args[1]), path.resolve(args[2])), null, 2));
+  if (command === 'build' && (args.length === 3 || (args.length === 4 && args[3] === '--allow-downloads'))) {
+    console.log(JSON.stringify(await freezeBuild(path.resolve(args[0]), path.resolve(args[1]), path.resolve(args[2]), { dependencyRetrieval: args[3] === '--allow-downloads' ? 'online' : 'offline' }), null, 2));
   } else if (command === 'tasks' && args.length >= 1 && args.length <= 2) {
     console.log(JSON.stringify(await prepareTasks(path.resolve(root, '../agent-core'), path.resolve(args[0]), { includeHeldOut: args[1] === '--include-held-out' }), null, 2));
-  } else throw new Error('Usage: prepare-evaluation.mjs build AGENTS CORE NEW_BUILD_DIR | tasks NEW_TASK_DIR [--include-held-out]');
+  } else throw new Error('Usage: prepare-evaluation.mjs build AGENTS CORE NEW_BUILD_DIR [--allow-downloads] | tasks NEW_TASK_DIR [--include-held-out]');
 }

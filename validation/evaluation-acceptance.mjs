@@ -30,3 +30,12 @@ export async function checkTests(files) {
     : summary.counts.failed === 0 ? 'passed' : failures.length ? 'failed' : 'error';
   reportAcceptance(status, JSON.stringify({ summary, failures }));
 }
+
+// A compiler rejecting candidate source is a failed criterion. Runtime/spawn
+// failures are evaluator errors, even when they happen to exit with code 1.
+export function compilationStatus(result) {
+  if (result.error || result.signal || result.stopped) return 'error';
+  if (result.status === 0) return 'passed';
+  return [1, 2].includes(result.status) && /\berror TS\d+:/.test(`${result.stdout ?? ''}\n${result.stderr ?? ''}`)
+    ? 'failed' : 'error';
+}

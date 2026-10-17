@@ -32,16 +32,71 @@ export function providerMeasurements(receipts, metadataRequests = 0) {
   };
 }
 
+// This projection is the sole interpretation of durable attempt facts. It is
+// reapplied after outer provider cleanup and during recovery; prior projections
+// are deliberately ignored. Solution evidence and experimental qualification
+// are separate, so a broken experiment cannot erase a demonstrated wrong answer.
+export function projectAttempt(facts) {
+  if (facts.format !== 'agents.attempt/2') throw new Error('Incompatible evaluation attempt.');
+  const reasons = [];
+  const add = (condition, reason) => { if (condition) reasons.push(reason); };
+  const checks = facts.acceptance ?? [];
+  const wrong = facts.invalidArtifact || facts.phaseEvidence?.some(stage => stage.status === 'violated') || facts.constraintViolations?.length || checks.some(check => check.status === 'failed');
+  const cancelled = facts.cancelled || facts.process?.stopped === 'cancelled';
+  const timeout = facts.process?.stopped === 'timeout' || facts.environmentSetup?.stopped === 'timeout';
+  const badProcess = facts.process && (facts.process.code !== 0 || facts.process.signal || facts.process.error || facts.process.stopped);
+  const infrastructure = facts.failurePhase === 'infrastructure' ||
+    (facts.failurePhase === 'artifact' && !facts.invalidArtifact) || facts.cleanupErrors?.length ||
+    facts.providerAdmissionClosedReason === 'provider_failure';
+  const evaluator = facts.failurePhase === 'evaluator' || checks.some(check => check.status === 'error');
+  const incomplete = facts.missingCheckpoints?.length || facts.measurementErrors?.length ||
+    facts.measurements?.usageSource !== 'provider' || facts.providerAdmissionClosedReason === 'usage_unavailable' ||
+    facts.interventions?.some(item => item.receipt?.kind === 'rejected' || item.interrupted === false);
+  add(facts.status !== 'finished', 'attempt_not_finished');
+  add(cancelled, 'cancelled');
+  add(facts.providerCleanup === 'pending', 'provider_cleanup_pending');
+  add(infrastructure, 'infrastructure_failure');
+  add(evaluator, 'evaluator_failure');
+  add(facts.phaseEvidence?.some(stage => stage.status === 'unproven'), 'unproven_phase_constraint');
+  add(facts.missingCheckpoints?.length, 'missing_checkpoints');
+  add(facts.measurementErrors?.length || facts.measurements?.usageSource !== 'provider', 'incomplete_measurements');
+  add(facts.interventions?.some(item => item.receipt?.kind === 'rejected' || item.interrupted === false), 'ineffective_intervention');
+  add(facts.humanReview?.some(item => item.status !== 'passed'), 'pending_review');
+  add(facts.execution === 'incomplete' || facts.providerAdmissionClosedReason === 'usage_unavailable', 'incomplete_execution');
+  add(badProcess && !timeout && !cancelled, 'abnormal_application_exit');
+  add(facts.status === 'finished' && !facts.execution && !timeout && !cancelled && !badProcess, 'missing_execution');
+  add(facts.execution === 'completed' && !facts.process, 'missing_application_exit');
+  let outcome;
+  if (facts.status === 'not-started') outcome = 'not_run';
+  else if (cancelled) outcome = 'cancelled';
+  else if (timeout) outcome = 'timeout';
+  else if (facts.execution === 'budget_exhaustion' || facts.providerAdmissionClosedReason === 'request_limit') outcome = 'budget_exhaustion';
+  else if (wrong) outcome = 'incorrect_solution';
+  else if (infrastructure) outcome = 'infrastructure_failure';
+  else if (evaluator) outcome = 'evaluator_failure';
+  else if (facts.status !== 'finished') outcome = 'incomplete';
+  else if (facts.providerAdmissionClosedReason === 'usage_unavailable') outcome = 'incomplete';
+  else if (facts.execution && facts.execution !== 'completed') outcome = facts.execution;
+  else if (badProcess || facts.failurePhase === 'agent') outcome = 'agent_failure';
+  else if (incomplete || facts.phaseEvidence?.some(stage => stage.status === 'unproven') || !facts.execution || !facts.process) outcome = 'incomplete';
+  else if (facts.humanReview?.some(item => item.status !== 'passed')) outcome = 'pending_review';
+  else outcome = 'success';
+  add(outcome === 'incomplete', 'incomplete_attempt');
+  return { ...facts, outcome, qualification: { qualified: reasons.length === 0, reasons } };
+}
+
+export function comparisonStatus(attempts, cancelled = false) {
+  return cancelled || attempts.some(attempt => attempt.cancelled || attempt.process?.stopped === 'cancelled') ? 'cancelled'
+    : attempts.every(attempt => attempt.status === 'finished' && !attempt.cleanupErrors?.length && attempt.providerCleanup !== 'pending') ? 'finished' : 'incomplete';
+}
+
 export function pairedReport(attempts, builds) {
   const pairs = [];
-  const groups = Map.groupBy(attempts, attempt => `${attempt.task}:${attempt.repetition}`);
+  const groups = Map.groupBy(attempts.map(projectAttempt), attempt => `${attempt.task}:${attempt.repetition}`);
   for (const [id, values] of groups) {
     const a = values.find(value => value.build === builds[0].label);
     const b = values.find(value => value.build === builds[1].label);
-    const incomplete = !a || !b || [a, b].some(value =>
-      value.status !== 'finished' || value.measurementErrors?.length ||
-      value.measurements?.usageSource !== 'provider' ||
-      ['not_run', 'incomplete', 'pending_review', 'cancelled', 'infrastructure_failure', 'evaluator_failure'].includes(value.outcome));
+    const incomplete = !a || !b || !a.qualification.qualified || !b.qualification.qualified;
     const both = !incomplete && a.outcome === 'success' && b.outcome === 'success';
     const delta = field => both && a.measurements?.reported[field] != null && b.measurements?.reported[field] != null
       ? b.measurements.reported[field] - a.measurements.reported[field] : null;

@@ -1,6 +1,6 @@
 import { spawn, execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cp, lstat, mkdir, readFile, readdir, readlink, realpath, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, readlink, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -16,8 +16,12 @@ export async function readFrozen(value) {
   return bytes;
 }
 
+function invalidArtifact(message, cause) {
+  return Object.assign(new Error(message, { cause }), { code: 'INVALID_ARTIFACT' });
+}
+
 export async function inventory(root) {
-  const result = {};
+  const result = Object.create(null);
   async function visit(relative) {
     for (const name of (await readdir(path.join(root, relative))).sort()) {
       const file = path.posix.join(relative, name);
@@ -28,14 +32,20 @@ export async function inventory(root) {
         const target = await readlink(path.join(root, file));
         const resolved = path.resolve(root, path.dirname(file), target);
         if (path.isAbsolute(target) || !resolved.startsWith(path.resolve(root) + path.sep))
-          throw new Error(`Artifact symlink escapes its workspace: ${file}`);
+          throw invalidArtifact(`Artifact symlink escapes its workspace: ${file}`);
         // Lexical containment alone misses paths through another link followed
         // by "..". Reject dangling/cyclic links as well as resolved escapes.
-        const actual = await realpath(path.join(root, file));
+        let actual;
+        try { actual = await realpath(path.join(root, file)); }
+        catch (error) {
+          if (['ENOENT', 'ELOOP', 'ENOTDIR'].includes(error.code))
+            throw invalidArtifact(`Artifact symlink is dangling or cyclic: ${file}`, error);
+          throw error;
+        }
         if (!actual.startsWith(path.resolve(root) + path.sep))
-          throw new Error(`Artifact symlink resolves outside its workspace: ${file}`);
+          throw invalidArtifact(`Artifact symlink resolves outside its workspace: ${file}`);
         result[file] = { symlink: target };
-      } else throw new Error(`Unsupported special artifact: ${file}`);
+      } else throw invalidArtifact(`Unsupported special artifact: ${file}`);
     }
   }
   await visit('');
@@ -66,89 +76,6 @@ export async function unpack(frozen, destination) {
   await execute('tar', ['-xf', frozen.path, '--no-same-owner', '-C', destination]);
 }
 
-// Export only executable application packages and dependencies. Never mount the
-// source checkout, evaluator, Git object database, tests, credentials or HOME.
-export async function freezeBuild(agents, core, destination, { qualification = false } = {}) {
-  await mkdir(destination, { recursive: false });
-  const git = async (root, args) => (await execute('git', args, { cwd: root, maxBuffer: 32 * 1024 * 1024 })).stdout.trim();
-  const agentsRevision = await git(agents, ['rev-parse', 'HEAD']);
-  const coreRevision = await git(core, ['rev-parse', 'HEAD']);
-  const changes = { agents: await git(agents, ['diff', 'HEAD']), core: await git(core, ['diff', 'HEAD']) };
-  if (!qualification && (changes.agents || changes.core)) throw new Error('Diagnostic builds must have clean tracked source.');
-  const manifest = JSON.parse(await readFile(path.join(agents, 'package.json'), 'utf8'));
-  if (manifest.agentCore.commit !== coreRevision) throw new Error('Agents Core dependency pin does not match the build.');
-  const modules = path.join(destination, 'node_modules');
-  await mkdir(modules);
-  const visited = new Map();
-  async function copyPackage(packageRoot) {
-    packageRoot = await realpath(packageRoot);
-    const pkg = JSON.parse(await readFile(path.join(packageRoot, 'package.json'), 'utf8'));
-    if (visited.has(pkg.name)) {
-      if (visited.get(pkg.name) !== packageRoot)
-        throw new Error(`Build contains conflicting installations of ${pkg.name}; cannot flatten its dependency layout.`);
-      return;
-    }
-    visited.set(pkg.name, packageRoot);
-    const target = path.join(modules, pkg.name);
-    await mkdir(target, { recursive: true });
-    const own = pkg.name.startsWith('@agent-core/') || pkg.name === '@ismail-elkorchi/coding-agent';
-    if (pkg.name.startsWith('@agent-core/')) {
-      const name = pkg.name.slice('@agent-core/'.length);
-      const source = path.join(core, name.startsWith('provider-')
-        ? `packages/providers/${name.slice('provider-'.length)}` : `packages/${name}`);
-      const installed = await inventory(path.join(packageRoot, 'dist'));
-      const compiled = await inventory(path.join(source, 'dist'));
-      if (JSON.stringify(installed) !== JSON.stringify(compiled) ||
-          !(await readFile(path.join(packageRoot, 'package.json'))).equals(await readFile(path.join(source, 'package.json'))))
-        throw new Error(`Installed ${pkg.name} differs from the declared Core build; rebuild and reinstall dependencies.`);
-    }
-    if (own) {
-      await cp(path.join(packageRoot, 'dist'), path.join(target, 'dist'), { recursive: true, dereference: true });
-      await cp(path.join(packageRoot, 'package.json'), path.join(target, 'package.json'));
-    } else await cp(packageRoot, target, {
-      recursive: true, dereference: true,
-      filter: file => !['.git', 'node_modules'].includes(path.basename(file))
-    });
-    for (const name of Object.keys(pkg.dependencies ?? {})) {
-      let directory = packageRoot;
-      let resolved;
-      for (;;) {
-        try { resolved = await realpath(path.join(directory, 'node_modules', name)); break; }
-        catch (error) { if (error.code !== 'ENOENT') throw error; }
-        const parent = path.dirname(directory);
-        if (parent === directory) throw new Error(`Missing build dependency: ${name}`);
-        directory = parent;
-      }
-      await copyPackage(resolved);
-    }
-  }
-  await copyPackage(path.join(agents, 'coding-agent'));
-  const files = await inventory(destination);
-  const build = {
-    format: 'agents.build/1', agentsRevision, coreRevision,
-    dependencyPin: manifest.agentCore.commit, qualification,
-    releaseQualification: 'not-verified-by-export',
-    sourceDiffSha256: { agents: sha256(changes.agents), core: sha256(changes.core) },
-    ...await runtimeIdentity(),
-    files
-  };
-  // The pin binds attribution and runtime identity, not only executable bytes.
-  build.sha256 = sha256(JSON.stringify(build));
-  await writeFile(path.join(destination, 'build.json'), JSON.stringify(build, null, 2));
-  return build;
-}
-
-export async function verifyBuild(build) {
-  const recorded = JSON.parse(await readFile(path.join(build.directory, 'build.json'), 'utf8'));
-  const { sha256: digest, ...identity } = recorded;
-  const files = await inventory(build.directory);
-  delete files['build.json'];
-  if (recorded.format !== 'agents.build/1' || digest !== build.sha256 ||
-      sha256(JSON.stringify(identity)) !== build.sha256 ||
-      JSON.stringify(files) !== JSON.stringify(recorded.files))
-    throw new Error('Agent build content does not match its pinned digest.');
-  return recorded;
-}
 
 export function sandboxArgs({ workspace, build, state, socket, runner, checks, readOnly = false, cwd = '/work' }) {
   if (process.platform !== 'linux') throw new Error('Evaluation requires Linux bubblewrap; no host fallback.');

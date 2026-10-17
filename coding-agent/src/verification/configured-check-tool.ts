@@ -12,11 +12,12 @@ import {
   type CompiledToolDefinition
 } from '@agent-core/tools';
 import { fileScope, processScope, type RootedFileAuthority } from '@agent-core/tools-local';
-import type {
-  ArtifactRepository,
-  PublicArtifactRef,
-  EventRepository,
-  EventReference
+import {
+  validatePublicArtifactRef,
+  type ArtifactRepository,
+  type PublicArtifactRef,
+  type EventRepository,
+  type EventReference
 } from '@agent-core/persistence';
 import { resolveToolObservation, type AgentEvent } from '@agent-core/runtime';
 import { createHash } from 'node:crypto';
@@ -44,6 +45,7 @@ const definitionSchema = z
   })
   .readonly();
 const statusSchema = z.enum([
+  'running',
   'passed',
   'failed',
   'timed_out',
@@ -65,7 +67,7 @@ export const configuredCheckObservationSchema = z
   .strictObject({
     definition: definitionSchema,
     status: statusSchema,
-    processStatus: z.enum(['exited', 'stopped', 'timed_out', 'failed', 'unknown', 'not_started']),
+    processStatus: z.enum(['running', 'exited', 'stopped', 'timed_out', 'failed', 'unknown', 'not_started']),
     processId: z.string().optional(),
     owner: ownerSchema,
     executionIdentity: z.string().regex(/^[a-f0-9]{64}$/u),
@@ -74,7 +76,11 @@ export const configuredCheckObservationSchema = z
     diagnostic: z.string().optional(),
     output: z.string(),
     outputComplete: z.boolean(),
-    testedState: z.strictObject({ before: testedStateSchema, after: testedStateSchema }).readonly()
+    testedState: z.strictObject({
+      before: testedStateSchema,
+      after: testedStateSchema,
+      afterCapture: z.enum(['terminal', 'interrupted'])
+    }).readonly()
   })
   .readonly()
   .superRefine((value, context) => {
@@ -100,6 +106,7 @@ export interface ConfiguredCheckResult {
   readonly status: CheckObservation['status'] | 'not_run';
   readonly applicability: CheckApplicability;
   readonly receipt?: EventReference;
+  readonly settlementReceipt?: EventReference;
   readonly observation?: CheckObservation;
   readonly processStatus?: CheckObservation['processStatus'];
   readonly exitCode?: number | null;
@@ -250,7 +257,9 @@ async function readCheckResults(
   const checks: ConfiguredCheckResult[] = [];
   const captureBudget = testedStateCaptureBudget();
   const currentScopes = new Map<string, TestedState>();
-  for (const { observation, receipt, outputArtifacts } of index.observations) {
+  for (const recorded of index.observations) {
+    const { observation, receipt, outputArtifacts, settlementReceipt } =
+      await settleRecordedCheck(events, runId, recorded, tail.sequence);
     const scopeKey = JSON.stringify(observation.definition.testedPaths);
     let current = currentScopes.get(scopeKey);
     if (root && !current) {
@@ -264,12 +273,9 @@ async function readCheckResults(
         requirement: observation.definition.requirement,
         coverage: observation.definition.coverage,
         status: observation.status,
-        applicability: checkApplicability(
-          observation.testedState.before,
-          observation.testedState.after,
-          current
-        ),
+        applicability: configuredCheckApplicability(observation, current),
         receipt,
+        ...(settlementReceipt ? { settlementReceipt } : {}),
         observation,
         outputArtifacts,
         processStatus: observation.processStatus,
@@ -313,6 +319,73 @@ async function readCheckResults(
   });
 }
 
+const settlementDetailsSchema = z.object({
+  owner: ownerSchema,
+  status: z.enum(['exited', 'stopped', 'timed_out', 'failed']),
+  exitCode: z.number().int().nullable().optional(),
+  signal: z.string().nullable().optional(),
+  diagnostic: z.string().optional(),
+  artifact: z.unknown().optional()
+});
+
+/** Reconcile the original invocation against the existing durable process receipt.
+ * Never launch an effect or pretend that files read later were observed at exit. */
+async function settleRecordedCheck(
+  events: EventRepository<AgentEvent>,
+  runId: string,
+  recorded: RecordedCheck,
+  throughSequence: number
+): Promise<RecordedCheck & { readonly settlementReceipt?: EventReference }> {
+  const original = recorded.observation;
+  if (original.status !== 'running' || !original.processId) return recorded;
+  const settlementReceipt = await events.referenceByKey(
+    runId, `${runId}:command:${original.processId}:terminal`
+  );
+  if (!settlementReceipt) return recorded;
+  if (settlementReceipt.sequence > throughSequence) return recorded;
+  const { event } = await events.readReference(settlementReceipt);
+  if (event.type !== 'resource.released' || event.runId !== runId ||
+      event.resourceId !== original.processId ||
+      event.outcome !== 'released')
+    throw new Error('Configured-check settlement does not match its process.');
+  const details = settlementDetailsSchema.parse(event.details);
+  if (digest(details.owner) !== digest(original.owner))
+    throw new Error('Configured-check settlement does not match its invocation owner.');
+  if (details.artifact !== undefined) validatePublicArtifactRef(details.artifact);
+  const outputArtifacts = details.artifact === undefined
+    ? recorded.outputArtifacts : Object.freeze([details.artifact]);
+  return Object.freeze({
+    ...recorded,
+    settlementReceipt,
+    outputArtifacts,
+    observation: configuredCheckObservationSchema.parse({
+      ...original,
+      status: checkOutcome(details.status, details.exitCode),
+      processStatus: details.status,
+      exitCode: details.exitCode,
+      signal: details.signal,
+      diagnostic: details.diagnostic,
+      // The terminal receipt owns the final output artifact. The inline text is
+      // only the earlier observation, never the terminal output capture.
+      outputComplete: false,
+      testedState: { ...original.testedState, afterCapture: 'interrupted' }
+    })
+  });
+}
+
+function configuredCheckApplicability(
+  observation: CheckObservation,
+  current?: TestedState
+): CheckApplicability {
+  const applicability = checkApplicability(
+    observation.testedState.before, observation.testedState.after, current
+  );
+  return observation.testedState.afterCapture === 'terminal' ? applicability : Object.freeze({
+    status: applicability.status,
+    reasons: Object.freeze([...applicability.reasons, 'terminal_tested_state_not_observed'])
+  });
+}
+
 export function createConfiguredCheckTool(input: {
   readonly required: readonly CodingAgentCheckConfiguration[];
   readonly advisory: readonly CodingAgentCheckConfiguration[];
@@ -334,14 +407,14 @@ export function createConfiguredCheckTool(input: {
     name: 'run_check',
     implementationId: 'coding-agent.configured-check@1',
     description:
-      'Run an explicitly configured check. Its observed outcome is historical; applicability to current files is reported separately.',
+      'Start a new explicitly configured check. If a check is already running, use process tools to observe or stop its process handle rather than starting it again. Its observed outcome is historical; applicability to current files is reported separately.',
     promptGuide: `Available checks:\n${[...checks.values()].map((check) => `- ${check.id} (${check.requirement}, ${check.coverage}, timeout ${String(check.timeoutMs)}ms): ${check.command}`).join('\n')}`,
     schema: inputSchema,
     outputSchema: configuredCheckObservationSchema,
     buildModelContent({ observation }) {
       if (observation.kind !== 'result') return defaultToolModelContent(observation);
       const result = observation.output;
-      const applicability = checkApplicability(result.testedState.before, result.testedState.after);
+      const applicability = configuredCheckApplicability(result);
       return [
         {
           type: 'text',
@@ -390,11 +463,10 @@ export function createConfiguredCheckTool(input: {
     async bindExecution(check, context) {
       const reservation = await planCommandExecution(input.commandExecution, {
         command: check.definition.command,
-        mode: 'foreground',
         rootedDirectory: '.',
         pty: false,
         timeoutMs: check.definition.timeoutMs,
-        yieldMs: Math.min(check.definition.timeoutMs, 1000),
+        yieldMs: check.definition.timeoutMs,
         outputTokenBudget: 8192,
         owner: check.owner
       });
@@ -411,13 +483,28 @@ export function createConfiguredCheckTool(input: {
           try {
             const started = await startCommandExecutionPlan(input.commandExecution, reservation, {
               ...(executionContext.signal ? { signal: executionContext.signal } : {}),
+              ...(executionContext.observationSignal ? { observationSignal: executionContext.observationSignal } : {}),
               ...(executionContext.resourceLease ? { lease: executionContext.resourceLease } : {}),
               onProgress: (progress) => executionContext.emitProgress?.(progress)
             });
             if (started.kind === 'not_started') {
               notStarted = true;
               executionError = started.diagnostic;
-            } else result = started.result;
+            } else {
+              result = started.result;
+              let observedLater = false;
+              // A check normally waits for its terminal result. Steering releases
+              // observation waiting without cancelling or restarting the check.
+              while (result.status === 'running' && !executionContext.observationSignal?.aborted) {
+                observedLater = true;
+                result = await input.commandExecution.query(
+                  result.processId, 8192, check.definition.timeoutMs,
+                  result.cursorEnd, check.owner, executionContext.observationSignal
+                );
+              }
+              if (observedLater && result.status !== 'running')
+                result = await input.commandExecution.query(result.processId, 8192, 0, 0, check.owner);
+            }
           } catch (error) {
             executionError = error instanceof Error ? error.message : String(error);
           }
@@ -429,12 +516,12 @@ export function createConfiguredCheckTool(input: {
             result.combined.endsAtOutputEnd &&
             result.combined.omittedBytes === 0;
           const processStatus =
-            notStarted ? ('not_started' as const) : !result || result.status === 'running' ? ('unknown' as const) : result.status;
+            notStarted ? ('not_started' as const) : !result ? ('unknown' as const) : result.status;
           const status = checkOutcome(processStatus, result?.exitCode);
           return {
             kind: 'result' as const,
             execution: {
-              state: notStarted ? ('not_started' as const) : processStatus === 'unknown' ? ('unknown' as const) : ('settled' as const)
+              state: notStarted ? ('not_started' as const) : processStatus === 'running' ? ('active' as const) : processStatus === 'unknown' ? ('unknown' as const) : ('settled' as const)
             },
             summary: `Configured check ${check.definition.id} ${status}.`,
             scope: {
@@ -459,7 +546,7 @@ export function createConfiguredCheckTool(input: {
                 : { diagnostic: executionError ?? result?.diagnostic }),
               output: result ? renderCommandOutput(result.combined) : '',
               outputComplete,
-              testedState: { before, after }
+              testedState: { before, after, afterCapture: processStatus === 'running' || processStatus === 'unknown' ? 'interrupted' as const : 'terminal' as const }
             }
           };
         }
@@ -496,6 +583,7 @@ function checkOutcome(
   exitCode?: number | null
 ): CheckObservation['status'] {
   if (status === 'not_started') return 'not_started';
+  if (status === 'running') return 'running';
   if (status === 'unknown') return 'unknown';
   if (status === 'timed_out') return 'timed_out';
   if (status === 'stopped') return 'cancelled';

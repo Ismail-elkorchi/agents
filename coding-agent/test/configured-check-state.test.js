@@ -42,7 +42,7 @@ async function fixture(t) {
   });
   return { root, directory };
 }
-function executor({ exitCode = 0, status = 'exited', incomplete = false, effect, refusal } = {}) {
+function executor({ exitCode = 0, status = 'exited', incomplete = false, effect, refusal, query } = {}) {
   const calls = [];
   const output = {
     segments: ['diagnostic'],
@@ -61,7 +61,8 @@ function executor({ exitCode = 0, status = 'exited', incomplete = false, effect,
     }),
     resourceLeases: new ResourceLeaseCoordinator(),
     async plan(request) {
-      assert.equal(request.mode, 'foreground', 'checks run to a terminal outcome');
+      assert.equal('mode' in request, false);
+      assert.equal(request.yieldMs, request.timeoutMs, 'check waiting uses its admitted lifetime');
       calls.push(['plan', request]);
       return createCommandExecutionReservation(
         { command: request.command, timeoutMs: request.timeoutMs },
@@ -85,7 +86,8 @@ function executor({ exitCode = 0, status = 'exited', incomplete = false, effect,
       } };
     },
     async listProcesses() { return []; },
-    async query() {
+    async query(...args) {
+      if (query) return query(...args);
       throw new Error('unexpected query');
     },
     async terminate() {
@@ -119,7 +121,8 @@ async function run(
     command: 'original',
     coverage: 'targeted',
     testedPaths: ['dirty.txt', 'untracked.txt']
-  }
+  },
+  executionContext = context
 ) {
   const tool = createConfiguredCheckTool({
     required: [check],
@@ -133,7 +136,7 @@ async function run(
     ...context,
     lifetime: { own: async (resource) => owned.push(resource) }
   });
-  const observation = await binding.invoke(context);
+  const observation = await binding.invoke(executionContext);
   for (const resource of owned) await resource.release();
   return { tool, binding, observation, input };
 }
@@ -153,6 +156,50 @@ async function record(events, observation) {
     }
   });
 }
+
+test('steering returns an active configured check without restarting or cancelling it',
+  { skip: process.platform !== 'linux' }, async (t) => {
+    const { root } = await fixture(t);
+    const steering = new AbortController();
+    const execution = executor({ status: 'running', exitCode: null,
+      effect: () => steering.abort() });
+    const { observation } = await run(root, execution, undefined,
+      { ...context, observationSignal: steering.signal });
+    assert.equal(observation.execution.state, 'active');
+    assert.equal(observation.output.status, 'running');
+    assert.equal(observation.output.processStatus, 'running');
+    assert.equal(observation.output.processId, 'process-1');
+    assert.equal(execution.calls.filter(([name]) => name === 'start').length, 1);
+    assert(configuredCheckObservationSchema.safeParse(observation.output).success);
+  });
+
+test('configured checks wait through output observations and retain the complete final output',
+  { skip: process.platform !== 'linux' }, async (t) => {
+    const { root } = await fixture(t);
+    const steering = new AbortController();
+    const queries = [];
+    const execution = executor({ status: 'running', exitCode: null,
+      query: async (processId, _budget, wait, cursor, requester, observationSignal) => {
+        queries.push({ wait, cursor });
+        assert.equal(processId, 'process-1');
+        assert.deepEqual(requester, owner);
+        if (wait > 0) assert.equal(observationSignal, steering.signal);
+        const combined = { segments: [cursor === 0 ? 'diagnostic finished' : ' finished'],
+          observedBytes: 19, capturedBytes: cursor === 0 ? 19 : 9,
+          omittedBytes: cursor, startsAtOutputStart: cursor === 0, endsAtOutputEnd: true };
+        return { processId, owner, status: 'exited', exitCode: 0,
+          cursorStart: cursor, cursorEnd: 19, stdout: combined, stderr: combined, combined };
+      }
+    });
+    const { observation } = await run(root, execution, undefined,
+      { ...context, observationSignal: steering.signal });
+    assert.equal(observation.output.status, 'passed');
+    assert.equal(observation.execution.state, 'settled');
+    assert.equal(observation.output.outputComplete, true);
+    assert.match(observation.output.output, /diagnostic finished/);
+    assert.deepEqual(queries, [{ wait: 60000, cursor: 10 }, { wait: 0, cursor: 0 }]);
+    assert.equal(execution.calls.filter(([name]) => name === 'start').length, 1);
+  });
 
 for (const [processStatus, exitCode, status] of [
   ['exited', 0, 'passed'],
@@ -541,3 +588,102 @@ test('a refused check dispatch records not_started without claiming an unknown e
   assert.equal(observation.output.status, 'not_started');
   assert.equal(observation.output.processStatus, 'not_started');
 });
+
+for (const [processStatus, exitCode, expected] of [
+  ['exited', 0, 'passed'], ['exited', 3, 'failed'],
+  ['stopped', null, 'cancelled'], ['failed', null, 'execution_failed'],
+  ['timed_out', null, 'timed_out']
+]) {
+  test(`an interrupted check joins its durable ${expected} receipt without another launch`,
+    { skip: process.platform !== 'linux' }, async (t) => {
+      const { root, directory } = await fixture(t);
+      await writeFile(path.join(directory, 'dirty.txt'), 'before');
+      const steering = new AbortController();
+      const execution = executor({ status: 'running', exitCode: null,
+        effect: () => steering.abort() });
+      const { observation } = await run(root, execution, undefined,
+        { ...context, observationSignal: steering.signal });
+      const events = repository();
+      const originalReceipt = await record(events, observation);
+      let report = await readConfiguredCheckResults(events, owner.runId, undefined, root);
+      assert.equal(report.checks[0].status, 'running');
+      const terminal = await events.append(owner.runId, {
+        type: 'resource.released', runId: owner.runId, resourceId: 'process-1',
+        outcome: 'released', details: { owner, status: processStatus, exitCode, signal: null }
+      }, { idempotencyKey: `${owner.runId}:command:process-1:terminal` });
+      report = await readConfiguredCheckResults(events, owner.runId, undefined, root);
+      const check = report.checks[0];
+      assert.equal(check.status, expected);
+      assert.equal(check.receipt.hash, originalReceipt.hash);
+      assert.equal(check.settlementReceipt.hash, terminal.hash);
+      assert.deepEqual(check.observation.testedState.before, observation.output.testedState.before);
+      assert.equal(check.observation.testedState.afterCapture, 'interrupted');
+      assert.equal(check.applicability.status, 'unknown');
+      assert(check.applicability.reasons.includes('terminal_tested_state_not_observed'));
+      assert.equal(check.outputComplete, false);
+      assert.equal(execution.calls.filter(([name]) => name === 'start').length, 1);
+      await writeFile(path.join(directory, 'dirty.txt'), 'later mutation');
+      report = await readConfiguredCheckResults(events, owner.runId, undefined, root);
+      assert.equal(report.checks[0].applicability.status, 'stale');
+      assert.deepEqual(report.checks[0].observation.testedState, check.observation.testedState);
+      // A fresh repository facade forces a full index replay of durable sources.
+      const replay = new Proxy(events, { get(target, property) {
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      } });
+      const replayed = await readConfiguredCheckResults(replay, owner.runId, undefined, root);
+      assert.deepEqual(replayed.checks, report.checks);
+    });
+}
+
+test('a terminal receipt from another invocation cannot settle a configured check',
+  { skip: process.platform !== 'linux' }, async (t) => {
+    const { root } = await fixture(t);
+    const steering = new AbortController();
+    const execution = executor({ status: 'running', exitCode: null,
+      effect: () => steering.abort() });
+    const { observation } = await run(root, execution, undefined,
+      { ...context, observationSignal: steering.signal });
+    const events = repository();
+    await record(events, observation);
+    await events.append(owner.runId, {
+      type: 'resource.released', runId: owner.runId, resourceId: 'process-1',
+      outcome: 'released', details: {
+        owner: { ...owner, callIndex: 1 }, status: 'exited', exitCode: 0
+      }
+    }, { idempotencyKey: `${owner.runId}:command:process-1:terminal` });
+    await assert.rejects(readConfiguredCheckResults(events, owner.runId, undefined, root),
+      /invocation owner/);
+  });
+
+test('verification retains its captured history boundary when a check settles during reading',
+  { skip: process.platform !== 'linux' }, async (t) => {
+    const { root } = await fixture(t);
+    const steering = new AbortController();
+    const execution = executor({ status: 'running', exitCode: null,
+      effect: () => steering.abort() });
+    const { observation } = await run(root, execution, undefined,
+      { ...context, observationSignal: steering.signal });
+    const events = repository();
+    await record(events, observation);
+    let appended = false;
+    const racing = new Proxy(events, { get(target, property) {
+      if (property === 'referenceByKey') return async (...args) => {
+        if (!appended) {
+          appended = true;
+          await target.append(owner.runId, {
+            type: 'resource.released', runId: owner.runId, resourceId: 'process-1',
+            outcome: 'released', details: { owner, status: 'exited', exitCode: 0 }
+          }, { idempotencyKey: `${owner.runId}:command:process-1:terminal` });
+        }
+        return target.referenceByKey(...args);
+      };
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+    assert.equal((await readConfiguredCheckResults(racing, owner.runId, undefined, root)).checks[0].status, 'running');
+    const settled = await readConfiguredCheckResults(racing, owner.runId, undefined, root);
+    assert.equal(settled.checks[0].status, 'passed');
+    assert(settled.checks[0].settlementReceipt.sequence <= settled.history.nextSequence);
+    assert.equal(execution.calls.filter(([name]) => name === 'start').length, 1);
+  });
