@@ -1,4 +1,4 @@
-import { cp, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile, chmod } from 'node:fs/promises';
+import { cp, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile, chmod, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { execute, inventory, runtimeIdentity, sha256 } from './evaluation-isolation.mjs';
@@ -124,41 +124,9 @@ export async function freezeBuild(agents, core, destination, { qualification = f
     }
     const modules = path.join(destination, 'node_modules');
     const packs = path.join(temporary, 'packs');
-    await mkdir(modules); await mkdir(packs);
-    const visited = new Map();
-    const packages = {};
-    await mkdir(path.join(evidence, 'packs'));
-    async function copyPackage(packageRoot) {
-      packageRoot = await realpath(packageRoot);
-      const pkg = JSON.parse(await readFile(path.join(packageRoot, 'package.json'), 'utf8'));
-      if (visited.has(pkg.name)) {
-        if (visited.get(pkg.name) !== packageRoot) throw new Error(`Conflicting installations of ${pkg.name}.`);
-        return;
-      }
-      visited.set(pkg.name, packageRoot);
-      const target = path.join(modules, pkg.name);
-      await mkdir(target, { recursive: true });
-      if (pkg.name.startsWith('@agent-core/') || pkg.name === '@ismail-elkorchi/coding-agent') {
-        const dependencies = await packPackages([packageRoot], packs, npmCli, env);
-        const archive = dependencies[pkg.name].slice(5);
-        packages[pkg.name] = { version: pkg.version, archive: path.basename(archive), archiveSha256: sha256(await readFile(archive)) };
-        await cp(archive, path.join(evidence, 'packs', path.basename(archive)));
-        await execute('tar', ['-xf', archive, '--strip-components=1', '-C', target]);
-      } else await cp(packageRoot, target, { recursive: true, dereference: true, filter: file => !['.git', 'node_modules'].includes(path.basename(file)) });
-      for (const name of Object.keys(pkg.dependencies ?? {})) {
-        let directory = packageRoot, resolved;
-        for (;;) {
-          try { resolved = await realpath(path.join(directory, 'node_modules', name)); break; }
-          catch (error) { if (error.code !== 'ENOENT') throw error; }
-          const parent = path.dirname(directory);
-          if (parent === directory) throw new Error(`Missing build dependency: ${name}`);
-          directory = parent;
-        }
-        await copyPackage(resolved);
-      }
-    }
-    await copyPackage(path.join(sourceAgents, 'coding-agent'));
-    const build = { format: 'agents.build/2', agentsRevision: sources.agents.revision, coreRevision: sources.core.revision,
+    const packages = await copyRuntimeDependencyClosure({ entry: path.join(sourceAgents, 'coding-agent'),
+      sourceRoots: { agents: sourceAgents, core: sourceCore }, modules, packs, evidence, npmCli, env });
+    const build = { format: 'agents.build/3', agentsRevision: sources.agents.revision, coreRevision: sources.core.revision,
       dependencyPin: manifest.agentCore.commit, qualification, releaseQualification: 'not-verified-by-preparation',
       sourceBuild: { status: 'built-from-snapshots', preparation, sources, locks, toolchain, packages, pipeline: receipt.steps.map(({ name, argv, status }) => ({ name, argv, status })) },
       ...await runtimeIdentity(), files: await inventory(destination) };
@@ -183,14 +151,96 @@ export async function freezeBuild(agents, core, destination, { qualification = f
   }
 }
 
+/** Retain each physical module instance once and bind every dependency to its exact resolution. */
+export async function copyRuntimeDependencyClosure({ entry, sourceRoots, modules, packs, evidence, npmCli, env = process.env }) {
+  if (process.platform !== 'linux') throw new Error('Evaluation dependency preparation requires the Linux runner.');
+  const roots = await Promise.all(Object.entries(sourceRoots).map(async ([name, root]) => [name, await realpath(root)]));
+  await mkdir(modules); await mkdir(packs, { recursive: true });
+  await mkdir(path.join(evidence, 'packs'), { recursive: true });
+  const instances = new Map();
+  const packages = {};
+  function sourceIdentity(root) {
+    for (const [name, directory] of roots) {
+      const relative = path.relative(directory, root);
+      if (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+        return `${name}/${relative.split(path.sep).join('/')}`;
+    }
+    throw new Error(`Runtime dependency resolves outside prepared source roots: ${root}`);
+  }
+  async function link(directory, name, target) {
+    if (!/^(?:@[a-z0-9._~-]+\/)?[a-z0-9._~-]+$/iu.test(name) || name === '.' || name === '..')
+      throw new Error(`Invalid runtime package name: ${name}`);
+    const destination = path.join(directory, name);
+    await mkdir(path.dirname(destination), { recursive: true });
+    await symlink(path.relative(path.dirname(destination), target), destination);
+  }
+  async function resolveDependency(packageRoot, name, optional) {
+    let directory = packageRoot;
+    for (;;) {
+      // Node skips an ancestor named node_modules rather than searching
+      // node_modules/node_modules, which would create a different resolution.
+      if (path.basename(directory) !== 'node_modules') {
+        try { return await realpath(path.join(directory, 'node_modules', name)); }
+        catch (error) { if (error.code !== 'ENOENT') throw error; }
+      }
+      const parent = path.dirname(directory);
+      if (parent === directory) {
+        if (optional) return undefined;
+        throw new Error(`Missing build dependency: ${name}`);
+      }
+      directory = parent;
+    }
+  }
+  async function copyPackage(packageRoot) {
+    packageRoot = await realpath(packageRoot);
+    const existing = instances.get(packageRoot);
+    if (existing) return existing;
+    const source = sourceIdentity(packageRoot);
+    const id = sha256(source);
+    const pkg = JSON.parse(await readFile(path.join(packageRoot, 'package.json'), 'utf8'));
+    const target = path.join(modules, '.packages', id);
+    const instance = { name: pkg.name, target, dependencies: [] };
+    instances.set(packageRoot, instance);
+    await mkdir(target, { recursive: true });
+    if (pkg.name.startsWith('@agent-core/') || pkg.name === '@ismail-elkorchi/coding-agent') {
+      const packagePacks = path.join(packs, id);
+      await mkdir(packagePacks);
+      const dependencies = await packPackages([packageRoot], packagePacks, npmCli, env);
+      const archive = dependencies[pkg.name].slice(5);
+      const archiveName = `${id}-${path.basename(archive)}`;
+      packages[source] = { name: pkg.name, version: pkg.version, archive: archiveName, archiveSha256: sha256(await readFile(archive)) };
+      await cp(archive, path.join(evidence, 'packs', archiveName));
+      await execute('tar', ['-xf', archive, '--strip-components=1', '-C', target]);
+    } else await cp(packageRoot, target, { recursive: true, dereference: true,
+      filter: file => !['.git', 'node_modules'].includes(path.basename(file)) });
+    const dependencies = { ...pkg.peerDependencies, ...pkg.dependencies, ...pkg.optionalDependencies };
+    for (const name of Object.keys(dependencies).sort()) {
+      const optional = Object.hasOwn(pkg.optionalDependencies ?? {}, name) ||
+        (!Object.hasOwn(pkg.dependencies ?? {}, name) && pkg.peerDependenciesMeta?.[name]?.optional === true);
+      const resolved = await resolveDependency(packageRoot, name, optional);
+      if (!resolved) continue;
+      const dependency = await copyPackage(resolved);
+      await link(path.join(target, 'node_modules'), name, dependency.target);
+      instance.dependencies.push([name, dependency]);
+    }
+    return instance;
+  }
+  const root = await copyPackage(entry);
+  await link(modules, root.name, root.target);
+  for (const [name, dependency] of root.dependencies)
+    if (name !== root.name) await link(modules, name, dependency.target);
+  return packages;
+}
+
 // This checks frozen content integrity. Source-build proof comes from preparation,
 // not from merely hashing an arbitrary existing installation.
 export async function verifyBuild(build) {
   const recorded = JSON.parse(await readFile(path.join(build.directory, 'build.json'), 'utf8'));
+  if (recorded.format !== 'agents.build/3') throw new Error(`Unsupported frozen build format: ${recorded.format}.`);
   const { sha256: digest, ...identity } = recorded;
   const files = await inventory(build.directory);
   delete files['build.json'];
-  if (recorded.format !== 'agents.build/2' || recorded.sourceBuild?.status !== 'built-from-snapshots' || digest !== build.sha256 ||
+  if (recorded.sourceBuild?.status !== 'built-from-snapshots' || digest !== build.sha256 ||
       sha256(JSON.stringify(identity)) !== build.sha256 || JSON.stringify(files) !== JSON.stringify(recorded.files))
     throw new Error('Agent build content does not match its pinned digest.');
   return recorded;

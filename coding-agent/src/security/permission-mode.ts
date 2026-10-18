@@ -9,7 +9,7 @@ export interface CodingAuthority {
     readonly workspaceRead: 'root_bound';
     readonly workspaceWrite: 'denied' | 'structured';
     readonly commandExecution: 'denied' | 'host';
-    readonly network: 'denied' | 'host';
+    readonly network: 'denied' | 'configured_tools' | 'host';
     readonly hostEscape: 'denied' | 'allowed';
     readonly tools: readonly string[];
   };
@@ -36,6 +36,7 @@ export function resolveCodingAuthority(input: {
   readonly requestedMode: CodingPermissionMode;
   readonly enabledTools?: readonly string[];
   readonly hasVerificationChecks: boolean;
+  readonly configuredNetworkTools?: boolean;
 }): CodingAuthority {
   const mode = input.requestedMode;
   const available = mode === 'read_only' ? READ_TOOLS : WORK_TOOLS;
@@ -54,7 +55,7 @@ export function resolveCodingAuthority(input: {
       workspaceRead: 'root_bound',
       workspaceWrite: mode === 'read_only' ? 'denied' : 'structured',
       commandExecution: mode === 'read_only' ? 'denied' : 'host',
-      network: mode === 'full_host' ? 'host' : 'denied',
+      network: mode === 'full_host' ? 'host' : input.configuredNetworkTools ? 'configured_tools' : 'denied',
       hostEscape: mode === 'full_host' ? 'allowed' : 'denied',
       tools: Object.freeze([...enabledTools, ...(verificationCommands ? ['run_check'] : [])])
     })

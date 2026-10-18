@@ -179,3 +179,16 @@ exposure, and remaining allowance. `configuration.set` selects a model; it does
 not grant a new owner budget.
 
 Recovered command context is a bounded read-only pending-handoff projection. `resource_reports_read` paginates pending reports or reads committed releases by original run ID from the canonical event ledger. Reads remain session/branch-scoped, including inherited branch cutoffs, and exclude protected output references. A successful acknowledgement removes the pending view while the committed release remains retrievable.
+
+## Optional tool capabilities
+
+The CLI, RPC application and TUI share the same session tool configuration:
+
+- `--programmatic-tools '{}'` enables the isolated portable JavaScript runner. The JSON object overrides validated compute, memory, output and call limits. Programs call qualified tools through the ordinary authorization and effect executor; they receive durable structured receipts. Interrupted code is not automatically replayed.
+- `--native-tools '{"programmatic":true,"discovery":true}'` selects provider-native tool exposure explicitly. The actual endpoint/model must support the requested features. Native and portable programmatic execution cannot both be selected.
+- `--web-tools '{"policy":{"id":"public-research-v1"}}'` enables bounded public-HTTPS source retrieval. Add `search:{"provider":"brave","credentialEnvironmentVariable":"BRAVE_SEARCH_API_KEY"}` for search. Credentials are read by the host, never supplied as tool arguments. Returned redirects require a separately authorized fetch.
+- `--mcp-tools '{"servers":[]}'` configures optional MCP sources. Each server requires its host-assigned identity, endpoint, account and policy revision, and explicit per-tool effects. See `@agent-core/tools-mcp` for the bounded configuration contract. Discovery does not grant execution authority.
+
+The corresponding application options are `programmaticTools`, `nativeToolExposure`, `webTools` and `mcpTools`. With none supplied, existing local-only tool behavior is preserved. Workspace edit/review permissions remain independent of optional network configuration. Source captures retain original bytes and identify any derived text separately.
+
+Read-only mode still forbids workspace mutations and command execution. Explicit web/MCP configuration grants only those bounded tool connections; inspection reports `network: configured_tools`. Without that configuration it reports `network: denied`. This never grants a shell or ambient host network access.

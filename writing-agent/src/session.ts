@@ -1,3 +1,14 @@
+import type { NativeToolExposure } from '@agent-core/runtime';
+import { resolveRuntimeToolCatalog, SessionToolCatalogSelectionStore } from '@agent-core/runtime';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { createProgrammaticTool } from '@agent-core/tools-programmatic';
+import { createQuickJSProgramRunner } from '@agent-core/tools-programmatic/node';
+import { createConfiguredWebTools } from '@agent-core/tools-web/node';
+import { createConfiguredMcpSources, type ConfiguredMcpSources } from '@agent-core/tools-mcp/node';
+import { ToolCatalog } from '@agent-core/tools';
+import type { ProgramLimits } from '@agent-core/tools-programmatic';
+import type { WebConfiguration } from '@agent-core/tools-web';
+import type { NodeMcpConfiguration } from '@agent-core/tools-mcp/node';
 import { RequestTokenEstimator, type ModelProvider } from '@agent-core/model';
 import { hashJson } from '@agent-core/persistence';
 import { JsonlEventRepository, LocalArtifactRepository } from '@agent-core/persistence/node';
@@ -43,6 +54,10 @@ export interface WritingConfiguration extends Omit<AgentSessionConfiguration, 'p
   readonly contextPolicy?: ContextResourcePolicy;
   readonly contextControlPolicy?: Partial<ContextControlPolicy>;
   readonly outputReservationPolicy?: OutputReservationPolicy;
+  readonly programmaticTools?: Partial<ProgramLimits>;
+  readonly nativeToolExposure?: NativeToolExposure;
+  readonly webTools?: WebConfiguration;
+  readonly mcpTools?: NodeMcpConfiguration;
   readonly maxOutputTokens?: number;
 }
 
@@ -80,6 +95,24 @@ export function createWritingSession(
     rootDir: path.join(workspace.stateDirectory, 'artifacts')
   });
 
+  if (configuration.programmaticTools && configuration.nativeToolExposure?.programmatic) throw new Error('Choose either portable or provider-native programmatic execution.');
+  const programRunner = configuration.programmaticTools ? createQuickJSProgramRunner({ limits: configuration.programmaticTools }) : undefined;
+  const configuredMcp = new Map<WritingMode, ConfiguredMcpSources>();
+  function mcpForMode(mode: WritingMode): ConfiguredMcpSources | undefined {
+    if (!configuration.mcpTools) return undefined;
+    let source = configuredMcp.get(mode);
+    if (!source) {
+      source = createConfiguredMcpSources(configuration.mcpTools, { artifacts,
+        allowedRisks: mode === 'review' ? ['read', 'network'] : ['read', 'write', 'network'] });
+      configuredMcp.set(mode, source);
+    }
+    return source;
+  }
+  const programTool = programRunner ? createProgrammaticTool({ limits: configuration.programmaticTools ?? {} }) : undefined;
+  const additionalTools = Object.freeze([
+    ...(programTool ? [programTool] : []),
+    ...(configuration.webTools ? createConfiguredWebTools(configuration.webTools, { artifacts }) : [])
+  ]);
   const history = new HistoryReader({
     repository: sessions,
     session: descriptor,
@@ -101,16 +134,22 @@ export function createWritingSession(
   });
   const ownerId = `writing-session:${descriptor.id}`;
   const hosts = new Set<ReturnType<typeof createLocalToolHost>>();
-  let inspectionMode: WritingMode = 'edit';
+  const inspectionMode = new AsyncLocalStorage<WritingMode>();
   const context: ContextService = new ContextService({
     inspectOperational: async (page = {}) => {
+      const mode = inspectionMode.getStore() ?? 'edit';
+      const modeMcp = mcpForMode(mode);
       const resolved = await providerBinding.resolve(agent.state().configuration);
-      const tools = [...describeLocalToolCatalog({ enabledTools: inspectionMode === 'edit'
+      const tools = [...describeLocalToolCatalog({ enabledTools: mode === 'edit'
         ? [...readTools, 'apply_patch', 'edit_text'] : readTools, artifactReadMaxBytes: 2_000_000 }),
-        ...createWritingDocumentTools(workspace.root, artifacts), ...sessionTools];
-      const catalog = resolveEffectiveToolCatalog({ bindingId: resolved.bindingId, tools, policy: toolPolicy,
+        ...createWritingDocumentTools(workspace.root, artifacts), ...sessionTools, ...additionalTools];
+      const configuredCatalog = new ToolCatalog({ tools, selectionStore: new SessionToolCatalogSelectionStore(sessions, descriptor), ...(modeMcp ? { sources: modeMcp.sources } : {}) });
+      const catalog = resolveEffectiveToolCatalog({ bindingId: resolved.bindingId,
+        programmaticRunner: programRunner !== undefined, modelProfile: resolved.profile,
+        ...(configuration.nativeToolExposure ? { nativeToolExposure: configuration.nativeToolExposure } : {}),
+        ...(programTool ? { eagerTool: programTool } : {}), tools: await resolveRuntimeToolCatalog(configuredCatalog), policy: toolPolicy,
         host: { services: { rootedFileAuthority: workspace.root, artifactRepository: artifacts,
-          rootedFileSelector: true, localToolConfiguration: true, ...(inspectionMode === 'edit' ? { patchJournal: true } : {}) },
+          rootedFileSelector: true, localToolConfiguration: true, ...(programRunner ? { programExecution: true } : {}), ...(mode === 'edit' ? { patchJournal: true } : {}) },
           modelInputModalities: resolved.profile.modalities.input, hostCapabilities: [] } });
       const contextAdmission = context.admittedCapabilities();
       return inspectSessionOperational({ configured: catalog.snapshot, profile: resolved.profile,
@@ -138,7 +177,7 @@ export function createWritingSession(
     ...context.toolDefinitions()
   ];
   const sessionToolNames = new Set(sessionTools.map(tool => tool.name));
-  const toolPolicy = { allowedRisks: ['read', 'write'] as const };
+  const toolPolicy = { allowedRisks: ['read', 'write', ...(configuration.webTools || configuration.mcpTools ? ['network' as const] : [])] as const };
   function createHost(root: WritingWorkspace['root'], mode: WritingMode, patchJournal?: TextPatchJournal) {
     return createLocalToolHost({
       artifactReadMaxBytes: 2_000_000,
@@ -149,7 +188,7 @@ export function createWritingSession(
     });
   }
   function composedTools(host: ReturnType<typeof createLocalToolHost>) {
-    return [...host.tools, ...createWritingDocumentTools(host.services.rootedFileAuthority, artifacts), ...sessionTools];
+    return [...host.tools, ...createWritingDocumentTools(host.services.rootedFileAuthority, artifacts), ...sessionTools, ...additionalTools];
   }
   const agent: AgentSession = new AgentSession({
     descriptor,
@@ -193,6 +232,7 @@ export function createWritingSession(
       try {
         await host.ready();
         const tools = composedTools(host);
+        const modeMcp = mcpForMode(mode);
         const contextItems = workspaceContext(workspace, mode);
         const runtime = new AgentRuntime({
           provider: providerBinding.provider,
@@ -215,15 +255,20 @@ export function createWritingSession(
             authorizationPolicyId: `writing-agent/${mode}`,
             executionTargetId: hashJson(workspace.binding)
           },
-          tools,
+          toolCatalog: new ToolCatalog({ tools, selectionStore: new SessionToolCatalogSelectionStore(sessions, descriptor), ...(modeMcp ? { sources: modeMcp.sources } : {}) }),
+          ...(programRunner ? { programRunner } : {}),
+          ...(configuration.nativeToolExposure ? { nativeToolExposure: configuration.nativeToolExposure } : {}),
           toolContext: { services: host.services },
           // Review excludes workspace mutations; session state still needs their session-bound write capability.
           toolPolicy,
-          toolAuthorizer: async request => sessionToolNames.has(request.call.name)
-            ? authorizeSessionToolEffects(request, { sessionId: descriptor.id, branchId: (await history.capture()).branchId,
-                artifacts: host.services.artifactRepository,
-                allowArtifactRead: host.tools.some(tool => tool.name === 'read_artifact') })
-            : Promise.resolve({ decision: 'allow', reason: 'Tools are bound to the selected workspace mode.' }),
+          toolAuthorizer: async request => {
+            if (sessionToolNames.has(request.call.name)) return authorizeSessionToolEffects(request,
+              { sessionId: descriptor.id, branchId: (await history.capture()).branchId,
+                artifacts: host.services.artifactRepository, allowArtifactRead: host.tools.some(tool => tool.name === 'read_artifact') });
+            if (mode === 'review' && request.effects.accesses.some(access => access.mode === 'write' || access.mode === 'delete' || access.mode === 'execute'))
+              return { decision: 'deny', reason: 'Review mode does not permit external mutations or execution.' };
+            return { decision: 'allow', reason: 'Tools are bound to the selected workspace mode.' };
+          },
           instructions,
           contextItems,
           ...(configuration.limits === undefined ? {} : { limits: configuration.limits }),
@@ -259,9 +304,8 @@ export function createWritingSession(
     sessions,
     context,
     async inspectContext(mode: WritingMode, page?: ContextOperationalInspectionPage) {
-      inspectionMode = mode;
       return {
-        ...(await context.inspect(undefined, undefined, page)),
+        ...(await inspectionMode.run(mode, () => context.inspect(undefined, undefined, page))),
         suspension: agent.inspectSuspension(),
         available: { instructions, resources: workspaceContext(workspace, mode) }
       };
@@ -274,6 +318,8 @@ export function createWritingSession(
         failures.push(error);
       }
       const results = await Promise.allSettled([...hosts].map((host) => host.close()));
+      const sourceResults = await Promise.allSettled([...configuredMcp.values()].map(source => source.close()));
+      for (const result of sourceResults) if (result.status === 'rejected') failures.push(result.reason);
       for (const result of results) if (result.status === 'rejected') failures.push(result.reason);
       if (failures.length > 0)
         throw new AggregateError(failures, 'Writing resources could not be closed.');

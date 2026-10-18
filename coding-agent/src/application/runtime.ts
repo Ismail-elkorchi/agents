@@ -1,3 +1,7 @@
+import type { NativeToolExposure } from '@agent-core/runtime';
+import type { ProgramLimits } from '@agent-core/tools-programmatic';
+import type { WebConfiguration } from '@agent-core/tools-web';
+import type { NodeMcpConfiguration } from '@agent-core/tools-mcp/node';
 import {
   parseModelReasoningRequest,
   type ModelProvider,
@@ -51,6 +55,10 @@ export interface CodingApplicationOptions {
   contextPolicy?: ContextResourcePolicy;
   contextControlPolicy?: Partial<ContextControlPolicy>;
   outputReservationPolicy?: OutputReservationPolicy;
+  programmaticTools?: Partial<ProgramLimits>;
+  nativeToolExposure?: NativeToolExposure;
+  webTools?: WebConfiguration;
+  mcpTools?: NodeMcpConfiguration;
   permissionMode: CodingPermissionMode;
   sessionSelection: SessionSelection;
   branch?: string;
@@ -299,6 +307,10 @@ export async function createRuntime(
     ...(options.contextPolicy === undefined ? {} : { contextPolicy: options.contextPolicy }),
     ...(options.contextControlPolicy === undefined ? {} : { contextControlPolicy: options.contextControlPolicy }),
     ...(options.outputReservationPolicy === undefined ? {} : { outputReservationPolicy: options.outputReservationPolicy }),
+    ...(options.programmaticTools === undefined ? {} : { programmaticTools: options.programmaticTools }),
+    ...(options.nativeToolExposure === undefined ? {} : { nativeToolExposure: options.nativeToolExposure }),
+    ...(options.webTools === undefined ? {} : { webTools: options.webTools }),
+    ...(options.mcpTools === undefined ? {} : { mcpTools: options.mcpTools }),
     ...(options.maxOutputTokens === undefined ? {} : { maxOutputTokens: options.maxOutputTokens }),
     ...(options.configuration === undefined ? {} : { configuration: options.configuration }),
     ...(options.configurationSource === undefined

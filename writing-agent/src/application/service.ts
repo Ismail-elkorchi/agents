@@ -1,3 +1,7 @@
+import { parseNativeToolExposure } from '@agent-core/runtime';
+import { parseProgramLimits } from '@agent-core/tools-programmatic';
+import { parseWebConfiguration } from '@agent-core/tools-web/node';
+import { parseMcpConfiguration } from '@agent-core/tools-mcp/node';
 import {
   assertModelRequestSupported,
   parseModelSelection,
@@ -59,7 +63,7 @@ import type * as z from 'zod';
 
 export type { WritingConfiguration, WritingMode } from '../session.js';
 export type { WritingDocument, DocumentRevision, DocumentPassageInput } from '../documents.js';
-export interface WritingApplicationOptions extends Pick<WritingConfiguration, 'inferenceBudget' | 'contextPolicy' | 'contextControlPolicy' | 'outputReservationPolicy'> {
+export interface WritingApplicationOptions extends Pick<WritingConfiguration, 'inferenceBudget' | 'contextPolicy' | 'contextControlPolicy' | 'outputReservationPolicy' | 'programmaticTools' | 'nativeToolExposure' | 'webTools' | 'mcpTools'> {
   readonly rootDirectory: string;
   readonly stateRoot?: string;
   readonly sessionId?: string;
@@ -105,7 +109,7 @@ export class WritingApplication {
   private configuration: WritingConfiguration | undefined;
   private mode: WritingMode;
   private unsubscribe: (() => void) | undefined;
-  private readonly resourceOptions: Pick<WritingConfiguration, 'inferenceBudget' | 'contextPolicy' | 'contextControlPolicy' | 'outputReservationPolicy'>;
+  private readonly resourceOptions: Pick<WritingConfiguration, 'inferenceBudget' | 'contextPolicy' | 'contextControlPolicy' | 'outputReservationPolicy' | 'programmaticTools' | 'nativeToolExposure' | 'webTools' | 'mcpTools'>;
   private readonly maxOutputTokens: number | undefined;
   private mutations: Promise<void> = Promise.resolve();
   private closeCompletion: Promise<void> | undefined;
@@ -132,7 +136,11 @@ export class WritingApplication {
       ...(options.inferenceBudget === undefined ? {} : { inferenceBudget: parseInferenceBudget(options.inferenceBudget) }),
       ...(options.contextPolicy === undefined ? {} : { contextPolicy: parseContextResourcePolicy(options.contextPolicy) }),
       ...(options.contextControlPolicy === undefined ? {} : { contextControlPolicy: parseContextControlPolicy(options.contextControlPolicy) }),
-      ...(options.outputReservationPolicy === undefined ? {} : { outputReservationPolicy: parseOutputReservationPolicy(options.outputReservationPolicy) })
+      ...(options.outputReservationPolicy === undefined ? {} : { outputReservationPolicy: parseOutputReservationPolicy(options.outputReservationPolicy) }),
+      ...(options.programmaticTools === undefined ? {} : { programmaticTools: parseProgramLimits(options.programmaticTools) }),
+      ...(options.nativeToolExposure === undefined ? {} : { nativeToolExposure: parseNativeToolExposure(options.nativeToolExposure) }),
+      ...(options.webTools === undefined ? {} : { webTools: parseWebConfiguration(options.webTools) }),
+      ...(options.mcpTools === undefined ? {} : { mcpTools: parseMcpConfiguration(options.mcpTools) })
     });
     this.configuration = options.configuration;
     this.selection = options.modelSelection;

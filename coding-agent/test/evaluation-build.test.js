@@ -1,11 +1,12 @@
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, rm, cp } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm, cp, rename, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execute } from '../../validation/evaluation-isolation.mjs';
-import { freezeBuild, verifyBuild, verifyBuildPreparation } from '../../validation/evaluation-build.mjs';
+import { execute, sha256 } from '../../validation/evaluation-isolation.mjs';
+import { copyRuntimeDependencyClosure, freezeBuild, verifyBuild, verifyBuildPreparation } from '../../validation/evaluation-build.mjs';
+import { inventory } from '../../validation/evaluation-isolation.mjs';
 import { snapshotBuildSource } from '../../validation/evaluation-build.mjs';
 
 const npm = path.resolve(path.dirname(process.execPath), '../lib/node_modules/npm/bin/npm-cli.js');
@@ -28,6 +29,47 @@ async function put(root, name, value) {
   await mkdir(path.dirname(path.join(root, name)), { recursive: true });
   await writeFile(path.join(root, name), typeof value === 'string' ? value : JSON.stringify(value));
 }
+
+test('runtime closure preserves nested versions, shared instances and cycles after relocation', { skip: process.platform !== 'linux' }, async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'runtime-closure-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const source = path.join(root, 'source');
+  async function pkg(relative, name, version, dependencies, code, metadata = {}) {
+    await put(source, `${relative}/package.json`, { name, version, main: 'index.cjs', dependencies, ...metadata });
+    await put(source, `${relative}/index.cjs`, code);
+  }
+  await pkg('entry', 'runtime-fixture', '1.0.0', { a: '1', b: '1', 'named-alias': '1', 'cycle-a': '1' },
+    `const a=require('a'),b=require('b'),cycle=require('cycle-a');module.exports={versions:[a.version,b.version],shared:a.shared===b.shared,importer:b.a===a,alias:require('named-alias')===b,cycle:cycle.peer.peer===cycle,peer:b.peer};`);
+  await pkg('node_modules/a', 'a', '1.0.0', { entities: '4', shared: '1' },
+    "module.exports={version:require('entities'),shared:require('shared')};");
+  await pkg('node_modules/b', 'b', '1.0.0', { entities: '7', shared: '1', a: '1' },
+    "module.exports={version:require('entities'),shared:require('shared'),a:require('a'),peer:require('peer-only')};",
+    { peerDependencies: { 'peer-only': '1', 'missing-peer': '1' }, peerDependenciesMeta: { 'peer-only': { optional: true }, 'missing-peer': { optional: true } } });
+  await pkg('node_modules/peer-only', 'peer-only', '1.0.0', {}, "module.exports='installed-optional-peer';");
+  await pkg('node_modules/entities', 'entities', '7.0.1', {}, "module.exports='7.0.1';");
+  await pkg('node_modules/a/node_modules/entities', 'entities', '4.5.0', {}, "module.exports='4.5.0';");
+  await pkg('node_modules/node_modules/entities', 'entities', '99.0.0', {}, "module.exports='incorrect-ancestor';");
+  await pkg('node_modules/shared', 'shared', '1.0.0', {}, 'module.exports={};');
+  await pkg('node_modules/cycle-a', 'cycle-a', '1.0.0', { 'cycle-b': '1' }, "exports.peer=require('cycle-b');");
+  await pkg('node_modules/cycle-b', 'cycle-b', '1.0.0', { 'cycle-a': '1' }, "exports.peer=require('cycle-a');");
+  await symlink('b', path.join(source, 'node_modules/named-alias'));
+  const baseline = await execute(process.execPath, ['-e', 'console.log(JSON.stringify(require("./entry")))'], { cwd: source });
+  const output = path.join(root, 'build');
+  await mkdir(output);
+  const packages = await copyRuntimeDependencyClosure({ entry: path.join(source, 'entry'), sourceRoots: { fixture: source },
+    modules: path.join(output, 'node_modules'), packs: path.join(root, 'packs'), evidence: path.join(root, 'evidence') });
+  assert.deepEqual(packages, {}, 'Third-party fixture packages need no npm packing or network setup.');
+  const original = await inventory(output);
+  assert(Object.values(original).some(value => value.symlink), 'Exact dependency edges are retained as owned relative links.');
+  const relocated = path.join(root, 'relocated');
+  await rename(output, relocated);
+  await rm(source, { recursive: true, force: true });
+  assert.deepEqual(await inventory(relocated), original);
+  const { stdout } = await execute(process.execPath, ['-e', 'console.log(JSON.stringify(require("runtime-fixture")))'], { cwd: relocated });
+  assert.deepEqual(JSON.parse(stdout), JSON.parse(baseline.stdout));
+  assert.deepEqual(JSON.parse(stdout), { versions: ['4.5.0', '7.0.1'], shared: true, importer: true, alias: true, cycle: true, peer: 'installed-optional-peer' });
+});
+
 async function fixture(t) {
   const root = await mkdtemp(path.join(tmpdir(), 'build-provenance-test-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -69,9 +111,21 @@ test('preparation builds exact source instead of matching poisoned dist installa
   assert.equal(await readFile(path.join(directory, 'node_modules/@agent-core/json/dist/index.js'), 'utf8'), 'export const answer = "source-core";');
   assert.equal(await readFile(path.join(core, 'packages/json/dist/index.js'), 'utf8'), 'matching-poisoned-core');
   assert.equal(build.sourceBuild.status, 'built-from-snapshots');
+  assert.equal(build.format, 'agents.build/3');
   assert.equal(build.sourceBuild.pipeline.length, 4);
   assert.equal((await verifyBuild({ directory, sha256: build.sha256 })).sha256, build.sha256);
   await verifyBuildPreparation({ directory, sha256: build.sha256 });
+  const buildFile = path.join(directory, 'build.json');
+  const original = await readFile(buildFile);
+  const { sha256: ignored, ...legacyIdentity } = build;
+  void ignored;
+  legacyIdentity.format = 'agents.build/2';
+  const legacyHash = sha256(JSON.stringify(legacyIdentity));
+  const legacy = Buffer.from(JSON.stringify({ ...legacyIdentity, sha256: legacyHash }));
+  await writeFile(buildFile, legacy);
+  await assert.rejects(verifyBuild({ directory, sha256: legacyHash }), /Unsupported frozen build format/);
+  assert.deepEqual(await readFile(buildFile), legacy, 'Incompatible build records remain unchanged.');
+  await writeFile(buildFile, original);
   const second = await freezeBuild(agents, core, path.join(root, 'build-again'));
   assert.equal(second.sha256, build.sha256, 'timestamps and preparation locations are not identity');
   await writeFile(`${directory}.preparation/agents.tar`, 'tampered source archive');

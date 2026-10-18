@@ -385,3 +385,57 @@ test('passage identities bind canonical source, content revision and range, coal
   assert.equal(input.originalInput.contextItems.length, 2);
   assert.deepEqual(input.originalInput.contextItems.map(item => item.id), [a.id, b.id]);
 });
+
+test('document tool contracts preserve source ranges and distinguish successful reads from conflicts', integration, async (t) => {
+  const f = await fixture('Café 😀 original.\r\n', { responses: [] });
+  t.after(() => f.close());
+  const current = await f.application.readDocumentSection({ path: 'document.txt' });
+  const retained = await f.application.readDocument('document.txt');
+  const ended = [];
+  f.application.subscribe(event => {
+    if (event.type === 'run.progress' && event.event.type === 'tool.ended') ended.push(event.event);
+  }, error => { throw error; });
+  f.provider.responses.push(toolCall('read_document_section', { path: 'document.txt', maxChars: 5 }), 'Read.');
+  await f.application.start();
+  const firstRun = await submit(f.application, 'Read the first five characters.');
+  assert.equal(firstRun.terminal.executionStatus, 'completed', JSON.stringify(firstRun));
+  assert.equal(ended.length, 1);
+  const section = ended.at(-1).observation;
+  assert.equal(section.kind, 'result');
+  assert.equal(section.output.status, 'success');
+  assert.equal(section.scope.coverage, 'partial');
+  assert.equal(section.observedFacts.items[0].outcome, 'success');
+  assert.equal(section.observedFacts.items[0].scope.coverage, 'partial');
+  assert.deepEqual(section.observedFacts.items[0].resources[0].range, { kind: 'byte', start: 0, end: 6 });
+  assert.equal(section.observedFacts.items[0].resources[0].fullSha256, current.expectedSha256);
+  assert.equal(section.output.originalText, 'Café ');
+
+  await writeFile(path.join(f.root, 'document.txt'), 'Changed original.\r\n');
+  f.provider.responses.push(toolCall('read_document_passage', {
+    revision: current.revision, selector: { quote: 'original' }
+  }), 'The source changed.');
+  await submit(f.application, 'Read the old current revision.');
+  const conflict = ended.at(-1).observation;
+  assert.equal(conflict.kind, 'result');
+  assert.deepEqual(conflict.output.status, 'conflict');
+  assert.equal(conflict.output.reason, 'stale_revision');
+  assert.equal(conflict.scope.coverage, 'partial');
+  assert.equal(conflict.observedFacts.items[0].outcome, 'failure');
+  assert.equal(conflict.observedFacts.items[0].scope.coverage, 'absent');
+  assert.equal(conflict.output.originalText, undefined);
+  assert.equal(conflict.observedFacts.items[0].resources, undefined);
+
+  f.provider.responses.push(toolCall('read_document_passage', {
+    revision: retained.revision, selector: { quote: '😀' }
+  }), 'Read the retained original.');
+  await submit(f.application, 'Read the retained smile.');
+  const historical = ended.at(-1).observation;
+  assert.equal(historical.output.status, 'success');
+  assert.equal(historical.output.sourceState, 'retained');
+  assert.equal(historical.observedFacts.items[0].scope.filters.sourceState, 'retained');
+  const resource = historical.observedFacts.items[0].resources[0];
+  assert.deepEqual(resource.range, { kind: 'byte', start: 6, end: 10 });
+  assert.equal(resource.fullSha256, retained.sha256);
+  assert.equal(new URL(resource.uri).searchParams.get('sha256'), retained.sha256);
+  assert.equal(historical.observedFacts.items[0].scope.filters.artifactId, retained.revision.artifactId);
+});

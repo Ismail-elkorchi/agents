@@ -19,15 +19,7 @@ export interface CodingRuntimeDetails {
   readonly reasoning?: import('@agent-core/model').ModelReasoningRequest;
   readonly sessionLocation?: string;
   readonly workspaceTrust?: 'untrusted' | 'trusted';
-  readonly permissions?: {
-    readonly mode: 'read_only' | 'full_host';
-    readonly workspaceRead: 'root_bound';
-    readonly workspaceWrite: 'denied' | 'structured';
-    readonly commandExecution: 'denied' | 'host';
-    readonly network: 'denied' | 'host';
-    readonly hostEscape: 'denied' | 'allowed';
-    readonly tools: readonly string[];
-  };
+  readonly permissions?: import('../security/permission-mode.js').CodingAuthority['permissions'];
 }
 
 export interface CodingHistoryPage {

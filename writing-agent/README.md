@@ -38,7 +38,7 @@ The TUI's selected passage goes through `readPassageContext()` on the applicatio
 
 The application API and state layout are breaking replacements; existing project-state directories are not migrated.
 
-Private state defaults to `$XDG_STATE_HOME/writing-agent` or `~/.local/state/writing-agent`; `--state-root` must point outside the workspace. File access uses Agent Core's rooted authority, which currently requires Linux. Symlinks, reserved state directories, and `.git` are excluded. The tool catalog contains no shell or network execution capability; requests to a configured model provider still use its connection. Pending runs retain their admitted file permission mode across restart. Unknown provider or tool outcomes require reconciliation or stopping through the recovery controls.
+Private state defaults to `$XDG_STATE_HOME/writing-agent` or `~/.local/state/writing-agent`; `--state-root` must point outside the workspace. File access uses Agent Core's rooted authority, which currently requires Linux. Symlinks, reserved state directories, and `.git` are excluded. The default tool catalog contains no shell or network execution capability; bounded web retrieval and MCP sources require explicit host configuration. Requests to a configured model provider still use its connection. Pending runs retain their admitted file permission mode across restart. Unknown provider or tool outcomes require reconciliation or stopping through the recovery controls.
 
 Headless applications import `openWritingApplication` from `@ismail-elkorchi/writing-agent`, call `start()`, submit an instruction string, await the returned completion, and close the application. An explicit configuration can set run limits or a session inference budget; ordinary work has no preset task budget. Runtime capacity and compiled-request limits still apply.
 
@@ -91,3 +91,14 @@ RPC `context.read`, or application `inspectContext()`, reports effective byte
 policy and operational allowance with settled usage, outstanding exposure, and
 remaining allowance. RPC `configuration.set` selects a model without granting a
 new owner budget.
+
+## Optional tool capabilities
+
+The CLI, RPC application and TUI share the same session tool configuration:
+
+- `--programmatic-tools '{}'` enables the isolated portable JavaScript runner. The JSON object overrides validated compute, memory, output and call limits. Programs call qualified tools through the ordinary authorization and effect executor; they receive durable structured receipts. Interrupted code is not automatically replayed.
+- `--native-tools '{"programmatic":true,"discovery":true}'` selects provider-native tool exposure explicitly. The actual endpoint/model must support the requested features. Native and portable programmatic execution cannot both be selected.
+- `--web-tools '{"policy":{"id":"public-research-v1"}}'` enables bounded public-HTTPS source retrieval. Add `search:{"provider":"brave","credentialEnvironmentVariable":"BRAVE_SEARCH_API_KEY"}` for search. Credentials are read by the host, never supplied as tool arguments. Returned redirects require a separately authorized fetch.
+- `--mcp-tools '{"servers":[]}'` configures optional MCP sources. Each server requires its host-assigned identity, endpoint, account and policy revision, and explicit per-tool effects. See `@agent-core/tools-mcp` for the bounded configuration contract. Discovery does not grant execution authority.
+
+The corresponding application options are `programmaticTools`, `nativeToolExposure`, `webTools` and `mcpTools`. With none supplied, existing local-only tool behavior is preserved. Workspace edit/review permissions remain independent of optional network configuration. Source captures retain original bytes and identify any derived text separately.

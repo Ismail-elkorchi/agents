@@ -1,3 +1,13 @@
+import type { NativeToolExposure } from '@agent-core/runtime';
+import { resolveRuntimeToolCatalog, SessionToolCatalogSelectionStore } from '@agent-core/runtime';
+import { createProgrammaticTool } from '@agent-core/tools-programmatic';
+import { createQuickJSProgramRunner } from '@agent-core/tools-programmatic/node';
+import { createConfiguredWebTools } from '@agent-core/tools-web/node';
+import { createConfiguredMcpSources } from '@agent-core/tools-mcp/node';
+import { ToolCatalog } from '@agent-core/tools';
+import type { ProgramLimits } from '@agent-core/tools-programmatic';
+import type { WebConfiguration } from '@agent-core/tools-web';
+import type { NodeMcpConfiguration } from '@agent-core/tools-mcp/node';
 import { RequestTokenEstimator, type ModelProvider } from '@agent-core/model';
 import { JsonlEventRepository, LocalArtifactRepository } from '@agent-core/persistence/node';
 import {
@@ -70,6 +80,10 @@ export interface CodingSessionOptions {
   readonly contextPolicy?: ContextResourcePolicy;
   readonly contextControlPolicy?: Partial<ContextControlPolicy>;
   readonly outputReservationPolicy?: OutputReservationPolicy;
+  readonly programmaticTools?: Partial<ProgramLimits>;
+  readonly nativeToolExposure?: NativeToolExposure;
+  readonly webTools?: WebConfiguration;
+  readonly mcpTools?: NodeMcpConfiguration;
   readonly onCommandSettlement?: (
     result: import('@agent-core/tools').CommandExecutionResult
   ) => void;
@@ -107,6 +121,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
   const configuration = projectPolicy ? options.configuration : undefined;
   const authority = resolveCodingAuthority({
     requestedMode: options.permissionMode,
+    configuredNetworkTools: options.webTools !== undefined || (options.mcpTools?.servers.length ?? 0) > 0,
     ...(configuration ? { enabledTools: configuration.tools.enabled } : {}),
     hasVerificationChecks: Boolean(
       configuration &&
@@ -134,6 +149,14 @@ export async function createCodingSession(options: CodingSessionOptions) {
     ...(inferenceBudget === undefined ? {} : { budget: inferenceBudget })
   });
   const runs = new AgentRunCoordinator(events, artifacts);
+  if (options.programmaticTools && options.nativeToolExposure?.programmatic) throw new Error('Choose either portable or provider-native programmatic execution.');
+  const programRunner = options.programmaticTools ? createQuickJSProgramRunner({ limits: options.programmaticTools }) : undefined;
+  const configuredMcp = options.mcpTools ? createConfiguredMcpSources(options.mcpTools, { artifacts, allowedRisks: options.permissionMode === 'read_only' ? ['read', 'network'] : ['read', 'write', 'execute', 'destructive', 'network'] }) : undefined;
+  const programTool = programRunner ? createProgrammaticTool({ limits: options.programmaticTools ?? {} }) : undefined;
+  const additionalTools = Object.freeze([
+    ...(programTool ? [programTool] : []),
+    ...(options.webTools ? createConfiguredWebTools(options.webTools, { artifacts }) : [])
+  ]);
   const history = new HistoryReader({ repository: sessions, session, events, artifacts });
 
   let inspectOperational: (page?: ContextOperationalInspectionPage) => Promise<SessionOperationalInspection>;
@@ -167,6 +190,11 @@ export async function createCodingSession(options: CodingSessionOptions) {
       if (result.owner.ownerId === ownerId) options.onCommandSettlement?.(result);
     }
   );
+  const closeEnvironment = async (): Promise<void> => {
+    const results = await Promise.allSettled([configuredMcp?.close(), environment.close()]);
+    const failures = results.flatMap((result): unknown[] => result.status === 'rejected' ? [result.reason as unknown] : []);
+    if (failures.length > 0) throw new AggregateError(failures, 'Coding session resources could not all be closed.');
+  };
   const commandExecution = environment.commandExecution;
   const resourceReports = { repository: sessions, session, events, ownerId, command: commandExecution };
   const sessionTools = Object.freeze([
@@ -184,7 +212,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
   try {
     await commandExecution?.reconcile();
   } catch (error) {
-    await environment.close();
+    await closeEnvironment();
     throw error;
   }
 
@@ -206,11 +234,12 @@ export async function createCodingSession(options: CodingSessionOptions) {
             })
           ]
         : [];
-    const tools = Object.freeze([...host.tools, ...checkTools, ...sessionTools]);
+    const tools = Object.freeze([...host.tools, ...checkTools, ...sessionTools, ...additionalTools]);
+    const toolCatalog = new ToolCatalog({ tools, selectionStore: new SessionToolCatalogSelectionStore(sessions, session), ...(configuredMcp ? { sources: configuredMcp.sources } : {}) });
     const resources = commandExecution
       ? commandExecutionResources(commandExecution, { kind: 'owner', ownerId })
       : undefined;
-    const toolPolicy: ToolPolicy = { allowedRisks: ['read', 'write', 'destructive', 'execute'] };
+    const toolPolicy: ToolPolicy = { allowedRisks: ['read', 'write', 'destructive', 'execute', ...(options.webTools || options.mcpTools ? ['network' as const] : [])] };
     const sessionOptions: AgentSessionOptions = {
       descriptor: session,
       expectedBinding: binding,
@@ -256,7 +285,9 @@ export async function createCodingSession(options: CodingSessionOptions) {
           maxOutputTokens:
             options.maxOutputTokens ??
             generationAllowance(await providerBinding.provider.describeModel(runtimeSettings.model), 16_384),
-          tools,
+          toolCatalog,
+          ...(programRunner ? { programRunner } : {}),
+          ...(options.nativeToolExposure ? { nativeToolExposure: options.nativeToolExposure } : {}),
           toolContext: { services: host.services },
           ...(resources === undefined ? {} : { resources }),
           // File/command authority is enforced by the exposed host capabilities and authorizer.
@@ -277,6 +308,8 @@ export async function createCodingSession(options: CodingSessionOptions) {
                 ...request, effects: { ...request.effects, accesses }
               });
             }
+            if (authority.mode === 'read_only' && request.effects.accesses.some(access => access.mode === 'write' || access.mode === 'delete' || access.mode === 'execute'))
+              return { decision: 'deny' as const, reason: 'Read-only mode does not permit external mutations or execution.' };
             const workspaceDecision = openedWorkspace.security.authorizeTool(request);
             if (workspaceDecision.decision === 'deny') return workspaceDecision;
             const guidanceDecision = await guidance.authorize(request);
@@ -322,8 +355,11 @@ export async function createCodingSession(options: CodingSessionOptions) {
     const agent = new AgentSession(sessionOptions);
     inspectOperational = async (page = {}) => {
       const resolved = await providerBinding.resolve(agent.state().configuration);
-      const catalog = resolveEffectiveToolCatalog({ bindingId: resolved.bindingId, tools, policy: toolPolicy,
-        host: { services: host.services, modelInputModalities: resolved.profile.modalities.input,
+      const catalog = resolveEffectiveToolCatalog({ bindingId: resolved.bindingId,
+        programmaticRunner: programRunner !== undefined, modelProfile: resolved.profile,
+        ...(options.nativeToolExposure ? { nativeToolExposure: options.nativeToolExposure } : {}),
+        ...(programTool ? { eagerTool: programTool } : {}), tools: await resolveRuntimeToolCatalog(toolCatalog), policy: toolPolicy,
+        host: { services: { ...host.services, ...(programRunner ? { programExecution: true } : {}) }, modelInputModalities: resolved.profile.modalities.input,
           hostCapabilities: resources?.capabilities ?? [] } });
       const contextAdmission = context.admittedCapabilities();
       return inspectSessionOperational({ configured: catalog.snapshot, profile: resolved.profile,
@@ -380,7 +416,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
               });
             }
           } finally {
-            await environment.close();
+            await closeEnvironment();
           }
         })();
         return closeCompletion;
@@ -388,7 +424,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
     };
   } catch (error) {
     try {
-      await environment.close();
+      await closeEnvironment();
     } catch (cleanup) {
       throw new AggregateError(
         [error, cleanup],

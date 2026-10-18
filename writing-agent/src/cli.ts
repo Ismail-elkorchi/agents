@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+import { parseNativeToolExposure } from '@agent-core/runtime';
+import { parseProgramLimits } from '@agent-core/tools-programmatic';
+import { parseWebConfiguration } from '@agent-core/tools-web/node';
+import { parseMcpConfiguration } from '@agent-core/tools-mcp/node';
 import { parseInferenceBudget, parseContextResourcePolicy, parseContextControlPolicy, parseOutputReservationPolicy } from '@agent-core/runtime';
 import { realpathSync } from 'node:fs';
 import path from 'node:path';
@@ -23,6 +27,10 @@ export async function main(argv: readonly string[]): Promise<void> {
       model: { type: 'string' },
       endpoint: { type: 'string' },
       reasoning: { type: 'string' },
+      'native-tools': { type: 'string' },
+      'programmatic-tools': { type: 'string' },
+      'web-tools': { type: 'string' },
+      'mcp-tools': { type: 'string' },
       'inference-budget': { type: 'string' },
       'context-policy': { type: 'string' },
       'context-control-policy': { type: 'string' },
@@ -68,6 +76,10 @@ export async function main(argv: readonly string[]): Promise<void> {
   )
     throw new Error('--max-output-tokens must be a positive integer.');
   const application = await openWritingApplication({
+    ...(values['native-tools'] === undefined ? {} : { nativeToolExposure: parseNativeToolExposure(JSON.parse(values['native-tools'])) }),
+    ...(values['programmatic-tools'] === undefined ? {} : { programmaticTools: parseProgramLimits(JSON.parse(values['programmatic-tools'])) }),
+    ...(values['web-tools'] === undefined ? {} : { webTools: parseWebConfiguration(JSON.parse(values['web-tools'])) }),
+    ...(values['mcp-tools'] === undefined ? {} : { mcpTools: parseMcpConfiguration(JSON.parse(values['mcp-tools'])) }),
     ...(values['inference-budget'] === undefined ? {} : { inferenceBudget: parseInferenceBudget(JSON.parse(values['inference-budget'])) }),
     ...(values['context-policy'] === undefined ? {} : { contextPolicy: parseContextResourcePolicy(JSON.parse(values['context-policy'])) }),
     ...(values['context-control-policy'] === undefined ? {} : { contextControlPolicy: parseContextControlPolicy(JSON.parse(values['context-control-policy'])) }),
@@ -161,7 +173,7 @@ export async function main(argv: readonly string[]): Promise<void> {
 }
 function printHelp() {
   process.stdout.write(
-    `Writing Agent\n\nwriting-agent [tui|rpc|write|review] [instruction]\n\n--root PATH          Workspace directory (default: current directory)\n--provider ID        ollama, openai, openai-codex, or openrouter\n--model ID           Provider model\n--endpoint URL       Provider endpoint\n--reasoning EFFORT   Requested model reasoning effort\n--max-output-tokens N  Generation allowance (reservation only where caps are unsupported)\n--inference-budget JSON  Continuing session-owner budget across runs and renewals\n--context-policy JSON  Source and session-state byte bounds\n--context-control-policy JSON  Finite context recovery bounds\n--output-reservation-policy JSON  Model-selectable minimum/maximum output tokens\n--mode edit|review   File editing or read-only review (default: edit)\n--state-root PATH    Private state outside the workspace\n--session ID         Resume a recorded conversation\n--passage JSON       Attach a revision-bound passage (repeatable)\n\nNo arguments opens the TUI in an interactive terminal.\nWRITING_AGENT_PROVIDER and WRITING_AGENT_MODEL supply provider defaults.\n`
+    `Writing Agent\n\nwriting-agent [tui|rpc|write|review] [instruction]\n\n--root PATH          Workspace directory (default: current directory)\n--provider ID        ollama, openai, openai-codex, or openrouter\n--model ID           Provider model\n--endpoint URL       Provider endpoint\n--reasoning EFFORT   Requested model reasoning effort\n--max-output-tokens N  Generation allowance (reservation only where caps are unsupported)\n--native-tools JSON   Explicit provider-native discovery/programmatic exposure\n--programmatic-tools JSON  Enable isolated tool programs with explicit limits\n--web-tools JSON      Enable bounded source retrieval/search\n--mcp-tools JSON      Configure governed MCP servers\n--inference-budget JSON  Continuing session-owner budget across runs and renewals\n--context-policy JSON  Source and session-state byte bounds\n--context-control-policy JSON  Finite context recovery bounds\n--output-reservation-policy JSON  Model-selectable minimum/maximum output tokens\n--mode edit|review   File editing or read-only review (default: edit)\n--state-root PATH    Private state outside the workspace\n--session ID         Resume a recorded conversation\n--passage JSON       Attach a revision-bound passage (repeatable)\n\nNo arguments opens the TUI in an interactive terminal.\nWRITING_AGENT_PROVIDER and WRITING_AGENT_MODEL supply provider defaults.\n`
   );
 }
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {

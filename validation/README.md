@@ -106,6 +106,12 @@ installed compiler bytes, complete input inventories and output inventories are
 part of the build identity. A failed preparation emits no qualified build.json.
 This is source-build provenance, not a claim that release gates passed.
 
+The current frozen format, `agents.build/3`, keeps each resolved physical package
+instance once, including nested versions. Internal relative links preserve exact
+dependency resolution and shared module identity after relocation. Those links
+participate in the output inventory; packed-package provenance is keyed by its
+source-relative location rather than its package name.
+
 Normal preparation requires clean tracked and nonignored untracked source and
 uses committed bytes. Machinery qualification captures complete dirty snapshots,
 including relevant added files, deleted files, binary inputs and executable bits.

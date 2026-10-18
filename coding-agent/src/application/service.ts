@@ -1,3 +1,7 @@
+import { parseNativeToolExposure } from '@agent-core/runtime';
+import { parseProgramLimits } from '@agent-core/tools-programmatic';
+import { parseWebConfiguration } from '@agent-core/tools-web/node';
+import { parseMcpConfiguration } from '@agent-core/tools-mcp/node';
 import {
   assertModelRequestSupported,
   parseModelSelection,
@@ -98,7 +102,11 @@ export class CodingApplication {
       ...(options.inferenceBudget === undefined ? {} : { inferenceBudget: parseInferenceBudget(options.inferenceBudget) }),
       ...(options.contextPolicy === undefined ? {} : { contextPolicy: parseContextResourcePolicy(options.contextPolicy) }),
       ...(options.contextControlPolicy === undefined ? {} : { contextControlPolicy: parseContextControlPolicy(options.contextControlPolicy) }),
-      ...(options.outputReservationPolicy === undefined ? {} : { outputReservationPolicy: parseOutputReservationPolicy(options.outputReservationPolicy) })
+      ...(options.outputReservationPolicy === undefined ? {} : { outputReservationPolicy: parseOutputReservationPolicy(options.outputReservationPolicy) }),
+      ...(options.programmaticTools === undefined ? {} : { programmaticTools: parseProgramLimits(options.programmaticTools) }),
+      ...(options.nativeToolExposure === undefined ? {} : { nativeToolExposure: parseNativeToolExposure(options.nativeToolExposure) }),
+      ...(options.webTools === undefined ? {} : { webTools: parseWebConfiguration(options.webTools) }),
+      ...(options.mcpTools === undefined ? {} : { mcpTools: parseMcpConfiguration(options.mcpTools) })
     };
     this.workspace = workspace;
     this.applicationState = Object.freeze({
@@ -923,6 +931,7 @@ export class CodingApplication {
         ? undefined
         : resolveCodingAuthority({
             requestedMode: this.options.permissionMode,
+            configuredNetworkTools: this.options.webTools !== undefined || (this.options.mcpTools?.servers.length ?? 0) > 0,
             ...(activeConfiguration ? { enabledTools: activeConfiguration.tools.enabled } : {}),
             hasVerificationChecks:
               (activeConfiguration?.verification.required.length ?? 0) +

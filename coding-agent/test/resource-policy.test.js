@@ -54,13 +54,39 @@ test('both CLIs reject invalid resource JSON before opening a workspace', async 
   const run = promisify(execFile);
   for (const agent of ['coding-agent', 'writing-agent']) {
     for (const [flag, value] of [
+      ['--programmatic-tools', '{"wallTimeMs":0}'],
+      ['--native-tools', '{"programmatic":false}'],
+      ['--web-tools', '{"policy":{"id":"bad","limits":{"maxResponseBytes":0}}}'],
+      ['--mcp-tools', '{"servers":[{"id":"bad"}]}'],
       ['--inference-budget', '{"maxInvocations":-1}'],
       ['--context-policy', '{"maxSourceBytes":0}'],
       ['--context-control-policy', '{"requestsPerBoundary":0}'],
       ['--output-reservation-policy', '{"minimum":10,"maximum":2}']
     ]) {
       await assert.rejects(run(process.execPath, [`${agent}/dist/cli.js`, 'rpc', flag, value]),
-        error => error.code === 1 && /inference|positive|Too small|context control|reservation policy/iu.test(error.stderr) && !/Unknown option|unknown option/u.test(error.stderr));
+        error => error.code === 1 && /inference|positive|Too small|context control|reservation policy|program|native tool|invalid input|expected|web/i.test(error.stderr) && !/Unknown option|unknown option/u.test(error.stderr));
     }
   }
 });
+
+test('configured web reads do not grant ambient execution in read-only mode',
+  { skip: process.platform !== 'linux' }, async t => {
+    const provider = await scriptedOllama([]);
+    const f = await createWorkspace({ endpoint: provider.endpoint, tools: ['read_files'], checks: [] });
+    await trust(f);
+    const app = await openCodingApplication({ root: f.root, stateRoot: f.stateRoot,
+      providerEndpoint: provider.endpoint, permissionMode: 'read_only', maxOutputTokens: 512,
+      webTools: { policy: { id: 'research', allowedOrigins: ['https://example.com'] } } });
+    t.after(async () => { await app.close(); await provider.close(); await f.close(); });
+    await app.start();
+    const context = await app.inspectContext();
+    const tools = context.operational.capabilities.items;
+    assert.ok(tools.some(tool => tool.name === 'fetch_source'));
+    assert.ok(!tools.some(tool => tool.name === 'exec_command' && tool.available));
+    assert.ok(!tools.some(tool => tool.name === 'apply_patch' && tool.available));
+    const permissions = app.state().runtimeDetails.permissions;
+    assert.equal(permissions.network, 'configured_tools');
+    assert.equal(permissions.commandExecution, 'denied');
+    assert.equal(permissions.workspaceWrite, 'denied');
+    assert.equal(permissions.hostEscape, 'denied');
+  });

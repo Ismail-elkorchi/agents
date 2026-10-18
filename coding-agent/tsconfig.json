@@ -47,6 +47,15 @@
     },
     {
       "path": "../../agent-core/packages/tui"
+    },
+    {
+      "path": "../../agent-core/packages/tools-programmatic"
+    },
+    {
+      "path": "../../agent-core/packages/tools-web"
+    },
+    {
+      "path": "../../agent-core/packages/tools-mcp"
     }
   ]
 }

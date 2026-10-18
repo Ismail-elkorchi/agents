@@ -39,6 +39,9 @@
     "@ismail-elkorchi/terminal-ui": "git+https://github.com/Ismail-elkorchi/terminal-ui.git#822c9d50f51843e2448a6f4cb6531f8f7ee8da7f",
     "@agent-core/rpc": "0.2.0",
     "@agent-core/tui": "0.2.0",
-    "markspan": "github:Ismail-elkorchi/markspan#c883b9a518cf96b967eadba31c3f2d08db1f5946"
+    "markspan": "github:Ismail-elkorchi/markspan#c883b9a518cf96b967eadba31c3f2d08db1f5946",
+    "@agent-core/tools-programmatic": "0.2.0",
+    "@agent-core/tools-web": "0.2.0",
+    "@agent-core/tools-mcp": "0.2.0"
   }
 }
