@@ -1,35 +1,37 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { InMemoryArtifactRepository } from '@agent-core/persistence';
 import { recoveredCommandContext } from '../src/execution/recovered-command-context.ts';
 
-function report(index, ownerId = 'session-1') {
-  return { result: {
-    processId: `process-${index}`, owner: { ownerId, runId: `run-${index}` },
-    status: 'exited', exitCode: index
-  } };
+function page() {
+  return { reports: [{ processId: 'process-1', owner: { ownerId: 'session-1', runId: 'run-1' },
+    status: 'exited', finalizationPending: false, handoffPending: true, details: { exitCode: 0 } }],
+  next: 'opaque-cursor', complete: false, scanned: 16 };
 }
-
-test('more than sixteen recovered receipts have explicit coverage and complete immutable retrieval', async () => {
-  const artifacts = new InMemoryArtifactRepository();
-  const reports = [...Array.from({ length: 23 }, (_, index) => report(index)), report(99, 'other-session')];
-  const [item] = await recoveredCommandContext(reports, 'session-1', artifacts);
-  const content = JSON.parse(item.content);
-  assert.deepEqual(content.coverage, { total: 23, included: 16, omitted: 7,
-    order: 'recovery-enumeration', complete: false });
-  const complete = JSON.parse(new TextDecoder().decode(await artifacts.readVerified(content.completeReports)));
-  assert.equal(complete.length, 23);
-  assert.equal(complete[22].processId, 'process-22');
-  assert.equal(complete[22].exitCode, 22);
-  assert.equal(complete.some(item => item.owner.ownerId === 'other-session'), false);
-  assert.equal(content.reports[2].processId, 'process-2');
+test('repeated request assembly is read-only and preserves bounded pending coverage', () => {
+  const source = page();
+  const before = JSON.stringify(source);
+  for (let index = 0; index < 100; index++) {
+    const [item] = recoveredCommandContext(source);
+    assert.deepEqual(JSON.parse(item.content), source);
+    assert.equal(item.sourceUri, 'runtime://command-reports/pending');
+    assert.equal(item.sourceUri.startsWith('artifact:'), false);
+    assert.ok(Buffer.byteLength(JSON.stringify(item)) <= 16_384);
+    assert.match(item.purpose, /resource_reports_read/);
+  }
+  assert.equal(JSON.stringify(source), before);
 });
-
-test('blocked terminal reports remain visibly pending instead of claiming a committed completion', async () => {
-  const pending = report(1);
-  pending.result.finalizationPending = true;
-  const [item] = await recoveredCommandContext([pending], 'session-1', new InMemoryArtifactRepository());
-  const content = JSON.parse(item.content);
+test('pending handoff does not imply failed terminal record finalization', () => {
+  const source = page();
+  source.reports[0].finalizationPending = true;
+  const content = JSON.parse(recoveredCommandContext(source)[0].content);
   assert.equal(content.reports[0].finalizationPending, true);
-  assert.equal(content.coverage.complete, true);
+  assert.equal(content.reports[0].handoffPending, true);
+});
+test('complete empty pending page adds no request contribution', () => {
+  assert.deepEqual(recoveredCommandContext({ reports: [], next: 'opaque-cursor', complete: true, scanned: 0 }), []);
+});
+test('complete contribution envelope is budgeted, including metadata and escaped content', () => {
+  const source = page();
+  source.reports[0].details.diagnostic = '"'.repeat(12_000);
+  assert.throws(() => recoveredCommandContext(source), /complete envelope budget/);
 });

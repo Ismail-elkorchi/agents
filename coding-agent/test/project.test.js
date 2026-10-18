@@ -152,3 +152,33 @@ test('workspace configuration cannot escape through a symlink', async () => {
   );
   workspaceRoot.close();
 });
+
+test('project resource policies decode independently of per-run limits', () => {
+  const base = { version: 1, provider: 'ollama', model: 'test', instructions: [],
+    tools: { enabled: [] }, verification: { required: [], advisory: [] } };
+  const budget = { maxInvocations: 4, maxPromptTokens: 50000,
+    maxKnownCost: { amount: 2, currency: 'USD' } };
+  const contextPolicy = { maxSourceBytes: 12000, committedRetainedStateBytes: 34000,
+    sessionStateMutationBytes: 5600, sessionStateReadBytes: 7800 };
+  const parsed = parseCodingAgentConfiguration({ ...base, inferenceBudget: budget, contextPolicy,
+    contextControlPolicy: { requestsPerBoundary: 2, reserveMode: 'advisory' },
+    outputReservationPolicy: { minimum: 128, maximum: 512 }, limits: { modelTurns: 10 } });
+  budget.maxKnownCost.amount = 100;
+  contextPolicy.maxSourceBytes = 1;
+  assert.equal(parsed.inferenceBudget.maxKnownCost.amount, 2);
+  assert.equal(parsed.contextPolicy.maxSourceBytes, 12000);
+  assert.equal(parsed.contextControlPolicy.requestsPerBoundary, 2);
+  assert.equal(parsed.outputReservationPolicy.maximum, 512);
+  assert.equal(parsed.limits.modelTurns, 10);
+  for (const value of [null, { maxSourceBytes: 0 }, { maxSourceBytes: 1.5 },
+    { maxSourceBytes: Number.MAX_SAFE_INTEGER + 1 }, { oldLimit: 123 }])
+    assert.throws(() => parseCodingAgentConfiguration({ ...base, contextPolicy: value }));
+  for (const value of [null, { maxInvocations: -1 }, { maxInvocations: 1.5 },
+    { maxInvocations: Number.MAX_SAFE_INTEGER + 1 }, { maxOutputTokens: 20 }])
+    assert.throws(() => parseCodingAgentConfiguration({ ...base, inferenceBudget: value }));
+  for (const value of [null, { requestsPerBoundary: 0 }, { reserveMode: 'ignore' }, { stale: 1 }])
+    assert.throws(() => parseCodingAgentConfiguration({ ...base, contextControlPolicy: value }));
+  for (const value of [null, { minimum: 1, maximum: 0 }, { minimum: 2, maximum: 1 },
+    { minimum: 1, maximum: 2, stale: 1 }])
+    assert.throws(() => parseCodingAgentConfiguration({ ...base, outputReservationPolicy: value }));
+});

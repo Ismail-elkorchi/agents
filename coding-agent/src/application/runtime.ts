@@ -10,6 +10,10 @@ import { OpenAICodexProvider, type OpenAICodexTransport } from '@agent-core/prov
 import { OpenRouterProvider } from '@agent-core/provider-openrouter';
 import {
   type AgentSession,
+  type InferenceBudget,
+  type ContextResourcePolicy,
+  type ContextControlPolicy,
+  type OutputReservationPolicy,
   type SessionBindingInput,
   type SessionDescriptor
 } from '@agent-core/runtime';
@@ -43,6 +47,10 @@ export interface CodingApplicationOptions {
   providerEndpoint?: string;
   codexTransport?: OpenAICodexTransport;
   maxOutputTokens?: number;
+  inferenceBudget?: InferenceBudget;
+  contextPolicy?: ContextResourcePolicy;
+  contextControlPolicy?: Partial<ContextControlPolicy>;
+  outputReservationPolicy?: OutputReservationPolicy;
   permissionMode: CodingPermissionMode;
   sessionSelection: SessionSelection;
   branch?: string;
@@ -287,6 +295,10 @@ export async function createRuntime(
       ...(settings.reasoning === undefined ? {} : { reasoning: settings.reasoning })
     },
     permissionMode: options.permissionMode,
+    ...(options.inferenceBudget === undefined ? {} : { inferenceBudget: options.inferenceBudget }),
+    ...(options.contextPolicy === undefined ? {} : { contextPolicy: options.contextPolicy }),
+    ...(options.contextControlPolicy === undefined ? {} : { contextControlPolicy: options.contextControlPolicy }),
+    ...(options.outputReservationPolicy === undefined ? {} : { outputReservationPolicy: options.outputReservationPolicy }),
     ...(options.maxOutputTokens === undefined ? {} : { maxOutputTokens: options.maxOutputTokens }),
     ...(options.configuration === undefined ? {} : { configuration: options.configuration }),
     ...(options.configurationSource === undefined

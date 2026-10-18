@@ -33,11 +33,11 @@ test('review mode exposes protected live context without acquiring document edit
         assert.equal(inspection.selection.status, 'available');
         assert(inspection.selection.items.some(item => item.type === 'input' && item.group.release === 'protected'));
         assert(inspection.admission.inputIdentity);
-        assert.equal(inspection.operational.lastAdmittedRequest.inputIdentity, inspection.admission.inputIdentity);
-        assert.ok(inspection.operational.capabilities.bindingId);
-        assert.ok(inspection.operational.allowance.ownerId);
-        const configuredNames = inspection.operational.capabilities.items.filter(tool => tool.available).map(tool => tool.name);
+        assert.equal(inspection.operational, null, 'Source inspection intentionally omits the separate operational projection.');
+        assert.equal(inspection.operationalCoverage, 'not_requested');
+        const configuredNames = request.tools.map(tool => tool.type === 'function' ? tool.function.name : tool.name);
         assert.ok(configuredNames.includes('context_inspect'));
+        assert.ok(configuredNames.includes('context_runtime_inspect'));
         assert.ok(!configuredNames.includes('apply_patch'));
         assert(!request.tools.some(tool => ['apply_patch', 'edit_text'].includes(tool.type === 'function' ? tool.function.name : tool.name)));
         return 'Review context is available.';
@@ -125,3 +125,30 @@ test('runtime inspection distinguishes the actual last admitted catalog from con
     assert.equal((await submit(f.application, 'Inspect runtime capabilities.')).terminal.executionStatus, 'completed');
   }
 );
+
+test('idle and restarted public inspection retain the admitted request separately from configured mode',
+  { skip: process.platform !== 'linux', timeout: 30_000 }, async t => {
+    const { openWritingApplication } = await import('@ismail-elkorchi/writing-agent');
+    const f = await fixture('', { mode: 'review', responses: ['Reviewed.'] });
+    t.after(() => f.close());
+    await f.application.start();
+    await submit(f.application, 'Review without changing files.');
+    const before = await f.application.inspectContext({ target: 'last_admitted' });
+    assert.equal(before.operational.lastAdmittedRequest.invocation.status, 'settled');
+    assert.equal(before.operational.lastAdmittedRequest.invocation.dispatch, 'observed');
+    const sessionId = f.application.state().sessionId;
+    await f.application.close();
+    const restarted = await openWritingApplication({ rootDirectory: f.root, stateRoot: f.stateRoot,
+      sessionId, mode: 'edit', configuration: { provider: f.provider, model: 'writing-test' } });
+    try {
+      await restarted.start();
+      const after = await restarted.inspectContext({ target: 'last_admitted' });
+      assert.deepEqual(after.operational.lastAdmittedRequest, before.operational.lastAdmittedRequest);
+      assert.deepEqual(after.operational.capabilities, before.operational.capabilities);
+      assert.equal(after.operational.allowance.settled.invocations, 1);
+      const configured = await restarted.inspectContext();
+      assert.ok(configured.operational.capabilities.items.some(tool => tool.name === 'apply_patch'));
+      assert.ok(!after.operational.capabilities.items.some(tool => tool.name === 'apply_patch'));
+      assert.equal(f.provider.requests.length, 1);
+    } finally { await restarted.close(); }
+  });

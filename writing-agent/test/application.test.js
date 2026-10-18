@@ -320,7 +320,7 @@ for (const mode of ['edit', 'review']) test(`prospective ${mode} inspection matc
   const inspected = await f.application.inspectContext();
   assert.equal(f.provider.requests.length, 0);
   assert.equal(inspected.operational.allowance.settled.invocations, 0);
-  const capabilities = inspected.available.capabilities;
+  const capabilities = inspected.operational.capabilities;
   assert.equal(capabilities.coverage, 'complete');
   const names = capabilities.items.filter(tool => tool.available).map(tool => tool.name);
   assert.equal(names.includes('apply_patch'), mode === 'edit');
@@ -331,7 +331,7 @@ for (const mode of ['edit', 'review']) test(`prospective ${mode} inspection matc
   const after = await f.application.inspectContext({ limit: 1 });
   assert.equal(after.operational.allowance.ownerId, inspected.operational.allowance.ownerId);
   assert.equal(after.operational.allowance.settled.invocations, 1);
-  const page = after.available.capabilities;
+  const page = after.operational.capabilities;
   assert.equal(page.coverage, 'partial');
   assert.equal(page.items.length, 1);
 });

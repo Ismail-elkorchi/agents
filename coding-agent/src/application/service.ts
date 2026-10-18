@@ -7,6 +7,10 @@ import {
 import { JsonlEventRepository } from '@agent-core/persistence/node';
 import {
   agentEventCodec,
+  parseInferenceBudget,
+  parseContextResourcePolicy,
+  parseContextControlPolicy,
+  parseOutputReservationPolicy,
   ApplicationEvents,
   SessionReadLifetime,
   assertHistoryModelCompatibility,
@@ -14,7 +18,7 @@ import {
   type AgentEvent,
   type AgentRunResult,
   type AgentSession,
-  type inspectCapabilitySnapshot,
+  type ContextOperationalInspectionPage,
   type SessionSubmissionInput
 } from '@agent-core/runtime';
 import {
@@ -90,6 +94,12 @@ export class CodingApplication {
     private readonly options: CodingApplicationOptions,
     workspace: OpenCodingWorkspace
   ) {
+    this.options = { ...options,
+      ...(options.inferenceBudget === undefined ? {} : { inferenceBudget: parseInferenceBudget(options.inferenceBudget) }),
+      ...(options.contextPolicy === undefined ? {} : { contextPolicy: parseContextResourcePolicy(options.contextPolicy) }),
+      ...(options.contextControlPolicy === undefined ? {} : { contextControlPolicy: parseContextControlPolicy(options.contextControlPolicy) }),
+      ...(options.outputReservationPolicy === undefined ? {} : { outputReservationPolicy: parseOutputReservationPolicy(options.outputReservationPolicy) })
+    };
     this.workspace = workspace;
     this.applicationState = Object.freeze({
       status: 'initializing',
@@ -703,7 +713,7 @@ export class CodingApplication {
     return this.readSessionOwned(runtime => runtime.context.readSessionState(ref));
   }
 
-  inspectContext(page?: Parameters<typeof inspectCapabilitySnapshot>[1]) {
+  inspectContext(page?: ContextOperationalInspectionPage) {
     return this.readSessionOwned(runtime => runtime.inspectContext(page));
   }
 

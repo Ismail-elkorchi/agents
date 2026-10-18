@@ -12,7 +12,11 @@ import {
   ownSessionSubmissionInput,
   progressReplacementKey,
   type AgentSession,
-  type inspectCapabilitySnapshot,
+  parseInferenceBudget,
+  parseContextResourcePolicy,
+  parseContextControlPolicy,
+  parseOutputReservationPolicy,
+  type ContextOperationalInspectionPage,
   type AgentSessionEvent,
   type AgentSessionSubmissionResult,
   type SessionBranchBoundary,
@@ -55,7 +59,7 @@ import type * as z from 'zod';
 
 export type { WritingConfiguration, WritingMode } from '../session.js';
 export type { WritingDocument, DocumentRevision, DocumentPassageInput } from '../documents.js';
-export interface WritingApplicationOptions {
+export interface WritingApplicationOptions extends Pick<WritingConfiguration, 'inferenceBudget' | 'contextPolicy' | 'contextControlPolicy' | 'outputReservationPolicy'> {
   readonly rootDirectory: string;
   readonly stateRoot?: string;
   readonly sessionId?: string;
@@ -101,6 +105,7 @@ export class WritingApplication {
   private configuration: WritingConfiguration | undefined;
   private mode: WritingMode;
   private unsubscribe: (() => void) | undefined;
+  private readonly resourceOptions: Pick<WritingConfiguration, 'inferenceBudget' | 'contextPolicy' | 'contextControlPolicy' | 'outputReservationPolicy'>;
   private readonly maxOutputTokens: number | undefined;
   private mutations: Promise<void> = Promise.resolve();
   private closeCompletion: Promise<void> | undefined;
@@ -123,6 +128,12 @@ export class WritingApplication {
     );
     this.initialSessionId = options.sessionId;
     this.maxOutputTokens = options.maxOutputTokens;
+    this.resourceOptions = Object.freeze({
+      ...(options.inferenceBudget === undefined ? {} : { inferenceBudget: parseInferenceBudget(options.inferenceBudget) }),
+      ...(options.contextPolicy === undefined ? {} : { contextPolicy: parseContextResourcePolicy(options.contextPolicy) }),
+      ...(options.contextControlPolicy === undefined ? {} : { contextControlPolicy: parseContextControlPolicy(options.contextControlPolicy) }),
+      ...(options.outputReservationPolicy === undefined ? {} : { outputReservationPolicy: parseOutputReservationPolicy(options.outputReservationPolicy) })
+    });
     this.configuration = options.configuration;
     this.selection = options.modelSelection;
     this.mode = options.mode ?? 'edit';
@@ -593,7 +604,7 @@ export class WritingApplication {
     return this.readSessionOwned(() => composition.context.readSessionState(ref));
   }
 
-  inspectContext(page?: Parameters<typeof inspectCapabilitySnapshot>[1]) {
+  inspectContext(page?: ContextOperationalInspectionPage) {
     this.assertOpen();
     if (this.composition === undefined)
       throw new Error('Configure a session before inspecting context.');
@@ -646,9 +657,8 @@ export class WritingApplication {
   }
 
   private generationConfiguration(configuration: WritingConfiguration): WritingConfiguration {
-    return this.maxOutputTokens === undefined
-      ? configuration
-      : { ...configuration, maxOutputTokens: this.maxOutputTokens };
+    return { ...configuration, ...this.resourceOptions,
+      ...(this.maxOutputTokens === undefined ? {} : { maxOutputTokens: this.maxOutputTokens }) };
   }
 
   private async connect() {

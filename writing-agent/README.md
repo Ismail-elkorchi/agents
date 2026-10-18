@@ -28,7 +28,7 @@ Choose review mode for suggestions before editing. Ask a later edit-mode request
 
 Tools read, list, search, and patch workspace files. Model-managed history, session state, and context selection support continuing work. Documents are retrieved when needed instead of filling a fixed-size excerpt template. Session state cannot grant permission or establish that a claim is verified. Model judgments and review responses are not independent verification certificates.
 
-Core saves narrative items independently from the exact revisions selected for model context. State is fallible interpretation, not verification or authority. Bounded history and item retrieval preserve originals; renewal preserves session identity, permissions, effects and accounting. See Core's [context guide](https://github.com/Ismail-elkorchi/agent-core/blob/main/docs/CONTEXT.md) for save, selection, atomic save-and-activate and recovery APIs. This build uses `agent-core.session/5`; incompatible session files remain intact and require their matching earlier build for access.
+Core saves narrative items independently from the exact revisions selected for model context. State is fallible interpretation, not verification or authority. Bounded history and item retrieval preserve originals; renewal preserves session identity, permissions, effects and accounting. See Core's [context guide](https://github.com/Ismail-elkorchi/agent-core/blob/main/docs/CONTEXT.md) for save, selection, atomic save-and-activate and recovery APIs. This build uses `agent-core.session/6`; incompatible session files remain intact and require their matching earlier build for access.
 
 Optional `read_document_section`, `read_document_passage`, and `compare_document_revisions` tools provide exact original text, revision hashes, and source ranges. Markdown headings and offsets come from markspan; plain text needs no structure. Section reads accept a heading or its `headingStart` and page with a section-relative `offset`. Duplicate headings or quotations produce explicit conflicts; passages can instead select an exact half-open UTF-16 range or quotation occurrence. Reads validate at most 2 MiB of original UTF-8 source before parsing; excerpt pages contain at most 65,536 UTF-16 code units. Offsets cannot split a Unicode scalar or CRLF pair. Returned `range`, `expectedText`, and `expectedSha256` compose directly with `edit_text`, which uses one-based Unicode-scalar line/column positions. Edit mode enables both `edit_text` and `apply_patch` through the same patch journal; review mode exposes neither writer. Stale full-file hashes reject edits, including unrelated concurrent changes, without rebasing them.
 
@@ -62,3 +62,32 @@ Saved conversations open automatically. Longer waits show “Opening conversatio
 Closing the application or choosing another conversation cancels the pending opening.
 If a conversation cannot be opened, the application explains the problem and keeps
 its saved messages intact; other conversations remain usable.
+
+### Resource policy
+
+The CLI (including `rpc`) accepts `--inference-budget JSON`, `--context-policy JSON`,
+`--context-control-policy JSON`, and `--output-reservation-policy JSON`. These are
+also application options and `WritingConfiguration` fields. Explicit application
+options take precedence over the supplied configuration.
+
+- `inferenceBudget`: `maxInvocations`, `maxPromptTokens`, `maxCompletionTokens`,
+  and `maxKnownCost: { amount, currency }`. These continuing session-owner limits
+  are separate from per-run `limits` and per-request `--max-output-tokens`.
+  Runs, model changes, and context renewal do not reset consumption. Once admitted,
+  the owner policy is immutable; changing configuration does not replenish it.
+  Known cost excludes unpriced usage.
+- `contextPolicy`: positive integer byte limits `maxSourceBytes`,
+  `committedRetainedStateBytes`, `sessionStateMutationBytes`, and
+  `sessionStateReadBytes`. Retained state counts committed revisions, including
+  history and forks; it is not physical artifact disk usage.
+- `contextControlPolicy`: finite context-control presentation and attempt bounds,
+  including `requestsPerBoundary`, `outputTokens`, and `reserveMode` (`required`
+  or `advisory`). Omitted fields use Core's explicit defaults.
+- `outputReservationPolicy`: `{ minimum, maximum }` authorizes model-selected
+  output reservations within these positive bounds. Its maximum cannot exceed the
+  configured generation allowance. Without it, that allowance is fixed.
+
+RPC `context.read`, or application `inspectContext()`, reports effective byte
+policy and operational allowance with settled usage, outstanding exposure, and
+remaining allowance. RPC `configuration.set` selects a model without granting a
+new owner budget.

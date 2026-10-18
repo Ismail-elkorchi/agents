@@ -1,3 +1,4 @@
+import { parseInferenceBudget, parseContextResourcePolicy, parseContextControlPolicy, parseOutputReservationPolicy, type InferenceBudget, type ContextResourcePolicy, type ContextControlPolicy, type OutputReservationPolicy } from '@agent-core/runtime';
 import { parseJsonObject } from '@agent-core/json';
 import { parseModelReasoningRequest, type ModelReasoningRequest } from '@agent-core/model';
 import { rootedFileIdentitiesEqual, type RootedFileAuthority } from '@agent-core/tools-local';
@@ -42,6 +43,10 @@ export interface CodingAgentConfiguration {
     readonly advisory: readonly CodingAgentCheckConfiguration[];
   };
   readonly limits?: CodingAgentLimitConfiguration;
+  readonly inferenceBudget?: InferenceBudget;
+  readonly contextPolicy?: ContextResourcePolicy;
+  readonly contextControlPolicy?: Partial<ContextControlPolicy>;
+  readonly outputReservationPolicy?: OutputReservationPolicy;
 }
 
 export async function loadCodingAgentConfiguration(
@@ -99,7 +104,11 @@ export function parseCodingAgentConfiguration(input: unknown): CodingAgentConfig
           'instructions',
           'tools',
           'verification',
-          'limits'
+          'limits',
+          'inferenceBudget',
+          'contextPolicy',
+          'contextControlPolicy',
+          'outputReservationPolicy'
         ].includes(key)
     )
   )
@@ -161,6 +170,10 @@ export function parseCodingAgentConfiguration(input: unknown): CodingAgentConfig
       required: Object.freeze(verification.required.map(snapshotCheck)),
       advisory: Object.freeze(verification.advisory.map(snapshotCheck))
     }),
+    ...(value.inferenceBudget === undefined ? {} : { inferenceBudget: parseInferenceBudget(value.inferenceBudget) }),
+    ...(value.contextPolicy === undefined ? {} : { contextPolicy: parseContextResourcePolicy(value.contextPolicy) }),
+    ...(value.contextControlPolicy === undefined ? {} : { contextControlPolicy: parseContextControlPolicy(value.contextControlPolicy) }),
+    ...(value.outputReservationPolicy === undefined ? {} : { outputReservationPolicy: parseOutputReservationPolicy(value.outputReservationPolicy) }),
     ...(ownedLimits === undefined ? {} : { limits: Object.freeze({ ...ownedLimits }) })
   });
 }
@@ -218,7 +231,7 @@ function checkArray(value: unknown): value is readonly CodingAgentCheckConfigura
   );
 }
 function optionalPositive(value: unknown): boolean {
-  return value === undefined || (typeof value === 'number' && Number.isInteger(value) && value > 0);
+  return value === undefined || (typeof value === 'number' && Number.isSafeInteger(value) && value > 0);
 }
 function validLimits(value: unknown): value is CodingAgentLimitConfiguration {
   if (!isRecord(value)) return false;

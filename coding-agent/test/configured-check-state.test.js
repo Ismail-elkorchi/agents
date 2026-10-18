@@ -98,8 +98,8 @@ function executor({ exitCode = 0, status = 'exited', incomplete = false, effect,
     async disposeOwner() {
       return [];
     },
-    recoveredTerminalReports() {
-      return [];
+    async readPendingTerminalReports() {
+      return { reports: [], next: '', complete: true, scanned: 0 };
     },
     async acknowledgeTerminalReport() {},
     async reconcile() {

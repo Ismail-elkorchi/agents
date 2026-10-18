@@ -103,7 +103,7 @@ The optional `limits` object accepts Agent Core's current run limits. Project co
 
 Informational questions and editing tasks use the same Agent Core session contract. A user prompt does not create a separate revision workflow. Original contributions, corrections, tool observations, provider state, context selections, session state, branches, queued input, approvals, and uncertain effects remain durable.
 
-Core saves narrative items independently from the exact revisions selected for model context. State is fallible interpretation, not verification or authority. Bounded history and item retrieval preserve originals; renewal preserves session identity, permissions, effects and accounting. See Core's [context guide](https://github.com/Ismail-elkorchi/agent-core/blob/main/docs/CONTEXT.md) for save, selection, atomic save-and-activate and recovery APIs. This build uses `agent-core.session/5`; incompatible session files remain intact and require their matching earlier build for access.
+Core saves narrative items independently from the exact revisions selected for model context. State is fallible interpretation, not verification or authority. Bounded history and item retrieval preserve originals; renewal preserves session identity, permissions, effects and accounting. See Core's [context guide](https://github.com/Ismail-elkorchi/agent-core/blob/main/docs/CONTEXT.md) for save, selection, atomic save-and-activate and recovery APIs. This build uses `agent-core.session/6`; incompatible session files remain intact and require their matching earlier build for access.
 
 An approval binds the exact tool input, effects, implementation, policy, and execution target. Changed facts invalidate it. Effects with an unknown outcome are not replayed automatically. `--resume` without a task drives only an unfinished accepted run.
 
@@ -147,3 +147,35 @@ Saved conversations open automatically. Longer waits show “Opening conversatio
 Closing the application or choosing another conversation cancels the pending opening.
 If a conversation cannot be opened, the application explains the problem and keeps
 its saved messages intact; other conversations remain usable.
+
+### Resource policy
+
+The CLI (including `rpc`) accepts `--inference-budget JSON`, `--context-policy JSON`,
+`--context-control-policy JSON`, and `--output-reservation-policy JSON`. The same
+fields are application options and optional fields in the existing project
+configuration. Project policy is applied only after workspace trust permits it;
+explicit host options take precedence.
+
+- `inferenceBudget`: `maxInvocations`, `maxPromptTokens`, `maxCompletionTokens`,
+  and `maxKnownCost: { amount, currency }`. These are continuing session-owner
+  limits, separate from per-run `limits` and per-request `--max-output-tokens`.
+  New runs, model changes, and context renewal do not reset consumed allowance.
+  Once admitted, the owner's budget policy is immutable; changing a configuration
+  does not replenish it. Known cost excludes unpriced usage.
+- `contextPolicy`: positive integer byte limits `maxSourceBytes`,
+  `committedRetainedStateBytes`, `sessionStateMutationBytes`, and
+  `sessionStateReadBytes`. Retained state counts committed revisions, including
+  history and forks; it is not physical artifact disk usage.
+- `contextControlPolicy`: finite context-control presentation and attempt bounds,
+  including `requestsPerBoundary`, `outputTokens`, and `reserveMode` (`required`
+  or `advisory`). Omitted fields use Core's explicit defaults.
+- `outputReservationPolicy`: `{ minimum, maximum }` authorizes model-selected
+  output reservations within these positive bounds. Its maximum cannot exceed the
+  configured generation allowance. Without it, that allowance is fixed.
+
+`context.read` in RPC, or `inspectContext()` on the application, reports effective
+context byte policy and operational allowance with settled usage, outstanding
+exposure, and remaining allowance. `configuration.set` selects a model; it does
+not grant a new owner budget.
+
+Recovered command context is a bounded read-only pending-handoff projection. `resource_reports_read` paginates pending reports or reads committed releases by original run ID from the canonical event ledger. Reads remain session/branch-scoped, including inherited branch cutoffs, and exclude protected output references. A successful acknowledgement removes the pending view while the committed release remains retrievable.

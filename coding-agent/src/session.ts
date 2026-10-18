@@ -4,14 +4,22 @@ import {
   AgentRunCoordinator,
   authorizeSessionToolEffects,
   commitResourceRelease,
+  createResourceReportTool,
+  readPendingResourceReports,
   AgentRuntime,
   AgentSession,
   ContextService,
   HistoryReader,
   SessionProviderBinding,
   generationAllowance,
+  resolveOutputReservation,
   resolveEffectiveToolCatalog,
-  inspectCapabilitySnapshot,
+  inspectSessionOperational,
+  type SessionOperationalInspection,
+  type ContextResourcePolicy,
+  type ContextControlPolicy,
+  type OutputReservationPolicy,
+
   agentEventCodec,
   createHistoryTools,
   type AgentEvent,
@@ -59,6 +67,9 @@ export interface CodingSessionOptions {
   readonly descriptor?: SessionDescriptor;
   readonly maxOutputTokens?: number;
   readonly inferenceBudget?: InferenceBudget;
+  readonly contextPolicy?: ContextResourcePolicy;
+  readonly contextControlPolicy?: Partial<ContextControlPolicy>;
+  readonly outputReservationPolicy?: OutputReservationPolicy;
   readonly onCommandSettlement?: (
     result: import('@agent-core/tools').CommandExecutionResult
   ) => void;
@@ -110,6 +121,9 @@ export async function createCodingSession(options: CodingSessionOptions) {
   const inferenceRepository = new JsonlInferenceRepository({
     rootDir: path.join(workspace.runtimeDir, 'inference')
   });
+  const contextControlPolicy = options.contextControlPolicy ?? configuration?.contextControlPolicy;
+  const outputReservationPolicy = options.outputReservationPolicy ?? configuration?.outputReservationPolicy;
+  const inferenceBudget = options.inferenceBudget ?? configuration?.inferenceBudget;
   const providerBinding = new SessionProviderBinding({
     provider: options.provider,
     selection: (() => { const { responseFormat: ignored, ...selection } = settings; void ignored; return selection; })(),
@@ -117,14 +131,12 @@ export async function createCodingSession(options: CodingSessionOptions) {
     repository: inferenceRepository,
     artifacts,
     admitRequest: (request) => { openedWorkspace.security.admitProviderRequest(request); },
-    ...(options.inferenceBudget === undefined ? {} : { budget: options.inferenceBudget })
+    ...(inferenceBudget === undefined ? {} : { budget: inferenceBudget })
   });
   const runs = new AgentRunCoordinator(events, artifacts);
   const history = new HistoryReader({ repository: sessions, session, events, artifacts });
 
-  let inspectOperational: (page?: ContextOperationalInspectionPage) => Promise<unknown> = async () => ({
-    allowance: await providerBinding.inference.inspectOwnerAllowance(ownerId)
-  });
+  let inspectOperational: (page?: ContextOperationalInspectionPage) => Promise<SessionOperationalInspection>;
   const context = new ContextService({
     inspectOperational: (page) => inspectOperational(page),
     repository: sessions,
@@ -134,15 +146,10 @@ export async function createCodingSession(options: CodingSessionOptions) {
     artifacts,
     policy: {
       maxSourceBytes: 4 * 1024 * 1024,
+      ...(options.contextPolicy ?? configuration?.contextPolicy),
       historyRead: { history, isAvailable: () => true }
     }
   });
-  const sessionTools = Object.freeze([
-    ...createHistoryTools({ history }),
-    ...context.toolDefinitions()
-  ]);
-  const sessionToolNames = new Set(sessionTools.map((tool) => tool.name));
-
   const commitTerminalReport = async (report: CommandExecutionReport): Promise<void> => {
     await commitResourceRelease({
       runId: report.result.owner.runId,
@@ -161,6 +168,14 @@ export async function createCodingSession(options: CodingSessionOptions) {
     }
   );
   const commandExecution = environment.commandExecution;
+  const resourceReports = { repository: sessions, session, events, ownerId, command: commandExecution };
+  const sessionTools = Object.freeze([
+    ...createHistoryTools({ history }),
+    createResourceReportTool(resourceReports),
+    ...context.toolDefinitions()
+  ]);
+  const sessionToolNames = new Set(sessionTools.map((tool) => tool.name));
+
   const sessionGuidance = RepositoryGuidanceSession.open({
     root: environment.files,
     security: openedWorkspace.security,
@@ -225,6 +240,8 @@ export async function createCodingSession(options: CodingSessionOptions) {
           modelBindingId: providerBinding.bindingId,
           inferenceService: providerBinding.inference,
           context,
+          ...(contextControlPolicy ? { contextControlPolicy } : {}),
+          ...(outputReservationPolicy ? { outputReservationPolicy } : {}),
           contextRenewal: { automatic: true },
 
           inferenceOwnerId: ownerId,
@@ -270,8 +287,8 @@ export async function createCodingSession(options: CodingSessionOptions) {
           onRequestAdmitted: (admitted) => {
             guidance.markRequestAdmitted(admitted);
           },
-          contextProvider: () => recoveredCommandContext(
-            commandExecution?.recoveredTerminalReports() ?? [], ownerId, artifacts
+          contextProvider: async () => recoveredCommandContext(
+            await readPendingResourceReports(resourceReports, { limit: 16, maxBytes: 7_000 })
           ),
           contextItems: [workspaceContext(authority, environment.files.displayPath)],
           ...(projectPolicy && configuration?.limits ? { limits: configuration.limits } : {}),
@@ -308,16 +325,15 @@ export async function createCodingSession(options: CodingSessionOptions) {
       const catalog = resolveEffectiveToolCatalog({ bindingId: resolved.bindingId, tools, policy: toolPolicy,
         host: { services: host.services, modelInputModalities: resolved.profile.modalities.input,
           hostCapabilities: resources?.capabilities ?? [] } });
-      return {
-        capabilityTarget: page.target ?? 'configured',
-        capabilities: page.target === 'last_admitted' ? null : inspectCapabilitySnapshot(catalog.snapshot, page),
-        configuredRevision: catalog.snapshot.revision,
-        lastAdmittedRequest: null,
-        generation: { outputReservation: options.maxOutputTokens ?? generationAllowance(resolved.profile, 16_384),
-          enforcement: resolved.profile.supportedParameters.includes('maxOutputTokens') ? 'provider-cap' : 'reservation-only' },
-        allowance: await resolved.inference.inspectOwnerAllowance(ownerId),
-        meaning: 'Current configured eligibility and owner allowance; per-call authorization and transactional admission still apply.'
-      };
+      const contextAdmission = context.admittedCapabilities();
+      return inspectSessionOperational({ configured: catalog.snapshot, profile: resolved.profile,
+        configuredOutputReservation: options.maxOutputTokens ?? generationAllowance(resolved.profile, 16_384),
+        outputReservation: resolveOutputReservation(options.maxOutputTokens ?? generationAllowance(resolved.profile, 16_384),
+          outputReservationPolicy, (await history.selectedContext())?.outputReservation),
+        ...(contextControlPolicy ? { contextControlPolicy } : {}),
+        ...(outputReservationPolicy ? { outputReservationPolicy } : {}),
+        inference: resolved.inference, ownerId, page,
+        ...(contextAdmission ? { contextAdmission } : {}) });
     };
 
     let closeCompletion: Promise<void> | undefined;
@@ -338,24 +354,13 @@ export async function createCodingSession(options: CodingSessionOptions) {
       events,
       sessions,
       session,
-      async inspectContext(page?: Parameters<typeof inspectCapabilitySnapshot>[1]) {
-        const { profile, bindingId } = await agent.inspectProviderBinding();
-        const catalog = resolveEffectiveToolCatalog({ bindingId, tools, policy: toolPolicy,
-          host: { services: host.services, modelInputModalities: profile.modalities.input,
-            hostCapabilities: resources?.capabilities ?? [] } });
+      async inspectContext(page?: ContextOperationalInspectionPage) {
         return {
-          ...(await context.inspect()),
+          ...(await context.inspect(undefined, undefined, page)),
           suspension: agent.inspectSuspension(),
-          generation: {
-            outputReservation: options.maxOutputTokens ?? generationAllowance(profile, 16_384),
-            enforcement: profile.supportedParameters.includes('maxOutputTokens')
-              ? 'provider-cap'
-              : 'reservation-only'
-          },
           available: {
             instructions: (await sessionGuidance.refresh()).instructions,
-            resources: [workspaceContext(authority, environment.files.displayPath)],
-            capabilities: inspectCapabilitySnapshot(catalog.snapshot, page)
+            resources: [workspaceContext(authority, environment.files.displayPath)]
           }
         };
       },

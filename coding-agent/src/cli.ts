@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { parseInferenceBudget, parseContextResourcePolicy, parseContextControlPolicy, parseOutputReservationPolicy } from '@agent-core/runtime';
 import { FileCredentialStore } from '@agent-core/auth';
 
 import {
@@ -210,6 +211,10 @@ interface CliOptionSpec {
 }
 
 const CLI_OPTION_SPECS = {
+  '--inference-budget': valued((options, value) => { options.inferenceBudget = parseInferenceBudget(JSON.parse(value)); }),
+  '--context-policy': valued((options, value) => { options.contextPolicy = parseContextResourcePolicy(JSON.parse(value)); }),
+  '--context-control-policy': valued((options, value) => { options.contextControlPolicy = parseContextControlPolicy(JSON.parse(value)); }),
+  '--output-reservation-policy': valued((options, value) => { options.outputReservationPolicy = parseOutputReservationPolicy(JSON.parse(value)); }),
   '--root': valued((options, value) => {
     options.root = value;
   }),
@@ -965,6 +970,14 @@ Common options:
                          OpenAI Codex streaming transport. Default: http_sse.
   --max-output-tokens <n>
                          Optional per-request output token override.
+  --inference-budget <json>
+                         Continuing session-owner budget, persisted across runs and renewals.
+  --context-policy <json>
+                         Source and session-state byte bounds.
+  --context-control-policy <json>
+                         Finite context recovery bounds and required/advisory reserve mode.
+  --output-reservation-policy <json>
+                         Allow model choice within minimum/maximum output-token bounds.
   --temperature <n>      Provider temperature.
   --reasoning-effort <level>
                          Model-supported reasoning effort; none requests disabled reasoning.

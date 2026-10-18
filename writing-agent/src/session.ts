@@ -10,8 +10,14 @@ import {
   HistoryReader,
   SessionProviderBinding,
   generationAllowance,
+  resolveOutputReservation,
   resolveEffectiveToolCatalog,
-  inspectCapabilitySnapshot,
+  inspectSessionOperational,
+  type ContextResourcePolicy,
+  type ContextOperationalInspectionPage,
+  type ContextControlPolicy,
+  type OutputReservationPolicy,
+
   agentEventCodec,
   createHistoryTools,
   type AgentEvent,
@@ -22,7 +28,7 @@ import {
   type SessionDescriptor
 } from '@agent-core/runtime';
 import { JsonlInferenceRepository, JsonlSessionRepository } from '@agent-core/runtime/node';
-import { TextPatchJournal, createLocalToolHost } from '@agent-core/tools-local';
+import { TextPatchJournal, createLocalToolHost, describeLocalToolCatalog } from '@agent-core/tools-local';
 import { mkdir, open, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import * as z from 'zod';
@@ -34,6 +40,9 @@ export interface WritingConfiguration extends Omit<AgentSessionConfiguration, 'p
   readonly provider: ModelProvider;
   readonly limits?: Partial<AgentRunLimits>;
   readonly inferenceBudget?: InferenceBudget;
+  readonly contextPolicy?: ContextResourcePolicy;
+  readonly contextControlPolicy?: Partial<ContextControlPolicy>;
+  readonly outputReservationPolicy?: OutputReservationPolicy;
   readonly maxOutputTokens?: number;
 }
 
@@ -92,19 +101,26 @@ export function createWritingSession(
   });
   const ownerId = `writing-session:${descriptor.id}`;
   const hosts = new Set<ReturnType<typeof createLocalToolHost>>();
+  let inspectionMode: WritingMode = 'edit';
   const context: ContextService = new ContextService({
     inspectOperational: async (page = {}) => {
       const resolved = await providerBinding.resolve(agent.state().configuration);
-      return {
-        capabilityTarget: page.target ?? 'configured',
-        capabilities: null,
-        configuredRevision: null,
-        lastAdmittedRequest: null,
-        generation: { outputReservation: configuration.maxOutputTokens ?? generationAllowance(resolved.profile, 16_384),
-          enforcement: resolved.profile.supportedParameters.includes('maxOutputTokens') ? 'provider-cap' : 'reservation-only' },
-        allowance: await resolved.inference.inspectOwnerAllowance(ownerId),
-        meaning: 'Owner allowance persists across runs. Tool eligibility additionally depends on the selected writing mode.'
-      };
+      const tools = [...describeLocalToolCatalog({ enabledTools: inspectionMode === 'edit'
+        ? [...readTools, 'apply_patch', 'edit_text'] : readTools, artifactReadMaxBytes: 2_000_000 }),
+        ...createWritingDocumentTools(workspace.root, artifacts), ...sessionTools];
+      const catalog = resolveEffectiveToolCatalog({ bindingId: resolved.bindingId, tools, policy: toolPolicy,
+        host: { services: { rootedFileAuthority: workspace.root, artifactRepository: artifacts,
+          rootedFileSelector: true, localToolConfiguration: true, ...(inspectionMode === 'edit' ? { patchJournal: true } : {}) },
+          modelInputModalities: resolved.profile.modalities.input, hostCapabilities: [] } });
+      const contextAdmission = context.admittedCapabilities();
+      return inspectSessionOperational({ configured: catalog.snapshot, profile: resolved.profile,
+        configuredOutputReservation: configuration.maxOutputTokens ?? generationAllowance(resolved.profile, 16_384),
+        outputReservation: resolveOutputReservation(configuration.maxOutputTokens ?? generationAllowance(resolved.profile, 16_384),
+          configuration.outputReservationPolicy, (await history.selectedContext())?.outputReservation),
+        ...(configuration.contextControlPolicy ? { contextControlPolicy: configuration.contextControlPolicy } : {}),
+        ...(configuration.outputReservationPolicy ? { outputReservationPolicy: configuration.outputReservationPolicy } : {}),
+        inference: resolved.inference, ownerId, page,
+        ...(contextAdmission ? { contextAdmission } : {}) });
     },
     repository: sessions,
     session: descriptor,
@@ -113,6 +129,7 @@ export function createWritingSession(
     artifacts,
     policy: {
       maxSourceBytes: 4 * 1024 * 1024,
+      ...configuration.contextPolicy,
       historyRead: { history, isAvailable: () => true }
     }
   });
@@ -189,6 +206,8 @@ export function createWritingSession(
             artifacts
           },
           context,
+          ...(configuration.contextControlPolicy ? { contextControlPolicy: configuration.contextControlPolicy } : {}),
+          ...(configuration.outputReservationPolicy ? { outputReservationPolicy: configuration.outputReservationPolicy } : {}),
           contextRenewal: { automatic: true },
 
           estimator: new RequestTokenEstimator(),
@@ -239,29 +258,13 @@ export function createWritingSession(
     events,
     sessions,
     context,
-    async inspectContext(mode: WritingMode, page?: Parameters<typeof inspectCapabilitySnapshot>[1]) {
-      const { profile, bindingId } = await agent.inspectProviderBinding();
-      const host = createHost(workspace.root.derive(), mode);
-      try {
-        const catalog = resolveEffectiveToolCatalog({ bindingId, tools: composedTools(host), policy: toolPolicy,
-          host: { services: host.services, modelInputModalities: profile.modalities.input,
-            hostCapabilities: host.capabilities } });
-        return {
-          ...(await context.inspect()),
-          suspension: agent.inspectSuspension(),
-          generation: {
-            outputReservation: configuration.maxOutputTokens ?? generationAllowance(profile, 16_384),
-            enforcement: profile.supportedParameters.includes('maxOutputTokens')
-              ? 'provider-cap'
-              : 'reservation-only'
-          },
-          available: {
-            instructions,
-            resources: workspaceContext(workspace, mode),
-            capabilities: inspectCapabilitySnapshot(catalog.snapshot, page)
-          }
-        };
-      } finally { await host.close(); }
+    async inspectContext(mode: WritingMode, page?: ContextOperationalInspectionPage) {
+      inspectionMode = mode;
+      return {
+        ...(await context.inspect(undefined, undefined, page)),
+        suspension: agent.inspectSuspension(),
+        available: { instructions, resources: workspaceContext(workspace, mode) }
+      };
     },
     async close() {
       const failures: unknown[] = [];
