@@ -382,13 +382,16 @@ test('human judgment remains pending, never an automatic pass', async () => {
 test('actual context renewal is recorded separately from natural one-window success', async () => {
   const result = await attempt([
     toolResponse('read_files', { files: [{ path: 'repo/settings.json' }] }),
-    toolResponse('context_transition', { reason: 'Qualification stress boundary, not natural workload evidence.', renewal: true,
-      sessionState: { blocks: [{ text: 'The corrected target is port 9090, with no theme. Preserve math.mjs.' }] } }),
+    toolResponse('context_save_and_activate', { reason: 'Qualification stress boundary, not natural workload evidence.', renewal: true,
+      operations: [{ kind: 'create', text: 'The corrected target is port 9090, with no theme. Preserve math.mjs.' }] }),
     toolResponse('history_latest', { limit: 5, maxBytes: 16384 }),
     patch(), finalResponse('Done')
   ], task => { task.contextMode = 'forced-renewal-stress'; });
   assert.equal(result.outcome, 'success', result.error);
   assert(result.metrics.contextRenewals > 0, JSON.stringify(result.metrics));
+  assert(result.metrics.toolCalls.some(call => call.toolName === 'context_save_and_activate' &&
+    call.attempts.some(attempt => attempt.invoked && attempt.observationKind === 'result')), JSON.stringify(result.metrics));
+  assert.equal(result.metrics.failureObservationCount, 0);
   assert(result.metrics.evidenceRetrievalCalls > 0);
 });
 

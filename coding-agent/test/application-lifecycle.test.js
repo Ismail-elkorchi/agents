@@ -3,6 +3,7 @@ import test from 'node:test';
 import { setImmediate } from 'node:timers/promises';
 import { AgentSession } from '@agent-core/runtime';
 import { JsonlEventRepository } from '@agent-core/persistence/node';
+import { JsonlSessionRepository } from '@agent-core/runtime/node';
 import { closeCodingSession, openCodingApplication } from '@ismail-elkorchi/coding-agent';
 import { createWorkspace, finalResponse, scriptedOllama, trust } from './fixtures/scripted-cli.js';
 
@@ -79,3 +80,53 @@ test('the composition close boundary stops the dispatcher and aggregates cleanup
     error.errors[0] === agentFailure && error.errors[1] === resourceFailure);
   assert.deepEqual(order, ['agent', 'resources']);
 });
+
+for (const operation of ['close', 'newSession']) {
+  test(`${operation} drains admitted history reads before releasing their captured session`, {
+    skip: process.platform !== 'linux', timeout: 30_000
+  }, async t => {
+    const provider = await scriptedOllama([finalResponse('Finished.')]);
+    const fixture = await createWorkspace({ endpoint: provider.endpoint, tools: ['read_files'], checks: [] });
+    const release = Promise.withResolvers();
+    let application;
+    t.after(async () => {
+      release.resolve();
+      await application?.close();
+      await provider.close();
+      await fixture.close();
+    });
+    await trust(fixture);
+    application = await openCodingApplication({
+      maxOutputTokens: fixture.maxOutputTokens, root: fixture.root, stateRoot: fixture.stateRoot,
+      permissionMode: 'read_only', providerEndpoint: provider.endpoint
+    });
+    await application.start();
+    const original = await application.readHistory();
+    const entered = Promise.withResolvers();
+    const read = JsonlSessionRepository.prototype.readBranchPage;
+    let intercepted = false;
+    t.mock.method(JsonlSessionRepository.prototype, 'readBranchPage', async function(...args) {
+      if (!intercepted) {
+        intercepted = true;
+        entered.resolve();
+        await release.promise;
+      }
+      return read.apply(this, args);
+    });
+    const reading = application.readHistory();
+    await entered.promise;
+    let stopped = false;
+    const stopping = application[operation]().then(() => { stopped = true; });
+    await setImmediate();
+    assert.equal(stopped, false);
+    assert.throws(() => application.readHistory());
+    release.resolve();
+    const page = await reading;
+    await stopping;
+    assert.deepEqual(page.history.boundary, original.history.boundary, 'the admitted read retains its original session identity');
+    if (operation === 'newSession') {
+      const replacement = await application.readHistory();
+      assert.notEqual(replacement.history.boundary.sessionId, original.history.boundary.sessionId);
+    }
+  });
+}

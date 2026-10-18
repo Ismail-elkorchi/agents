@@ -7,6 +7,7 @@ import {
 import { LocalArtifactRepository, atomicWritePrivateJson } from '@agent-core/persistence/node';
 import {
   ApplicationEvents,
+  SessionReadLifetime,
   assertHistoryModelCompatibility,
   ownSessionSubmissionInput,
   progressReplacementKey,
@@ -103,6 +104,7 @@ export class WritingApplication {
   private readonly maxOutputTokens: number | undefined;
   private mutations: Promise<void> = Promise.resolve();
   private closeCompletion: Promise<void> | undefined;
+  private sessionReads = new SessionReadLifetime();
   private historyRecovery: AbortController | undefined;
   private readonly historyRecoveryFailures = new Map<string, string>();
 
@@ -464,9 +466,9 @@ export class WritingApplication {
     return this.submit(input, { delivery: 'steer', expectedRunId });
   }
 
-  async readPendingSubmissions() {
-    if (this.descriptor === undefined) throw new Error('No session is open.');
-    return this.sessions.loadPendingSubmissions(this.descriptor);
+  readPendingSubmissions() {
+    const descriptor = this.requireDescriptor();
+    return this.readSessionOwned(() => this.sessions.loadPendingSubmissions(descriptor));
   }
 
   async updateQueuedSubmission(
@@ -551,26 +553,29 @@ export class WritingApplication {
 
   readSession() {
     this.assertOpen();
-    return this.requireAgent().inspect();
+    const agent = this.requireAgent();
+    return this.readSessionOwned(() => agent.inspect());
   }
   readHistory(request: SessionBranchPageRequest = {}) {
-    return this.sessions.readBranchPage(this.requireDescriptor(), request);
+    return this.readSessionOwned(() => this.sessions.readBranchPage(this.requireDescriptor(), request));
   }
   searchHistory(request: SessionBranchSearchRequest) {
-    return this.sessions.searchBranch(this.requireDescriptor(), request);
+    return this.readSessionOwned(() => this.sessions.searchBranch(this.requireDescriptor(), request));
   }
   readHistoryEntry(boundary: SessionBranchBoundary, entryId: string) {
-    return this.sessions.readBranchEntry(this.requireDescriptor(), boundary, entryId);
+    return this.readSessionOwned(() => this.sessions.readBranchEntry(this.requireDescriptor(), boundary, entryId));
   }
 
   readHistorySource(request: import('@agent-core/runtime').HistoryReadRequest) {
     if (!this.composition) throw new Error('Open a session before reading original history.');
-    return this.composition.history.read(request);
+    const composition = this.composition;
+    return this.readSessionOwned(() => composition.history.read(request));
   }
 
   contextSources(request: import('@agent-core/runtime').HistorySearchRequest) {
     if (!this.composition) throw new Error('Open a session before inspecting context.');
-    return this.composition.history.search(request);
+    const composition = this.composition;
+    return this.readSessionOwned(() => composition.history.search(request));
   }
   async transitionContext(request: import('@agent-core/runtime').ContextTransitionRequest) {
     const agent = this.requireAgent();
@@ -584,14 +589,17 @@ export class WritingApplication {
   readSessionState(ref: import('@agent-core/runtime').SessionStateItemRef) {
     this.assertOpen();
     if (!this.composition) throw new Error('Configure a session before reading session state.');
-    return this.composition.context.readSessionState(ref);
+    const composition = this.composition;
+    return this.readSessionOwned(() => composition.context.readSessionState(ref));
   }
 
   inspectContext(page?: Parameters<typeof inspectCapabilitySnapshot>[1]) {
     this.assertOpen();
     if (this.composition === undefined)
       throw new Error('Configure a session before inspecting context.');
-    return this.composition.inspectContext(this.mode, page);
+    const composition = this.composition;
+    const mode = this.mode;
+    return this.readSessionOwned(() => composition.inspectContext(mode, page));
   }
   inspectSuspension() {
     this.assertOpen();
@@ -630,6 +638,11 @@ export class WritingApplication {
       }
     });
     return this.closeCompletion;
+  }
+
+  private readSessionOwned<T>(read: () => Promise<T>): Promise<T> {
+    this.assertOpen();
+    return this.sessionReads.read(read);
   }
 
   private generationConfiguration(configuration: WritingConfiguration): WritingConfiguration {
@@ -713,8 +726,10 @@ export class WritingApplication {
   private async disconnect() {
     this.unsubscribe?.();
     this.unsubscribe = undefined;
+    await this.sessionReads.close();
     await this.composition?.close();
     this.composition = undefined;
+    this.sessionReads = new SessionReadLifetime();
   }
 
   private requireAgent() {

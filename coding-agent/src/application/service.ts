@@ -8,6 +8,7 @@ import { JsonlEventRepository } from '@agent-core/persistence/node';
 import {
   agentEventCodec,
   ApplicationEvents,
+  SessionReadLifetime,
   assertHistoryModelCompatibility,
   progressReplacementKey,
   type AgentEvent,
@@ -82,6 +83,7 @@ export class CodingApplication {
   private readonly historyRecoveryFailures = new Map<string, string>();
   private closed = false;
   private closeCompletion: Promise<void> | undefined;
+  private sessionReads = new SessionReadLifetime();
   private applicationState: CodingApplicationState;
 
   constructor(
@@ -277,6 +279,7 @@ export class CodingApplication {
     const runtime = this.runtime;
     this.runtime = undefined;
     await this.stopRuntimeEvents();
+    await this.sessionReads.close();
     const failures: unknown[] = [];
     if (runtime !== undefined) {
       try {
@@ -487,7 +490,9 @@ export class CodingApplication {
     requireIdleSession(runtime.agent);
     this.runtime = undefined;
     await this.stopRuntimeEvents();
+    await this.sessionReads.close();
     await closeCodingSession(runtime);
+    this.sessionReads = new SessionReadLifetime();
   }
 
   private async stopRuntimeEvents(): Promise<void> {
@@ -679,11 +684,11 @@ export class CodingApplication {
   }
 
   readHistorySource(request: import('@agent-core/runtime').HistoryReadRequest) {
-    return this.requireRuntime().history.read(request);
+    return this.readSessionOwned(runtime => runtime.history.read(request));
   }
 
   contextSources(request: import('@agent-core/runtime').HistorySearchRequest) {
-    return this.requireRuntime().history.search(request);
+    return this.readSessionOwned(runtime => runtime.history.search(request));
   }
   async transitionContext(request: import('@agent-core/runtime').ContextTransitionRequest) {
     const agent = this.requireRuntime().agent;
@@ -695,15 +700,15 @@ export class CodingApplication {
   }
 
   readSessionState(ref: import('@agent-core/runtime').SessionStateItemRef) {
-    return this.requireRuntime().context.readSessionState(ref);
+    return this.readSessionOwned(runtime => runtime.context.readSessionState(ref));
   }
 
   inspectContext(page?: Parameters<typeof inspectCapabilitySnapshot>[1]) {
-    return this.requireRuntime().inspectContext(page);
+    return this.readSessionOwned(runtime => runtime.inspectContext(page));
   }
 
   listProcesses() {
-    return this.requireRuntime().listProcesses();
+    return this.readSessionOwned(runtime => runtime.listProcesses());
   }
   reconcileProcesses(acknowledge?: import('../execution/process-controls.js').CodingProcessTarget) {
     return this.requireRuntime().reconcileProcesses(acknowledge);
@@ -717,8 +722,7 @@ export class CodingApplication {
   }
 
   readPendingSubmissions() {
-    const runtime = this.requireRuntime();
-    return runtime.sessions.loadPendingSubmissions(runtime.session);
+    return this.readSessionOwned(runtime => runtime.sessions.loadPendingSubmissions(runtime.session));
   }
 
   waitForIdle(): Promise<void> {
@@ -756,55 +760,59 @@ export class CodingApplication {
     });
   }
 
-  async readChange(runId: string, path: string) {
-    const runtime = this.requireRuntime();
-    const decision = this.workspace.security.decide('workspace_read');
-    if (decision.kind !== 'allowed') throw new Error(decision.reason);
-    const report = await readRunChangeReport(
-      runtime.events,
-      runId,
-      runtime.workspaceRoot,
-      runtime.artifacts
-    );
-    const change = report.changes.find((change) => change.path === path);
-    if (change === undefined) throw new Error('The requested change is not recorded in this run.');
-    const receipts = report.mutationReceipts.filter((receipt) =>
-      change.receiptSequences.includes(receipt.sequence)
-    );
-    const patches = await readRecordedMutationPatches(runtime.events, runId, receipts);
-    return { change, patches };
+  readChange(runId: string, path: string) {
+    return this.readSessionOwned(async runtime => {
+      const decision = this.workspace.security.decide('workspace_read');
+      if (decision.kind !== 'allowed') throw new Error(decision.reason);
+      const report = await readRunChangeReport(
+        runtime.events,
+        runId,
+        runtime.workspaceRoot,
+        runtime.artifacts
+      );
+      const change = report.changes.find((change) => change.path === path);
+      if (change === undefined) throw new Error('The requested change is not recorded in this run.');
+      const receipts = report.mutationReceipts.filter((receipt) =>
+        change.receiptSequences.includes(receipt.sequence)
+      );
+      const patches = await readRecordedMutationPatches(runtime.events, runId, receipts);
+      return { change, patches };
+    });
   }
 
   readSession() {
-    return readCodingSessionView(this.requireRuntime());
+    return this.readSessionOwned(runtime => readCodingSessionView(runtime));
   }
 
   readVerification(runId: string) {
-    const runtime = this.requireRuntime();
-    return readConfiguredCheckResults(
+    return this.readSessionOwned(runtime => readConfiguredCheckResults(
       runtime.events,
       runId,
       runtime.configuration,
       runtime.fileRoot,
       runtime.artifacts
-    );
+    ));
   }
 
   readHistory(request?: Parameters<JsonlSessionRepository['readBranchPage']>[1]) {
-    return readCodingHistoryPage(this.requireRuntime(), request);
+    this.assertOpen();
+    const runtime = this.requireRuntime();
+    return this.sessionReads.read(() => readCodingHistoryPage(runtime, request));
   }
 
   searchHistory(request: Parameters<JsonlSessionRepository['searchBranch']>[1]) {
+    this.assertOpen();
     const runtime = this.requireRuntime();
-    return runtime.sessions.searchBranch(runtime.session, request);
+    return this.sessionReads.read(() => runtime.sessions.searchBranch(runtime.session, request));
   }
 
   readHistoryEntry(
     boundary: Parameters<JsonlSessionRepository['readBranchEntry']>[1],
     entryId: string
   ) {
+    this.assertOpen();
     const runtime = this.requireRuntime();
-    return runtime.sessions.readBranchEntry(runtime.session, boundary, entryId);
+    return this.sessionReads.read(() => runtime.sessions.readBranchEntry(runtime.session, boundary, entryId));
   }
 
   listSessions() {
@@ -876,6 +884,12 @@ export class CodingApplication {
     if (this.runtime !== undefined) requireIdleSession(this.runtime.agent);
     await this.publishState('initializing', []);
     await this.deactivateRuntime();
+  }
+
+  private readSessionOwned<T>(read: (runtime: CodingAgentRuntimeComposition) => Promise<T>): Promise<T> {
+    this.assertOpen();
+    const runtime = this.requireRuntime();
+    return this.sessionReads.read(() => read(runtime));
   }
 
   private requireRuntime(): CodingAgentRuntimeComposition {

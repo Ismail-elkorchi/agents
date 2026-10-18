@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { setImmediate } from 'node:timers/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { JsonlSessionRepository } from '@agent-core/runtime/node';
+import { ContextService } from '@agent-core/runtime';
 import { RootedFileAuthority } from '@agent-core/tools-local';
 import { openWritingApplication } from '@ismail-elkorchi/writing-agent';
 import { ScriptedWritingProvider } from './helpers/runtime.js';
@@ -255,3 +257,36 @@ test('navigation during a writing startup submission preserves the draft and ini
   assert.equal(runtime.state().application.sessionId, destination);
   assert.equal(textDocumentText(runtime.state().composer.input.document), '');
 });
+
+for (const method of ['readHistory', 'searchHistory', 'readHistoryEntry', 'inspectContext']) {
+  test(`close drains an admitted ${method} before releasing writing session resources`, integration, async t => {
+    const f = await fixture(t);
+    await f.app.start();
+    const originalPage = await f.app.readHistory();
+    const repositoryMethod = { readHistory: 'readBranchPage', searchHistory: 'searchBranch', readHistoryEntry: 'readBranchEntry', inspectContext: 'inspect' }[method];
+    const prototype = method === 'inspectContext' ? ContextService.prototype : JsonlSessionRepository.prototype;
+    const read = prototype[repositoryMethod];
+    const entered = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    t.after(() => release.resolve());
+    t.mock.method(prototype, repositoryMethod, async function(...args) {
+      entered.resolve();
+      await release.promise;
+      return read.apply(this, args);
+    });
+    const args = method === 'searchHistory' ? [{ query: 'Earlier' }]
+      : method === 'readHistoryEntry' ? [originalPage.boundary, originalPage.entries[0].id] : [];
+    const reading = f.app[method](...args);
+    await entered.promise;
+    let closed = false;
+    const closing = f.app.close().then(() => { closed = true; });
+    try {
+      await setImmediate();
+      assert.equal(closed, false, 'close must await the admitted repository read');
+      assert.throws(() => f.app.readHistory(), /closed/u);
+    } finally { release.resolve(); }
+    await reading;
+    await closing;
+    assert.equal(closed, true);
+  });
+}
