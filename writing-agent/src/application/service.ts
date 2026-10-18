@@ -11,6 +11,7 @@ import {
   ownSessionSubmissionInput,
   progressReplacementKey,
   type AgentSession,
+  type inspectCapabilitySnapshot,
   type AgentSessionEvent,
   type AgentSessionSubmissionResult,
   type SessionBranchBoundary,
@@ -279,7 +280,20 @@ export class WritingApplication {
       delete configuration.temperature;
       if (owned.reasoning !== undefined) configuration.reasoning = owned.reasoning;
       if (owned.temperature !== undefined) configuration.temperature = owned.temperature;
-      await this.replaceConfiguration(configuration, owned);
+      if (this.composition) {
+        this.requireIdle();
+        const profile = await provider.describeModel(owned.model);
+        await this.composition.agent.changeModel({ selection: owned, provider, profile, artifacts: this.composition.artifacts });
+        this.configuration = configuration;
+        this.selection = owned;
+        try {
+          await atomicWritePrivateJson(path.join(this.workspace.stateDirectory, 'model-selection.json'), { ...owned });
+        } catch (cause) {
+          throw new Error('The session model changed, but saving the default model failed.', { cause });
+        }
+      } else {
+        await this.replaceConfiguration(configuration, owned);
+      }
     });
   }
 
@@ -331,6 +345,7 @@ export class WritingApplication {
             : { temperature: configuration.temperature })
         },
         profile,
+        provider: configuration.provider,
         artifacts: prepared.artifacts
       });
     } catch (error) {
@@ -566,11 +581,17 @@ export class WritingApplication {
     return { selection: selected };
   }
 
-  inspectContext() {
+  readSessionState(ref: import('@agent-core/runtime').SessionStateItemRef) {
+    this.assertOpen();
+    if (!this.composition) throw new Error('Configure a session before reading session state.');
+    return this.composition.context.readSessionState(ref);
+  }
+
+  inspectContext(page?: Parameters<typeof inspectCapabilitySnapshot>[1]) {
     this.assertOpen();
     if (this.composition === undefined)
       throw new Error('Configure a session before inspecting context.');
-    return this.composition.inspectContext(this.mode);
+    return this.composition.inspectContext(this.mode, page);
   }
   inspectSuspension() {
     this.assertOpen();

@@ -257,8 +257,8 @@ test(
     const f = await fixture('Original document.\n', {
       mode: 'review',
       responses: [
-        toolCall('context_transition', {
-          sessionState: { blocks: [{ text }] }, reason: 'Preserve the current interpretation.'
+        toolCall('context_save_and_activate', {
+          operations: [{ kind: 'create', text }], reason: 'Preserve the current interpretation.'
         }),
         'Reviewed.',
         'Answered.'
@@ -272,16 +272,11 @@ test(
       'completed'
     );
     const inspected = await f.application.inspectContext();
-    assert.equal(inspected.sessionState.content.blocks[0]?.text, text, JSON.stringify(inspected.sessionState));
-    assert.equal(inspected.sessionState.complete, true);
-    assert.ok(inspected.sessionState.revisionId);
-    const original = await f.application.readHistorySource({
-      source: inspected.sessionState.source,
-      maxBytes: 16
-    });
-    assert.equal(original.status, 'available');
-    assert.equal(original.item.generated, true);
-    assert.equal(original.item.truncated, true);
+    assert.equal((await f.application.readSessionState(inspected.sessionState.selected[0])).text, text);
+    assert.equal(inspected.sessionState.stored.coverage, 'complete');
+    assert.ok(inspected.sessionState.selected[0].revisionId);
+    const original = await f.application.readSessionState({ ...inspected.sessionState.selected[0], range: { offset: 0, bytes: 16 } });
+    assert.equal(original.text, text.slice(0, 16));
     assert.equal(await readFile(path.join(f.root, 'document.txt'), 'utf8'), 'Original document.\n');
     assert.equal(
       (await submit(f.application, 'Why did you choose that audience?')).terminal.executionStatus,
@@ -316,4 +311,27 @@ test('review sessions reject idle renewal without changing document authority', 
   assert(!tools.includes('apply_patch'));
   assert(tools.includes('context_transition'));
   assert.equal(await readFile(path.join(f.root, 'document.txt'), 'utf8'), 'Original document.\n');
+});
+
+for (const mode of ['edit', 'review']) test(`prospective ${mode} inspection matches actual declared tools without running inference`, integration, async t => {
+  const f = await fixture('Original document.\n', { mode, responses: ['Done.'] });
+  t.after(() => f.close());
+  await f.application.start();
+  const inspected = await f.application.inspectContext();
+  assert.equal(f.provider.requests.length, 0);
+  assert.equal(inspected.operational.allowance.settled.invocations, 0);
+  const capabilities = inspected.available.capabilities;
+  assert.equal(capabilities.coverage, 'complete');
+  const names = capabilities.items.filter(tool => tool.available).map(tool => tool.name);
+  assert.equal(names.includes('apply_patch'), mode === 'edit');
+  assert.ok(names.includes('context_transition'));
+  await submit(f.application, 'Describe the document without editing it.');
+  const declared = f.provider.requests[0].tools.map(tool => tool.type === 'function' ? tool.function.name : tool.name);
+  assert.deepEqual([...names].sort(), [...declared].sort());
+  const after = await f.application.inspectContext({ limit: 1 });
+  assert.equal(after.operational.allowance.ownerId, inspected.operational.allowance.ownerId);
+  assert.equal(after.operational.allowance.settled.invocations, 1);
+  const page = after.available.capabilities;
+  assert.equal(page.coverage, 'partial');
+  assert.equal(page.items.length, 1);
 });

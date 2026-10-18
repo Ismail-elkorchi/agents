@@ -1,17 +1,21 @@
-import { assertModelRequestSupported, RequestTokenEstimator, type ModelProvider } from '@agent-core/model';
-import { hashJson } from '@agent-core/persistence';
+import { RequestTokenEstimator, type ModelProvider } from '@agent-core/model';
 import { JsonlEventRepository, LocalArtifactRepository } from '@agent-core/persistence/node';
 import {
   AgentRunCoordinator,
-  assertSessionImagesSupported,
+  authorizeSessionToolEffects,
+  commitResourceRelease,
   AgentRuntime,
   AgentSession,
   ContextService,
   HistoryReader,
-  InferenceService,
+  SessionProviderBinding,
+  generationAllowance,
+  resolveEffectiveToolCatalog,
+  inspectCapabilitySnapshot,
   agentEventCodec,
   createHistoryTools,
   type AgentEvent,
+  type ContextOperationalInspectionPage,
   type AgentSessionConfiguration,
   type AgentSessionOptions,
   type InferenceBudget,
@@ -22,8 +26,6 @@ import { JsonlInferenceRepository, JsonlSessionRepository } from '@agent-core/ru
 import {
   commandExecutionResources,
   commandReleaseReport,
-  isToolAvailable,
-  toolRequirementsSatisfied,
   type ToolPolicy,
   type CommandExecutionReport
 } from '@agent-core/tools';
@@ -31,6 +33,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { CodingAgentConfiguration } from './configuration.js';
 import { processControls } from './execution/process-controls.js';
+import { recoveredCommandContext } from './execution/recovered-command-context.js';
 import {
   createLocalToolHost,
   DEFAULT_LOCAL_TOOL_CONFIGURATION,
@@ -103,27 +106,27 @@ export async function createCodingSession(options: CodingSessionOptions) {
 
   await fs.mkdir(workspace.artifactsDir, { recursive: true, mode: 0o700 });
   const artifacts = new LocalArtifactRepository({ rootDir: workspace.artifactsDir });
-  let provider = options.provider;
-  let providerBinding = settings;
   const ownerId = `coding-session:${session.id}`;
   const inferenceRepository = new JsonlInferenceRepository({
     rootDir: path.join(workspace.runtimeDir, 'inference')
   });
-  const createInference = () =>
-    new InferenceService({
-      provider,
-      repository: inferenceRepository,
-      artifacts,
-      admitRequest: (request) => {
-        openedWorkspace.security.admitProviderRequest(request);
-      },
-      ...(options.inferenceBudget === undefined ? {} : { budget: options.inferenceBudget })
-    });
-  let inference = createInference();
+  const providerBinding = new SessionProviderBinding({
+    provider: options.provider,
+    selection: (() => { const { responseFormat: ignored, ...selection } = settings; void ignored; return selection; })(),
+    ...(options.resolveProvider ? { resolveProvider: options.resolveProvider } : {}),
+    repository: inferenceRepository,
+    artifacts,
+    admitRequest: (request) => { openedWorkspace.security.admitProviderRequest(request); },
+    ...(options.inferenceBudget === undefined ? {} : { budget: options.inferenceBudget })
+  });
   const runs = new AgentRunCoordinator(events, artifacts);
   const history = new HistoryReader({ repository: sessions, session, events, artifacts });
 
+  let inspectOperational: (page?: ContextOperationalInspectionPage) => Promise<unknown> = async () => ({
+    allowance: await providerBinding.inference.inspectOwnerAllowance(ownerId)
+  });
   const context = new ContextService({
+    inspectOperational: (page) => inspectOperational(page),
     repository: sessions,
     session,
     history,
@@ -141,36 +144,11 @@ export async function createCodingSession(options: CodingSessionOptions) {
   const sessionToolNames = new Set(sessionTools.map((tool) => tool.name));
 
   const commitTerminalReport = async (report: CommandExecutionReport): Promise<void> => {
-    const released = commandReleaseReport(report);
-    if (released.outcome === 'unknown') throw new Error('Command lifetime is still unresolved.');
-    if (released.settlementReference) return;
-    const key = `${report.result.owner.runId}:command:${released.resourceId}:terminal`;
-    const previous = await events.referenceByKey(report.result.owner.runId, key);
-    if (previous) {
-      const { event } = await events.readReference(previous);
-      if (
-        event.type !== 'resource.released' ||
-        event.resourceId !== released.resourceId ||
-        event.outcome !== 'released' ||
-        event.details.status !== released.details.status ||
-        event.details.exitCode !== released.details.exitCode ||
-        event.details.signal !== released.details.signal ||
-        hashJson(event.details.owner) !== hashJson(report.result.owner)
-      )
-        throw new Error('Committed command settlement does not match its owner.');
-      return;
-    }
-    await events.append(
-      report.result.owner.runId,
-      {
-        type: 'resource.released',
-        runId: report.result.owner.runId,
-        resourceId: released.resourceId,
-        outcome: released.outcome,
-        details: released.details
-      },
-      { actor: 'runtime', idempotencyKey: key }
-    );
+    await commitResourceRelease({
+      runId: report.result.owner.runId,
+      report: commandReleaseReport(report),
+      events
+    });
   };
   const environment = await openHostEnvironment(
     openedWorkspace.fileRoot,
@@ -235,29 +213,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
           ? {}
           : { responseFormat: settings.responseFormat })
       },
-      async prepareConfiguration(configuration, input) {
-        const { responseFormat: ignored, ...binding } = configuration;
-        const { responseFormat: ignoredBound, ...bound } = providerBinding;
-        void ignored;
-        void ignoredBound;
-        if (hashJson(binding) !== hashJson(bound)) {
-          if (!options.resolveProvider)
-            throw new Error('Session model configuration changed in another client. Select the model again before submitting.');
-          const next = options.resolveProvider(configuration);
-          if (next.id !== configuration.provider) throw new Error('The resolved provider does not match the session configuration.');
-          const profile = await next.describeModel(configuration.model);
-          if (profile.provider !== configuration.provider || profile.id !== configuration.model)
-            throw new Error('The resolved model profile does not match the session configuration.');
-          assertModelRequestSupported(profile, { model: configuration.model, messages: [],
-            ...(configuration.reasoning === undefined ? {} : { reasoning: configuration.reasoning }),
-            ...(configuration.temperature === undefined ? {} : { temperature: configuration.temperature }) });
-          provider = next;
-          providerBinding = configuration;
-          inference = createInference();
-        }
-        if (input.images?.length)
-          assertSessionImagesSupported(input.images, await provider.describeModel(configuration.model));
-      },
+      providerBinding,
       async createRuntime(runtimeSettings, onProgress) {
         const guidance = RepositoryGuidanceSession.open({
           root: environment.files,
@@ -265,8 +221,9 @@ export async function createCodingSession(options: CodingSessionOptions) {
           configuredPaths: configuration?.instructions.map((instruction) => instruction.path) ?? []
         });
         const runtime = new AgentRuntime({
-          provider,
-          inferenceService: inference,
+          provider: providerBinding.provider,
+          modelBindingId: providerBinding.bindingId,
+          inferenceService: providerBinding.inference,
           context,
           contextRenewal: { automatic: true },
 
@@ -281,7 +238,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
           estimator: new RequestTokenEstimator(),
           maxOutputTokens:
             options.maxOutputTokens ??
-            defaultGenerationAllowance(await provider.describeModel(runtimeSettings.model)),
+            generationAllowance(await providerBinding.provider.describeModel(runtimeSettings.model), 16_384),
           tools,
           toolContext: { services: host.services },
           ...(resources === undefined ? {} : { resources }),
@@ -293,12 +250,16 @@ export async function createCodingSession(options: CodingSessionOptions) {
               ? Promise.resolve(undefined)
               : guidance.contextPrerequisite(request),
           toolAuthorizer: async (request) => {
-            if (sessionToolNames.has(request.call.name))
-              return {
-                decision: 'allow',
-                reason:
-                  'The tool is bound to this session history, session state, or context service.'
-              };
+            if (sessionToolNames.has(request.call.name)) {
+              const decision = await authorizeSessionToolEffects(request, { sessionId: session.id, branchId: (await history.capture()).branchId,
+                artifacts: host.services.artifactRepository,
+                allowArtifactRead: host.tools.some(tool => tool.name === 'read_artifact') });
+              if (decision.decision !== 'allow') return decision;
+              const accesses = request.effects.accesses.filter(access => access.scope.startsWith('artifacts/'));
+              return accesses.length === 0 ? decision : openedWorkspace.security.authorizeTool({
+                ...request, effects: { ...request.effects, accesses }
+              });
+            }
             const workspaceDecision = openedWorkspace.security.authorizeTool(request);
             if (workspaceDecision.decision === 'deny') return workspaceDecision;
             const guidanceDecision = await guidance.authorize(request);
@@ -309,31 +270,9 @@ export async function createCodingSession(options: CodingSessionOptions) {
           onRequestAdmitted: (admitted) => {
             guidance.markRequestAdmitted(admitted);
           },
-          contextProvider: () =>
-            commandExecution
-              ?.recoveredTerminalReports()
-              .filter(({ result }) => result.owner.ownerId === ownerId)
-              .slice(-16)
-              .map(({ result }) => ({
-                id: `command:${result.processId}`,
-                sourceUri: `command:${result.processId}`,
-                sourceKind: 'external',
-                integrity: 'verified',
-                representation: 'summary',
-                mediaType: 'application/json',
-                title: 'Command completion',
-                purpose:
-                  'Committed result of a command owned by this session; use process controls or the output artifact to retrieve original output.',
-                content: JSON.stringify({
-                  processId: result.processId,
-                  runId: result.owner.runId,
-                  status: result.status,
-                  exitCode: result.exitCode,
-                  signal: result.signal,
-                  artifact: result.artifact,
-                  originalOutput: result.originalOutput
-                })
-              })) ?? [],
+          contextProvider: () => recoveredCommandContext(
+            commandExecution?.recoveredTerminalReports() ?? [], ownerId, artifacts
+          ),
           contextItems: [workspaceContext(authority, environment.files.displayPath)],
           ...(projectPolicy && configuration?.limits ? { limits: configuration.limits } : {}),
           metadata: {
@@ -364,21 +303,32 @@ export async function createCodingSession(options: CodingSessionOptions) {
       }
     };
     const agent = new AgentSession(sessionOptions);
+    inspectOperational = async (page = {}) => {
+      const resolved = await providerBinding.resolve(agent.state().configuration);
+      const catalog = resolveEffectiveToolCatalog({ bindingId: resolved.bindingId, tools, policy: toolPolicy,
+        host: { services: host.services, modelInputModalities: resolved.profile.modalities.input,
+          hostCapabilities: resources?.capabilities ?? [] } });
+      return {
+        capabilityTarget: page.target ?? 'configured',
+        capabilities: page.target === 'last_admitted' ? null : inspectCapabilitySnapshot(catalog.snapshot, page),
+        configuredRevision: catalog.snapshot.revision,
+        lastAdmittedRequest: null,
+        generation: { outputReservation: options.maxOutputTokens ?? generationAllowance(resolved.profile, 16_384),
+          enforcement: resolved.profile.supportedParameters.includes('maxOutputTokens') ? 'provider-cap' : 'reservation-only' },
+        allowance: await resolved.inference.inspectOwnerAllowance(ownerId),
+        meaning: 'Current configured eligibility and owner allowance; per-call authorization and transactional admission still apply.'
+      };
+    };
 
     let closeCompletion: Promise<void> | undefined;
     return {
       ...processControls(session.id, ownerId, commandExecution),
       agent,
       get inference() {
-        return inference;
+        return providerBinding.inference;
       },
       get provider() {
-        return provider;
-      },
-      setProvider(next: ModelProvider, binding: AgentSessionConfiguration) {
-        provider = next;
-        providerBinding = binding;
-        inference = createInference();
+        return providerBinding.provider;
       },
       history,
       artifacts,
@@ -388,13 +338,16 @@ export async function createCodingSession(options: CodingSessionOptions) {
       events,
       sessions,
       session,
-      async inspectContext() {
-        const profile = await provider.describeModel(agent.state().configuration.model);
+      async inspectContext(page?: Parameters<typeof inspectCapabilitySnapshot>[1]) {
+        const { profile, bindingId } = await agent.inspectProviderBinding();
+        const catalog = resolveEffectiveToolCatalog({ bindingId, tools, policy: toolPolicy,
+          host: { services: host.services, modelInputModalities: profile.modalities.input,
+            hostCapabilities: resources?.capabilities ?? [] } });
         return {
           ...(await context.inspect()),
           suspension: agent.inspectSuspension(),
           generation: {
-            outputReservation: options.maxOutputTokens ?? defaultGenerationAllowance(profile),
+            outputReservation: options.maxOutputTokens ?? generationAllowance(profile, 16_384),
             enforcement: profile.supportedParameters.includes('maxOutputTokens')
               ? 'provider-cap'
               : 'reservation-only'
@@ -402,15 +355,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
           available: {
             instructions: (await sessionGuidance.refresh()).instructions,
             resources: [workspaceContext(authority, environment.files.displayPath)],
-            toolNames: tools
-              .filter((tool) =>
-                isToolAvailable(tool, toolPolicy) && toolRequirementsSatisfied(tool, {
-                  services: host.services,
-                  modelInputModalities: profile.modalities.input,
-                  hostCapabilities: resources?.capabilities ?? []
-                })
-              )
-              .map((tool) => tool.name)
+            capabilities: inspectCapabilitySnapshot(catalog.snapshot, page)
           }
         };
       },
@@ -421,9 +366,13 @@ export async function createCodingSession(options: CodingSessionOptions) {
       closeResources() {
         closeCompletion ??= (async () => {
           try {
-            for (const report of (await commandExecution?.disposeOwner(ownerId)) ?? []) {
-              await commitTerminalReport(report);
-              await commandExecution?.acknowledgeTerminalReport(report.result.processId);
+            if (commandExecution) for (const report of await commandExecution.disposeOwner(ownerId)) {
+              await commitResourceRelease({
+                runId: report.result.owner.runId,
+                report: commandReleaseReport(report),
+                events,
+                acknowledge: (resourceId) => commandExecution.acknowledgeTerminalReport(resourceId)
+              });
             }
           } finally {
             await environment.close();
@@ -461,8 +410,7 @@ function workspaceContext(authority: CodingAuthority, displayRoot: string): Prom
       authority.mode === 'read_only'
         ? 'Read-only host workspace. Edits and commands are disabled.'
         : 'Host workspace. Commands run under your host account with access to the rest of the system and network.',
-      `Permission mode: ${authority.mode}`,
-      `Available workspace tools: ${authority.enabledTools.join(', ') || 'none'}`
+      `Permission mode: ${authority.mode}`
     ].join('\n'),
     purpose: 'Current source location and permission boundary.'
   });
@@ -503,6 +451,7 @@ async function openHostEnvironment(
       });
     }
     host = createLocalToolHost({
+      artifactReadMaxBytes: 2_000_000,
       rootedFileAuthority: files,
       artifactRepository: artifacts,
       ...(commands ? { commandExecution: commands } : {}),
@@ -552,15 +501,4 @@ export async function closeCodingSession(runtime: CodingSessionComposition): Pro
   }
   if (failures.length > 0)
     throw new AggregateError(failures, 'Coding session cleanup failed.');
-}
-
-/** Application policy: reserve at most half the context and up to 16,384 output tokens. */
-function defaultGenerationAllowance(profile: import('@agent-core/model').ModelProfile): number {
-  return Math.min(
-    16_384,
-    profile.limits.outputTokens ?? Infinity,
-    profile.limits.contextTokens === undefined
-      ? Infinity
-      : Math.max(1, Math.floor(profile.limits.contextTokens / 2))
-  );
 }

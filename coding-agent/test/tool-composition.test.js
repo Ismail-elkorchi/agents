@@ -38,6 +38,7 @@ test('Coding Agent local tool composition exposes exact structured and artifact 
   const patchJournalPath = path.join(workspace.runtimeDir, 'transactions', 'patch');
   await mkdir(patchJournalPath, { recursive: true, mode: 0o700 });
   const host = createLocalToolHost({
+    artifactReadMaxBytes: 2_000_000,
     rootedFileAuthority: RootedFileAuthority.adopt(workspace.workspaceRoot, {
       additionalDeniedEntries: ['.coding-agent']
     }),
@@ -100,6 +101,7 @@ test('local host exposes dry-run patching without a transaction directory and ga
     boundary: { authorizationPolicyId: 'tests/local-host-patch@1', executionTargetId: root }
   });
   const withoutDirectory = createLocalToolHost({
+    artifactReadMaxBytes: 2_000_000,
     rootedFileAuthority: RootedFileAuthority.adopt(root),
     artifactRepository: new LocalArtifactRepository({
       rootDir: path.join(root, 'artifacts-without-patch')
@@ -138,6 +140,7 @@ test('local host exposes dry-run patching without a transaction directory and ga
   const patchJournalPath = path.join(root, 'patch-transactions');
   await mkdir(patchJournalPath, { recursive: true, mode: 0o700 });
   const withDirectory = createLocalToolHost({
+    artifactReadMaxBytes: 2_000_000,
     rootedFileAuthority: RootedFileAuthority.adopt(root),
     artifactRepository: new LocalArtifactRepository({
       rootDir: path.join(root, 'artifacts-with-patch')

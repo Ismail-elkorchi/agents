@@ -255,8 +255,8 @@ test(
   async (t) => {
     const text = 'Change intent: explain first. Unresolved: verify repository guidance.';
     const provider = await scriptedOllama([
-      toolResponse('context_transition', {
-        sessionState: { blocks: [{ text }] }, reason: 'Preserve the current interpretation.'
+      toolResponse('context_save_and_activate', {
+        operations: [{ kind: 'create', text }], reason: 'Preserve the current interpretation.'
       }),
       finalResponse('Explained.'),
       finalResponse('Continued.')
@@ -288,23 +288,18 @@ test(
     const completed = await first.completion;
     assert.equal(completed.terminal?.executionStatus, 'completed', JSON.stringify(completed));
     const state = await app.inspectContext();
-    assert.equal(state.sessionState.content.blocks[0]?.text, text, JSON.stringify(state.sessionState));
+    assert.equal((await app.readSessionState(state.sessionState.selected[0])).text, text);
     assert.equal(app.modelSelection().endpoint, provider.endpoint, 'Context state publication preserves the selected base endpoint');
-    assert.equal(state.sessionState.complete, true);
-    assert.ok(state.sessionState.revisionId);
-    const original = await app.readHistorySource({
-      source: state.sessionState.source,
-      maxBytes: 16
-    });
-    assert.equal(original.status, 'available');
-    assert.equal(original.item.generated, true);
-    assert.equal(original.item.truncated, true);
+    assert.equal(state.sessionState.stored.coverage, 'complete');
+    assert.ok(state.sessionState.selected[0].revisionId);
+    const original = await app.readSessionState({ ...state.sessionState.selected[0], range: { offset: 0, bytes: 16 } });
+    assert.equal(original.text, text.slice(0, 16));
     await app.close();
     app = await openCodingApplication({ ...options, sessionSelection: { kind: 'existing', id: state.cut.sessionId } });
     await app.start();
     assert.equal(
-      (await app.inspectContext()).sessionState.revisionId,
-      state.sessionState.revisionId
+      (await app.inspectContext()).sessionState.selected[0].revisionId,
+      state.sessionState.selected[0].revisionId
     );
     const next = await app.submit({ task: 'What remains uncertain?' });
     assert.equal(app.modelSelection().endpoint, provider.endpoint, 'Restart preserves the selected base endpoint');

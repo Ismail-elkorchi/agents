@@ -33,6 +33,12 @@ test('review mode exposes protected live context without acquiring document edit
         assert.equal(inspection.selection.status, 'available');
         assert(inspection.selection.items.some(item => item.type === 'input' && item.group.release === 'protected'));
         assert(inspection.admission.inputIdentity);
+        assert.equal(inspection.operational.lastAdmittedRequest.inputIdentity, inspection.admission.inputIdentity);
+        assert.ok(inspection.operational.capabilities.bindingId);
+        assert.ok(inspection.operational.allowance.ownerId);
+        const configuredNames = inspection.operational.capabilities.items.filter(tool => tool.available).map(tool => tool.name);
+        assert.ok(configuredNames.includes('context_inspect'));
+        assert.ok(!configuredNames.includes('apply_patch'));
         assert(!request.tools.some(tool => ['apply_patch', 'edit_text'].includes(tool.type === 'function' ? tool.function.name : tool.name)));
         return 'Review context is available.';
       }
@@ -49,7 +55,7 @@ test('history_latest retrieves recent user contributions after a fresh context s
   { skip: process.platform !== 'linux', timeout: 30_000 }, async t => {
     const f = await fixture('', { mode: 'review', responses: [
       'First answer.',
-      toolCall('context_transition', { renewal: true, retain: [], sessionState: { blocks: [{ text: 'Recover recent original user instructions.' }] }, reason: 'Recover original history in fresh inference.' }),
+      toolCall('context_save_and_activate', { renewal: true, retain: [], operations: [{ kind: 'create', text: 'Recover recent original user instructions.' }], reason: 'Recover original history in fresh inference.' }),
       toolCall('history_latest', { limit: 10, maxBytes: 8192 }),
       request => {
         const latest = request.messages.filter(item => item.role === 'tool').at(-1);
@@ -67,28 +73,55 @@ test('history_latest retrieves recent user contributions after a fresh context s
   }
 );
 
-test('ordinary state replacements append once and identical replacements preserve the revision',
+test('activating the same exact narrative revision preserves the context window',
   { skip: process.platform !== 'linux', timeout: 30_000 }, async t => {
-    const sessionState = { blocks: [{ text: 'Preserve the author’s uncertainty.' }] };
+    let selected;
+    const operations = [{ kind: 'create', text: 'Preserve the author’s uncertainty.' }];
     const f = await fixture('', { mode: 'review', responses: [
-      toolCall('context_transition', { sessionState, reason: 'Record the current editorial interpretation.' }),
+      toolCall('context_save_and_activate', { operations, reason: 'Record the current editorial interpretation.' }),
       'State recorded.',
-      toolCall('context_transition', { sessionState, reason: 'Keep the same editorial interpretation.' }),
+      () => toolCall('context_transition', { sessionState: selected, reason: 'Keep the same editorial interpretation.' }),
       'State unchanged.'
     ] });
     t.after(() => f.close());
     await f.application.start();
     assert.equal((await submit(f.application, 'Review the draft.')).terminal.executionStatus, 'completed');
     const before = await f.application.inspectContext();
+    selected = before.sessionState.selected;
     const firstHistory = await f.application.readHistory();
     const transitions = firstHistory.entries.filter(entry => entry.type === 'context_transition');
     assert.equal(transitions.length, 1);
     assert.equal(transitions[0].transition.strategy, 'append');
+    assert.equal(transitions[0].transition.admission.status, 'admitted');
+    assert.equal((await f.application.readSessionState(selected[0])).text, operations[0].text);
     assert.equal((await submit(f.application, 'Keep that interpretation.')).terminal.executionStatus, 'completed');
     const after = await f.application.inspectContext();
-    assert.equal(after.sessionState.revisionId, before.sessionState.revisionId);
+    assert.deepEqual(after.sessionState.selected, before.sessionState.selected);
     assert.equal(after.window.windowId, before.window.windowId);
     assert.equal((await f.application.readHistory()).entries.filter(entry => entry.type === 'context_transition').length, 1);
     assert.ok(JSON.stringify(f.provider.requests.at(-1)).includes('Keep that interpretation.'));
+  }
+);
+
+
+test('runtime inspection distinguishes the actual last admitted catalog from configured eligibility',
+  { skip: process.platform !== 'linux', timeout: 30_000 }, async t => {
+    const f = await fixture('', { mode: 'review', responses: [
+      toolCall('context_runtime_inspect', { target: 'last_admitted', limit: 128 }),
+      request => {
+        const inspection = JSON.parse(request.messages.filter(item => item.role === 'tool').at(-1).content);
+        assert.equal(inspection.capabilityTarget, 'last_admitted');
+        assert.equal(inspection.capabilities.revision, inspection.lastAdmittedRequest.catalogRevision);
+        assert.equal(inspection.capabilities.bindingId, inspection.lastAdmittedRequest.bindingId);
+        assert.ok(inspection.configuredRevision);
+        assert.equal(inspection.capabilities.coverage, 'complete');
+        const names = inspection.capabilities.items.filter(tool => tool.available).map(tool => tool.name);
+        assert.deepEqual(names.sort(), request.tools.map(tool => tool.type === 'function' ? tool.function.name : tool.name).sort());
+        return 'Inspected the admitted request.';
+      }
+    ] });
+    t.after(() => f.close());
+    await f.application.start();
+    assert.equal((await submit(f.application, 'Inspect runtime capabilities.')).terminal.executionStatus, 'completed');
   }
 );

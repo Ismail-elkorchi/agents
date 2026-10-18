@@ -13,6 +13,7 @@ import {
   type AgentEvent,
   type AgentRunResult,
   type AgentSession,
+  type inspectCapabilitySnapshot,
   type SessionSubmissionInput
 } from '@agent-core/runtime';
 import {
@@ -592,6 +593,7 @@ export class CodingApplication {
             ));
           await prepared.agent.changeModel({
             selection: owned,
+            provider: adapter,
             profile,
             artifacts: prepared.artifacts
           });
@@ -603,7 +605,6 @@ export class CodingApplication {
       this.modelOverride = { selection: owned, adapter };
       this.resolvedSettings = settings;
       if (prepared !== undefined) {
-        prepared.setProvider(adapter, owned);
         if (prepared !== this.runtime) await this.activateRuntime(prepared);
       }
       await this.publishState(
@@ -693,8 +694,12 @@ export class CodingApplication {
     return { selection: selected };
   }
 
-  inspectContext() {
-    return this.requireRuntime().inspectContext();
+  readSessionState(ref: import('@agent-core/runtime').SessionStateItemRef) {
+    return this.requireRuntime().context.readSessionState(ref);
+  }
+
+  inspectContext(page?: Parameters<typeof inspectCapabilitySnapshot>[1]) {
+    return this.requireRuntime().inspectContext(page);
   }
 
   listProcesses() {

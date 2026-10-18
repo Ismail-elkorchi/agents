@@ -23,11 +23,21 @@ for (const permissionMode of ['read_only', 'full_host'])
     assert.equal((await submission.completion).state, 'ended');
     assert.ok(JSON.stringify(provider.chatRequests[0]).includes(JSON.stringify(content).slice(1, -1)));
     const declared = provider.chatRequests[0].tools.map(tool => tool.function.name);
-    assert.deepEqual([...inspected.available.toolNames].sort(), [...declared].sort());
-    assert.ok(inspected.available.toolNames.includes('context_transition'));
-    assert.ok(inspected.available.toolNames.includes('history_latest'));
-    assert.equal(inspected.available.toolNames.includes('run_check'), permissionMode === 'full_host');
-    assert.ok(!inspected.available.toolNames.includes('view_image'), 'The text-only model cannot view images.');
+    const toolNames = inspected.available.capabilities.items.filter(tool => tool.available).map(tool => tool.name);
+    assert.deepEqual([...toolNames].sort(), [...declared].sort());
+    assert.ok(toolNames.includes('context_transition'));
+    assert.ok(toolNames.includes('history_latest'));
+    assert.equal(toolNames.includes('run_check'), permissionMode === 'full_host');
+    assert.ok(!toolNames.includes('view_image'), 'The text-only model cannot view images.');
+    const imageCapability = inspected.available.capabilities.items.find(tool => tool.name === 'view_image');
+    assert.equal(imageCapability.available, false);
+    assert.ok(imageCapability.reasons.some(reason => reason.kind === 'model_input_modality'));
+    const firstPage = (await app.inspectContext({ limit: 1 })).available.capabilities;
+    assert.equal(firstPage.items.length, 1);
+    assert.equal(firstPage.coverage, 'partial');
+    const secondPage = (await app.inspectContext({ offset: firstPage.nextOffset, limit: 1, expectedRevision: firstPage.revision })).available.capabilities;
+    assert.equal(secondPage.revision, firstPage.revision);
+    assert.notEqual(secondPage.items[0].name, firstPage.items[0].name);
   });
 
 test('reading source preserves identifiers and redacts credentials without interrupting inference', {
