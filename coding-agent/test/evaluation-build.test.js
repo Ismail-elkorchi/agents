@@ -100,6 +100,26 @@ async function fixture(t) {
   return { root, agents, core };
 }
 
+test('build pin covers provenance metadata as well as executable files after copying', { skip: process.platform !== 'linux' }, async t => {
+  const { root, agents, core } = await fixture(t);
+  const directory = path.join(root, 'build');
+  const frozen = await freezeBuild(agents, core, directory);
+  const build = { directory, sha256: frozen.sha256 };
+  const destination = path.join(root, 'copied-build');
+  await cp(directory, destination, { recursive: true, verbatimSymlinks: true });
+  assert.deepEqual(await inventory(destination), await inventory(directory));
+  assert.equal((await verifyBuild({ ...build, directory: destination })).sha256, build.sha256);
+  const file = path.join(destination, 'build.json');
+  const recorded = JSON.parse(await readFile(file, 'utf8'));
+  recorded.agentsRevision = '0'.repeat(40);
+  await writeFile(file, JSON.stringify(recorded));
+  await assert.rejects(verifyBuild({ ...build, directory: destination }), /digest/);
+  await cp(path.join(directory, 'build.json'), file);
+  await writeFile(path.join(destination, 'node_modules/@ismail-elkorchi/coding-agent/dist/cli.js'), '// changed executable');
+  await assert.rejects(verifyBuild({ ...build, directory: destination }), /digest/);
+  await verifyBuild(build);
+});
+
 test('preparation builds exact source instead of matching poisoned dist installations', { skip: process.platform !== 'linux' }, async t => {
   const { root, agents, core } = await fixture(t);
   await put(agents, 'coding-agent/dist/index.js', 'poisoned-agent');

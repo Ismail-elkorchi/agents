@@ -106,23 +106,48 @@ test('activating the same exact narrative revision preserves the context window'
 
 test('runtime inspection distinguishes the actual last admitted catalog from configured eligibility',
   { skip: process.platform !== 'linux', timeout: 30_000 }, async t => {
+    const page = { target: 'last_admitted', limit: 9, maxBytes: 6144 };
+    const names = [];
+    let revision;
+    let bindingId;
+    let offset = 0;
+    let pageCount = 0;
     const f = await fixture('', { mode: 'review', responses: [
-      toolCall('context_runtime_inspect', { target: 'last_admitted', limit: 128 }),
-      request => {
-        const inspection = JSON.parse(request.messages.filter(item => item.role === 'tool').at(-1).content);
+      toolCall('context_runtime_inspect', page),
+      function inspectPage(request) {
+        const content = request.messages.filter(item => item.role === 'tool').at(-1).content;
+        assert.ok(Buffer.byteLength(content) <= 8192, 'Each complete JSON page fits the existing model-presentation bound.');
+        const inspection = JSON.parse(content);
         assert.equal(inspection.capabilityTarget, 'last_admitted');
         assert.equal(inspection.capabilities.revision, inspection.lastAdmittedRequest.catalogRevision);
         assert.equal(inspection.capabilities.bindingId, inspection.lastAdmittedRequest.bindingId);
         assert.ok(inspection.configuredRevision);
-        assert.equal(inspection.capabilities.coverage, 'complete');
-        const names = inspection.capabilities.items.filter(tool => tool.available).map(tool => tool.name);
+        revision ??= inspection.capabilities.revision;
+        bindingId ??= inspection.capabilities.bindingId;
+        assert.equal(inspection.capabilities.revision, revision);
+        assert.equal(inspection.capabilities.bindingId, bindingId);
+        assert.equal(inspection.capabilities.offset, offset);
+        assert.equal(inspection.capabilities.coverage, 'partial', 'One bounded page does not claim complete catalog coverage.');
+        assert.ok(inspection.capabilities.items.length > 0);
+        names.push(...inspection.capabilities.items.filter(tool => tool.available && tool.modelCallable).map(tool => tool.name));
+        offset += inspection.capabilities.items.length;
+        pageCount++;
+        if (inspection.capabilities.nextOffset !== undefined) {
+          assert.equal(inspection.capabilities.nextOffset, offset);
+          f.provider.responses.push(inspectPage);
+          return toolCall('context_runtime_inspect', { ...page, offset, expectedRevision: revision });
+        }
+        assert.equal(offset, inspection.capabilities.totalCount, 'All pages together cover the admitted catalog.');
+        assert.equal(new Set(names).size, names.length);
         assert.deepEqual(names.sort(), request.tools.map(tool => tool.type === 'function' ? tool.function.name : tool.name).sort());
         return 'Inspected the admitted request.';
       }
     ] });
     t.after(() => f.close());
     await f.application.start();
-    assert.equal((await submit(f.application, 'Inspect runtime capabilities.')).terminal.executionStatus, 'completed');
+    const result = await submit(f.application, 'Inspect runtime capabilities.');
+    assert.equal(result.terminal?.executionStatus, 'completed', JSON.stringify(result));
+    assert.ok(pageCount > 1, 'The capability catalog is inspected through multiple revision-pinned pages.');
   }
 );
 

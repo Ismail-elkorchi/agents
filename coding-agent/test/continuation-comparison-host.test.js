@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, symlink, writeFile, readFile, readlink, cp, rm } from '
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { inventory, sandboxArgs, launch, readFrozen } from '../../validation/evaluation-isolation.mjs';
-import { freezeBuild, verifyBuild, verifyBuildPreparation } from '../../validation/evaluation-build.mjs';
+import { freezeBuild, verifyBuildPreparation } from '../../validation/evaluation-build.mjs';
 import { runAttempt, runComparison, recoverComparisonReport } from '../../validation/coding-agent-evaluation.mjs';
 import { qualificationTask, qualificationSettings, qualificationScript, archiveFiles } from '../../validation/qualify-evaluation.mjs';
 import { checkedCommandScript } from './fixtures/checked-command-script.js';
@@ -36,19 +36,6 @@ async function attempt(script, change = () => {}, options = {}) {
 }
 const patch = () => qualificationScript()[2];
 const pass = `console.log(JSON.stringify({format:'agents.acceptance/1',status:'passed',evidence:'Assertions passed'}));`;
-
-test('build pin covers provenance metadata as well as executable files', async () => {
-  const destination = path.join(directory, 'altered-build');
-  await cp(build.directory, destination, { recursive: true });
-  const file = path.join(destination, 'build.json');
-  const recorded = JSON.parse(await readFile(file, 'utf8'));
-  recorded.agentsRevision = '0'.repeat(40);
-  await writeFile(file, JSON.stringify(recorded));
-  await assert.rejects(verifyBuild({ ...build, directory: destination }), /digest/);
-  await cp(path.join(build.directory, 'build.json'), file);
-  await writeFile(path.join(destination, 'node_modules/@ismail-elkorchi/coding-agent/dist/cli.js'), '// changed executable');
-  await assert.rejects(verifyBuild({ ...build, directory: destination }), /digest/);
-});
 
 test('an existing attempt directory is rejected without changing its evidence', async () => {
   const destination = path.join(directory, 'existing-attempt');
