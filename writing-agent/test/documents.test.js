@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { InMemoryArtifactRepository } from '@agent-core/persistence';
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fixture, submit, toolCall } from './helpers/runtime.js';
@@ -114,13 +115,6 @@ test(
       context.content
     );
     await assert.rejects(
-      f.application.compareDocumentRevisions({
-        before: { ...before.revision, artifactId: '0'.repeat(64) + '.json' },
-        after: after.revision
-      }),
-      { reason: 'missing_revision' }
-    );
-    await assert.rejects(
       f.application.readDocumentPassage({
         revision: { ...before.revision, path: 'another.txt' },
         selector: { quote: 'Quotation' }
@@ -146,6 +140,37 @@ test(
     );
   }
 );
+
+test('retained document references distinguish malformed identifiers from valid missing revisions', integration, async (t) => {
+  const f = await fixture();
+  t.after(() => f.close());
+  const current = await f.application.readDocumentSection({ path: 'document.txt' });
+  // Obtain a current-format reference through the public repository contract;
+  // this independent repository does not retain it in the application's store.
+  const absent = await new InMemoryArtifactRepository().store({
+    label: 'unavailable-document-revision', mediaType: 'application/json',
+    content: new TextEncoder().encode('{"unavailable":true}')
+  });
+  await assert.rejects(
+    f.application.compareDocumentRevisions({
+      before: { ...current.revision, artifactId: absent.artifactId },
+      after: current.revision
+    }),
+    { reason: 'missing_revision' }
+  );
+  for (const artifactId of ['0'.repeat(64) + '.json', '../revision.json']) {
+    await assert.rejects(
+      f.application.compareDocumentRevisions({
+        before: { ...current.revision, artifactId }, after: current.revision
+      }),
+      error => {
+        assert.match(error.message, /Invalid artifact representation identifier/);
+        assert.notEqual(error.reason, 'missing_revision');
+        return true;
+      }
+    );
+  }
+});
 
 test(
   'plain text remains exact, comparison handles insertions and equal revisions, and original reads are bounded',
