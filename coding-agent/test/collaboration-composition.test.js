@@ -4,15 +4,17 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout } from 'node:timers/promises';
-import { createCodingSession, closeCodingSession, openCodingWorkspace } from '@ismail-elkorchi/coding-agent';
+import { createCodingSession, closeCodingSession, openCodingWorkspace, parseCodingAgentConfiguration } from '@ismail-elkorchi/coding-agent';
 import { LocalCommandExecution } from '@agent-core/tools-local';
-import { sourceRef } from '@agent-core/runtime';
+import { sourceRef, collaborationEventCodec } from '@agent-core/runtime';
+import { JsonlEventRepository } from '@agent-core/persistence/node';
 import { ScriptedWritingProvider, toolCall } from '../../writing-agent/test/helpers/runtime.js';
 import { createWorkspace, trust } from './fixtures/scripted-cli.js';
 
 const integration = { skip: process.platform !== 'linux', timeout: 90_000 };
 async function composition(t, responses, options = {}) {
-  const fixture = await createWorkspace({ tools: ['read_files', 'apply_patch', 'exec_command'], checks: [], files: { 'document.txt': 'Original.\n' } });
+  const fixture = await createWorkspace({ tools: options.configuration?.tools.enabled ?? ['read_files', 'apply_patch', 'exec_command'],
+    checks: [], files: { 'document.txt': 'Original.\n' } });
   await trust(fixture);
   const workspace = await openCodingWorkspace(fixture.root, { stateRoot: fixture.stateRoot });
   const provider = new ScriptedWritingProvider(responses);
@@ -27,6 +29,9 @@ async function settle(session, selection) {
     const result = await session.collaboration.wait(selection);
     if (result.reason !== 'timeout') return result;
   }
+}
+function requestToolNames(request) {
+  return (request.tools ?? []).map(tool => tool.type === 'function' ? tool.function.name : tool.name);
 }
 function assignment(id, task, toolNames) {
   return { operationId: `start-${id}`, participantId: id, task, expectedEpoch: 0,
@@ -62,6 +67,101 @@ test('a read-only participant shares its supervisor file scheduler and the works
   await closeCodingSession(session);
   assert.equal(closes, 1);
   assert.equal(resources.resourceLeases.inspect().activeCount, 0);
+});
+
+test('an edit_text-only work participant retains its exact configured editing grant', integration, async t => {
+  const configuration = parseCodingAgentConfiguration({ version: 1, provider: 'ollama', model: 'fixture',
+    instructions: [], tools: { enabled: ['edit_text'] }, verification: { required: [], advisory: [] } });
+  const { session, provider, fixture } = await composition(t, [toolCall('edit_text', { files: [{
+    path: 'document.txt', expectedSha256: createHash('sha256').update('Original.\n').digest('hex'),
+    edits: [{ range: { start: { line: 1, column: 1 }, end: { line: 1, column: 10 } },
+      expectedText: 'Original.', replacementText: 'Edited.' }]
+  }] }), 'The exact edit is complete.'], { configuration });
+  assert(session.toolNames.includes('edit_text'));
+  assert(!session.toolNames.includes('apply_patch'));
+  assert(!session.toolNames.includes('exec_command'));
+  const child = await session.collaboration.start(assignment('exact-editor', 'Edit the supplied exact text range.', ['edit_text']));
+  assert.equal((await settle(session, { participantIds: ['exact-editor'] })).reason, 'settled');
+  assert.equal(await readFile(path.join(fixture.root, 'document.txt'), 'utf8'), 'Edited.\n');
+  const tools = requestToolNames(provider.requests[0]);
+  assert(tools.includes('edit_text'));
+  for (const denied of ['apply_patch', 'exec_command', 'write_stdin', 'stop_process', 'run_check'])
+    assert(!tools.includes(denied), denied);
+  const descriptor = await session.sessions.open(child.participant.sessionId, session.session.header.binding);
+  const history = await session.sessions.readBranchPage(descriptor);
+  assert(history.entries.some(entry => entry.type === 'observation' && entry.toolName === 'edit_text' &&
+    entry.output?.applicationStatus === 'applied'));
+});
+
+test('the review profile denies file mutations and commands from a full-host supervisor', integration, async t => {
+  let supervisorTurns = 0;
+  let participantTurns = 0;
+  const respond = request => {
+    if (requestToolNames(request).includes('edit_text')) {
+      const turn = supervisorTurns++;
+      if (turn === 0) return toolCall('tool_catalog_discover', { query: 'collaboration_start' });
+      if (turn === 1) {
+        const discovered = JSON.parse(request.messages.findLast(message => message.role === 'tool' && message.toolName === 'tool_catalog_discover').content);
+        return toolCall('tool_catalog_select', { references: [discovered.items.find(item => item.name === 'collaboration_start').reference],
+          expectedSelectionRevision: discovered.selectionRevision });
+      }
+      return turn === 2 ? toolCall('collaboration_start', { profile: 'review', task: 'Review without changing the workspace.' })
+        : 'The review was delegated.';
+    }
+    if (participantTurns++ > 0) return 'The unauthorized operations were rejected.';
+    const edit = toolCall('edit_text', { files: [{ path: 'document.txt',
+      expectedSha256: createHash('sha256').update('Original.\n').digest('hex'),
+      edits: [{ range: { start: { line: 1, column: 1 }, end: { line: 1, column: 10 } },
+        expectedText: 'Original.', replacementText: 'Forbidden.' }] }] });
+    return { ...edit, toolCalls: [...edit.toolCalls,
+      ...toolCall('exec_command', { command: 'printf forbidden > forbidden.txt' }).toolCalls] };
+  };
+  const { session, provider, fixture } = await composition(t, Array(8).fill(respond));
+  assert(session.toolNames.includes('edit_text'));
+  assert(session.toolNames.includes('exec_command'));
+  const root = await session.agent.submit({ task: 'Delegate an independent read-only review.' });
+  assert.equal(root.kind, 'started');
+  assert.equal((await root.completion).state, 'ended');
+  assert(!requestToolNames(provider.requests[0]).includes('collaboration_start'), 'Start is unavailable before exact catalog selection');
+  assert(provider.requests.some(request => requestToolNames(request).includes('collaboration_start')));
+  const group = await session.collaboration.inspect();
+  assert.equal(group.participants.length, 1);
+  const child = group.participants[0];
+  const participantId = child.participant.participantId;
+  assert.equal((await settle(session, { participantIds: [participantId] })).reason, 'settled');
+  const view = await session.collaboration.inspectParticipant(participantId);
+  for (const denied of ['apply_patch', 'edit_text', 'exec_command', 'write_stdin', 'stop_process', 'run_check']) {
+    assert(!view.assignment.capabilities.toolNames.includes(denied), denied);
+    for (const request of provider.requests.filter(request => !requestToolNames(request).includes('edit_text')))
+      assert(!requestToolNames(request).includes(denied), denied);
+  }
+  assert.equal(await readFile(path.join(fixture.root, 'document.txt'), 'utf8'), 'Original.\n');
+  await assert.rejects(readFile(path.join(fixture.root, 'forbidden.txt')), { code: 'ENOENT' });
+  const descriptor = await session.sessions.open(view.participant.sessionId, session.session.header.binding);
+  const history = await session.sessions.readBranchPage(descriptor);
+  const rejected = history.entries.filter(entry => entry.type === 'observation' && entry.kind === 'failure');
+  assert(rejected.some(entry => entry.toolName === 'edit_text'));
+  assert(rejected.some(entry => entry.toolName === 'exec_command'));
+  assert.equal(session.workspaceResources.commandExecution.activeCount(), 0);
+});
+
+test('ordinary Coding work fits a 32K model while collaboration schemas remain deferred', integration, async t => {
+  const { session, provider } = await composition(t, ['Ordinary work complete.'], { maxOutputTokens: 4096 });
+  const describeModel = provider.describeModel.bind(provider);
+  t.mock.method(provider, 'describeModel', async model => ({ ...await describeModel(model),
+    limits: { contextTokens: 32_768, outputTokens: 4_096 } }));
+  const submission = await session.agent.submit({ task: 'Explain the current task briefly.' });
+  assert.equal(submission.kind, 'started');
+  const result = await submission.completion;
+  assert.equal(result.state, 'ended', JSON.stringify(result));
+  assert.equal(result.terminal.executionStatus, 'completed');
+  assert.equal(provider.requests.length, 1, 'Ordinary work must not consume a context recovery turn');
+  const names = requestToolNames(provider.requests[0]);
+  assert(names.includes('tool_catalog_discover'));
+  assert(names.includes('tool_catalog_select'));
+  assert.deepEqual(names.filter(name => name.startsWith('collaboration_')), ['collaboration_inspect']);
+  const inspect = provider.requests[0].tools.find(tool => (tool.function?.name ?? tool.name) === 'collaboration_inspect');
+  assert(Buffer.byteLength(JSON.stringify(inspect)) < 1024, 'The eager collaboration schema stays compact');
 });
 
 test('participants planning from one revision reject the candidate whose exact base became stale', integration, async t => {
@@ -160,7 +260,7 @@ test('an admitted assignment keeps its model binding through factory failure and
 });
 
 test('permanent cancellation settles a finished participant process owner without closing the shared manager', integration, async t => {
-  const { session, provider } = await composition(t, [
+  const { session, provider, workspace } = await composition(t, [
     toolCall('exec_command', { command: 'sleep 30', yieldMs: 1, timeoutMs: 30_000 }),
     'The process is still running.',
     toolCall('read_files', { files: [{ path: 'document.txt' }] }),
@@ -195,7 +295,19 @@ test('permanent cancellation settles a finished participant process owner withou
   assert.equal((await submission.completion).state, 'ended');
   assert.equal(provider.requests.length, 4);
   const group = await session.collaboration.inspect();
-  assert(group.controls.find(value => value.operationId === control.operationId).applied);
+  assert.equal(group.controls.some(value => value.operationId === control.operationId), false, 'applied controls leave the pending projection');
+  const journal = new JsonlEventRepository({ rootDir: path.join(workspace.layout.runtimeDir, 'collaboration', 'events'), codec: collaborationEventCodec });
+  const streams = await journal.listRunIds();
+  assert.equal(streams.length, 1);
+  const records = await Array.fromAsync(journal.read(streams[0]));
+  const admitted = records.filter(({ event }) => event.type === 'collaboration.control_requested' && event.operationId === control.operationId);
+  const applied = records.filter(({ event }) => event.type === 'collaboration.control_applied' && event.operationId === control.operationId);
+  assert.equal(admitted.length, 1, 'retry cannot admit a second cancellation');
+  assert.equal(applied.length, 1, 'resource cleanup has one durable acknowledgement');
+  assert.deepEqual(admitted[0].event.targets, [{ participantId: 'process-owner', assignmentId: child.assignment.assignmentId,
+    assignmentRevision: child.assignment.revision, runId: child.assignment.runId }]);
+  assert(applied[0].sequence > admitted[0].sequence);
+  assert.equal(group.participants.find(value => value.participant.participantId === 'process-owner').cancelled, true);
   await closeCodingSession(session);
   assert.equal(closes, 1);
 });

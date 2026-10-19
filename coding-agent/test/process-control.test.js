@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readFile, readdir, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { openCodingApplication, loadWorkspace } from '@ismail-elkorchi/coding-agent';
 import { JsonlEventRepository } from '@agent-core/persistence/node';
 import { agentEventCodec } from '@agent-core/runtime';
+import { assertClosedProcessLedger } from './fixtures/process-ledger.js';
 import {
   createWorkspace,
   finalResponse,
@@ -194,13 +195,15 @@ for (const pending of [false, true]) test(`closing a local session durably ackno
   assert.equal((await submitted.completion).state, 'ended');
   await application.close();
   const layout = await loadWorkspace(fixture.root, { stateRoot: fixture.stateRoot });
-  assert((await readdir(path.join(layout.runtimeDir, 'host-processes'))).every(name => name.endsWith('.terminal.json')));
   const events = new JsonlEventRepository({ rootDir: layout.runsDir, codec: agentEventCodec });
   const released = [];
   for await (const { event } of events.read(submitted.runId)) if (event.type === 'resource.released') released.push(event);
   assert.equal(released.length, 1);
   assert.equal(released[0].outcome, 'released');
   assert.equal(released[0].details.status, pending ? 'stopped' : 'exited');
+  await assertClosedProcessLedger(path.join(layout.runtimeDir, 'host-processes'), {
+    processId: released[0].resourceId, runId: submitted.runId, status: released[0].details.status
+  });
 });
 
 test('a refused process lookup is recorded and the coding session continues', { skip: process.platform !== 'linux' }, async (t) => {

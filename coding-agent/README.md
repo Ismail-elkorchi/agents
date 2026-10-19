@@ -203,6 +203,10 @@ exact-base validation still protects edits against changed files. Worktrees are 
 isolation boundary. The host supplies narrowed profiles; a participant cannot grant itself more
 authority. Read-only and review modes remain read-only.
 
+`collaboration_inspect` is available immediately. The model discovers other collaboration
+operations through `tool_catalog_discover` and selects only the needed exact tool references
+with `tool_catalog_select`. Discovery and selection do not expand the session's grants.
+
 Every admitted Coding root owns a handle to the workspace process supervisor for orphan
 recovery, including read-only roots. Read-only mode still exposes no command tools or command
 execution service. Compatible read-only and full-host application handles in one process

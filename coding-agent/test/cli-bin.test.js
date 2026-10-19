@@ -61,6 +61,7 @@ test('permission choices separate read-only inspection from full host execution'
   const host = resolveCodingAuthority({ requestedMode: 'full_host', hasVerificationChecks: true });
   assert.equal(readOnly.enabledTools.includes('exec_command'), false);
   assert.equal(readOnly.enabledTools.includes('apply_patch'), false);
+  assert.equal(readOnly.enabledTools.includes('edit_text'), false);
   assert.equal(readOnly.verificationCommands, false);
   assert.equal(readOnly.permissions.commandExecution, 'denied');
   assert.equal(readOnly.permissions.network, 'denied');
@@ -72,6 +73,7 @@ test('permission choices separate read-only inspection from full host execution'
   assert.equal(networkReads.permissions.hostEscape, 'denied');
   assert.deepEqual(networkReads.enabledTools, readOnly.enabledTools);
   assert.equal(host.enabledTools.includes('exec_command'), true);
+  assert.equal(host.enabledTools.includes('edit_text'), true);
   assert.equal(host.verificationCommands, true);
   assert.equal(host.permissions.commandExecution, 'host');
   assert.equal(host.permissions.network, 'host');

@@ -1,4 +1,5 @@
 import { conservativeProtocolCapabilities } from '@agent-core/model';
+import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -52,6 +53,32 @@ export function toolCall(name, args) {
     toolCalls: [{ name, id: crypto.randomUUID(), type: 'function', input: { kind: 'json', value: args } }]
   };
 }
+
+export function collaborationStartResponses(task, profile, respond = toolCall) {
+  const names = request => (request.tools ?? []).map(tool => tool.type === 'function' ? tool.function.name : tool.name);
+  return [
+    request => {
+      assert(names(request).includes('collaboration_inspect'));
+      assert(!names(request).includes('collaboration_start'));
+      return respond('tool_catalog_discover', { query: 'collaboration_start' });
+    },
+    request => {
+      assert(!names(request).includes('collaboration_start'), 'discovery does not load a tool');
+      const page = JSON.parse(request.messages.findLast(message => message.role === 'tool').content);
+      const descriptor = page.items.find(item => item.name === 'collaboration_start');
+      assert(descriptor, 'the granted start operation is discoverable');
+      assert.equal(descriptor.loaded, false);
+      return respond('tool_catalog_select', {
+        references: [descriptor.reference], expectedSelectionRevision: page.selectionRevision
+      });
+    },
+    request => {
+      assert(names(request).includes('collaboration_start'));
+      assert(!names(request).includes('collaboration_send'), 'only the selected operation is loaded');
+      return respond('collaboration_start', { task, profile });
+    }
+  ];
+}
 export function patchResponse(patch) {
   return {
     content: '',
@@ -72,7 +99,7 @@ export async function fixture(content = 'Old line.\n', options = {}) {
   const stateRoot = path.join(parent, 'state');
   await mkdir(root);
   await writeFile(path.join(root, 'document.txt'), content);
-  const provider = new ScriptedWritingProvider(options.responses);
+  const provider = options.provider ?? new ScriptedWritingProvider(options.responses);
   const application = await openWritingApplication({
     rootDirectory: root,
     stateRoot,

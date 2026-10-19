@@ -113,6 +113,10 @@ exact-base validation still protects edits against changed files. Worktrees are 
 isolation boundary. The host supplies narrowed profiles; a participant cannot grant itself more
 authority. Read-only and review modes remain read-only.
 
+`collaboration_inspect` is available immediately. The model discovers other collaboration
+operations through `tool_catalog_discover` and selects only the needed exact tool references
+with `tool_catalog_select`. Discovery and selection do not expand the session's grants.
+
 `--collaboration JSON` overrides `maxParticipants`, `maxConcurrentRuns`, `maxWaitMs`,
 `maxPendingOperations`, and `participantBudget`; `--collaboration false` disables collaboration. The corresponding
 application/configuration field is `collaboration`. Defaults permit four participants and

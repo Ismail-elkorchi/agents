@@ -2,11 +2,32 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { openWritingApplication } from '@ismail-elkorchi/writing-agent';
 import { writingRpcMethods } from '@ismail-elkorchi/writing-agent/rpc';
-import { fixture, toolCall } from './helpers/runtime.js';
+import { collaborationStartResponses, fixture, ScriptedWritingProvider } from './helpers/runtime.js';
 
-test('writing public RPC inspects default participants, continues exact targets and restores durable state', { timeout: 90_000 }, async t => {
+const integration = { skip: process.platform !== 'linux' };
+
+test('ordinary writing requests fit a 32K model without loading collaboration operation schemas', { ...integration, timeout: 30_000 }, async t => {
+  const provider = new ScriptedWritingProvider(['A focused response.']);
+  const describeModel = provider.describeModel.bind(provider);
+  provider.describeModel = async () => ({ ...await describeModel(), limits: { contextTokens: 32_768, outputTokens: 4_096 } });
+  const f = await fixture('Draft.\n', { provider });
+  t.after(() => f.close());
+  await f.application.start();
+  const accepted = await f.application.submit({ task: 'Discuss the draft briefly.' });
+  assert.equal(accepted.kind, 'started');
+  const outcome = await accepted.completion;
+  assert.equal(outcome.state, 'ended', JSON.stringify(outcome));
+  assert.equal(outcome.terminal.executionStatus, 'completed', JSON.stringify(outcome));
+  assert.equal(provider.requests.length, 1);
+  const names = provider.requests[0].tools.map(tool => tool.type === 'function' ? tool.function.name : tool.name);
+  assert.deepEqual(names.filter(name => name.startsWith('collaboration_')), ['collaboration_inspect']);
+  assert(names.includes('tool_catalog_discover'));
+  assert(names.includes('tool_catalog_select'));
+});
+
+test('writing public RPC inspects default participants, continues exact targets and restores durable state', { ...integration, timeout: 90_000 }, async t => {
   const f = await fixture('Draft.\n', { mode: 'review', responses: [
-    toolCall('collaboration_start', { task: 'Inspect the draft independently.', profile: 'review' }),
+    ...collaborationStartResponses('Inspect the draft independently.', 'review'),
     'Read-only review complete.', 'Root review complete.', 'Continued review complete.'
   ] });
   let restored;
@@ -47,9 +68,9 @@ test('writing public RPC inspects default participants, continues exact targets 
   assert.equal(recovered.phase, 'ended');
 });
 
-test('writing review mode refuses continuation of a historical edit grant before admitting work', { timeout: 60_000 }, async t => {
+test('writing review mode refuses continuation of a historical edit grant before admitting work', { ...integration, timeout: 60_000 }, async t => {
   const f = await fixture('Draft.\n', { responses: [
-    toolCall('collaboration_start', { task: 'Inspect editing options.', profile: 'edit' }),
+    ...collaborationStartResponses('Inspect editing options.', 'edit'),
     'Participant inspection complete.', 'Root inspection complete.'
   ] });
   t.after(() => f.close());
@@ -68,5 +89,5 @@ test('writing review mode refuses continuation of a historical edit grant before
     operationId: 'denied-edit-continuation', task: 'Make an edit.'
   }), /review|capabilit|grant/i);
   assert.equal((await f.application.readParticipant(first.participant.participantId)).assignment.runId, prior.assignment.runId);
-  assert.equal(f.provider.requests.length, 3);
+  assert.equal(f.provider.requests.length, 5);
 });

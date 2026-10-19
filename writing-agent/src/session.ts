@@ -18,6 +18,7 @@ import {
   parseCollaborationPolicy,
   createCollaborationTools,
   createCollaborationToolHost,
+  createCollaborationToolSource,
   createCollaborationPeerDelivery,
   createParticipantArtifactRepository,
   type ParticipantArtifactRepository,
@@ -104,7 +105,8 @@ interface WritingParticipantOptions {
   readonly authorizePeerContribution?: (entry: SessionPeerContributionEntry, stage: 'read' | 'admit') => Promise<void>;
 }
 
-const observerTools = ['collaboration_inspect', 'collaboration_result', 'collaboration_send', 'collaboration_wait'];
+const catalogControls = ['tool_catalog_discover', 'tool_catalog_select'];
+const observerTools = ['collaboration_inspect', 'collaboration_result', 'collaboration_send', 'collaboration_wait', ...catalogControls];
 
 export async function createWritingSession(
   workspace: WritingWorkspace,
@@ -347,7 +349,7 @@ async function composeWritingSession(
         ...createWritingDocumentTools(workspace.root, artifacts), ...sessionTools, ...additionalTools];
       const tools = [...primaryTools, ...(options.collaborationTools?.(mode, primaryTools.map(tool => tool.name)) ?? [])]
         .filter(tool => options.allowedToolNames === undefined || options.allowedToolNames.includes(tool.name));
-      const configuredCatalog = new ToolCatalog({ tools, selectionStore: new SessionToolCatalogSelectionStore(sessions, descriptor), ...(modeMcp ? { sources: modeMcp.sources } : {}) });
+      const configuredCatalog = configuredToolCatalog(tools, modeMcp);
       const catalog = resolveEffectiveToolCatalog({ bindingId: resolved.bindingId,
         programmaticRunner: programRunner !== undefined, modelProfile: resolved.profile,
         ...(configuration.nativeToolExposure ? { nativeToolExposure: configuration.nativeToolExposure } : {}),
@@ -395,6 +397,12 @@ async function composeWritingSession(
     const ordinary = [...host.tools, ...createWritingDocumentTools(host.services.rootedFileAuthority, artifacts), ...sessionTools, ...additionalTools];
     return [...ordinary, ...(options.collaborationTools?.(mode, ordinary.map(tool => tool.name)) ?? [])]
       .filter(tool => options.allowedToolNames === undefined || options.allowedToolNames.includes(tool.name));
+  }
+  function configuredToolCatalog(tools: readonly CompiledToolDefinition[], modeMcp: ConfiguredMcpSources | undefined) {
+    const deferred = tools.filter(tool => tool.name.startsWith('collaboration_') && tool.name !== 'collaboration_inspect');
+    return new ToolCatalog({ tools: tools.filter(tool => !deferred.includes(tool)),
+      selectionStore: new SessionToolCatalogSelectionStore(sessions, descriptor),
+      sources: [...(deferred.length ? [createCollaborationToolSource(deferred)] : []), ...(modeMcp?.sources ?? [])] });
   }
   const runs = new AgentRunCoordinator(events, artifacts);
   const agent: AgentSession = new AgentSession({
@@ -466,7 +474,7 @@ async function composeWritingSession(
             authorizationPolicyId: `writing-agent/${mode}`,
             executionTargetId: hashJson(workspace.binding)
           },
-          toolCatalog: new ToolCatalog({ tools, selectionStore: new SessionToolCatalogSelectionStore(sessions, descriptor), ...(modeMcp ? { sources: modeMcp.sources } : {}) }),
+          toolCatalog: configuredToolCatalog(tools, modeMcp),
           ...(programRunner ? { programRunner } : {}),
           ...(configuration.nativeToolExposure ? { nativeToolExposure: configuration.nativeToolExposure } : {}),
           toolContext: { services: host.services },
@@ -517,8 +525,9 @@ async function composeWritingSession(
       const ordinary = [...describeLocalToolCatalog({ enabledTools: mode === 'edit'
         ? [...readTools, 'apply_patch', 'edit_text'] : readTools, artifactReadMaxBytes: 2_000_000 }),
         ...createWritingDocumentTools(workspace.root, artifacts), ...sessionTools, ...additionalTools];
-      return [...ordinary, ...(options.collaborationTools?.(mode, ordinary.map(tool => tool.name)) ?? [])]
-        .filter(tool => options.allowedToolNames === undefined || options.allowedToolNames.includes(tool.name)).map(tool => tool.name);
+      const tools = [...ordinary, ...(options.collaborationTools?.(mode, ordinary.map(tool => tool.name)) ?? [])]
+        .filter(tool => options.allowedToolNames === undefined || options.allowedToolNames.includes(tool.name));
+      return [...tools.map(tool => tool.name), ...(configuredToolCatalog(tools, mcpForMode(mode)).hasSelectionControls() ? catalogControls : [])];
     },
     agent,
     history,

@@ -23,14 +23,19 @@ const READ_TOOLS = Object.freeze([
   'view_image',
   'read_artifact'
 ]);
-const WORK_TOOLS = Object.freeze([
-  ...READ_TOOLS,
+const LOCAL_WORK_TOOLS = Object.freeze([
   'apply_patch',
+  'edit_text',
   'exec_command',
   'write_stdin',
   'stop_process'
 ]);
+const WORK_TOOLS = Object.freeze([...READ_TOOLS, ...LOCAL_WORK_TOOLS]);
 export const CODING_AGENT_TOOLS = WORK_TOOLS;
+
+export function isCodingWorkspaceMutatingTool(name: string): boolean {
+  return LOCAL_WORK_TOOLS.includes(name) || name === 'run_check';
+}
 
 export function resolveCodingAuthority(input: {
   readonly requestedMode: CodingPermissionMode;

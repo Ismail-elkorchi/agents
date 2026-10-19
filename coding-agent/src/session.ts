@@ -17,6 +17,7 @@ import {
   parseCollaborationPolicy,
   createCollaborationTools,
   createCollaborationToolHost,
+  createCollaborationToolSource,
   createCollaborationPeerDelivery,
   createParticipantArtifactRepository,
   type ParticipantArtifactRepository,
@@ -71,6 +72,7 @@ import {
 } from '@agent-core/tools-local';
 import { RepositoryGuidanceSession } from './instructions/repository-guidance.js';
 import {
+  isCodingWorkspaceMutatingTool,
   resolveCodingAuthority,
   type CodingAuthority,
   type CodingPermissionMode
@@ -123,7 +125,8 @@ interface CodingParticipantOptions extends CodingSessionOptions {
   readonly authorizePeerContribution?: (entry: SessionPeerContributionEntry, stage: 'read' | 'admit') => Promise<void>;
 }
 
-const observerTools = ['collaboration_inspect', 'collaboration_result', 'collaboration_send', 'collaboration_wait'];
+const catalogControls = ['tool_catalog_discover', 'tool_catalog_select'];
+const observerTools = ['collaboration_inspect', 'collaboration_result', 'collaboration_send', 'collaboration_wait', ...catalogControls];
 
 /** Host-owned collaboration shares execution resources, never a provider conversation. */
 export async function createCodingSession(options: CodingSessionOptions) {
@@ -150,7 +153,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
         const childCollaboration = { actions: ['inspect', 'message'] as const,
           participantIds: [`supervisor:${session.id}`] };
         const toolNames = [...names, ...observerTools];
-        const review = toolNames.filter(name => !['apply_patch', 'edit_text', 'exec_command', 'write_stdin', 'stop_process', 'run_check'].includes(name));
+        const review = toolNames.filter(name => !isCodingWorkspaceMutatingTool(name));
         return createCollaborationTools(createCollaborationToolHost({
           groupId: `coding:${session.id}`, coordinator, actorSessionId: session.id,
           capabilities: { toolNames },
@@ -232,7 +235,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
           if (!provider) throw new Error('The persisted participant provider binding cannot be resolved by this host.');
           const grant = input.assignment.capabilities;
           const { mcpTools: ignoredMcp, ...childOptions } = options; void ignoredMcp;
-          const permissionMode = grant.toolNames.some(name => ['apply_patch', 'exec_command', 'write_stdin', 'stop_process', 'run_check'].includes(name))
+          const permissionMode = grant.toolNames.some(isCodingWorkspaceMutatingTool)
             ? options.permissionMode : 'read_only';
           await delivery.importAssignmentSources(input.assignment, input.participant);
           const artifactRepository = createParticipantArtifactRepository({ artifacts: root.artifacts,
@@ -465,7 +468,10 @@ async function composeCodingSession(options: CodingParticipantOptions) {
     const collaborationNames = new Set(collaborationTools.map(tool => tool.name));
     const tools = Object.freeze([...ordinaryTools, ...collaborationTools]
       .filter(tool => options.allowedToolNames === undefined || options.allowedToolNames.includes(tool.name)));
-    const toolCatalog = new ToolCatalog({ tools, selectionStore: new SessionToolCatalogSelectionStore(sessions, session), ...(configuredMcp ? { sources: configuredMcp.sources } : {}) });
+    const deferred = tools.filter(tool => collaborationNames.has(tool.name) && tool.name !== 'collaboration_inspect');
+    const toolCatalog = new ToolCatalog({ tools: tools.filter(tool => !deferred.includes(tool)),
+      selectionStore: new SessionToolCatalogSelectionStore(sessions, session),
+      sources: [...(deferred.length ? [createCollaborationToolSource(deferred)] : []), ...(configuredMcp?.sources ?? [])] });
     const resources = commandExecutionResources(commandSupervisor, { kind: 'owner', ownerId });
     const toolPolicy: ToolPolicy = { allowedRisks: ['read', 'write', 'destructive', 'execute', ...(options.webTools || options.mcpTools ? ['network' as const] : [])] };
     const sessionOptions: AgentSessionOptions = {
@@ -527,7 +533,7 @@ async function composeCodingSession(options: CodingParticipantOptions) {
           // Session-state publication remains available in read-only workspaces.
           toolPolicy,
           toolContextPrerequisite: (request) =>
-            sessionToolNames.has(request.call.name) || collaborationNames.has(request.call.name)
+            sessionToolNames.has(request.call.name) || collaborationNames.has(request.call.name) || catalogControls.includes(request.call.name)
               ? Promise.resolve(undefined)
               : guidance.contextPrerequisite(request),
           toolAuthorizer: async (request) => {
@@ -634,7 +640,7 @@ async function composeCodingSession(options: CodingParticipantOptions) {
         };
       },
       workspaceResources,
-      toolNames: tools.map(tool => tool.name),
+      toolNames: [...tools.map(tool => tool.name), ...(toolCatalog.hasSelectionControls() ? catalogControls : [])],
       inferenceOwnerId,
       inferenceScope,
       workspaceRoot: environment.files.displayPath,

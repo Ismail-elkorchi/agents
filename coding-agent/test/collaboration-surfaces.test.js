@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { openCodingApplication } from '@ismail-elkorchi/coding-agent';
 import { codingRpcMethods } from '@ismail-elkorchi/coding-agent/rpc';
+import { collaborationStartResponses } from '../../writing-agent/test/helpers/runtime.js';
 import { createWorkspace, finalResponse, scriptedOllama, toolResponse, trust } from './fixtures/scripted-cli.js';
 
 test('coding read-only application exposes bounded default collaboration through public RPC', { timeout: 90_000, skip: process.platform !== 'linux' }, async t => {
   const provider = await scriptedOllama([
-    toolResponse('collaboration_start', { task: 'Inspect the repository independently.', profile: 'review' }),
+    ...collaborationStartResponses('Inspect the repository independently.', 'review', toolResponse),
     finalResponse('Read-only inspection complete.'), finalResponse('Root inspection complete.'),
     finalResponse('Continued inspection complete.')
   ]);
