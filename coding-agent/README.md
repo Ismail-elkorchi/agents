@@ -192,3 +192,42 @@ The CLI, RPC application and TUI share the same session tool configuration:
 The corresponding application options are `programmaticTools`, `nativeToolExposure`, `webTools` and `mcpTools`. With none supplied, existing local-only tool behavior is preserved. Workspace edit/review permissions remain independent of optional network configuration. Source captures retain original bytes and identify any derived text separately.
 
 Read-only mode still forbids workspace mutations and command execution. Explicit web/MCP configuration grants only those bounded tool connections; inspection reports `network: configured_tools`. Without that configuration it reports `network: denied`. This never grants a shell or ambient host network access.
+
+## Collaboration
+
+Bounded collaboration is available through ordinary model tools by default. Participants
+run as separate durable sessions under the same host resource coordination and continuing
+budget owner. Resource leases coordinate one supervised collaboration family in its admitted
+workspace. Independent application hosts and external editors do not share those leases;
+exact-base validation still protects edits against changed files. Worktrees are not an
+isolation boundary. The host supplies narrowed profiles; a participant cannot grant itself more
+authority. Read-only and review modes remain read-only.
+
+Every admitted Coding root owns a handle to the workspace process supervisor for orphan
+recovery, including read-only roots. Read-only mode still exposes no command tools or command
+execution service. Compatible read-only and full-host application handles in one process
+reuse that manager and scheduler; closing one handle leaves the others available. A competing
+manager in another process is rejected before process recovery can disturb a live owner.
+Separate state roots and external editors still require exact-base validation. Rooted workspace
+authority retains its Linux-only platform admission; Writing uses a shared file coordinator
+without a shell manager.
+
+`--collaboration JSON` overrides `maxParticipants`, `maxConcurrentRuns`, `maxWaitMs`,
+`maxPendingOperations`, and `participantBudget`; `--collaboration false` disables collaboration. The corresponding
+application/configuration field is `collaboration`. Defaults permit four participants and
+two concurrent participant runs. Participant allowances accumulate across continuations;
+they do not replace or replenish the host's `inferenceBudget`.
+
+The optional `/collaboration` inspector lists bounded pages of participants, their
+session/run identities, current assignments and recorded result references. Select a
+participant to send user steering, continue settled work, interrupt, cancel, or wait.
+Steering is recorded as user input; peer contributions retain model-authored sender attribution.
+Refresh and delivery-gap recovery read the canonical recorded state rather than reconstructing
+execution from display events.
+
+RPC provides `collaboration.read` (`offset`, `limit`, maximum 64),
+`collaboration.participant`, `collaboration.send`, `collaboration.continue`,
+`collaboration.interrupt`, `collaboration.cancel`, and `collaboration.wait`.
+Mutating controls require the inspected participant/session/run identity and current epoch;
+stale targets fail rather than controlling another run. Continuation retains the participant's
+existing grants. Starting participants remains an ordinary governed model-tool operation.

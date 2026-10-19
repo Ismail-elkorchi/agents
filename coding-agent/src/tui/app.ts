@@ -26,6 +26,7 @@ import {
   createDraft,
   createPromptRecall,
   queuePanel,
+  collaborationPanel,
   createSessionName,
   sourceInspectorPanel,
   diagnosticMessage,
@@ -158,6 +159,7 @@ import type { CodingAgentTuiSetupState, CodingAgentTuiState } from './state.js';
 import { createInitialCodingAgentTuiState } from './state.js';
 
 export interface CodingAgentTuiAppOptions {
+  readonly collaboration?: import('@agent-core/tui').CollaborationOperations;
   readonly context?: import('@agent-core/tui').ContextOperations;
   readonly processes?: import('../execution/process-controls.js').CodingProcessOperations;
   readonly historyEntryReader?: import('@agent-core/tui').HistoryEntryReader;
@@ -585,6 +587,8 @@ export function createCodingAgentTuiApp(
       ...(eventSource === undefined ? [] : [eventSource]),
       ...(state.overlay.kind === 'configuration'
         ? (configuration?.subscriptions(state.overlay.state, context) ?? [])
+        : state.overlay.kind === 'collaboration' && options.collaboration !== undefined
+          ? codingCollaboration(options.collaboration, state.overlay.state.state.sessionId).subscriptions(state.overlay.state, context)
         : state.overlay.kind === 'inspector'
           ? inspector.subscriptions(state.overlay.state, context)
           : []),
@@ -619,6 +623,8 @@ export function createCodingAgentTuiApp(
                 state.queuePanel,
                 context
               )
+            : state.overlay.kind === 'collaboration' && options.collaboration !== undefined
+              ? codingCollaboration(options.collaboration, state.overlay.state.state.sessionId).view(state.overlay.state, context)
             : state.overlay.kind === 'inspector'
               ? inspector.view(state.overlay.state, context)
               : undefined
@@ -818,6 +824,22 @@ function updateCodingAgentTui(
           }
         ]
       };
+    case 'collaboration.open': {
+      if (options.collaboration === undefined || state.debug.sessionId === undefined)
+        return { state: appendNotice(state, 'Open a configured session before inspecting collaboration.', 'info') };
+      return mountPanel(state, 'collaboration', codingCollaboration(options.collaboration, state.debug.sessionId), context);
+    }
+    case 'collaboration.refresh': {
+      if (state.overlay.kind !== 'collaboration' || options.collaboration === undefined) return { state };
+      const child = codingCollaboration(options.collaboration, state.overlay.state.state.sessionId);
+      const result = child.update(state.overlay.state, { id: state.overlay.state.id, generation: state.overlay.state.generation, message: { type: 'refresh' } }, context);
+      return applyPanelResult(state, 'collaboration', result);
+    }
+    case 'collaboration.child': {
+      if (state.overlay.kind !== 'collaboration' || options.collaboration === undefined) return { state };
+      const result = codingCollaboration(options.collaboration, state.overlay.state.state.sessionId).update(state.overlay.state, message.child, context);
+      return applyPanelResult(state, 'collaboration', result, result.outputs?.includes('close'));
+    }
     case 'inspector.open':
     case 'history.inspect': {
       if (
@@ -2166,6 +2188,7 @@ function overlayView(
       return processesView(state.overlay.state, width, height);
     case 'session-name':
       return sessionNameView(state.overlay.state, width, height);
+    case 'collaboration':
     case 'inspector':
       return childPanel;
     case 'decision':
@@ -2707,7 +2730,7 @@ function mountedPanels(
 ): readonly import('@ismail-elkorchi/terminal-ui/tui').TuiChildState<unknown>[] {
   const overlay = state.overlay;
   return [
-    ...(overlay.kind === 'configuration' || overlay.kind === 'inspector' ? [overlay.state] : []),
+    ...(overlay.kind === 'configuration' || overlay.kind === 'inspector' || overlay.kind === 'collaboration' ? [overlay.state] : []),
     ...(state.queuePanel === undefined ? [] : [state.queuePanel])
   ];
 }
@@ -2721,4 +2744,9 @@ function composerHint(
   return state.run.kind === 'working'
     ? `${submit}: queue follow-up · ${steer}: steer`
     : `${submit}: send · Shift+Enter: newline`;
+}
+
+function codingCollaboration(operations: import('@agent-core/tui').CollaborationOperations, sessionId: string) {
+  return createTuiChild(collaborationPanel(operations, sessionId),
+    (child): CodingAgentTuiMessage => ({ type: 'collaboration.child', child }));
 }

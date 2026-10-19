@@ -1,3 +1,4 @@
+import type { CollaborationCoordinator } from '@agent-core/runtime';
 import { parseNativeToolExposure } from '@agent-core/runtime';
 import { parseProgramLimits } from '@agent-core/tools-programmatic';
 import { parseWebConfiguration } from '@agent-core/tools-web/node';
@@ -16,6 +17,7 @@ import {
   ownSessionSubmissionInput,
   progressReplacementKey,
   type AgentSession,
+  parseCollaborationPolicy,
   parseInferenceBudget,
   parseContextResourcePolicy,
   parseContextControlPolicy,
@@ -63,7 +65,7 @@ import type * as z from 'zod';
 
 export type { WritingConfiguration, WritingMode } from '../session.js';
 export type { WritingDocument, DocumentRevision, DocumentPassageInput } from '../documents.js';
-export interface WritingApplicationOptions extends Pick<WritingConfiguration, 'inferenceBudget' | 'contextPolicy' | 'contextControlPolicy' | 'outputReservationPolicy' | 'programmaticTools' | 'nativeToolExposure' | 'webTools' | 'mcpTools'> {
+export interface WritingApplicationOptions extends Pick<WritingConfiguration, 'collaboration' | 'inferenceBudget' | 'contextPolicy' | 'contextControlPolicy' | 'outputReservationPolicy' | 'programmaticTools' | 'nativeToolExposure' | 'webTools' | 'mcpTools'> {
   readonly rootDirectory: string;
   readonly stateRoot?: string;
   readonly sessionId?: string;
@@ -83,6 +85,7 @@ export interface WritingApplicationState {
 }
 export type WritingApplicationEvent =
   | { readonly type: 'history.recovery'; readonly progress: import('@agent-core/runtime/node').HistoryIndexRecoveryProgress }
+  | import('@agent-core/runtime').CollaborationNotification
   | AgentSessionEvent
   | {
       readonly type: 'application.state.changed';
@@ -96,7 +99,8 @@ export type WritingSubmissionResult =
 /** Coordinates workspace authority and a Core session; editorial decisions belong to the conversation. */
 export class WritingApplication {
   private readonly events = new ApplicationEvents<WritingApplicationEvent>((event) =>
-    event.type === 'run.progress' ? progressReplacementKey(event.event)
+    event.type === 'collaboration.changed' ? `collaboration:${event.groupId}`
+      : event.type === 'run.progress' ? progressReplacementKey(event.event)
       : event.type === 'history.recovery' && event.progress.phase === 'progress'
         ? `history.recovery:${event.progress.sessionId}` : undefined
   );
@@ -104,12 +108,13 @@ export class WritingApplication {
   private readonly documents: WritingDocuments;
   private descriptor: SessionDescriptor | undefined;
   private readonly initialSessionId: string | undefined;
-  private composition: ReturnType<typeof createWritingSession> | undefined;
+  private composition: Awaited<ReturnType<typeof createWritingSession>> | undefined;
   private selection: ModelSelection | undefined;
   private configuration: WritingConfiguration | undefined;
   private mode: WritingMode;
+  private collaborationUnsubscribe: (() => void) | undefined;
   private unsubscribe: (() => void) | undefined;
-  private readonly resourceOptions: Pick<WritingConfiguration, 'inferenceBudget' | 'contextPolicy' | 'contextControlPolicy' | 'outputReservationPolicy' | 'programmaticTools' | 'nativeToolExposure' | 'webTools' | 'mcpTools'>;
+  private readonly resourceOptions: Pick<WritingConfiguration, 'collaboration' | 'inferenceBudget' | 'contextPolicy' | 'contextControlPolicy' | 'outputReservationPolicy' | 'programmaticTools' | 'nativeToolExposure' | 'webTools' | 'mcpTools'>;
   private readonly maxOutputTokens: number | undefined;
   private mutations: Promise<void> = Promise.resolve();
   private closeCompletion: Promise<void> | undefined;
@@ -133,6 +138,7 @@ export class WritingApplication {
     this.initialSessionId = options.sessionId;
     this.maxOutputTokens = options.maxOutputTokens;
     this.resourceOptions = Object.freeze({
+      ...(options.collaboration === undefined ? {} : { collaboration: options.collaboration === false ? false : parseCollaborationPolicy(options.collaboration) }),
       ...(options.inferenceBudget === undefined ? {} : { inferenceBudget: parseInferenceBudget(options.inferenceBudget) }),
       ...(options.contextPolicy === undefined ? {} : { contextPolicy: parseContextResourcePolicy(options.contextPolicy) }),
       ...(options.contextControlPolicy === undefined ? {} : { contextControlPolicy: parseContextControlPolicy(options.contextControlPolicy) }),
@@ -348,11 +354,15 @@ export class WritingApplication {
       this.selection = selection;
       return;
     }
-    const prepared = createWritingSession(
+    // One host owns this collaboration group at a time. Validate first, then release
+    // the previous composition before reopening the same durable session identity.
+    await this.disconnect();
+    const prepared = await createWritingSession(
       this.workspace,
       this.requireDescriptor(),
       this.generationConfiguration(configuration),
-      (selection) => this.connectProvider(selection.provider, selection.endpoint)
+      (selection) => this.connectProvider(selection.provider, selection.endpoint),
+      () => this.mode
     );
     try {
       await prepared.agent.changeModel({
@@ -373,14 +383,10 @@ export class WritingApplication {
       await prepared.close();
       throw error;
     }
-    const previous = this.composition;
-    this.unsubscribe?.();
-    this.unsubscribe = undefined;
     this.configuration = configuration;
     this.selection = selection;
     this.composition = prepared;
     this.subscribeComposition();
-    await previous?.close();
     if (selection !== undefined) {
       try {
         await atomicWritePrivateJson(
@@ -396,9 +402,20 @@ export class WritingApplication {
   }
 
   setMode(mode: WritingMode): Promise<void> {
-    return this.mutate(() => {
+    return this.mutate(async () => {
       this.requireIdle();
-      this.mode = mode;
+      if (this.mode === mode) return;
+      const coordinator = this.composition?.collaboration;
+      if (coordinator === undefined) {
+        this.mode = mode;
+        return;
+      }
+      await coordinator.withSupervisorExecution(async () => {
+        const snapshot = await coordinator.inspect();
+        if (snapshot.participants.some(participant => !participant.cancelled && participant.phase !== 'ended' && participant.phase !== 'cancelled'))
+          throw new Error('Finish or cancel participant work before changing edit/review mode.');
+        this.mode = mode;
+      });
     });
   }
 
@@ -641,6 +658,43 @@ export class WritingApplication {
       ? agent.resumeRuntime(runId)
       : agent.reconcileExternal(runId);
   }
+  readCollaboration(input: Parameters<CollaborationCoordinator['inspectParticipants']>[0] = {}) {
+    const coordinator = this.requireCollaboration();
+    return this.readSessionOwned(() => coordinator.inspectParticipants(input));
+  }
+
+  readParticipant(participantId: string) {
+    const coordinator = this.requireCollaboration();
+    return this.readSessionOwned(() => coordinator.inspectParticipantSummary(participantId));
+  }
+
+  sendParticipantInput(input: Parameters<CollaborationCoordinator['sendUserInput']>[0]) {
+    return this.requireCollaboration().sendUserInput(input);
+  }
+
+  continueParticipant(input: Parameters<CollaborationCoordinator['continueUserInput']>[0]) {
+    return this.requireCollaboration().continueUserInput(input);
+  }
+
+  interruptParticipant(input: Parameters<CollaborationCoordinator['interrupt']>[0]) {
+    return this.requireCollaboration().interrupt(input);
+  }
+
+  cancelParticipant(input: Parameters<CollaborationCoordinator['cancel']>[0]) {
+    return this.requireCollaboration().cancel(input);
+  }
+
+  waitForParticipants(input: Parameters<CollaborationCoordinator['wait']>[0]) {
+    return this.requireCollaboration().wait(input);
+  }
+
+  private requireCollaboration(): CollaborationCoordinator {
+    this.assertOpen();
+    const coordinator = this.composition?.collaboration;
+    if (coordinator === undefined) throw new Error('Collaboration is disabled for this session.');
+    return coordinator;
+  }
+
   resolveApproval(input: Parameters<AgentSession['resolveApproval']>[0]) {
     this.assertOpen();
     return this.requireAgent().resolveApproval(input);
@@ -694,11 +748,12 @@ export class WritingApplication {
       }
     }
     if (!this.configuration) return;
-    const composition = createWritingSession(
+    const composition = await createWritingSession(
       this.workspace,
       this.descriptor,
       this.generationConfiguration(this.configuration),
-      (selection) => this.connectProvider(selection.provider, selection.endpoint)
+      (selection) => this.connectProvider(selection.provider, selection.endpoint),
+      () => this.mode
     );
     try {
       const profile = await this.configuration.provider.describeModel(this.configuration.model);
@@ -711,6 +766,8 @@ export class WritingApplication {
       this.subscribeComposition();
       await composition.agent.restore();
     } catch (error) {
+      this.collaborationUnsubscribe?.();
+      this.collaborationUnsubscribe = undefined;
       this.unsubscribe?.();
       this.unsubscribe = undefined;
       this.composition = undefined;
@@ -725,6 +782,9 @@ export class WritingApplication {
 
   private subscribeComposition() {
     if (this.composition === undefined) return;
+    this.collaborationUnsubscribe = this.composition.collaboration?.subscribe(
+      event => { this.events.publish(event); }, error => { this.events.fail(error); }
+    );
     this.unsubscribe = this.composition.agent.subscribe(
       (event) => {
         this.events.publish(event);
@@ -742,6 +802,8 @@ export class WritingApplication {
   }
 
   private async disconnect() {
+    this.collaborationUnsubscribe?.();
+    this.collaborationUnsubscribe = undefined;
     this.unsubscribe?.();
     this.unsubscribe = undefined;
     await this.sessionReads.close();

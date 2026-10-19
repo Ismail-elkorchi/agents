@@ -1,4 +1,4 @@
-import { parseInferenceBudget, parseContextResourcePolicy, parseContextControlPolicy, parseOutputReservationPolicy, type InferenceBudget, type ContextResourcePolicy, type ContextControlPolicy, type OutputReservationPolicy } from '@agent-core/runtime';
+import { parseCollaborationPolicy, type CollaborationPolicy, parseInferenceBudget, parseContextResourcePolicy, parseContextControlPolicy, parseOutputReservationPolicy, type InferenceBudget, type ContextResourcePolicy, type ContextControlPolicy, type OutputReservationPolicy } from '@agent-core/runtime';
 import { parseJsonObject } from '@agent-core/json';
 import { parseModelReasoningRequest, type ModelReasoningRequest } from '@agent-core/model';
 import { rootedFileIdentitiesEqual, type RootedFileAuthority } from '@agent-core/tools-local';
@@ -43,6 +43,7 @@ export interface CodingAgentConfiguration {
     readonly advisory: readonly CodingAgentCheckConfiguration[];
   };
   readonly limits?: CodingAgentLimitConfiguration;
+  readonly collaboration?: false | Partial<CollaborationPolicy>;
   readonly inferenceBudget?: InferenceBudget;
   readonly contextPolicy?: ContextResourcePolicy;
   readonly contextControlPolicy?: Partial<ContextControlPolicy>;
@@ -105,6 +106,7 @@ export function parseCodingAgentConfiguration(input: unknown): CodingAgentConfig
           'tools',
           'verification',
           'limits',
+          'collaboration',
           'inferenceBudget',
           'contextPolicy',
           'contextControlPolicy',
@@ -170,6 +172,7 @@ export function parseCodingAgentConfiguration(input: unknown): CodingAgentConfig
       required: Object.freeze(verification.required.map(snapshotCheck)),
       advisory: Object.freeze(verification.advisory.map(snapshotCheck))
     }),
+    ...(value.collaboration === undefined ? {} : { collaboration: value.collaboration === false ? false as const : parseCollaborationPolicy(value.collaboration) }),
     ...(value.inferenceBudget === undefined ? {} : { inferenceBudget: parseInferenceBudget(value.inferenceBudget) }),
     ...(value.contextPolicy === undefined ? {} : { contextPolicy: parseContextResourcePolicy(value.contextPolicy) }),
     ...(value.contextControlPolicy === undefined ? {} : { contextControlPolicy: parseContextControlPolicy(value.contextControlPolicy) }),

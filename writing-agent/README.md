@@ -102,3 +102,33 @@ The CLI, RPC application and TUI share the same session tool configuration:
 - `--mcp-tools '{"servers":[]}'` configures optional MCP sources. Each server requires its host-assigned identity, endpoint, account and policy revision, and explicit per-tool effects. See `@agent-core/tools-mcp` for the bounded configuration contract. Discovery does not grant execution authority.
 
 The corresponding application options are `programmaticTools`, `nativeToolExposure`, `webTools` and `mcpTools`. With none supplied, existing local-only tool behavior is preserved. Workspace edit/review permissions remain independent of optional network configuration. Source captures retain original bytes and identify any derived text separately.
+
+## Collaboration
+
+Bounded collaboration is available through ordinary model tools by default. Participants
+run as separate durable sessions under the same host resource coordination and continuing
+budget owner. Resource leases coordinate one supervised collaboration family in its admitted
+workspace. Independent application hosts and external editors do not share those leases;
+exact-base validation still protects edits against changed files. Worktrees are not an
+isolation boundary. The host supplies narrowed profiles; a participant cannot grant itself more
+authority. Read-only and review modes remain read-only.
+
+`--collaboration JSON` overrides `maxParticipants`, `maxConcurrentRuns`, `maxWaitMs`,
+`maxPendingOperations`, and `participantBudget`; `--collaboration false` disables collaboration. The corresponding
+application/configuration field is `collaboration`. Defaults permit four participants and
+two concurrent participant runs. Participant allowances accumulate across continuations;
+they do not replace or replenish the host's `inferenceBudget`.
+
+The optional `/collaboration` inspector lists bounded pages of participants, their
+session/run identities, current assignments and recorded result references. Select a
+participant to send user steering, continue settled work, interrupt, cancel, or wait.
+Steering is recorded as user input; peer contributions retain model-authored sender attribution.
+Refresh and delivery-gap recovery read the canonical recorded state rather than reconstructing
+execution from display events.
+
+RPC provides `collaboration.read` (`offset`, `limit`, maximum 64),
+`collaboration.participant`, `collaboration.send`, `collaboration.continue`,
+`collaboration.interrupt`, `collaboration.cancel`, and `collaboration.wait`.
+Mutating controls require the inspected participant/session/run identity and current epoch;
+stale targets fail rather than controlling another run. Continuation retains the participant's
+existing grants. Starting participants remains an ordinary governed model-tool operation.

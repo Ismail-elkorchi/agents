@@ -39,7 +39,8 @@ export async function runCodingAgentTuiApp(
   let result: AgentRunResult | undefined;
   const events = applicationEventSource<CodingAgentTuiMessage>('coding-agent-events', {
     replacementKey: (message) =>
-      message.type === 'progress'
+      message.type === 'collaboration.refresh' ? 'collaboration-refresh'
+        : message.type === 'progress'
         ? progressReplacementKey(message.event)
         : message.type === 'history.recovery' && message.progress.phase === 'progress'
           ? `history-recovery:${message.progress.sessionId}`
@@ -56,6 +57,7 @@ export async function runCodingAgentTuiApp(
           const hydration = await controller.readSession();
           await emit({ type: 'application.state.changed', state: controller.state() });
           await emit({ type: 'session.hydrated', hydration });
+          await emit({ type: 'collaboration.refresh' });
           return;
         }
         result = await presentControllerEvent(
@@ -112,6 +114,7 @@ export async function runCodingAgentTuiApp(
         runtimeDetails: initial.runtimeDetails,
         navigation: controller,
         context: controller,
+        collaboration: controller,
         processes: controller,
         attachments: controller,
         configuration: {
@@ -207,6 +210,9 @@ async function presentControllerEvent(
 ): Promise<AgentRunResult | undefined> {
   let message: CodingAgentTuiMessage;
   switch (event.type) {
+    case 'collaboration.changed':
+      await emit({ type: 'collaboration.refresh' });
+      return currentResult;
     case 'delivery.gap':
     case 'configuration.changed':
     case 'input.queued':

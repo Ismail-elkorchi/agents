@@ -82,6 +82,7 @@ export type CodingAgentTuiOverlay =
   | { readonly kind: 'attachments'; readonly state: import('@agent-core/tui').AttachmentState }
   | { readonly kind: 'recall'; readonly state: import('@agent-core/tui').PromptRecallState }
   | { readonly kind: 'queue' }
+  | { readonly kind: 'collaboration'; readonly state: import('@ismail-elkorchi/terminal-ui/tui').TuiChildState<import('@agent-core/tui').CollaborationPanelState> }
   | {
       readonly kind: 'preferences';
       readonly capture?: string;

@@ -1,5 +1,6 @@
 import { parseModelSelection } from '@agent-core/model';
 import {
+  collaborationRpcMethods,
   historyRpcMethods,
   contextRpcMethods,
   inputRpcMethods,
@@ -22,6 +23,7 @@ const id = z.string().min(1);
 
 export function writingRpcMethods(application: WritingApplication, shutdown: () => void) {
   return {
+    ...collaborationRpcMethods(application),
     ...historyRpcMethods(application),
     ...contextRpcMethods(application),
     ...sessionRpcMethods(application),

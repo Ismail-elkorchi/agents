@@ -22,7 +22,8 @@ export async function runWritingAgentTuiApp(
 ) {
   const events = applicationEventSource<WritingTuiMessage>('writing-agent-events', {
     replacementKey: (message) =>
-      message.type === 'progress'
+      message.type === 'collaboration.refresh' ? 'collaboration-refresh'
+        : message.type === 'progress'
         ? progressReplacementKey(message.event)
         : message.type === 'history.recovery' && message.progress.phase === 'progress'
           ? `history-recovery:${message.progress.sessionId}`
@@ -33,6 +34,8 @@ export async function runWritingAgentTuiApp(
     subscribe: (emit, failed) => {
       return application.subscribe(async (event) => {
         switch (event.type) {
+          case 'collaboration.changed':
+            return emit({ type: 'collaboration.refresh' });
           case 'history.recovery':
             return emit(event);
           case 'application.state.changed':
@@ -52,6 +55,8 @@ export async function runWritingAgentTuiApp(
             await emit({ type: 'context.applied', idempotencyKey: event.transition.idempotencyKey });
             return emit({ type: 'refresh' });
           case 'delivery.gap':
+            await emit({ type: 'collaboration.refresh' });
+            return emit({ type: 'refresh' });
           case 'configuration.changed':
           case 'input.queued':
           case 'input.revised':

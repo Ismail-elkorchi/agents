@@ -1,3 +1,4 @@
+import type { CollaborationCoordinator } from '@agent-core/runtime';
 import { parseNativeToolExposure } from '@agent-core/runtime';
 import { parseProgramLimits } from '@agent-core/tools-programmatic';
 import { parseWebConfiguration } from '@agent-core/tools-web/node';
@@ -11,6 +12,7 @@ import {
 import { JsonlEventRepository } from '@agent-core/persistence/node';
 import {
   agentEventCodec,
+  parseCollaborationPolicy,
   parseInferenceBudget,
   parseContextResourcePolicy,
   parseContextControlPolicy,
@@ -71,13 +73,15 @@ import {
 
 export class CodingApplication {
   private readonly events = new ApplicationEvents<CodingApplicationEvent>((event) =>
-    event.type === 'run.progress' ? progressReplacementKey(event.event)
+    event.type === 'collaboration.changed' ? `collaboration:${event.groupId}`
+      : event.type === 'run.progress' ? progressReplacementKey(event.event)
       : event.type === 'history.recovery' && event.progress.phase === 'progress'
         ? `history.recovery:${event.progress.sessionId}` : undefined
   );
   private run: Promise<void> = Promise.resolve();
   private workspace: OpenCodingWorkspace;
   private runtime: CodingAgentRuntimeComposition | undefined;
+  private collaborationUnsubscribe: (() => void) | undefined;
   private runtimeUnsubscribe: (() => void) | undefined;
   private runtimeEventTask: Promise<void> | undefined;
   private selectedSessionId: string | undefined;
@@ -99,6 +103,7 @@ export class CodingApplication {
     workspace: OpenCodingWorkspace
   ) {
     this.options = { ...options,
+      ...(options.collaboration === undefined ? {} : { collaboration: options.collaboration === false ? false : parseCollaborationPolicy(options.collaboration) }),
       ...(options.inferenceBudget === undefined ? {} : { inferenceBudget: parseInferenceBudget(options.inferenceBudget) }),
       ...(options.contextPolicy === undefined ? {} : { contextPolicy: parseContextResourcePolicy(options.contextPolicy) }),
       ...(options.contextControlPolicy === undefined ? {} : { contextControlPolicy: parseContextControlPolicy(options.contextControlPolicy) }),
@@ -229,6 +234,43 @@ export class CodingApplication {
         ...(relationship === undefined ? {} : { relationship })
       });
     });
+  }
+
+  readCollaboration(input: Parameters<CollaborationCoordinator['inspectParticipants']>[0] = {}) {
+    const coordinator = this.requireCollaboration();
+    return this.readSessionOwned(() => coordinator.inspectParticipants(input));
+  }
+
+  readParticipant(participantId: string) {
+    const coordinator = this.requireCollaboration();
+    return this.readSessionOwned(() => coordinator.inspectParticipantSummary(participantId));
+  }
+
+  sendParticipantInput(input: Parameters<CollaborationCoordinator['sendUserInput']>[0]) {
+    return this.requireCollaboration().sendUserInput(input);
+  }
+
+  continueParticipant(input: Parameters<CollaborationCoordinator['continueUserInput']>[0]) {
+    return this.requireCollaboration().continueUserInput(input);
+  }
+
+  interruptParticipant(input: Parameters<CollaborationCoordinator['interrupt']>[0]) {
+    return this.requireCollaboration().interrupt(input);
+  }
+
+  cancelParticipant(input: Parameters<CollaborationCoordinator['cancel']>[0]) {
+    return this.requireCollaboration().cancel(input);
+  }
+
+  waitForParticipants(input: Parameters<CollaborationCoordinator['wait']>[0]) {
+    return this.requireCollaboration().wait(input);
+  }
+
+  private requireCollaboration(): CollaborationCoordinator {
+    this.assertOpen();
+    const coordinator = this.requireRuntime().collaboration;
+    if (coordinator === undefined) throw new Error('Collaboration is disabled for this session.');
+    return coordinator;
   }
 
   resolveApproval(input: Parameters<AgentSession['resolveApproval']>[0]) {
@@ -476,6 +518,9 @@ export class CodingApplication {
     this.runtime = runtime;
     this.selectedSessionId = runtime.session.id;
     delete this.options.branch;
+    this.collaborationUnsubscribe = runtime.collaboration?.subscribe(event => {
+      if (this.ownsRuntime(runtime)) this.events.publish(event);
+    }, error => { if (this.ownsRuntime(runtime)) this.events.fail(error); });
     this.runtimeUnsubscribe = runtime.agent.subscribe(
       (event) => {
         const task = this.onSessionEvent(runtime, event).finally(() => {
@@ -514,6 +559,8 @@ export class CodingApplication {
   }
 
   private async stopRuntimeEvents(): Promise<void> {
+    this.collaborationUnsubscribe?.();
+    this.collaborationUnsubscribe = undefined;
     this.runtimeUnsubscribe?.();
     this.runtimeUnsubscribe = undefined;
     // Unsubscribe prevents new delivery; an already-running owned reader must finish

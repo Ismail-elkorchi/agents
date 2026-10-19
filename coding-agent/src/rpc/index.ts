@@ -1,5 +1,6 @@
 import { parseModelSelection } from '@agent-core/model';
 import {
+  collaborationRpcMethods,
   historyRpcMethods,
   contextRpcMethods,
   inputRpcMethods,
@@ -51,6 +52,7 @@ const processAction = z.discriminatedUnion('kind', [
 
 export function codingRpcMethods(application: CodingApplication, shutdown: () => void) {
   return {
+    ...collaborationRpcMethods(application),
     ...historyRpcMethods(application),
     ...contextRpcMethods(application),
     ...sessionRpcMethods(application),

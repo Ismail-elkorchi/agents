@@ -52,6 +52,7 @@ export const WRITING_COMMANDS: readonly {
     description: 'Inspect configuration and session state',
     message: { type: 'status.open' }
   },
+  { name: '/collaboration', description: 'Inspect participants and control their exact sessions and runs', message: { type: 'collaboration.open' } },
   {
     name: '/export',
     description: 'Export the loaded conversation pages locally',

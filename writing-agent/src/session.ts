@@ -5,15 +5,25 @@ import { createProgrammaticTool } from '@agent-core/tools-programmatic';
 import { createQuickJSProgramRunner } from '@agent-core/tools-programmatic/node';
 import { createConfiguredWebTools } from '@agent-core/tools-web/node';
 import { createConfiguredMcpSources, type ConfiguredMcpSources } from '@agent-core/tools-mcp/node';
-import { ToolCatalog } from '@agent-core/tools';
+import { ResourceLeaseCoordinator, ToolCatalog, type CompiledToolDefinition } from '@agent-core/tools';
 import type { ProgramLimits } from '@agent-core/tools-programmatic';
 import type { WebConfiguration } from '@agent-core/tools-web';
 import type { NodeMcpConfiguration } from '@agent-core/tools-mcp/node';
 import { RequestTokenEstimator, type ModelProvider } from '@agent-core/model';
-import { hashJson } from '@agent-core/persistence';
+import { hashJson, sameArtifactIdentity } from '@agent-core/persistence';
 import { JsonlEventRepository, LocalArtifactRepository } from '@agent-core/persistence/node';
 import {
   AgentRunCoordinator,
+  CollaborationCoordinator,
+  parseCollaborationPolicy,
+  createCollaborationTools,
+  createCollaborationToolHost,
+  createCollaborationPeerDelivery,
+  createParticipantArtifactRepository,
+  type ParticipantArtifactRepository,
+  peerDeliveryEventCodec,
+  type PeerDeliveryEvent,
+  type SessionPeerContributionEntry,
   authorizeSessionToolEffects,
   AgentRuntime,
   AgentSession,
@@ -36,11 +46,14 @@ import {
   type AgentSessionConfiguration,
   type InferenceBudget,
   type PromptContextItemInput,
-  type SessionDescriptor
+  type SessionDescriptor,
+  type CollaborationPolicy,
+  type ParticipantExecutionBinding
 } from '@agent-core/runtime';
-import { JsonlInferenceRepository, JsonlSessionRepository } from '@agent-core/runtime/node';
+import { JsonlInferenceRepository, JsonlSessionRepository, JsonlCollaborationRepository } from '@agent-core/runtime/node';
 import { TextPatchJournal, createLocalToolHost, describeLocalToolCatalog } from '@agent-core/tools-local';
 import { mkdir, open, readFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import * as z from 'zod';
 import type { WritingWorkspace } from './workspace.js';
@@ -59,6 +72,7 @@ export interface WritingConfiguration extends Omit<AgentSessionConfiguration, 'p
   readonly webTools?: WebConfiguration;
   readonly mcpTools?: NodeMcpConfiguration;
   readonly maxOutputTokens?: number;
+  readonly collaboration?: false | Partial<CollaborationPolicy>;
 }
 
 const instructions = [
@@ -77,11 +91,192 @@ const instructions = [
 ];
 const readTools = ['read_files', 'list_directory', 'search_text', 'read_artifact'];
 
-export function createWritingSession(
+interface WritingParticipantOptions {
+  readonly artifactRepository?: ParticipantArtifactRepository;
+  readonly resourceLeases: ResourceLeaseCoordinator;
+  readonly participant?: ParticipantExecutionBinding;
+  readonly withSubmissionAdmission?: <T>(operation: () => Promise<T>) => Promise<T>;
+  readonly withSupervisorExecution?: <T>(operation: () => Promise<T>) => Promise<T>;
+  readonly allowedToolNames?: readonly string[];
+  readonly participantBudget?: InferenceBudget;
+  readonly participantContext?: PromptContextItemInput;
+  readonly collaborationTools?: (mode: WritingMode, names: readonly string[]) => readonly CompiledToolDefinition[];
+  readonly authorizePeerContribution?: (entry: SessionPeerContributionEntry, stage: 'read' | 'admit') => Promise<void>;
+}
+
+const observerTools = ['collaboration_inspect', 'collaboration_result', 'collaboration_send', 'collaboration_wait'];
+
+export async function createWritingSession(
   workspace: WritingWorkspace,
   descriptor: SessionDescriptor,
   configuration: WritingConfiguration,
-  resolveProvider?: (configuration: AgentSessionConfiguration) => ModelProvider
+  resolveProvider?: (configuration: AgentSessionConfiguration) => ModelProvider,
+  readMode: () => WritingMode = () => 'edit'
+) {
+  const policy = configuration.collaboration === false ? undefined : parseCollaborationPolicy(configuration.collaboration);
+  const resourceLeases = new ResourceLeaseCoordinator();
+  let collaboration: CollaborationCoordinator | undefined;
+  let peer: ReturnType<typeof createCollaborationPeerDelivery> | undefined;
+  const participants = new Map<string, Awaited<ReturnType<typeof composeWritingSession>>>();
+  const coordinator = () => {
+    if (!collaboration) throw new Error('Collaboration host is not ready.');
+    return collaboration;
+  };
+  const root = await composeWritingSession(workspace, descriptor, configuration, resolveProvider, {
+    resourceLeases,
+    withSubmissionAdmission: operation => collaboration ? collaboration.withSupervisorSubmission(operation) : operation(),
+    ...(policy ? {
+      withSupervisorExecution: <T>(operation: () => Promise<T>) => coordinator().withSupervisorExecution(operation),
+      authorizePeerContribution: (entry: SessionPeerContributionEntry, stage: 'read' | 'admit') => {
+        if (!peer) throw new Error('Peer delivery host is not ready.');
+        return peer.authorizeContribution(entry, stage);
+      },
+      collaborationTools: (mode: WritingMode, names: readonly string[]) => {
+        const childCollaboration = { actions: ['inspect', 'message'] as const,
+          participantIds: [`supervisor:${descriptor.id}`] };
+        const toolNames = [...names, ...observerTools];
+        const review = toolNames.filter(name => !['apply_patch', 'edit_text'].includes(name));
+        return createCollaborationTools(createCollaborationToolHost({
+          groupId: `writing:${descriptor.id}`, coordinator, actorSessionId: descriptor.id,
+          capabilities: { toolNames },
+          profiles: [
+            { id: 'review', capabilityRevision: 'writing/review@1', capabilities: { toolNames: review, collaboration: childCollaboration } },
+            ...(mode === 'edit' ? [{ id: 'edit', capabilityRevision: 'writing/edit@1',
+              capabilities: { toolNames, collaboration: childCollaboration } }] : [])
+          ],
+          send: input => {
+            if (!peer) throw new Error('Peer delivery host is not ready.');
+            const { sources, ...message } = input;
+            return peer.send({ ...message, ...(sources === undefined ? {} : { sources }) });
+          }
+        }));
+      }
+    } : {})
+  });
+  try {
+    if (policy) {
+      peer = createCollaborationPeerDelivery({ coordinator,
+        supervisorSession: () => descriptor, supervisorRunId: () => root.agent.state().activeRunId,
+        sessions: root.sessions, historyEvents: root.events, artifacts: root.artifacts,
+        async authorizePublicArtifact(grant) {
+          if (grant.source.kind !== 'public_artifact') throw new Error('A public artifact source is required.');
+          const artifact = grant.source.artifact;
+          const supervisor = grant.sender.participantId === `supervisor:${descriptor.id}` && grant.sender.sessionId === descriptor.id;
+          const allowed = supervisor ? root.toolNames(readMode()).includes('read_artifact')
+            : await coordinator().canReadPublicArtifact(grant.sender.participantId, artifact);
+          if (!allowed) throw new Error('The source artifact is outside the sender grant.');
+          const stored = await root.artifacts.resolve(artifact.artifactId);
+          if (!stored || !sameArtifactIdentity(stored, artifact)) throw new Error('The source artifact representation changed.');
+        },
+        events: new JsonlEventRepository<PeerDeliveryEvent>({ rootDir: path.join(workspace.stateDirectory, 'peer-deliveries'), codec: peerDeliveryEventCodec })
+      });
+      collaboration = await CollaborationCoordinator.open({ groupId: `writing:${descriptor.id}`,
+        hostId: randomUUID(), supervisorSessionId: descriptor.id, budgetOwnerId: root.inferenceOwnerId,
+        repository: new JsonlCollaborationRepository({ rootDir: path.join(workspace.stateDirectory, 'collaboration') }),
+        runs: root.runs, ...policy,
+        readCorrectionRevision: () => root.sessions.acceptedCorrectionRevision(descriptor),
+        captureConfiguration: () => root.agent.state().configuration,
+        async readSubmission({ sessionId, runId }) {
+          const child = await root.sessions.open(sessionId, workspace.binding);
+          const submission = (await root.sessions.pendingSubmissionSummaries(child)).find(value => value.runId === runId);
+          return submission ? root.sessions.readSubmission(child, submission.submissionId) : undefined;
+        },
+        validateCapabilities(capabilities) {
+          const available = root.toolNames(readMode());
+          if (capabilities.toolNames.some(name => !available.includes(name)))
+            throw new Error('Participant tools exceed the current Writing mode or host grant.');
+        },
+        async closeParticipant(participantId: string) {
+          await participants.get(participantId)?.close();
+        },
+        async createSession(input) {
+          collaboration = input.coordinator;
+          const delivery = peer;
+          if (!delivery) throw new Error('Peer delivery host is not ready.');
+          const prior = participants.get(input.participant.participantId);
+          if (prior) { await prior.close(); participants.delete(input.participant.participantId); }
+          const settings = input.assignment.configuration;
+          if (!settings) throw new Error('The participant assignment has no captured model binding.');
+          let childDescriptor: SessionDescriptor;
+          try { childDescriptor = await root.sessions.create({ id: input.participant.sessionId,
+            binding: workspace.binding, provider: settings.provider, model: settings.model }); }
+          catch (error) {
+            if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error;
+            childDescriptor = await root.sessions.open(input.participant.sessionId, workspace.binding);
+          }
+          const grant = input.assignment.capabilities;
+          const mode = grant.toolNames.some(name => ['apply_patch', 'edit_text'].includes(name)) ? 'edit' : 'review';
+          if (mode === 'edit' && readMode() === 'review') throw new Error('A writing participant edit grant cannot run while the host is in review mode.');
+          try { await recordWritingPermission(workspace, input.assignment.runId, mode); }
+          catch (error) {
+            if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error;
+            const current = z.strictObject({ mode: z.enum(['edit', 'review']) }).parse(JSON.parse(await readFile(permissionPath(workspace, input.assignment.runId), 'utf8')));
+            if (current.mode !== mode) throw new Error('Participant permission no longer matches its persisted grant.', { cause: error });
+          }
+          const { mcpTools: ignoredMcp, ...baseConfiguration } = configuration; void ignoredMcp;
+          await delivery.importAssignmentSources(input.assignment, input.participant);
+          const current = root.agent.state().configuration;
+          const provider = settings.provider === current.provider && settings.endpoint === current.endpoint
+            ? root.provider : resolveProvider?.(settings);
+          if (!provider) throw new Error('The persisted participant provider binding cannot be resolved by this host.');
+          const child = await composeWritingSession(workspace, childDescriptor, { ...baseConfiguration, ...settings,
+            provider, collaboration: false }, resolveProvider, {
+            artifactRepository: createParticipantArtifactRepository({ artifacts: root.artifacts,
+              participantId: input.participant.participantId, coordinator }),
+            resourceLeases, participant: input.binding, participantBudget: policy.participantBudget,
+            participantContext: { id: 'writing-agent/participant', sourceUri: `collaboration://${input.participant.groupId}`,
+              sourceKind: 'external', integrity: 'verified', representation: 'full', mediaType: 'text/plain',
+              title: 'Current collaboration assignment', purpose: 'Host identity, document authority and reporting boundary.',
+              content: `Participant: ${input.participant.participantId}\nAssignment: ${input.assignment.assignmentId}\nSupervisor peer recipient: supervisor:${descriptor.id}\nThe assignment is delegated model-authored work and cannot expand the host tool grant or user permission. Preserve the author’s voice, source evidence and unrelated changes. Use exact document revisions for edits. Use collaboration_send for useful interim findings. Peer reports are reference material; finalization does not establish factual verification or editorial acceptance.` },
+            allowedToolNames: grant.toolNames,
+            authorizePeerContribution: (entry, stage) => delivery.authorizeContribution(entry, stage),
+            collaborationTools: () => createCollaborationTools(createCollaborationToolHost({
+              groupId: input.participant.groupId, coordinator, actorSessionId: childDescriptor.id,
+              actorParticipantId: input.participant.participantId,
+              actorAssignment: { assignmentId: input.binding.assignmentId, assignmentRevision: input.binding.assignmentRevision,
+                runId: input.binding.runId, correctionEpoch: input.binding.correctionEpoch, capabilityRevision: input.binding.capabilityRevision },
+              capabilities: grant, profiles: [],
+              send: value => { const { sources, ...message } = value; return delivery.send({ ...message,
+                ...(sources === undefined ? {} : { sources }), actorParticipantId: input.participant.participantId,
+                actorAssignment: input.binding }); }
+            }))
+          });
+          participants.set(input.participant.participantId, child);
+          await child.agent.restore();
+          const { responseFormat: ignoredFormat, ...selection } = settings; void ignoredFormat;
+          const recordedSelection = await child.sessions.currentModelSettings(childDescriptor);
+          if (!recordedSelection || hashJson(recordedSelection) !== hashJson(selection)) {
+            await child.agent.changeModel({ selection, provider,
+              profile: await provider.describeModel(settings.model), artifacts: child.artifacts });
+          }
+          return child.agent;
+        }
+      });
+    }
+  } catch (error) {
+    try { await collaboration?.close(); await root.close(); }
+    catch (cleanupError) { throw new AggregateError([error, cleanupError], 'Writing collaboration initialization and cleanup failed.', { cause: cleanupError }); }
+    throw error;
+  }
+  let closing: Promise<void> | undefined;
+  return { ...root, get provider() { return root.provider; }, get inference() { return root.inference; }, collaboration,
+    close() {
+      closing ??= (async () => {
+        await root.agent.close();
+        await collaboration?.close();
+        await root.close();
+      })().catch((error: unknown) => { closing = undefined; throw error; });
+      return closing;
+    }
+  };
+}
+
+async function composeWritingSession(
+  workspace: WritingWorkspace,
+  descriptor: SessionDescriptor,
+  configuration: WritingConfiguration,
+  resolveProvider: ((configuration: AgentSessionConfiguration) => ModelProvider) | undefined,
+  options: WritingParticipantOptions
 ) {
   const provider = configuration.provider;
   const sessions = new JsonlSessionRepository({
@@ -91,7 +286,7 @@ export function createWritingSession(
     rootDir: path.join(workspace.stateDirectory, 'runs'),
     codec: agentEventCodec
   });
-  const artifacts = new LocalArtifactRepository({
+  const artifacts = options.artifactRepository ?? new LocalArtifactRepository({
     rootDir: path.join(workspace.stateDirectory, 'artifacts')
   });
 
@@ -117,7 +312,8 @@ export function createWritingSession(
     repository: sessions,
     session: descriptor,
     events,
-    artifacts
+    artifacts,
+    ...(options.authorizePeerContribution ? { authorizePeerContribution: options.authorizePeerContribution } : {})
   });
   const providerBinding = new SessionProviderBinding({
     provider,
@@ -132,7 +328,13 @@ export function createWritingSession(
     repository: new JsonlInferenceRepository({ rootDir: path.join(workspace.stateDirectory, 'inference') }),
     ...(configuration.inferenceBudget === undefined ? {} : { budget: configuration.inferenceBudget })
   });
-  const ownerId = `writing-session:${descriptor.id}`;
+  const ownerId = options.participant?.budgetOwnerId ?? `writing-session:${descriptor.id}`;
+  const scope = options.participant ? { participantId: options.participant.participantId,
+    budgetScopeId: options.participant.budgetScopeId } : {
+      participantId: `supervisor:${descriptor.id}`, budgetScopeId: `supervisor:${descriptor.id}`
+    };
+  await providerBinding.inference.registerBudgetScope({ ownerId,
+    participantId: scope.participantId, scopeId: scope.budgetScopeId, budget: options.participantBudget ?? {} });
   const hosts = new Set<ReturnType<typeof createLocalToolHost>>();
   const inspectionMode = new AsyncLocalStorage<WritingMode>();
   const context: ContextService = new ContextService({
@@ -140,9 +342,11 @@ export function createWritingSession(
       const mode = inspectionMode.getStore() ?? 'edit';
       const modeMcp = mcpForMode(mode);
       const resolved = await providerBinding.resolve(agent.state().configuration);
-      const tools = [...describeLocalToolCatalog({ enabledTools: mode === 'edit'
+      const primaryTools = [...describeLocalToolCatalog({ enabledTools: mode === 'edit'
         ? [...readTools, 'apply_patch', 'edit_text'] : readTools, artifactReadMaxBytes: 2_000_000 }),
         ...createWritingDocumentTools(workspace.root, artifacts), ...sessionTools, ...additionalTools];
+      const tools = [...primaryTools, ...(options.collaborationTools?.(mode, primaryTools.map(tool => tool.name)) ?? [])]
+        .filter(tool => options.allowedToolNames === undefined || options.allowedToolNames.includes(tool.name));
       const configuredCatalog = new ToolCatalog({ tools, selectionStore: new SessionToolCatalogSelectionStore(sessions, descriptor), ...(modeMcp ? { sources: modeMcp.sources } : {}) });
       const catalog = resolveEffectiveToolCatalog({ bindingId: resolved.bindingId,
         programmaticRunner: programRunner !== undefined, modelProfile: resolved.profile,
@@ -158,7 +362,7 @@ export function createWritingSession(
           configuration.outputReservationPolicy, (await history.selectedContext())?.outputReservation),
         ...(configuration.contextControlPolicy ? { contextControlPolicy: configuration.contextControlPolicy } : {}),
         ...(configuration.outputReservationPolicy ? { outputReservationPolicy: configuration.outputReservationPolicy } : {}),
-        inference: resolved.inference, ownerId, page,
+        inference: resolved.inference, ownerId, page, resources: options.resourceLeases.inspect(),
         ...(contextAdmission ? { contextAdmission } : {}) });
     },
     repository: sessions,
@@ -187,14 +391,17 @@ export function createWritingSession(
       ...(patchJournal ? { patchJournal } : {})
     });
   }
-  function composedTools(host: ReturnType<typeof createLocalToolHost>) {
-    return [...host.tools, ...createWritingDocumentTools(host.services.rootedFileAuthority, artifacts), ...sessionTools, ...additionalTools];
+  function composedTools(host: ReturnType<typeof createLocalToolHost>, mode: WritingMode) {
+    const ordinary = [...host.tools, ...createWritingDocumentTools(host.services.rootedFileAuthority, artifacts), ...sessionTools, ...additionalTools];
+    return [...ordinary, ...(options.collaborationTools?.(mode, ordinary.map(tool => tool.name)) ?? [])]
+      .filter(tool => options.allowedToolNames === undefined || options.allowedToolNames.includes(tool.name));
   }
+  const runs = new AgentRunCoordinator(events, artifacts);
   const agent: AgentSession = new AgentSession({
     descriptor,
     expectedBinding: workspace.binding,
     repository: sessions,
-    runs: new AgentRunCoordinator(events, artifacts),
+    runs,
     context,
 
     configuration: {
@@ -210,6 +417,7 @@ export function createWritingSession(
         : { responseFormat: configuration.responseFormat })
     },
     providerBinding,
+    ...(options.withSubmissionAdmission ? { withSubmissionAdmission: options.withSubmissionAdmission } : {}),
     async createRuntime(settings, onProgress, run) {
       const { mode } = z
         .strictObject({ mode: z.enum(['edit', 'review']) })
@@ -231,14 +439,17 @@ export function createWritingSession(
       hosts.add(host);
       try {
         await host.ready();
-        const tools = composedTools(host);
+        const tools = composedTools(host, mode);
         const modeMcp = mcpForMode(mode);
-        const contextItems = workspaceContext(workspace, mode);
+        const contextItems = [...workspaceContext(workspace, mode), ...(options.participantContext ? [options.participantContext] : [])];
         const runtime = new AgentRuntime({
           provider: providerBinding.provider,
           modelBindingId: providerBinding.bindingId,
           inferenceService: providerBinding.inference,
           inferenceOwnerId: ownerId,
+          ...(options.participant ? { participant: options.participant } : {}),
+          ...(options.withSupervisorExecution ? { supervisor: { groupId: `writing:${descriptor.id}`, withCurrent: options.withSupervisorExecution } } : {}),
+          ...(!options.participant ? { inferenceScope: scope } : {}),
           model: settings.model,
           repositories: {
             events,
@@ -259,6 +470,7 @@ export function createWritingSession(
           ...(programRunner ? { programRunner } : {}),
           ...(configuration.nativeToolExposure ? { nativeToolExposure: configuration.nativeToolExposure } : {}),
           toolContext: { services: host.services },
+          toolResourceLeases: options.resourceLeases,
           // Review excludes workspace mutations; session state still needs their session-bound write capability.
           toolPolicy,
           toolAuthorizer: async request => {
@@ -296,6 +508,18 @@ export function createWritingSession(
   });
   return {
     get provider() { return providerBinding.provider; },
+    get inference() { return providerBinding.inference; },
+    resourceLeases: options.resourceLeases,
+    session: descriptor,
+    runs,
+    inferenceOwnerId: ownerId,
+    toolNames(mode: WritingMode) {
+      const ordinary = [...describeLocalToolCatalog({ enabledTools: mode === 'edit'
+        ? [...readTools, 'apply_patch', 'edit_text'] : readTools, artifactReadMaxBytes: 2_000_000 }),
+        ...createWritingDocumentTools(workspace.root, artifacts), ...sessionTools, ...additionalTools];
+      return [...ordinary, ...(options.collaborationTools?.(mode, ordinary.map(tool => tool.name)) ?? [])]
+        .filter(tool => options.allowedToolNames === undefined || options.allowedToolNames.includes(tool.name)).map(tool => tool.name);
+    },
     agent,
     history,
     artifacts,

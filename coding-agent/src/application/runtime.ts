@@ -14,6 +14,7 @@ import { OpenAICodexProvider, type OpenAICodexTransport } from '@agent-core/prov
 import { OpenRouterProvider } from '@agent-core/provider-openrouter';
 import {
   type AgentSession,
+  type CollaborationPolicy,
   type InferenceBudget,
   type ContextResourcePolicy,
   type ContextControlPolicy,
@@ -51,6 +52,7 @@ export interface CodingApplicationOptions {
   providerEndpoint?: string;
   codexTransport?: OpenAICodexTransport;
   maxOutputTokens?: number;
+  collaboration?: false | Partial<CollaborationPolicy>;
   inferenceBudget?: InferenceBudget;
   contextPolicy?: ContextResourcePolicy;
   contextControlPolicy?: Partial<ContextControlPolicy>;
@@ -303,6 +305,7 @@ export async function createRuntime(
       ...(settings.reasoning === undefined ? {} : { reasoning: settings.reasoning })
     },
     permissionMode: options.permissionMode,
+    ...(options.collaboration === undefined ? {} : { collaboration: options.collaboration }),
     ...(options.inferenceBudget === undefined ? {} : { inferenceBudget: options.inferenceBudget }),
     ...(options.contextPolicy === undefined ? {} : { contextPolicy: options.contextPolicy }),
     ...(options.contextControlPolicy === undefined ? {} : { contextControlPolicy: options.contextControlPolicy }),

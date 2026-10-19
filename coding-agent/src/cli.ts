@@ -3,7 +3,7 @@ import { parseNativeToolExposure } from '@agent-core/runtime';
 import { parseProgramLimits } from '@agent-core/tools-programmatic';
 import { parseWebConfiguration } from '@agent-core/tools-web/node';
 import { parseMcpConfiguration } from '@agent-core/tools-mcp/node';
-import { parseInferenceBudget, parseContextResourcePolicy, parseContextControlPolicy, parseOutputReservationPolicy } from '@agent-core/runtime';
+import { parseCollaborationPolicy, parseInferenceBudget, parseContextResourcePolicy, parseContextControlPolicy, parseOutputReservationPolicy } from '@agent-core/runtime';
 import { FileCredentialStore } from '@agent-core/auth';
 
 import {
@@ -219,6 +219,7 @@ const CLI_OPTION_SPECS = {
   '--programmatic-tools': valued((options, value) => { options.programmaticTools = parseProgramLimits(JSON.parse(value)); }),
   '--web-tools': valued((options, value) => { options.webTools = parseWebConfiguration(JSON.parse(value)); }),
   '--mcp-tools': valued((options, value) => { options.mcpTools = parseMcpConfiguration(JSON.parse(value)); }),
+  '--collaboration': valued((options, value) => { const policy: unknown = JSON.parse(value); options.collaboration = policy === false ? false : parseCollaborationPolicy(policy); }),
   '--inference-budget': valued((options, value) => { options.inferenceBudget = parseInferenceBudget(JSON.parse(value)); }),
   '--context-policy': valued((options, value) => { options.contextPolicy = parseContextResourcePolicy(JSON.parse(value)); }),
   '--context-control-policy': valued((options, value) => { options.contextControlPolicy = parseContextControlPolicy(JSON.parse(value)); }),
@@ -982,6 +983,7 @@ Common options:
   --programmatic-tools <json>  Enable isolated tool programs with explicit limits
   --web-tools <json>           Enable bounded source retrieval/search
   --mcp-tools <json>           Configure governed MCP servers
+  --collaboration <json>      Override bounded participant policy, or false to disable
   --inference-budget <json>
                          Continuing session-owner budget, persisted across runs and renewals.
   --context-policy <json>

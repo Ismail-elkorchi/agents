@@ -4,16 +4,26 @@ import { createProgrammaticTool } from '@agent-core/tools-programmatic';
 import { createQuickJSProgramRunner } from '@agent-core/tools-programmatic/node';
 import { createConfiguredWebTools } from '@agent-core/tools-web/node';
 import { createConfiguredMcpSources } from '@agent-core/tools-mcp/node';
-import { ToolCatalog } from '@agent-core/tools';
+import { ToolCatalog, type CompiledToolDefinition } from '@agent-core/tools';
 import type { ProgramLimits } from '@agent-core/tools-programmatic';
 import type { WebConfiguration } from '@agent-core/tools-web';
 import type { NodeMcpConfiguration } from '@agent-core/tools-mcp/node';
 import { RequestTokenEstimator, type ModelProvider } from '@agent-core/model';
 import { JsonlEventRepository, LocalArtifactRepository } from '@agent-core/persistence/node';
+import { hashJson, sameArtifactIdentity, type ArtifactRepository } from '@agent-core/persistence';
 import {
   AgentRunCoordinator,
+  CollaborationCoordinator,
+  parseCollaborationPolicy,
+  createCollaborationTools,
+  createCollaborationToolHost,
+  createCollaborationPeerDelivery,
+  createParticipantArtifactRepository,
+  type ParticipantArtifactRepository,
+  peerDeliveryEventCodec,
+  type PeerDeliveryEvent,
+  type SessionPeerContributionEntry,
   authorizeSessionToolEffects,
-  commitResourceRelease,
   createResourceReportTool,
   readPendingResourceReports,
   AgentRuntime,
@@ -38,24 +48,24 @@ import {
   type AgentSessionOptions,
   type InferenceBudget,
   type PromptContextItemInput,
-  type SessionDescriptor
+  type SessionDescriptor,
+  type ParticipantExecutionBinding,
+  type CollaborationPolicy
 } from '@agent-core/runtime';
-import { JsonlInferenceRepository, JsonlSessionRepository } from '@agent-core/runtime/node';
+import { JsonlInferenceRepository, JsonlSessionRepository, JsonlCollaborationRepository } from '@agent-core/runtime/node';
 import {
   commandExecutionResources,
-  commandReleaseReport,
   type ToolPolicy,
-  type CommandExecutionReport
 } from '@agent-core/tools';
 import { promises as fs } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type { CodingAgentConfiguration } from './configuration.js';
+import { openCodingWorkspaceResources, type CodingWorkspaceResources } from './execution/workspace-resources.js';
 import { processControls } from './execution/process-controls.js';
 import { recoveredCommandContext } from './execution/recovered-command-context.js';
 import {
   createLocalToolHost,
-  DEFAULT_LOCAL_TOOL_CONFIGURATION,
-  LocalCommandExecution,
   TextPatchJournal,
   type RootedFileAuthority
 } from '@agent-core/tools-local';
@@ -70,10 +80,13 @@ import { codingWorkspaceSessionBinding, type OpenCodingWorkspace } from './works
 
 export interface CodingSessionOptions {
   readonly workspace: OpenCodingWorkspace;
+  /** Borrowed by participant sessions. The supervisor closes this host after children settle. */
+  readonly workspaceResources?: CodingWorkspaceResources;
   readonly provider: ModelProvider;
   readonly resolveProvider?: (configuration: AgentSessionConfiguration) => ModelProvider;
   readonly settings: AgentSessionConfiguration;
   readonly permissionMode: CodingPermissionMode;
+  readonly collaboration?: false | Partial<CollaborationPolicy>;
   readonly descriptor?: SessionDescriptor;
   readonly maxOutputTokens?: number;
   readonly inferenceBudget?: InferenceBudget;
@@ -98,7 +111,205 @@ export interface CodingSessionOptions {
 /** Application composition shared by the CLI, TUI, and RPC surfaces. */
 export type CodingSessionComposition = Awaited<ReturnType<typeof createCodingSession>>;
 
+interface CodingParticipantOptions extends CodingSessionOptions {
+  readonly artifactRepository?: ParticipantArtifactRepository;
+  readonly participant?: ParticipantExecutionBinding;
+  readonly withSubmissionAdmission?: <T>(operation: () => Promise<T>) => Promise<T>;
+  readonly withSupervisorExecution?: <T>(operation: () => Promise<T>) => Promise<T>;
+  readonly allowedToolNames?: readonly string[];
+  readonly collaborationTools?: (session: SessionDescriptor, names: readonly string[]) => readonly CompiledToolDefinition[];
+  readonly participantBudget?: InferenceBudget;
+  readonly participantContext?: PromptContextItemInput;
+  readonly authorizePeerContribution?: (entry: SessionPeerContributionEntry, stage: 'read' | 'admit') => Promise<void>;
+}
+
+const observerTools = ['collaboration_inspect', 'collaboration_result', 'collaboration_send', 'collaboration_wait'];
+
+/** Host-owned collaboration shares execution resources, never a provider conversation. */
 export async function createCodingSession(options: CodingSessionOptions) {
+  const configured = options.collaboration ?? (options.workspace.security.decide('project_execution_policy').kind === 'allowed'
+    ? options.configuration?.collaboration : undefined);
+  const policy = configured === false ? undefined : parseCollaborationPolicy(configured);
+  let collaboration: CollaborationCoordinator | undefined;
+  let peer: ReturnType<typeof createCollaborationPeerDelivery> | undefined;
+  const participants = new Map<string, Awaited<ReturnType<typeof composeCodingSession>>>();
+  const recoveredOwners = new Map<string, () => Promise<void>>();
+  const coordinator = () => {
+    if (!collaboration) throw new Error('Collaboration host is not ready.');
+    return collaboration;
+  };
+  const root = await composeCodingSession({ ...options,
+    withSubmissionAdmission: operation => collaboration ? collaboration.withSupervisorSubmission(operation) : operation(),
+    ...(policy ? {
+      withSupervisorExecution: <T>(operation: () => Promise<T>) => coordinator().withSupervisorExecution(operation),
+      authorizePeerContribution: (entry: SessionPeerContributionEntry, stage: 'read' | 'admit') => {
+        if (!peer) throw new Error('Peer delivery host is not ready.');
+        return peer.authorizeContribution(entry, stage);
+      },
+      collaborationTools: (session: SessionDescriptor, names: readonly string[]) => {
+        const childCollaboration = { actions: ['inspect', 'message'] as const,
+          participantIds: [`supervisor:${session.id}`] };
+        const toolNames = [...names, ...observerTools];
+        const review = toolNames.filter(name => !['apply_patch', 'edit_text', 'exec_command', 'write_stdin', 'stop_process', 'run_check'].includes(name));
+        return createCollaborationTools(createCollaborationToolHost({
+          groupId: `coding:${session.id}`, coordinator, actorSessionId: session.id,
+          capabilities: { toolNames },
+          profiles: [
+            { id: 'review', capabilityRevision: 'coding/review@1', capabilities: { toolNames: review, collaboration: childCollaboration } },
+            ...(options.permissionMode === 'full_host' ? [{ id: 'work', capabilityRevision: 'coding/work@1',
+              capabilities: { toolNames, collaboration: childCollaboration } }] : [])
+          ],
+          send: input => {
+            if (!peer) throw new Error('Peer delivery host is not ready.');
+            const { sources, ...message } = input;
+            return peer.send({ ...message, ...(sources === undefined ? {} : { sources }) });
+          }
+        }));
+      }
+    } : {})
+  });
+  try {
+    if (policy) {
+      peer = createCollaborationPeerDelivery({ coordinator,
+        supervisorSession: () => root.session,
+        supervisorRunId: () => root.agent.state().activeRunId,
+        sessions: root.sessions, historyEvents: root.events, artifacts: root.artifacts,
+        async authorizePublicArtifact(grant) {
+          if (grant.source.kind !== 'public_artifact') throw new Error('A public artifact source is required.');
+          const artifact = grant.source.artifact;
+          const supervisor = grant.sender.participantId === `supervisor:${root.session.id}` && grant.sender.sessionId === root.session.id;
+          const allowed = supervisor ? root.toolNames.includes('read_artifact')
+            : await coordinator().canReadPublicArtifact(grant.sender.participantId, artifact);
+          if (!allowed) throw new Error('The source artifact is outside the sender grant.');
+          const stored = await root.artifacts.resolve(artifact.artifactId);
+          if (!stored || !sameArtifactIdentity(stored, artifact)) throw new Error('The source artifact representation changed.');
+        },
+        events: new JsonlEventRepository<PeerDeliveryEvent>({
+          rootDir: path.join(options.workspace.layout.runtimeDir, 'peer-deliveries'), codec: peerDeliveryEventCodec
+        })
+      });
+      collaboration = await CollaborationCoordinator.open({ groupId: `coding:${root.session.id}`,
+        hostId: randomUUID(), supervisorSessionId: root.session.id, budgetOwnerId: root.inferenceOwnerId,
+        repository: new JsonlCollaborationRepository({ rootDir: path.join(options.workspace.layout.runtimeDir, 'collaboration') }),
+        runs: root.runs, ...policy,
+        readCorrectionRevision: () => root.sessions.acceptedCorrectionRevision(root.session),
+        captureConfiguration: () => root.agent.state().configuration,
+        async readSubmission({ sessionId, runId }) {
+          const descriptor = await root.sessions.open(sessionId, root.session.header.binding);
+          const submission = (await root.sessions.pendingSubmissionSummaries(descriptor)).find(value => value.runId === runId);
+          return submission ? root.sessions.readSubmission(descriptor, submission.submissionId) : undefined;
+        },
+        validateCapabilities(capabilities) {
+          if (capabilities.toolNames.some(name => !root.toolNames.includes(name)))
+            throw new Error('Participant tools exceed the current Coding host grant.');
+        },
+        async closeParticipant(participantId: string) {
+          const child = participants.get(participantId);
+          if (child) await closeCodingParticipant(child);
+          await recoveredOwners.get(participantId)?.();
+          recoveredOwners.delete(participantId);
+        },
+        async createSession(input) {
+          collaboration = input.coordinator;
+          const delivery = peer;
+          if (!delivery) throw new Error('Peer delivery host is not ready.');
+          await recoveredOwners.get(input.participant.participantId)?.();
+          recoveredOwners.delete(input.participant.participantId);
+          const prior = participants.get(input.participant.participantId);
+          if (prior) { await prior.agent.close(); await prior.closeResources(); participants.delete(input.participant.participantId); }
+          const settings = input.assignment.configuration;
+          if (!settings) throw new Error('The participant assignment has no captured model binding.');
+          let descriptor: SessionDescriptor;
+          try { descriptor = await root.sessions.create({ id: input.participant.sessionId,
+            binding: root.session.header.binding, provider: settings.provider, model: settings.model }); }
+          catch (error) {
+            if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error;
+            descriptor = await root.sessions.open(input.participant.sessionId, root.session.header.binding);
+          }
+          const current = root.agent.state().configuration;
+          const provider = settings.provider === current.provider && settings.endpoint === current.endpoint
+            ? root.provider : options.resolveProvider?.(settings);
+          if (!provider) throw new Error('The persisted participant provider binding cannot be resolved by this host.');
+          const grant = input.assignment.capabilities;
+          const { mcpTools: ignoredMcp, ...childOptions } = options; void ignoredMcp;
+          const permissionMode = grant.toolNames.some(name => ['apply_patch', 'exec_command', 'write_stdin', 'stop_process', 'run_check'].includes(name))
+            ? options.permissionMode : 'read_only';
+          await delivery.importAssignmentSources(input.assignment, input.participant);
+          const artifactRepository = createParticipantArtifactRepository({ artifacts: root.artifacts,
+            participantId: input.participant.participantId, coordinator });
+          const child = await composeCodingSession({ ...childOptions, descriptor, settings, provider, permissionMode,
+            collaboration: false, workspaceResources: root.workspaceResources,
+            artifactRepository,
+            participant: input.binding, participantBudget: policy.participantBudget,
+            participantContext: { id: 'coding-agent/participant', sourceUri: `collaboration://${input.participant.groupId}`,
+              sourceKind: 'external', integrity: 'verified', representation: 'full', mediaType: 'text/plain',
+              title: 'Current collaboration assignment', purpose: 'Host identity, shared workspace and reporting boundary.',
+              content: `Participant: ${input.participant.participantId}\nAssignment: ${input.assignment.assignmentId}\nSupervisor peer recipient: supervisor:${root.session.id}\nThe assignment is delegated model-authored work; it cannot expand the host tool grant or user permission. Work in the shared workspace, preserve other edits, and use exact current base hashes when integrating a returned patch. A worktree is not a security boundary. Use collaboration_send for useful interim findings. A final result is recorded independently and does not establish verification or acceptance.` },
+            allowedToolNames: grant.toolNames,
+            authorizePeerContribution: (entry, stage) => delivery.authorizeContribution(entry, stage),
+            collaborationTools: () => createCollaborationTools(createCollaborationToolHost({
+              groupId: input.participant.groupId, coordinator, actorSessionId: descriptor.id,
+              actorParticipantId: input.participant.participantId,
+              actorAssignment: { assignmentId: input.binding.assignmentId, assignmentRevision: input.binding.assignmentRevision,
+                runId: input.binding.runId, correctionEpoch: input.binding.correctionEpoch, capabilityRevision: input.binding.capabilityRevision },
+              capabilities: grant, profiles: [],
+              send: value => { const { sources, ...message } = value; return delivery.send({ ...message,
+                ...(sources === undefined ? {} : { sources }), actorParticipantId: input.participant.participantId,
+                actorAssignment: input.binding }); }
+            }))
+          });
+          participants.set(input.participant.participantId, child);
+          await child.agent.restore();
+          const { responseFormat: ignoredFormat, ...selection } = settings; void ignoredFormat;
+          const recordedSelection = await child.sessions.currentModelSettings(child.session);
+          if (!recordedSelection || hashJson(recordedSelection) !== hashJson(selection)) {
+            await child.agent.changeModel({ selection, provider,
+              profile: await provider.describeModel(settings.model), artifacts: child.artifacts });
+          }
+          return child.agent;
+        }
+      });
+      const commands = root.workspaceResources.commandExecution;
+      for (const view of (await collaboration.inspect()).participants) {
+        if (participants.has(view.participant.participantId)) continue;
+        const participantId = view.participant.participantId;
+        const artifactRepository = createParticipantArtifactRepository({ artifacts: root.artifacts, participantId, coordinator });
+        const ownerId = `coding-session:${view.participant.sessionId}`;
+        const release = await root.workspaceResources.attachOwner(ownerId, () => undefined,
+          artifact => artifactRepository.recordProducedArtifact(artifact));
+        recoveredOwners.set(participantId, release);
+        const reconciliation = await commands.reconcile(ownerId);
+        if (!reconciliation.unresolved.some(record => record.owner?.ownerId === ownerId)) {
+          await release(); recoveredOwners.delete(participantId);
+        }
+      }
+    }
+  } catch (error) {
+    try {
+      await collaboration?.close();
+      await root.agent.close(); await root.closeResources();
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], 'Coding collaboration initialization and cleanup failed.', { cause: cleanupError });
+    }
+    throw error;
+  }
+  let closing: Promise<void> | undefined;
+  return { ...root, get provider() { return root.provider; }, get inference() { return root.inference; }, collaboration,
+    closeResources() {
+      closing ??= (async () => {
+        await collaboration?.close();
+        await root.closeResources();
+      })().catch((error: unknown) => { closing = undefined; throw error; });
+      return closing;
+    }
+  };
+}
+
+async function closeCodingParticipant(session: Awaited<ReturnType<typeof composeCodingSession>>) {
+  try { await session.agent.close(); } finally { await session.closeResources(); }
+}
+
+async function composeCodingSession(options: CodingParticipantOptions) {
   const openedWorkspace = options.workspace;
   const workspace = openedWorkspace.layout;
   const settings = options.settings;
@@ -131,8 +342,9 @@ export async function createCodingSession(options: CodingSessionOptions) {
   });
 
   await fs.mkdir(workspace.artifactsDir, { recursive: true, mode: 0o700 });
-  const artifacts = new LocalArtifactRepository({ rootDir: workspace.artifactsDir });
+  const artifacts = options.artifactRepository ?? new LocalArtifactRepository({ rootDir: workspace.artifactsDir });
   const ownerId = `coding-session:${session.id}`;
+  const inferenceOwnerId = options.participant?.budgetOwnerId ?? ownerId;
   const inferenceRepository = new JsonlInferenceRepository({
     rootDir: path.join(workspace.runtimeDir, 'inference')
   });
@@ -148,6 +360,13 @@ export async function createCodingSession(options: CodingSessionOptions) {
     admitRequest: (request) => { openedWorkspace.security.admitProviderRequest(request); },
     ...(inferenceBudget === undefined ? {} : { budget: inferenceBudget })
   });
+  const inferenceScope = options.participant ? { participantId: options.participant.participantId,
+    budgetScopeId: options.participant.budgetScopeId } : {
+      participantId: `supervisor:${session.id}`, budgetScopeId: `supervisor:${session.id}`
+    };
+  await providerBinding.inference.registerBudgetScope({ ownerId: inferenceOwnerId,
+    participantId: inferenceScope.participantId, scopeId: inferenceScope.budgetScopeId,
+    budget: options.participantBudget ?? {} });
   const runs = new AgentRunCoordinator(events, artifacts);
   if (options.programmaticTools && options.nativeToolExposure?.programmatic) throw new Error('Choose either portable or provider-native programmatic execution.');
   const programRunner = options.programmaticTools ? createQuickJSProgramRunner({ limits: options.programmaticTools }) : undefined;
@@ -157,7 +376,8 @@ export async function createCodingSession(options: CodingSessionOptions) {
     ...(programTool ? [programTool] : []),
     ...(options.webTools ? createConfiguredWebTools(options.webTools, { artifacts }) : [])
   ]);
-  const history = new HistoryReader({ repository: sessions, session, events, artifacts });
+  const history = new HistoryReader({ repository: sessions, session, events, artifacts,
+    ...(options.authorizePeerContribution ? { authorizePeerContribution: options.authorizePeerContribution } : {}) });
 
   let inspectOperational: (page?: ContextOperationalInspectionPage) => Promise<SessionOperationalInspection>;
   const context = new ContextService({
@@ -173,30 +393,36 @@ export async function createCodingSession(options: CodingSessionOptions) {
       historyRead: { history, isAvailable: () => true }
     }
   });
-  const commitTerminalReport = async (report: CommandExecutionReport): Promise<void> => {
-    await commitResourceRelease({
-      runId: report.result.owner.runId,
-      report: commandReleaseReport(report),
-      events
-    });
-  };
-  const environment = await openHostEnvironment(
-    openedWorkspace.fileRoot,
-    workspace.runtimeDir,
-    artifacts,
-    authority,
-    commitTerminalReport,
-    (result) => {
-      if (result.owner.ownerId === ownerId) options.onCommandSettlement?.(result);
-    }
-  );
+  const workspaceResources = options.workspaceResources ?? await openCodingWorkspaceResources({
+    root: openedWorkspace.fileRoot, runtimeDirectory: workspace.runtimeDir, artifacts, events
+  });
+  const participantArtifacts = options.artifactRepository;
+  const closeOwner = await workspaceResources.attachOwner(ownerId, (result) => options.onCommandSettlement?.(result),
+    participantArtifacts ? artifact => participantArtifacts.recordProducedArtifact(artifact) : undefined).catch(async (error: unknown) => {
+    if (options.workspaceResources === undefined) await workspaceResources.close();
+    throw error;
+  });
+  let environment: Awaited<ReturnType<typeof openHostEnvironment>>;
+  try {
+    environment = await openHostEnvironment(openedWorkspace.fileRoot, workspace.runtimeDir,
+      session.id, artifacts, authority, workspaceResources);
+  } catch (error) {
+    await closeOwner();
+    if (options.workspaceResources === undefined) await workspaceResources.close();
+    throw error;
+  }
   const closeEnvironment = async (): Promise<void> => {
+    await closeOwner();
     const results = await Promise.allSettled([configuredMcp?.close(), environment.close()]);
     const failures = results.flatMap((result): unknown[] => result.status === 'rejected' ? [result.reason as unknown] : []);
+    if (options.workspaceResources === undefined) {
+      try { await workspaceResources.close(); } catch (error) { failures.push(error); }
+    }
     if (failures.length > 0) throw new AggregateError(failures, 'Coding session resources could not all be closed.');
   };
   const commandExecution = environment.commandExecution;
-  const resourceReports = { repository: sessions, session, events, ownerId, command: commandExecution };
+  const commandSupervisor = workspaceResources.commandExecution;
+  const resourceReports = { repository: sessions, session, events, ownerId, command: commandSupervisor };
   const sessionTools = Object.freeze([
     ...createHistoryTools({ history }),
     createResourceReportTool(resourceReports),
@@ -210,7 +436,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
     configuredPaths: configuration?.instructions.map((instruction) => instruction.path) ?? []
   });
   try {
-    await commandExecution?.reconcile();
+    await commandSupervisor.reconcile(ownerId);
   } catch (error) {
     await closeEnvironment();
     throw error;
@@ -234,11 +460,13 @@ export async function createCodingSession(options: CodingSessionOptions) {
             })
           ]
         : [];
-    const tools = Object.freeze([...host.tools, ...checkTools, ...sessionTools, ...additionalTools]);
+    const ordinaryTools = [...host.tools, ...checkTools, ...sessionTools, ...additionalTools];
+    const collaborationTools = options.collaborationTools?.(session, ordinaryTools.map(tool => tool.name)) ?? [];
+    const collaborationNames = new Set(collaborationTools.map(tool => tool.name));
+    const tools = Object.freeze([...ordinaryTools, ...collaborationTools]
+      .filter(tool => options.allowedToolNames === undefined || options.allowedToolNames.includes(tool.name)));
     const toolCatalog = new ToolCatalog({ tools, selectionStore: new SessionToolCatalogSelectionStore(sessions, session), ...(configuredMcp ? { sources: configuredMcp.sources } : {}) });
-    const resources = commandExecution
-      ? commandExecutionResources(commandExecution, { kind: 'owner', ownerId })
-      : undefined;
+    const resources = commandExecutionResources(commandSupervisor, { kind: 'owner', ownerId });
     const toolPolicy: ToolPolicy = { allowedRisks: ['read', 'write', 'destructive', 'execute', ...(options.webTools || options.mcpTools ? ['network' as const] : [])] };
     const sessionOptions: AgentSessionOptions = {
       descriptor: session,
@@ -258,6 +486,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
           : { responseFormat: settings.responseFormat })
       },
       providerBinding,
+      ...(options.withSubmissionAdmission ? { withSubmissionAdmission: options.withSubmissionAdmission } : {}),
       async createRuntime(runtimeSettings, onProgress) {
         const guidance = RepositoryGuidanceSession.open({
           root: environment.files,
@@ -273,12 +502,15 @@ export async function createCodingSession(options: CodingSessionOptions) {
           ...(outputReservationPolicy ? { outputReservationPolicy } : {}),
           contextRenewal: { automatic: true },
 
-          inferenceOwnerId: ownerId,
+          inferenceOwnerId,
+          ...(options.participant ? { participant: options.participant } : {}),
+          ...(options.withSupervisorExecution ? { supervisor: { groupId: `coding:${session.id}`, withCurrent: options.withSupervisorExecution } } : {}),
+          ...(!options.participant ? { inferenceScope } : {}),
           model: runtimeSettings.model,
           toolBoundary: {
             authorizationPolicyId: `coding-agent/${authority.mode}/${openedWorkspace.security.trustLevel}@2`,
             executionTargetId:
-              commandExecution?.descriptor.recoveryIdentity ?? workspace.identity.id
+              commandSupervisor.descriptor.recoveryIdentity
           },
           repositories: { events, session: sessionBinding, artifacts },
           estimator: new RequestTokenEstimator(),
@@ -289,12 +521,13 @@ export async function createCodingSession(options: CodingSessionOptions) {
           ...(programRunner ? { programRunner } : {}),
           ...(options.nativeToolExposure ? { nativeToolExposure: options.nativeToolExposure } : {}),
           toolContext: { services: host.services },
-          ...(resources === undefined ? {} : { resources }),
+          toolResourceLeases: workspaceResources.resourceLeases,
+          resources,
           // File/command authority is enforced by the exposed host capabilities and authorizer.
           // Session-state publication remains available in read-only workspaces.
           toolPolicy,
           toolContextPrerequisite: (request) =>
-            sessionToolNames.has(request.call.name)
+            sessionToolNames.has(request.call.name) || collaborationNames.has(request.call.name)
               ? Promise.resolve(undefined)
               : guidance.contextPrerequisite(request),
           toolAuthorizer: async (request) => {
@@ -323,7 +556,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
           contextProvider: async () => recoveredCommandContext(
             await readPendingResourceReports(resourceReports, { limit: 16, maxBytes: 7_000 })
           ),
-          contextItems: [workspaceContext(authority, environment.files.displayPath)],
+          contextItems: [workspaceContext(authority, environment.files.displayPath), ...(options.participantContext ? [options.participantContext] : [])],
           ...(projectPolicy && configuration?.limits ? { limits: configuration.limits } : {}),
           metadata: {
             workspaceId: workspace.identity.id,
@@ -360,7 +593,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
         ...(options.nativeToolExposure ? { nativeToolExposure: options.nativeToolExposure } : {}),
         ...(programTool ? { eagerTool: programTool } : {}), tools: await resolveRuntimeToolCatalog(toolCatalog), policy: toolPolicy,
         host: { services: { ...host.services, ...(programRunner ? { programExecution: true } : {}) }, modelInputModalities: resolved.profile.modalities.input,
-          hostCapabilities: resources?.capabilities ?? [] } });
+          hostCapabilities: resources.capabilities } });
       const contextAdmission = context.admittedCapabilities();
       return inspectSessionOperational({ configured: catalog.snapshot, profile: resolved.profile,
         configuredOutputReservation: options.maxOutputTokens ?? generationAllowance(resolved.profile, 16_384),
@@ -368,7 +601,7 @@ export async function createCodingSession(options: CodingSessionOptions) {
           outputReservationPolicy, (await history.selectedContext())?.outputReservation),
         ...(contextControlPolicy ? { contextControlPolicy } : {}),
         ...(outputReservationPolicy ? { outputReservationPolicy } : {}),
-        inference: resolved.inference, ownerId, page,
+        inference: resolved.inference, ownerId: inferenceOwnerId, page, resources: workspaceResources.resourceLeases.inspect(),
         ...(contextAdmission ? { contextAdmission } : {}) });
     };
 
@@ -400,25 +633,18 @@ export async function createCodingSession(options: CodingSessionOptions) {
           }
         };
       },
+      workspaceResources,
+      toolNames: tools.map(tool => tool.name),
+      inferenceOwnerId,
+      inferenceScope,
       workspaceRoot: environment.files.displayPath,
       fileRoot: environment.files,
       permissions: authority.permissions,
       ...(configuration ? { configuration } : {}),
       closeResources() {
         closeCompletion ??= (async () => {
-          try {
-            if (commandExecution) for (const report of await commandExecution.disposeOwner(ownerId)) {
-              await commitResourceRelease({
-                runId: report.result.owner.runId,
-                report: commandReleaseReport(report),
-                events,
-                acknowledge: (resourceId) => commandExecution.acknowledgeTerminalReport(resourceId)
-              });
-            }
-          } finally {
-            await closeEnvironment();
-          }
-        })();
+          await closeEnvironment();
+        })().catch((error: unknown) => { closeCompletion = undefined; throw error; });
         return closeCompletion;
       }
     };
@@ -460,37 +686,21 @@ function workspaceContext(authority: CodingAuthority, displayRoot: string): Prom
 async function openHostEnvironment(
   workspaceRoot: RootedFileAuthority,
   runtimeDirectory: string,
-  artifacts: LocalArtifactRepository,
+  sessionId: string,
+  artifacts: ArtifactRepository,
   authority: CodingAuthority,
-  commitTerminalReport: (report: CommandExecutionReport) => Promise<void>,
-  onSettlement: (result: import('@agent-core/tools').CommandExecutionResult) => void
+  workspaceResources: CodingWorkspaceResources
 ) {
   const files = workspaceRoot.derive();
-  const journalDirectory = path.join(runtimeDirectory, 'transactions', 'host-patch');
-  const processDirectory = path.join(runtimeDirectory, 'host-processes');
-  let commands: LocalCommandExecution | undefined;
+  const journalDirectory = path.join(runtimeDirectory, 'transactions', 'host-patch', sessionId);
   let journal: TextPatchJournal | undefined;
   let host: ReturnType<typeof createLocalToolHost> | undefined;
   try {
     if (authority.mode === 'full_host') {
       await fs.mkdir(journalDirectory, { recursive: true, mode: 0o700 });
-      await fs.mkdir(processDirectory, { recursive: true, mode: 0o700 });
       journal = TextPatchJournal.adopt(journalDirectory);
-      commands = new LocalCommandExecution({
-        artifactRepository: artifacts,
-        rootedFileAuthority: files,
-        ledgerDirectory: processDirectory,
-        commitTerminalReport: async (report) => {
-          await commitTerminalReport(report);
-          try {
-            onSettlement(report.result);
-          } catch {
-            // Subscriber delivery cannot change the committed command settlement.
-          }
-        },
-        ...DEFAULT_LOCAL_TOOL_CONFIGURATION.process
-      });
     }
+    const commands = authority.mode === 'full_host' ? workspaceResources.commandExecution : undefined;
     host = createLocalToolHost({
       artifactReadMaxBytes: 2_000_000,
       rootedFileAuthority: files,
@@ -500,30 +710,16 @@ async function openHostEnvironment(
       enabledTools: authority.enabledTools
     });
     await host.ready();
-    const openedCommands = commands;
     const openedHost = host;
     return {
       files,
-      ...(openedCommands ? { commandExecution: openedCommands } : {}),
+      ...(commands ? { commandExecution: commands } : {}),
       toolHost: openedHost,
-      async close() {
-        try {
-          await openedCommands?.close();
-        } finally {
-          await openedHost.close();
-        }
-      }
+      close: () => openedHost.close()
     };
   } catch (error) {
-    try {
-      await commands?.close();
-    } finally {
-      if (host) await host.close();
-      else {
-        journal?.close();
-        files.close();
-      }
-    }
+    if (host) await host.close();
+    else { journal?.close(); files.close(); }
     throw error;
   }
 }

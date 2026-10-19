@@ -18,6 +18,7 @@ type ApplicationCommandName =
   | '/debug';
 export type InteractiveCommandName =
   | ApplicationCommandName
+  | '/collaboration'
   | '/model'
   | '/provider'
   | '/login'
@@ -164,6 +165,7 @@ export const INTERACTIVE_COMMAND_REGISTRY = {
     type: 'context.open'
   }),
   '/stop': command('/stop', 'Interrupt active work.', 'optional'),
+  '/collaboration': action('/collaboration', 'Inspect participants and control their exact sessions and runs.', { type: 'collaboration.open' }),
   '/status': command('/status', 'Inspect setup, configuration and session status.', 'none'),
   '/debug': command('/debug', 'Inspect runtime diagnostics.', 'none')
 } satisfies Record<InteractiveCommandName, InteractiveCommandEntry>;

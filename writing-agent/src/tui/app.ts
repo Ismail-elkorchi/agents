@@ -21,6 +21,7 @@ import {
   createDraft,
   createPromptRecall,
   queuePanel,
+  collaborationPanel,
   createSessionName,
   sourceInspectorPanel,
   diagnosticMessage,
@@ -478,6 +479,8 @@ export function createWritingAgentTuiApp(
         ...(events === undefined ? [] : [events]),
         ...(state.overlay.kind === 'configuration'
           ? configuration.subscriptions(state.overlay.state, context)
+          : state.overlay.kind === 'collaboration'
+            ? writingCollaboration(application, state.overlay.state.state.sessionId).subscriptions(state.overlay.state, context)
           : state.overlay.kind === 'inspector'
             ? inspector.subscriptions(state.overlay.state, context)
             : []),
@@ -505,6 +508,8 @@ export function createWritingAgentTuiApp(
                   state.queuePanel,
                   context
                 )
+              : state.overlay.kind === 'collaboration'
+                ? writingCollaboration(application, state.overlay.state.state.sessionId).view(state.overlay.state, context)
               : state.overlay.kind === 'inspector'
                 ? inspector.view(state.overlay.state, context)
                 : undefined
@@ -674,6 +679,21 @@ function update(
           }
         ]
       };
+    case 'collaboration.open': {
+      if (state.application.sessionId === undefined) return { state };
+      return mountPanel(state, 'collaboration', writingCollaboration(app, state.application.sessionId), context);
+    }
+    case 'collaboration.refresh': {
+      if (state.overlay.kind !== 'collaboration') return { state };
+      const child = writingCollaboration(app, state.overlay.state.state.sessionId);
+      const result = child.update(state.overlay.state, { id: state.overlay.state.id, generation: state.overlay.state.generation, message: { type: 'refresh' } }, context);
+      return applyPanelResult(state, 'collaboration', result);
+    }
+    case 'collaboration.child': {
+      if (state.overlay.kind !== 'collaboration') return { state };
+      const result = writingCollaboration(app, state.overlay.state.state.sessionId).update(state.overlay.state, message.child, context);
+      return applyPanelResult(state, 'collaboration', result, result.outputs?.includes('close'));
+    }
     case 'inspector.open':
     case 'history.inspect': {
       if (
@@ -2211,7 +2231,7 @@ function mountedPanels(
 ): readonly import('@ismail-elkorchi/terminal-ui/tui').TuiChildState<unknown>[] {
   const overlay = state.overlay;
   return [
-    ...(overlay.kind === 'configuration' || overlay.kind === 'inspector' ? [overlay.state] : []),
+    ...(overlay.kind === 'configuration' || overlay.kind === 'inspector' || overlay.kind === 'collaboration' ? [overlay.state] : []),
     ...(state.queuePanel === undefined ? [] : [state.queuePanel])
   ];
 }
@@ -2239,4 +2259,9 @@ function documentResources(app: WritingApplication): import('@agent-core/tui').R
       };
     }
   };
+}
+
+function writingCollaboration(operations: import('@agent-core/tui').CollaborationOperations, sessionId: string) {
+  return createTuiChild(collaborationPanel(operations, sessionId),
+    (child): WritingTuiMessage => ({ type: 'collaboration.child', child }));
 }

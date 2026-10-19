@@ -57,6 +57,7 @@ export type CodingApplicationEvent =
       readonly result: import('@agent-core/tools').CommandExecutionResult;
     }
   | { readonly type: 'history.recovery'; readonly progress: import('@agent-core/runtime/node').HistoryIndexRecoveryProgress }
+  | import('@agent-core/runtime').CollaborationNotification
   | AgentSessionEvent
   | { readonly type: 'application.state.changed'; readonly state: CodingApplicationState }
   | { readonly type: 'session.restored'; readonly view: CodingSessionView }
