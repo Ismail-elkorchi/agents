@@ -31,7 +31,7 @@ import type { CodingApplication } from '../application/service.js';
 import type { WorkspaceChange } from '../changes/run-change-report.js';
 import { appendNotice } from './conversation.js';
 import { branchPointPresentation } from './branch-presentation.js';
-import { recordedChangeEvidence, reviewAttachment, type ReviewEvidence } from './change-review.js';
+import { recordedChangeSource, reviewAttachment, type RecordedChangeSource } from './change-review.js';
 import type { CodingAgentTuiMessage } from './messages.js';
 import type { CodingAgentTuiPickerState, CodingAgentTuiState } from './state.js';
 
@@ -69,7 +69,7 @@ export interface ChangeReview {
   readonly items: readonly ChangeItem[];
   readonly index: number;
   readonly loading: boolean;
-  readonly evidence?: ReviewEvidence;
+  readonly evidence?: RecordedChangeSource;
   readonly hunk?: number;
   readonly error?: string;
 }
@@ -94,7 +94,7 @@ export type PanelMessage =
   | { readonly type: 'panel.failed'; readonly requestId: string; readonly message: string }
   | { readonly type: 'panel.transition'; readonly transition: SearchPickerControlTransition }
   | { readonly type: 'panel.accept'; readonly id: string }
-  | { readonly type: 'panel.change-loaded'; readonly requestId: string; readonly sessionId: string | undefined; readonly evidence: ReviewEvidence }
+  | { readonly type: 'panel.change-loaded'; readonly requestId: string; readonly sessionId: string | undefined; readonly evidence: RecordedChangeSource }
   | { readonly type: 'panel.change-failed'; readonly requestId: string; readonly sessionId: string | undefined; readonly message: string }
   | { readonly type: 'panel.source-loaded'; readonly title: string; readonly content: string }
   | { readonly type: 'panel.source-mode' }
@@ -576,7 +576,7 @@ function readReviewFile(state: CodingAgentTuiState, listing: NavigationPanel, it
     effects: [{ id: 'change-source', concurrency: 'replace', async run() {
       if (operations === undefined) throw new Error('Change inspection is unavailable.');
       const inspection = await operations.readChange(item.runId, item.change.path, sessionId);
-      const evidence = recordedChangeEvidence(sessionId, item.runId, inspection);
+      const evidence = recordedChangeSource(sessionId, item.runId, inspection);
       return { kind: 'message', message: { type: 'panel.change-loaded', requestId, sessionId, evidence } };
     }, onError: ({ diagnostic }) => ({ kind: 'message', message: {
       type: 'panel.change-failed', requestId, sessionId, message: diagnosticMessage(diagnostic)

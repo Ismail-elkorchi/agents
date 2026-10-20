@@ -3,7 +3,7 @@ import type { DraftAttachment } from '@agent-core/tui';
 import type { CodingApplication } from '../application/service.js';
 import type { WorkspaceChange } from '../changes/run-change-report.js';
 
-export interface ReviewEvidence {
+export interface RecordedChangeSource {
   readonly title: string;
   readonly content: string;
   readonly patch?: string;
@@ -11,11 +11,11 @@ export interface ReviewEvidence {
   readonly hunks: readonly { readonly label: string; readonly content: string; readonly start: number; readonly end: number }[];
 }
 
-export function recordedChangeEvidence(
+export function recordedChangeSource(
   sessionId: string | undefined,
   runId: string,
   inspection: Awaited<ReturnType<CodingApplication['readChange']>>
-): ReviewEvidence {
+): RecordedChangeSource {
   const change = inspection.change;
   const patches = inspection.patches.map(({ receipt, patch }) =>
     `Recorded mutation · ${receipt.applicationStatus} · ${receipt.patchSha256}\n${patch}`
@@ -35,7 +35,7 @@ function describeChange(runId: string, change: WorkspaceChange): string {
 }
 
 /** Exact slices of the retained patch, never regenerated from the current filesystem. */
-function patchHunks(patch: string): ReviewEvidence['hunks'] {
+function patchHunks(patch: string): RecordedChangeSource['hunks'] {
   if (!patch) return [];
   const lines = patch.split(/(?<=\n)/u);
   const hunks: { label: string; content: string; start: number; end: number }[] = [];
@@ -64,9 +64,9 @@ function patchHunks(patch: string): ReviewEvidence['hunks'] {
 }
 
 export function reviewAttachment(
-  evidence: ReviewEvidence,
+  evidence: RecordedChangeSource,
   selection?: string,
-  hunk?: ReviewEvidence['hunks'][number]
+  hunk?: RecordedChangeSource['hunks'][number]
 ): DraftAttachment {
   const content = selection ?? hunk?.content ?? evidence.content;
   const label = `${selection !== undefined ? 'Selection' : hunk === undefined ? 'Recorded change' : 'Patch hunk'} · ${hunk?.label ?? evidence.title}`;
