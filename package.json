@@ -12,7 +12,7 @@
   ],
   "agentCore": {
     "path": "../agent-core",
-    "commit": "a42c547bb045d58c5c7edc013bddd5a52c6be99a"
+    "commit": "c718234769182bd83b6b59abc87d93de7d6e7ba5"
   },
   "scripts": {
     "build": "node scripts/verify-source-dependencies.mjs && tsc -b && node scripts/post-build.mjs",
@@ -48,6 +48,7 @@
     "typescript-eslint": "^8.61.1",
     "@agent-core/tools-programmatic": "file:../agent-core/packages/tools-programmatic",
     "@agent-core/tools-web": "file:../agent-core/packages/tools-web",
-    "@agent-core/tools-mcp": "file:../agent-core/packages/tools-mcp"
+    "@agent-core/tools-mcp": "file:../agent-core/packages/tools-mcp",
+    "@agent-core/skills": "file:../agent-core/packages/skills"
   }
 }

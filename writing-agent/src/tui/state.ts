@@ -38,6 +38,7 @@ export type WritingTuiOverlay =
   | { readonly kind: 'attachments'; readonly state: import('@agent-core/tui').AttachmentState }
   | { readonly kind: 'recall'; readonly state: import('@agent-core/tui').PromptRecallState }
   | { readonly kind: 'queue' }
+  | { readonly kind: 'material'; readonly state: import('@ismail-elkorchi/terminal-ui/tui').TuiChildState<import('@agent-core/tui').MaterialPanelState> }
   | { readonly kind: 'collaboration'; readonly state: import('@ismail-elkorchi/terminal-ui/tui').TuiChildState<import('@agent-core/tui').CollaborationPanelState> }
   | {
       readonly kind: 'preferences';
@@ -197,6 +198,8 @@ export type WritingTuiMessage =
   | import('@agent-core/tui').SessionNameMessage
   | import('@agent-core/tui').ResourceCompletionMessage
   | { readonly type: 'conversation.export' }
+  | { readonly type: 'material.open' }
+  | { readonly type: 'material.child'; readonly child: import('@ismail-elkorchi/terminal-ui/tui').TuiChildMessage<import('@agent-core/tui').MaterialPanelMessage> }
   | { readonly type: 'collaboration.open' | 'collaboration.refresh' }
   | { readonly type: 'collaboration.child'; readonly child: import('@ismail-elkorchi/terminal-ui/tui').TuiChildMessage<import('@agent-core/tui').CollaborationPanelMessage> }
   | { readonly type: 'inspector.open' }

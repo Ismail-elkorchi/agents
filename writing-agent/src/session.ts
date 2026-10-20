@@ -1,3 +1,4 @@
+import type { SkillCatalog } from '@agent-core/skills';
 import type { NativeToolExposure } from '@agent-core/runtime';
 import { resolveRuntimeToolCatalog, SessionToolCatalogSelectionStore } from '@agent-core/runtime';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -36,6 +37,7 @@ import {
   resolveEffectiveToolCatalog,
   inspectSessionOperational,
   type ContextResourcePolicy,
+  type ContextServiceOptions,
   type ContextOperationalInspectionPage,
   type ContextControlPolicy,
   type OutputReservationPolicy,
@@ -45,6 +47,7 @@ import {
   type AgentEvent,
   type AgentRunLimits,
   type AgentSessionConfiguration,
+  type AgentSessionOptions,
   type InferenceBudget,
   type PromptContextItemInput,
   type SessionDescriptor,
@@ -72,6 +75,10 @@ export interface WritingConfiguration extends Omit<AgentSessionConfiguration, 'p
   readonly nativeToolExposure?: NativeToolExposure;
   readonly webTools?: WebConfiguration;
   readonly mcpTools?: NodeMcpConfiguration;
+  /** Explicit host skill sources. Never inherited through peer citations. */
+  readonly skills?: SkillCatalog;
+  /** Host-owned scopes, storage and retention; independent of workspace authority. */
+  readonly materials?: ContextServiceOptions['materials'];
   readonly maxOutputTokens?: number;
   readonly collaboration?: false | Partial<CollaborationPolicy>;
 }
@@ -95,6 +102,7 @@ const readTools = ['read_files', 'list_directory', 'search_text', 'read_artifact
 interface WritingParticipantOptions {
   readonly artifactRepository?: ParticipantArtifactRepository;
   readonly resourceLeases: ResourceLeaseCoordinator;
+  readonly stageTriggeredSubmission?: AgentSessionOptions['stageTriggeredSubmission'];
   readonly participant?: ParticipantExecutionBinding;
   readonly withSubmissionAdmission?: <T>(operation: () => Promise<T>) => Promise<T>;
   readonly withSupervisorExecution?: <T>(operation: () => Promise<T>) => Promise<T>;
@@ -126,6 +134,7 @@ export async function createWritingSession(
   };
   const root = await composeWritingSession(workspace, descriptor, configuration, resolveProvider, {
     resourceLeases,
+    stageTriggeredSubmission: input => stageWritingPermission(workspace, input.runId, readMode()),
     withSubmissionAdmission: operation => collaboration ? collaboration.withSupervisorSubmission(operation) : operation(),
     ...(policy ? {
       withSupervisorExecution: <T>(operation: () => Promise<T>) => coordinator().withSupervisorExecution(operation),
@@ -209,13 +218,9 @@ export async function createWritingSession(
           const grant = input.assignment.capabilities;
           const mode = grant.toolNames.some(name => ['apply_patch', 'edit_text'].includes(name)) ? 'edit' : 'review';
           if (mode === 'edit' && readMode() === 'review') throw new Error('A writing participant edit grant cannot run while the host is in review mode.');
-          try { await recordWritingPermission(workspace, input.assignment.runId, mode); }
-          catch (error) {
-            if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error;
-            const current = z.strictObject({ mode: z.enum(['edit', 'review']) }).parse(JSON.parse(await readFile(permissionPath(workspace, input.assignment.runId), 'utf8')));
-            if (current.mode !== mode) throw new Error('Participant permission no longer matches its persisted grant.', { cause: error });
-          }
-          const { mcpTools: ignoredMcp, ...baseConfiguration } = configuration; void ignoredMcp;
+          await stageWritingPermission(workspace, input.assignment.runId, mode);
+          const { mcpTools: ignoredMcp, skills: ignoredSkills, materials: ignoredMaterials, ...baseConfiguration } = configuration;
+          void ignoredMcp; void ignoredSkills; void ignoredMaterials;
           await delivery.importAssignmentSources(input.assignment, input.participant);
           const current = root.agent.state().configuration;
           const provider = settings.provider === current.provider && settings.endpoint === current.endpoint
@@ -340,6 +345,8 @@ async function composeWritingSession(
   const hosts = new Set<ReturnType<typeof createLocalToolHost>>();
   const inspectionMode = new AsyncLocalStorage<WritingMode>();
   const context: ContextService = new ContextService({
+    ...(configuration.skills === undefined ? {} : { skills: configuration.skills }),
+    ...(configuration.materials === undefined ? {} : { materials: configuration.materials }),
     inspectOperational: async (page = {}) => {
       const mode = inspectionMode.getStore() ?? 'edit';
       const modeMcp = mcpForMode(mode);
@@ -425,6 +432,7 @@ async function composeWritingSession(
         : { responseFormat: configuration.responseFormat })
     },
     providerBinding,
+    ...(options.stageTriggeredSubmission ? { stageTriggeredSubmission: options.stageTriggeredSubmission } : {}),
     ...(options.withSubmissionAdmission ? { withSubmissionAdmission: options.withSubmissionAdmission } : {}),
     async createRuntime(settings, onProgress, run) {
       const { mode } = z
@@ -484,7 +492,9 @@ async function composeWritingSession(
           toolAuthorizer: async request => {
             if (sessionToolNames.has(request.call.name)) return authorizeSessionToolEffects(request,
               { sessionId: descriptor.id, branchId: (await history.capture()).branchId,
-                artifacts: host.services.artifactRepository, allowArtifactRead: host.tools.some(tool => tool.name === 'read_artifact') });
+                artifacts: host.services.artifactRepository,
+                materials: context.materials, allowSkillRead: context.skills !== undefined,
+                allowArtifactRead: host.tools.some(tool => tool.name === 'read_artifact') });
             if (mode === 'review' && request.effects.accesses.some(access => access.mode === 'write' || access.mode === 'delete' || access.mode === 'execute'))
               return { decision: 'deny', reason: 'Review mode does not permit external mutations or execution.' };
             return { decision: 'allow', reason: 'Tools are bound to the selected workspace mode.' };
@@ -562,6 +572,16 @@ async function composeWritingSession(
 
 function permissionPath(workspace: WritingWorkspace, runId: string): string {
   return path.join(workspace.stateDirectory, 'permissions', `${hashJson(runId)}.json`);
+}
+
+/** Idempotent permission staging for replayed host admissions; changed authority fails closed. */
+async function stageWritingPermission(workspace: WritingWorkspace, runId: string, mode: WritingMode): Promise<void> {
+  try { await recordWritingPermission(workspace, runId, mode); }
+  catch (error) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error;
+    const current = z.strictObject({ mode: z.enum(['edit', 'review']) }).parse(JSON.parse(await readFile(permissionPath(workspace, runId), 'utf8')));
+    if (current.mode !== mode) throw new Error('The staged writing permission no longer matches the current host grant.', { cause: error });
+  }
 }
 
 /** Records application authority independently of model-visible material before durable submission. */

@@ -40,6 +40,7 @@
     "@agent-core/tui": "0.2.0",
     "@agent-core/tools-programmatic": "0.2.0",
     "@agent-core/tools-web": "0.2.0",
-    "@agent-core/tools-mcp": "0.2.0"
+    "@agent-core/tools-mcp": "0.2.0",
+    "@agent-core/skills": "0.2.0"
   }
 }

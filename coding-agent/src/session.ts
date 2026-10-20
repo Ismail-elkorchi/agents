@@ -1,3 +1,4 @@
+import type { SkillCatalog } from '@agent-core/skills';
 import type { NativeToolExposure } from '@agent-core/runtime';
 import { resolveRuntimeToolCatalog, SessionToolCatalogSelectionStore } from '@agent-core/runtime';
 import { createProgrammaticTool } from '@agent-core/tools-programmatic';
@@ -38,6 +39,7 @@ import {
   inspectSessionOperational,
   type SessionOperationalInspection,
   type ContextResourcePolicy,
+  type ContextServiceOptions,
   type ContextControlPolicy,
   type OutputReservationPolicy,
 
@@ -99,6 +101,10 @@ export interface CodingSessionOptions {
   readonly nativeToolExposure?: NativeToolExposure;
   readonly webTools?: WebConfiguration;
   readonly mcpTools?: NodeMcpConfiguration;
+  /** Explicit host skill sources. Never inherited through peer citations. */
+  readonly skills?: SkillCatalog;
+  /** Host-owned scopes, storage and retention; independent of workspace authority. */
+  readonly materials?: ContextServiceOptions['materials'];
   readonly onCommandSettlement?: (
     result: import('@agent-core/tools').CommandExecutionResult
   ) => void;
@@ -234,7 +240,8 @@ export async function createCodingSession(options: CodingSessionOptions) {
             ? root.provider : options.resolveProvider?.(settings);
           if (!provider) throw new Error('The persisted participant provider binding cannot be resolved by this host.');
           const grant = input.assignment.capabilities;
-          const { mcpTools: ignoredMcp, ...childOptions } = options; void ignoredMcp;
+          const { mcpTools: ignoredMcp, skills: ignoredSkills, materials: ignoredMaterials, ...childOptions } = options;
+          void ignoredMcp; void ignoredSkills; void ignoredMaterials;
           const permissionMode = grant.toolNames.some(isCodingWorkspaceMutatingTool)
             ? options.permissionMode : 'read_only';
           await delivery.importAssignmentSources(input.assignment, input.participant);
@@ -385,6 +392,8 @@ async function composeCodingSession(options: CodingParticipantOptions) {
   let inspectOperational: (page?: ContextOperationalInspectionPage) => Promise<SessionOperationalInspection>;
   const context = new ContextService({
     inspectOperational: (page) => inspectOperational(page),
+    ...(options.skills === undefined ? {} : { skills: options.skills }),
+    ...(options.materials === undefined ? {} : { materials: options.materials }),
     repository: sessions,
     session,
     history,
@@ -540,6 +549,7 @@ async function composeCodingSession(options: CodingParticipantOptions) {
             if (sessionToolNames.has(request.call.name)) {
               const decision = await authorizeSessionToolEffects(request, { sessionId: session.id, branchId: (await history.capture()).branchId,
                 artifacts: host.services.artifactRepository,
+                materials: context.materials, allowSkillRead: context.skills !== undefined,
                 allowArtifactRead: host.tools.some(tool => tool.name === 'read_artifact') });
               if (decision.decision !== 'allow') return decision;
               const accesses = request.effects.accesses.filter(access => access.scope.startsWith('artifacts/'));
@@ -559,9 +569,9 @@ async function composeCodingSession(options: CodingParticipantOptions) {
           onRequestAdmitted: (admitted) => {
             guidance.markRequestAdmitted(admitted);
           },
-          contextProvider: async () => recoveredCommandContext(
+          contextProvider: async () => ({ items: recoveredCommandContext(
             await readPendingResourceReports(resourceReports, { limit: 16, maxBytes: 7_000 })
-          ),
+          ) }),
           contextItems: [workspaceContext(authority, environment.files.displayPath), ...(options.participantContext ? [options.participantContext] : [])],
           ...(projectPolicy && configuration?.limits ? { limits: configuration.limits } : {}),
           metadata: {

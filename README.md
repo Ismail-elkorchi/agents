@@ -17,3 +17,5 @@ npm run verify:release
 ```
 
 See [Coding Agent](coding-agent/README.md) and [Writing Agent](writing-agent/README.md) for product usage.
+
+The workspace-free conversational fixture in `test-helpers/conversation.js` exercises the same public Core session/material/skill contracts without local tools or a workspace. Its scripted tests establish structural authority and persistence guarantees; they do not claim a live-model behavioral improvement.

@@ -357,6 +357,7 @@ function modalView(
   switch (modal.kind) {
     case 'session-name':
       return sessionNameView(modal.state, width, height);
+    case 'material':
     case 'collaboration':
     case 'inspector':
       return childPanel;

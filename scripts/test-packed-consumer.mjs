@@ -91,6 +91,13 @@ assert.equal(typeof nodeMcp.createMcpStdioTransport, 'function');
 const configured = nodeMcp.createConfiguredMcpSources(nodeMcp.parseMcpConfiguration({ servers: [] }), { artifacts, environment: {} });
 assert.deepEqual(configured.sources, []);
 await configured.close();
+const { InMemorySkillSource, SkillCatalog } = await import('@agent-core/skills');
+const skills = new SkillCatalog({ sources: [new InMemorySkillSource({ scopeId: 'packed-methods', bindingRevision: 'grant-1', packages: [
+  { packageId: 'review', files: [{ path: 'SKILL.md', content: '---\nname: review\ndescription: Check source evidence.\n---\nRead original sources.' }] }
+] })] });
+const page = await skills.discover({ scopeId: 'packed-methods' });
+assert.equal(page.items.length, 1);
+assert.equal((await skills.load(page.items[0].reference)).instructions, 'Read original sources.');
 `);
   await exec(process.execPath, ['optional-tools.mjs'], { cwd: consumer });
   await writeFile(path.join(consumer, 'optional-tools.ts'), String.raw`
@@ -158,6 +165,27 @@ const codingSession: Pick<CodingSessionOptions, OptionalToolKeys> = codingApplic
 const writingApplication: Pick<WritingApplicationOptions, OptionalToolKeys> = codingApplication;
 const writingConfiguration: Pick<WritingConfiguration, OptionalToolKeys> = writingApplication;
 void [codingSession, writingConfiguration];
+
+import { InMemoryMaterialRepository, InMemoryMaterialGrantProvider, HostWakeService, InMemoryIntentionRepository, type HostWakeSession, type ContextServiceOptions } from '@agent-core/runtime';
+import { InMemorySkillSource, SkillCatalog } from '@agent-core/skills';
+import type { CodingApplication } from '@ismail-elkorchi/coding-agent';
+import type { WritingApplication } from '@ismail-elkorchi/writing-agent';
+const materials: ContextServiceOptions['materials'] = { repository: new InMemoryMaterialRepository(), artifacts,
+  grants: new InMemoryMaterialGrantProvider([{ owner: { kind: 'scope', scopeId: 'person:opaque-id' }, revision: 'grant-1', read: true, write: true }]) };
+const skills = new SkillCatalog({ sources: [new InMemorySkillSource({ scopeId: 'methods', bindingRevision: 'grant-1', packages: [] })] });
+const codingMemory: Pick<CodingApplicationOptions, 'materials' | 'skills'> = { materials, skills };
+const writingMemory: Pick<WritingApplicationOptions, 'materials' | 'skills'> = codingMemory;
+declare const codingHost: CodingApplication;
+declare const writingHost: WritingApplication;
+const codingWake: HostWakeSession = codingHost.hostWakeSession('session');
+const writingWake: HostWakeSession = writingHost.hostWakeSession('session');
+const hostWakes = new HostWakeService({ repository: new InMemoryIntentionRepository(),
+  resolveSession: async id => writingHost.hostWakeSession(id), adapter: {
+    now: () => new Date().toISOString(), evaluate: async () => undefined,
+    withAdmission: async (_intention, _trigger, operation) => operation()
+  }
+});
+void [codingWake, writingWake, hostWakes, writingMemory];
 `);
   await writeFile(
     path.join(consumer, 'index.mjs'),

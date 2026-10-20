@@ -1,3 +1,4 @@
+import type { SkillCatalog } from '@agent-core/skills';
 import type { NativeToolExposure } from '@agent-core/runtime';
 import type { ProgramLimits } from '@agent-core/tools-programmatic';
 import type { WebConfiguration } from '@agent-core/tools-web';
@@ -17,6 +18,7 @@ import {
   type CollaborationPolicy,
   type InferenceBudget,
   type ContextResourcePolicy,
+  type ContextServiceOptions,
   type ContextControlPolicy,
   type OutputReservationPolicy,
   type SessionBindingInput,
@@ -61,6 +63,10 @@ export interface CodingApplicationOptions {
   nativeToolExposure?: NativeToolExposure;
   webTools?: WebConfiguration;
   mcpTools?: NodeMcpConfiguration;
+  /** Host-configured reusable packages, independent of project configuration. */
+  skills?: SkillCatalog;
+  /** Host-owned material scopes, never inferred from a repository path. */
+  materials?: ContextServiceOptions['materials'];
   permissionMode: CodingPermissionMode;
   sessionSelection: SessionSelection;
   branch?: string;
@@ -314,6 +320,8 @@ export async function createRuntime(
     ...(options.nativeToolExposure === undefined ? {} : { nativeToolExposure: options.nativeToolExposure }),
     ...(options.webTools === undefined ? {} : { webTools: options.webTools }),
     ...(options.mcpTools === undefined ? {} : { mcpTools: options.mcpTools }),
+    ...(options.skills === undefined ? {} : { skills: options.skills }),
+    ...(options.materials === undefined ? {} : { materials: options.materials }),
     ...(options.maxOutputTokens === undefined ? {} : { maxOutputTokens: options.maxOutputTokens }),
     ...(options.configuration === undefined ? {} : { configuration: options.configuration }),
     ...(options.configurationSource === undefined

@@ -115,6 +115,7 @@ export async function runCodingAgentTuiApp(
         navigation: controller,
         context: controller,
         collaboration: controller,
+        materials: controller,
         processes: controller,
         attachments: controller,
         configuration: {

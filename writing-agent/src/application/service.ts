@@ -1,5 +1,5 @@
 import type { CollaborationCoordinator } from '@agent-core/runtime';
-import { parseNativeToolExposure } from '@agent-core/runtime';
+import { parseNativeToolExposure, qualifiedMaterialRefSchema } from '@agent-core/runtime';
 import { parseProgramLimits } from '@agent-core/tools-programmatic';
 import { parseWebConfiguration } from '@agent-core/tools-web/node';
 import { parseMcpConfiguration } from '@agent-core/tools-mcp/node';
@@ -65,7 +65,7 @@ import type * as z from 'zod';
 
 export type { WritingConfiguration, WritingMode } from '../session.js';
 export type { WritingDocument, DocumentRevision, DocumentPassageInput } from '../documents.js';
-export interface WritingApplicationOptions extends Pick<WritingConfiguration, 'collaboration' | 'inferenceBudget' | 'contextPolicy' | 'contextControlPolicy' | 'outputReservationPolicy' | 'programmaticTools' | 'nativeToolExposure' | 'webTools' | 'mcpTools'> {
+export interface WritingApplicationOptions extends Pick<WritingConfiguration, 'collaboration' | 'inferenceBudget' | 'contextPolicy' | 'contextControlPolicy' | 'outputReservationPolicy' | 'programmaticTools' | 'nativeToolExposure' | 'webTools' | 'mcpTools' | 'skills' | 'materials'> {
   readonly rootDirectory: string;
   readonly stateRoot?: string;
   readonly sessionId?: string;
@@ -114,7 +114,7 @@ export class WritingApplication {
   private mode: WritingMode;
   private collaborationUnsubscribe: (() => void) | undefined;
   private unsubscribe: (() => void) | undefined;
-  private readonly resourceOptions: Pick<WritingConfiguration, 'collaboration' | 'inferenceBudget' | 'contextPolicy' | 'contextControlPolicy' | 'outputReservationPolicy' | 'programmaticTools' | 'nativeToolExposure' | 'webTools' | 'mcpTools'>;
+  private readonly resourceOptions: Pick<WritingConfiguration, 'collaboration' | 'inferenceBudget' | 'contextPolicy' | 'contextControlPolicy' | 'outputReservationPolicy' | 'programmaticTools' | 'nativeToolExposure' | 'webTools' | 'mcpTools' | 'skills' | 'materials'>;
   private readonly maxOutputTokens: number | undefined;
   private mutations: Promise<void> = Promise.resolve();
   private closeCompletion: Promise<void> | undefined;
@@ -146,7 +146,9 @@ export class WritingApplication {
       ...(options.programmaticTools === undefined ? {} : { programmaticTools: parseProgramLimits(options.programmaticTools) }),
       ...(options.nativeToolExposure === undefined ? {} : { nativeToolExposure: parseNativeToolExposure(options.nativeToolExposure) }),
       ...(options.webTools === undefined ? {} : { webTools: parseWebConfiguration(options.webTools) }),
-      ...(options.mcpTools === undefined ? {} : { mcpTools: parseMcpConfiguration(options.mcpTools) })
+      ...(options.mcpTools === undefined ? {} : { mcpTools: parseMcpConfiguration(options.mcpTools) }),
+      ...(options.skills === undefined ? {} : { skills: options.skills }),
+      ...(options.materials === undefined ? {} : { materials: options.materials })
     });
     this.configuration = options.configuration;
     this.selection = options.modelSelection;
@@ -620,6 +622,58 @@ export class WritingApplication {
     if (selected.kind === 'selected' && suspension?.category === 'context_admission')
       return { selection: selected, run: await agent.resumeContextAdmission(suspension.runId) };
     return { selection: selected };
+  }
+
+  /** Privileged embedding-host ingress. Never exposed through user RPC or model tools. */
+  hostWakeSession(expectedSessionId: string): import('@agent-core/runtime').HostWakeSession {
+    const current = () => {
+      this.assertOpen();
+      const agent = this.requireAgent();
+      if (agent.state().sessionId !== expectedSessionId) throw new Error('Host wake target is not the current application session.');
+      return agent;
+    };
+    current();
+    return {
+      submitTriggered: input => this.mutate(() => current().submitTriggered(input)),
+      readTriggeredSubmissionReceipt: key => current().readTriggeredSubmissionReceipt(key),
+      readSubmission: submissionId => current().readSubmission(submissionId),
+      updateQueuedSubmission: (submissionId, change) => this.mutate(() => current().updateQueuedSubmission(submissionId, change))
+    };
+  }
+
+  /** The exact service used to read and admit scoped material for this session. */
+  materialService(expectedSessionId?: string): import('@agent-core/runtime').ScopedMaterialService {
+    this.assertOpen();
+    if (expectedSessionId !== undefined && expectedSessionId !== this.composition?.session.id)
+      throw new Error('The selected session changed. Reopen retained material.');
+    const materials = this.composition?.context.materials;
+    if (materials === undefined) throw new Error('Configure a session before inspecting retained material.');
+    return materials;
+  }
+
+  submitMaterialCorrection(ref: import('@agent-core/runtime').QualifiedMaterialRef, text: string, expectedSessionId: string) {
+    const target = qualifiedMaterialRefSchema.parse(ref);
+    if (!text.trim()) throw new Error('A correction requires non-empty text.');
+    return this.mutate(async () => {
+      const materials = this.materialService(expectedSessionId);
+      const agent = this.requireAgent();
+      const observed = agent.state();
+      if (observed.phase === 'suspended' || (observed.phase === 'idle' && observed.queuedInputs > 0))
+        throw new Error('Settle pending session work before correcting retained material.');
+      // The original target stays exact if a later save races this instruction. Its eventual edit uses CAS.
+      await materials.assertCurrent(target);
+      const current = agent.state();
+      if (current.phase !== observed.phase || current.activeRunId !== observed.activeRunId)
+        throw new Error('The active run changed while inspecting the correction target. Inspect it again.');
+      const task = `Correct the retained material identified by this exact reference: ${JSON.stringify(target)}\nUser correction: ${text}\nPreserve the original evidence and revise the interpretation using the inspected revision as the conditional edit target. If it has changed, inspect the conflict before applying this correction. Continue other accepted work while applying this correction unless the user says otherwise.`;
+      const runId = observed.activeRunId ?? randomUUID();
+      if (observed.activeRunId === undefined) await recordWritingPermission(this.workspace, runId, this.mode);
+      const accepted = await agent.submit({ task, runId }, observed.activeRunId === undefined ? {} : { delivery: 'steer', expectedRunId: observed.activeRunId });
+      if (accepted.kind === 'rejected') return accepted;
+      const { completion, ...submission } = accepted;
+      void completion.catch(() => undefined);
+      return { status: 'correction_submitted' as const, submission };
+    });
   }
 
   readSessionState(ref: import('@agent-core/runtime').SessionStateItemRef) {

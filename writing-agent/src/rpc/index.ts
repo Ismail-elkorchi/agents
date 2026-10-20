@@ -3,6 +3,7 @@ import {
   collaborationRpcMethods,
   historyRpcMethods,
   contextRpcMethods,
+  materialRpcMethods,
   inputRpcMethods,
   recoveryRpcMethods,
   rpcMethod,
@@ -26,6 +27,7 @@ export function writingRpcMethods(application: WritingApplication, shutdown: () 
     ...collaborationRpcMethods(application),
     ...historyRpcMethods(application),
     ...contextRpcMethods(application),
+    ...materialRpcMethods(application),
     ...sessionRpcMethods(application),
     ...inputRpcMethods(application),
     ...recoveryRpcMethods({

@@ -38,6 +38,7 @@ export type InteractiveCommandName =
   | '/source'
   | '/tools'
   | '/context'
+  | '/memory'
   | '/processes'
   | '/editor'
   | '/recovery'
@@ -161,6 +162,7 @@ export const INTERACTIVE_COMMAND_REGISTRY = {
   '/temperature': command('/temperature', 'Set supported provider temperature.', 'required'),
   '/steer': command('/steer', 'Steer the active run.', 'required'),
   '/follow': command('/follow', 'Queue a follow-up after active work.', 'required'),
+  '/memory': action('/memory', 'Inspect retained material, submit corrections and control future use.', { type: 'material.open' }),
   '/context': action('/context', 'Inspect effective context and available resources.', {
     type: 'context.open'
   }),

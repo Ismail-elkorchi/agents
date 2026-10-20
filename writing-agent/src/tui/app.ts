@@ -22,6 +22,7 @@ import {
   createPromptRecall,
   queuePanel,
   collaborationPanel,
+  materialPanel,
   createSessionName,
   sourceInspectorPanel,
   diagnosticMessage,
@@ -479,6 +480,8 @@ export function createWritingAgentTuiApp(
         ...(events === undefined ? [] : [events]),
         ...(state.overlay.kind === 'configuration'
           ? configuration.subscriptions(state.overlay.state, context)
+          : state.overlay.kind === 'material'
+            ? writingMaterials(application, state.overlay.state.state.sessionId).subscriptions(state.overlay.state, context)
           : state.overlay.kind === 'collaboration'
             ? writingCollaboration(application, state.overlay.state.state.sessionId).subscriptions(state.overlay.state, context)
           : state.overlay.kind === 'inspector'
@@ -508,6 +511,8 @@ export function createWritingAgentTuiApp(
                   state.queuePanel,
                   context
                 )
+              : state.overlay.kind === 'material'
+                ? writingMaterials(application, state.overlay.state.state.sessionId).view(state.overlay.state, context)
               : state.overlay.kind === 'collaboration'
                 ? writingCollaboration(application, state.overlay.state.state.sessionId).view(state.overlay.state, context)
               : state.overlay.kind === 'inspector'
@@ -679,6 +684,15 @@ function update(
           }
         ]
       };
+    case 'material.open': {
+      if (state.application.sessionId === undefined) return { state };
+      return mountPanel(state, 'material', writingMaterials(app, state.application.sessionId), context);
+    }
+    case 'material.child': {
+      if (state.overlay.kind !== 'material') return { state };
+      const result = writingMaterials(app, state.overlay.state.state.sessionId).update(state.overlay.state, message.child, context);
+      return applyPanelResult(state, 'material', result, result.outputs?.includes('close'));
+    }
     case 'collaboration.open': {
       if (state.application.sessionId === undefined) return { state };
       return mountPanel(state, 'collaboration', writingCollaboration(app, state.application.sessionId), context);
@@ -2231,7 +2245,7 @@ function mountedPanels(
 ): readonly import('@ismail-elkorchi/terminal-ui/tui').TuiChildState<unknown>[] {
   const overlay = state.overlay;
   return [
-    ...(overlay.kind === 'configuration' || overlay.kind === 'inspector' || overlay.kind === 'collaboration' ? [overlay.state] : []),
+    ...(overlay.kind === 'configuration' || overlay.kind === 'inspector' || overlay.kind === 'collaboration' || overlay.kind === 'material' ? [overlay.state] : []),
     ...(state.queuePanel === undefined ? [] : [state.queuePanel])
   ];
 }
@@ -2264,4 +2278,9 @@ function documentResources(app: WritingApplication): import('@agent-core/tui').R
 function writingCollaboration(operations: import('@agent-core/tui').CollaborationOperations, sessionId: string) {
   return createTuiChild(collaborationPanel(operations, sessionId),
     (child): WritingTuiMessage => ({ type: 'collaboration.child', child }));
+}
+
+function writingMaterials(operations: import('@agent-core/tui').MaterialOperations, sessionId: string) {
+  return createTuiChild(materialPanel(operations, sessionId),
+    (child): WritingTuiMessage => ({ type: 'material.child', child }));
 }

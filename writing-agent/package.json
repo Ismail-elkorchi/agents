@@ -42,6 +42,7 @@
     "markspan": "github:Ismail-elkorchi/markspan#c883b9a518cf96b967eadba31c3f2d08db1f5946",
     "@agent-core/tools-programmatic": "0.2.0",
     "@agent-core/tools-web": "0.2.0",
-    "@agent-core/tools-mcp": "0.2.0"
+    "@agent-core/tools-mcp": "0.2.0",
+    "@agent-core/skills": "0.2.0"
   }
 }
