@@ -14,8 +14,8 @@ import type {
   SessionBranchPoint,
   SessionPendingSubmission
 } from '@agent-core/runtime';
-import type { ComposerDraft, ConversationEntry } from '@agent-core/tui';
-import { defaultTuiPreferences, RetainedListPresentation } from '@agent-core/tui';
+import type { ComposerDraft, ConversationEntry, ConversationDisplayEntry } from '@agent-core/tui';
+import { defaultTuiPreferences, RetainedListPresentation, ConversationGroupingPresentation } from '@agent-core/tui';
 import type {
   ScrollState,
   UnscrolledSearchPickerState
@@ -107,7 +107,7 @@ export type CodingAgentTuiOverlay =
     }
   | HistorySearch
   | CodingPanel
-  | { readonly kind: 'help' }
+  | { readonly kind: 'help'; readonly results: import('@ismail-elkorchi/terminal-ui/behavior').TextAreaState; readonly query: import('@ismail-elkorchi/terminal-ui/behavior').TextAreaState }
   | { readonly kind: 'debug'; readonly text: string };
 
 export type CodingAgentTuiPickerState = UnscrolledSearchPickerState;
@@ -134,6 +134,8 @@ export interface CodingAgentTuiComposerState extends ComposerDraft {
 }
 
 export interface CodingAgentTuiState {
+  readonly inspection: { layout?: import('@ismail-elkorchi/terminal-ui/interaction').MeasuredViewportLayout };
+  readonly settledProcess?: { readonly sessionId: string; readonly result: import('@agent-core/tools').CommandExecutionResult };
   readonly historyOpeningClock?: import('@agent-core/tui').ActivityClock | undefined;
   readonly historyRecovery?: Extract<CodingAgentTuiMessage, { readonly type: 'history.recovery' }>['progress'];
   readonly activityClock?: import('@agent-core/tui').ActivityClock | undefined;
@@ -153,10 +155,12 @@ export interface CodingAgentTuiState {
       {
         readonly composer: CodingAgentTuiComposerState;
         readonly history: import('@agent-core/tui').HistoryBookmark;
+        readonly expandedIds: readonly string[];
       }
     >
   >;
-  readonly presentation: RetainedListPresentation<ConversationEntry, CodingAgentTuiMessage>;
+  readonly presentation: RetainedListPresentation<ConversationDisplayEntry, CodingAgentTuiMessage>;
+  readonly activityGroups: ConversationGroupingPresentation;
   readonly preferences: import('@agent-core/tui').TuiPreferences;
   readonly setup: CodingAgentTuiSetupState;
   readonly run: CodingAgentTuiRunState;
@@ -175,11 +179,13 @@ export function createInitialCodingAgentTuiState(
   preferences = defaultTuiPreferences
 ): CodingAgentTuiState {
   return {
+    inspection: {},
     sessionViews: {},
     attention: { focused: true },
     panelGeneration: 0,
     progress: { label: 'Idle' },
-    presentation: new RetainedListPresentation<ConversationEntry, CodingAgentTuiMessage>(),
+    presentation: new RetainedListPresentation<ConversationDisplayEntry, CodingAgentTuiMessage>(),
+    activityGroups: new ConversationGroupingPresentation(),
     preferences,
     setup,
     run: { kind: 'idle' },

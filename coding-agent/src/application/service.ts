@@ -10,6 +10,7 @@ import {
   type ModelSelection
 } from '@agent-core/model';
 import { JsonlEventRepository } from '@agent-core/persistence/node';
+import { hashJson } from '@agent-core/persistence';
 import {
   agentEventCodec,
   parseCollaborationPolicy,
@@ -24,6 +25,7 @@ import {
   type AgentEvent,
   type AgentRunResult,
   type AgentSession,
+  type AgentSessionSuspensionDescriptor,
   type ContextOperationalInspectionPage,
   type SessionSubmissionInput
 } from '@agent-core/runtime';
@@ -873,8 +875,10 @@ export class CodingApplication {
     });
   }
 
-  readChange(runId: string, path: string) {
+  readChange(runId: string, path: string, expectedSessionId?: string) {
     return this.readSessionOwned(async runtime => {
+      if (expectedSessionId !== undefined && runtime.agent.state().sessionId !== expectedSessionId)
+        throw new Error('The selected session changed before change inspection.');
       const decision = this.workspace.security.decide('workspace_read');
       if (decision.kind !== 'allowed') throw new Error(decision.reason);
       const report = await readRunChangeReport(
@@ -962,10 +966,14 @@ export class CodingApplication {
     });
   }
 
-  async branchFrom(entryId: string, label?: string): Promise<void> {
-    const runtime = this.requireRuntime();
-    await runtime.agent.branchFrom(entryId, label);
-    await this.emit({ type: 'session.restored', view: await readCodingSessionView(runtime) });
+  branchFrom(entryId: string, label?: string, expectedSessionId?: string): Promise<void> {
+    return this.serial(async () => {
+      const runtime = this.requireRuntime();
+      if (expectedSessionId !== undefined && runtime.agent.state().sessionId !== expectedSessionId)
+        throw new Error('The selected session changed before branching.');
+      await runtime.agent.branchFrom(entryId, label);
+      await this.emit({ type: 'session.restored', view: await readCodingSessionView(runtime) });
+    });
   }
 
   abort(reason?: string, expectedRunId?: string): Promise<boolean> {
@@ -978,13 +986,18 @@ export class CodingApplication {
       : agent.abort(reason, expectedRunId ?? agent.state().activeRunId);
   }
 
-  async resumeSuspension(expectedRunId?: string): Promise<AgentRunResult> {
+  async resumeSuspension(
+    expectedRunId?: string,
+    expectedSuspension?: AgentSessionSuspensionDescriptor
+  ): Promise<AgentRunResult> {
     const agent = this.requireRuntime().agent;
     await agent.restore();
     const suspension = agent.inspectSuspension();
     if (suspension === undefined) throw new Error('The selected session is not suspended.');
     if (expectedRunId !== undefined && suspension.runId !== expectedRunId)
       throw new Error('The selected run has changed.');
+    if (expectedSuspension !== undefined && hashJson(suspension) !== hashJson(expectedSuspension))
+      throw new Error('The paused request changed. Inspect its current recovery decision.');
     if (suspension.category === 'external_recovery')
       return agent.reconcileExternal(suspension.runId);
     if (suspension.category === 'context_admission')

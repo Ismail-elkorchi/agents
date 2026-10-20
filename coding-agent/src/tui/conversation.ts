@@ -3,8 +3,33 @@ import type {
   ConversationEntry,
   ConversationNoticeEntry
 } from '@agent-core/tui';
-import { mergeConversationEntries } from '@agent-core/tui';
+import { mergeConversationEntries, type ConversationGroupingPresentation } from '@agent-core/tui';
 import type { CodingAgentTuiState } from './state.js';
+
+/** Only known, read-only tool identities are eligible, never labels or matching output text. */
+export function codingConversationDisplay(
+  presentation: ConversationGroupingPresentation,
+  entries: readonly ConversationEntry[],
+  preserveIds: readonly string[] = []
+) {
+  return presentation.project(entries, {
+    preserveIds,
+    classify: (entry) => {
+      switch (entry.toolName) {
+        case 'read_files':
+          return 'read';
+        case 'search_text':
+          return 'text search';
+        case 'find_files':
+          return 'file search';
+        case 'list_directory':
+          return 'directory listing';
+        default:
+          return undefined;
+      }
+    }
+  });
+}
 
 export function appendNotice(
   state: CodingAgentTuiState,

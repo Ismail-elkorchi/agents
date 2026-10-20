@@ -1,3 +1,4 @@
+import { hashJson } from '@agent-core/persistence';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
@@ -80,7 +81,7 @@ test('incoming approvals preserve input focus and closing their view does not de
   assert.deepEqual(decisions, []);
   assert.equal(textDocumentText(runtime.state().composer.input.document), 'Still typing');
   await runtime.dispatch({ type: 'recovery.open' });
-  await runtime.dispatch({ type: 'approval.decide', decision: 'deny' });
+  await runtime.dispatch({ type: 'approval.decide', runId: suspension.runId, approvalId: suspension.pendingApprovals[0].approvalId, decision: 'deny' });
   await waitFor(() => decisions.length === 1);
   assert.deepEqual(decisions, ['deny']);
   await runtime.dispose();
@@ -232,7 +233,7 @@ for (const columns of [48, 100])
     await runtime.dispatch({ type: 'composer.submit' });
     assert.deepEqual(submitted, []);
     assert.equal(textDocumentText(runtime.state().composer.input.document), 'Keep my next instruction');
-    await runtime.dispatch({ type: 'recovery.act', action: 'resume' });
+    await runtime.dispatch({ type: 'recovery.act', identity: hashJson(runtime.state().run.suspension), action: 'resume' });
     await waitFor(() => actions.length === 1 && runtime.state().run.operation === undefined);
     assert.deepEqual(actions, [['run', 'resume']]);
     assert.match(renderFramePlain(runtime.frame()), /No recorded result/);
@@ -325,7 +326,7 @@ test('preparation suspension offers ordinary retry without claiming context over
   assert.match(dialog, /Request preparation unavailable/);
   assert.match(dialog, /Retry request/);
   assert.doesNotMatch(dialog, /does not fit|Context needs adjustment|Check for a recorded result/);
-  await runtime.dispatch({ type: 'recovery.act', action: 'resume' });
+  await runtime.dispatch({ type: 'recovery.act', identity: hashJson(runtime.state().run.suspension), action: 'resume' });
   const { waitFor } = await import('./coding-agent-tui-test-helpers.js');
   await waitFor(() => calls.length === 1);
   assert.equal(calls[0].action, 'resume');

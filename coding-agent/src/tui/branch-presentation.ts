@@ -27,3 +27,27 @@ export function applyBranchEntry(
     state
   );
 }
+
+/** Use admitted user intent when available; runtime identifiers remain inspection details. */
+export function branchPointPresentation(
+  state: CodingAgentTuiState,
+  point: import('@agent-core/runtime').SessionBranchPoint
+): { readonly title: string; readonly detail: string } {
+  const run = point.runId === undefined
+    ? undefined
+    : state.debug.runs.find((run) => run.state.runId === point.runId);
+  const inputs = state.conversation.pages.flatMap((page) => page.history.entries)
+    .filter((entry): entry is Extract<SessionBranchEntry, { type: 'input' }> =>
+      entry.type === 'input' && entry.timestamp <= point.timestamp);
+  const input = point.runId === undefined
+    ? inputs.at(-1)
+    : inputs.find((entry) => entry.runId === point.runId);
+  const task = run?.state.input.task ?? input?.task;
+  const kind = point.kind === 'run_finalization' ? 'Completed run'
+    : point.kind === 'context_transition' ? 'Context transition' : 'Saved session state';
+  const preview = task?.trim().replaceAll(/\s+/gu, ' ');
+  return {
+    title: preview ? preview.length > 140 ? `${preview.slice(0, 139)}…` : preview : `${kind} (prompt not loaded)`,
+    detail: `${point.timestamp} · ${kind}\nEntry: ${point.entryId}${point.runId === undefined ? '' : `\nRun: ${point.runId}`}\n${state.runtimeDetails.workspacePath === undefined ? '' : `Workspace: ${state.runtimeDetails.workspacePath}\n`}Creates a conversation branch in the same workspace, not an isolated Git worktree. Original history remains stored.`
+  };
+}

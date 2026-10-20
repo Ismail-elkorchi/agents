@@ -70,7 +70,7 @@ test('process controls inspect first and send exact input only on an explicit ac
     field: 'input',
     transition: { kind: 'edit', operation: { kind: 'insert', text: 'Input 文\t\n' } }
   });
-  await runtime.dispatch({ type: 'processes.action', action: 'input' });
+  await runtime.dispatch({ type: 'processes.action', panelId: runtime.state().overlay.state.id, target: runtime.state().overlay.state.selected.target, action: 'input' });
   await waitForState(runtime, t.signal, () => !runtime.state().overlay.state.pending);
   assert.deepEqual(actions[1], {
     selected: target,
@@ -260,7 +260,7 @@ for (const operation of ['inspect', 'reconcile'])
         runtime.dispatch(
           operation === 'inspect'
             ? { type: 'processes.select', processId: target.processId }
-            : { type: 'processes.reconcile', acknowledge: false }
+            : { type: 'processes.reconcile', panelId: runtime.state().overlay.state.id, target: runtime.state().overlay.state.selected?.target, acknowledge: false }
         );
       await runtime.start();
       await runtime.dispatch({ type: 'processes.open' });
@@ -325,8 +325,8 @@ for (const action of ['input', 'acknowledge'])
           field: 'input',
           transition: { kind: 'edit', operation: { kind: 'insert', text: 'requested input\n' } }
         });
-        await runtime.dispatch({ type: 'processes.action', action: 'input' });
-      } else await runtime.dispatch({ type: 'processes.reconcile', acknowledge: true });
+        await runtime.dispatch({ type: 'processes.action', panelId: runtime.state().overlay.state.id, target: runtime.state().overlay.state.selected.target, action: 'input' });
+      } else await runtime.dispatch({ type: 'processes.reconcile', panelId: runtime.state().overlay.state.id, target: runtime.state().overlay.state.selected?.target, acknowledge: true });
       await waitForState(runtime, t.signal, () => started);
       await runtime.dispatch({ type: 'overlay.close' });
       await runtime.dispatch({ type: 'processes.open' });

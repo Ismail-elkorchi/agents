@@ -69,6 +69,8 @@ export async function main(argv: string[]): Promise<void> {
     return;
   }
   const parsed = parseOptions(exec || rpc ? argv.slice(1) : argv);
+  if (parsed.options.accessible && (rpc || exec))
+    throw new Error('--accessible is available only in interactive mode.');
   let task = parsed.positionals.join(' ');
   if (exec && (task === '-' || (task.length === 0 && !process.stdin.isTTY)))
     task = await readStandardInput();
@@ -178,7 +180,8 @@ export async function main(argv: string[]): Promise<void> {
   const controller = new CodingApplication(parsed.options, workspace);
   const { runCodingAgentTuiApp } = await import('./tui/index.js');
   await runCodingAgentTuiApp(controller, {
-    ...(task.length > 0 ? { initialTask: task } : {})
+    ...(task.length > 0 ? { initialTask: task } : {}),
+    ...(parsed.options.accessible ? { outputMode: 'accessible' as const } : {})
   });
 }
 
@@ -256,6 +259,7 @@ const CLI_OPTION_SPECS = {
   '--permissions': valued((options, value) => {
     options.permissionMode = parseCodingPermissionMode(value, '--permissions');
   }),
+  '--accessible': flagged((options) => { options.accessible = true; }),
   '--show-reasoning': flagged((options) => {
     options.showReasoning = true;
   }),
@@ -995,6 +999,7 @@ Common options:
   --temperature <n>      Provider temperature.
   --reasoning-effort <level>
                          Model-supported reasoning effort; none requests disabled reasoning.
+  --accessible          Use semantic terminal scrollback in interactive mode (Ctrl+L repeats context).
   --show-reasoning       Stream separate model reasoning or reasoning summaries to stderr.
   --permissions <mode>   read_only or full_host. Default: read_only.
   --resume               Select the latest session; taskless exec drives only its unfinished run.
@@ -1056,5 +1061,6 @@ function isDirectRun(): boolean {
   }
 }
 interface CliOptions extends CodingApplicationOptions {
+  accessible?: boolean;
   showReasoning: boolean;
 }

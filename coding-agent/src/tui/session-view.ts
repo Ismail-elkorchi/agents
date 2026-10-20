@@ -14,15 +14,20 @@ export function restoreSessionView(
 ): TuiUpdateResult<CodingAgentTuiState, CodingAgentTuiMessage> {
   if (state.debug.sessionId === view.session.sessionId || state.debug.sessionId === undefined)
     return { state: hydrateCodingAgentTuiState(state, view) };
+  const anchor =
+    state.conversation.anchor ?? state.presentation.anchor(state.presentation.layout.scroll.offsetRow);
   const views = {
     ...state.sessionViews,
     [state.debug.sessionId]: {
       composer: state.composer,
+      expandedIds: state.conversation.expandedIds,
       history: historyBookmark(
         state.conversation.pages.map((page) => page.history),
-        state.conversation.anchor ?? state.presentation.anchor(state.presentation.layout.scroll.offsetRow),
+        anchor,
         state.conversation.scroll.followTail,
-        sessionConversationId
+        anchor?.itemId.startsWith('activity-group:')
+          ? (entry) => `activity-group:${sessionConversationId(entry)}`
+          : sessionConversationId
       )
     }
   };
@@ -31,6 +36,14 @@ export function restoreSessionView(
     {
       ...state,
       sessionViews: views,
+      // Inspectors and completion candidates belong to the session that opened
+      // them. Keep its draft/bookmark, not controls that could target new work.
+      overlay: { kind: 'none' },
+      modalOffsetRow: 0,
+      inspection: {},
+      completion: undefined,
+      resourceCompletion: undefined,
+      panelGeneration: state.panelGeneration + 1,
       run: { kind: 'idle' },
       progress: { label: 'Ready' },
       composer: saved?.composer ?? {
@@ -42,7 +55,7 @@ export function restoreSessionView(
       conversation: {
         items: [],
         pages: [],
-        expandedIds: [],
+        expandedIds: saved?.expandedIds ?? [],
         unread: false,
         scroll: createScrollState({ followTail: true })
       }
@@ -50,13 +63,17 @@ export function restoreSessionView(
     view
   );
   const bookmark = saved?.history;
-  if (bookmark?.cursor === undefined || read === undefined) return { state: next };
+  if (bookmark?.cursor === undefined || read === undefined)
+    return { state: next, focus: { kind: 'element', elementId: 'composer' } };
   const cursor = bookmark.cursor;
   const requestId = crypto.randomUUID();
   next = {
     ...next,
     conversation: {
       ...next.conversation,
+      // Initial hydration reads the tail; retain the bookmark's disclosure
+      // state until its own historical pages arrive and can prune it correctly.
+      expandedIds: saved?.expandedIds ?? [],
       ...(bookmark.anchor === undefined ? {} : { anchor: bookmark.anchor }),
       loading: { id: requestId, direction: 'restore' },
       scroll: createScrollState({ followTail: false })
@@ -64,6 +81,7 @@ export function restoreSessionView(
   };
   return {
     state: next,
+    focus: { kind: 'element', elementId: 'composer' },
     effects: [
       {
         id: 'history-page',

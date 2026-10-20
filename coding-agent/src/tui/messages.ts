@@ -26,12 +26,12 @@ import type {
   CodingAgentTuiCommandExecution,
   CodingAgentTuiCommandRequest
 } from './command-surface.js';
-import type { PanelItem, PanelKind } from './panels.js';
 
 export type CodingAgentTuiMessage =
   | Extract<import('../application/contracts.js').CodingApplicationEvent, { readonly type: 'history.recovery' }>
   | { readonly type: 'activity.tick' }
-  | import('./panels.js').PanelQueryMessage
+  | { readonly type: 'operational.open'; readonly sessionId: string; readonly target: 'changes' | 'context' | 'recovery' }
+  | import('./panels.js').PanelMessage
   | import('@agent-core/tui').ContextMessage
   | { readonly type: 'search.adjacent'; readonly direction: 'previous' | 'next' }
   | { readonly type: 'conversation.message'; readonly direction: 'previous' | 'next' }
@@ -89,30 +89,6 @@ export type CodingAgentTuiMessage =
       readonly cancelledRunId?: string;
       readonly pending: readonly SessionPendingSubmission[];
     }
-  | {
-      readonly type: 'panel.change-loaded';
-      readonly patch: string;
-      readonly panelId: string;
-      readonly sessionId: string | undefined;
-      readonly title: string;
-      readonly content: string;
-    }
-  | { readonly type: 'panel.source-loaded'; readonly title: string; readonly content: string }
-  | { readonly type: 'panel.open'; readonly panel: PanelKind }
-  | {
-      readonly type: 'panel.loaded';
-      readonly requestId: string;
-      readonly panel: PanelKind;
-      readonly items: readonly PanelItem[];
-    }
-  | { readonly type: 'panel.failed'; readonly requestId: string; readonly message: string }
-  | { readonly type: 'panel.transition'; readonly transition: SearchPickerControlTransition }
-  | { readonly type: 'panel.accept'; readonly id: string }
-  | { readonly type: 'panel.source-mode' }
-  | { readonly type: 'panel.source-scroll'; readonly offset: number }
-  | { readonly type: 'panel.text'; readonly transition: TextAreaTransition }
-  | { readonly type: 'panel.branch'; readonly entryId: string }
-  | { readonly type: 'panel.done' | 'panel.operation-failed'; readonly message: string }
   | { readonly type: 'progress'; readonly runId: string; readonly event: AgentProgressEvent }
   | { readonly type: 'result'; readonly result: AgentEndedRunResult }
   | { readonly type: 'failure'; readonly message: string }
@@ -128,9 +104,9 @@ export type CodingAgentTuiMessage =
   | { readonly type: 'session.hydrated'; readonly hydration: CodingSessionView }
   | { readonly type: 'approval.required'; readonly suspension: AgentApprovalSuspension }
   | { readonly type: 'run.suspended'; readonly suspension: AgentSessionSuspensionDescriptor }
-  | { readonly type: 'recovery.act'; readonly action: import('./recovery.js').RecoveryAction }
-  | { readonly type: 'recovery.finished'; readonly runId: string; readonly message: string }
-  | { readonly type: 'approval.decide'; readonly decision: 'allow' | 'deny' }
+  | { readonly type: 'recovery.act'; readonly identity: string; readonly action: import('./recovery.js').RecoveryAction }
+  | { readonly type: 'recovery.finished'; readonly runId: string; readonly identity: string; readonly message: string }
+  | { readonly type: 'approval.decide'; readonly runId: string; readonly approvalId: string; readonly decision: 'allow' | 'deny' }
   | { readonly type: 'composer.edit'; readonly transition: TextAreaTransition }
   | { readonly type: 'composer.history'; readonly direction: 'previous' | 'next' }
   | { readonly type: 'composer.submit'; readonly delivery?: 'steer' | 'follow_up' }
@@ -167,7 +143,10 @@ export type CodingAgentTuiMessage =
   | { readonly type: 'activity.toggle'; readonly id: string }
   | { readonly type: 'overlay.open'; readonly overlay: 'commands' | 'search' | 'help' | 'debug' }
   | { readonly type: 'overlay.close' }
+  | { readonly type: 'modal.page'; readonly direction: 'previous' | 'next' | 'start' | 'end' }
   | { readonly type: 'modal.scrolled'; readonly offsetRow: number }
+  | { readonly type: 'help.results'; readonly transition: TextAreaTransition }
+  | { readonly type: 'help.query'; readonly transition: TextAreaTransition }
   | { readonly type: 'commands.transition'; readonly transition: SearchPickerControlTransition }
   | { readonly type: 'commands.accept'; readonly event: SearchPickerAcceptEvent }
   | {

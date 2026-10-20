@@ -1,3 +1,4 @@
+import { hashJson } from '@agent-core/persistence';
 import { renderCommandOutput, type CommandExecutionResult } from '@agent-core/tools';
 import { diagnosticMessage, panel } from '@agent-core/tui';
 import {
@@ -32,7 +33,14 @@ import type {
   CodingProcessTarget
 } from '../execution/process-controls.js';
 
+export interface ProcessInspectionTarget {
+  readonly sessionId: string;
+  readonly processId: string;
+  readonly owner: CommandExecutionResult['owner'];
+}
+
 export interface ProcessPanel {
+  readonly requestedTarget?: ProcessInspectionTarget;
   readonly id: string;
   readonly processes: readonly CodingProcessTarget[];
   readonly picker: UnscrolledSearchPickerState;
@@ -41,6 +49,7 @@ export interface ProcessPanel {
   readonly pending: boolean;
   readonly selected?: {
     readonly target: CodingProcessTarget;
+    readonly unavailable?: true;
     readonly result?: CommandExecutionResult;
     readonly output: TextAreaState;
     readonly input: TextAreaState;
@@ -49,8 +58,10 @@ export interface ProcessPanel {
 }
 
 export type ProcessMessage =
-  | { readonly type: 'processes.open' | 'processes.refresh' | 'processes.back' }
-  | { readonly type: 'processes.reconcile'; readonly acknowledge: boolean }
+  | { readonly type: 'processes.open'; readonly target?: ProcessInspectionTarget }
+  | { readonly type: 'processes.settled'; readonly result: CommandExecutionResult }
+  | { readonly type: 'processes.refresh' | 'processes.back' }
+  | { readonly type: 'processes.reconcile'; readonly panelId: string; readonly target?: CodingProcessTarget; readonly acknowledge: boolean }
   | { readonly type: 'processes.transition'; readonly transition: SearchPickerControlTransition }
   | { readonly type: 'processes.select'; readonly processId: string }
   | {
@@ -60,6 +71,8 @@ export type ProcessMessage =
     }
   | {
       readonly type: 'processes.action';
+      readonly panelId: string;
+      readonly target: CodingProcessTarget;
       readonly action: CodingProcessAction['kind'];
       readonly more?: boolean;
     }
@@ -107,8 +120,11 @@ export function updateProcesses(
   operations: CodingProcessOperations
 ): TuiUpdateResult<ProcessPanel, ProcessMessage> {
   switch (message.type) {
+    case 'processes.settled':
+      return { state };
     case 'processes.reconcile': {
-      if (state.pending || (message.acknowledge && !state.selected)) return { state };
+      if (message.panelId !== state.id || (message.target !== undefined && hashJson(message.target) !== hashJson(state.selected?.target ?? null)) || (message.acknowledge && message.target === undefined)) return { state };
+      if (state.pending || (message.acknowledge && (!state.selected || state.selected.unavailable))) return { state };
       return {
         state: { ...state, pending: true },
         effects: [
@@ -143,7 +159,7 @@ export function updateProcesses(
     case 'processes.open':
     case 'processes.refresh': {
       if (state.pending) return { state };
-      const next = { ...state };
+      const next = { ...state, ...(message.type === 'processes.open' && message.target !== undefined ? { requestedTarget: message.target } : {}) };
       delete next.error;
       return {
         state: { ...next, pending: true },
@@ -186,18 +202,33 @@ export function updateProcesses(
       const active = pickerQueryResult.entryAt(position ?? 0);
       const picker = searchPickerReducer(state.picker, { kind: 'setActive', ...(active === undefined ? {} : { id: active.id }) },
         { searchPickerIndex: pickerIndex, queryResult: pickerQueryResult });
-      return { state: {
+      const selected = state.selected === undefined ? undefined : { ...state.selected };
+      if (selected !== undefined) {
+        const current = message.processes.find((item) => sameProcessOwner(item, selected.target));
+        // A reused ID is not the selected resource, even if its display label matches.
+        if (current === undefined) selected.unavailable = true;
+        else {
+          selected.target = current;
+          delete selected.unavailable;
+        }
+      }
+      const next: ProcessPanel = {
         ...state,
         pending: false,
         processes: message.processes,
         pickerIndex,
         pickerQueryResult,
         picker,
-        ...(state.selected ? { selected: {
-          ...state.selected,
-          target: message.processes.find((item) => item.processId === state.selected?.target.processId) ?? state.selected.target
-        } } : {})
-      } };
+        ...(selected === undefined ? {} : { selected })
+      };
+      if (state.requestedTarget === undefined) return { state: next.selected?.unavailable ? { ...next, error: 'The selected command is no longer available with its recorded owner. Return to the process list.' } : next };
+      const requestedTarget = state.requestedTarget;
+      const withoutTarget = { ...next };
+      delete withoutTarget.requestedTarget;
+      const target = message.processes.find((item) => sameProcessOwner(item, requestedTarget));
+      return target === undefined
+        ? { state: { ...withoutTarget, error: 'This command is no longer available with its recorded owner. Earlier output remains in the conversation.' } }
+        : updateProcesses(withoutTarget, { type: 'processes.select', processId: target.processId }, operations);
     }
     case 'processes.failed':
       return message.id !== state.id
@@ -215,6 +246,7 @@ export function updateProcesses(
       return { state: { ...state, picker, pickerQueryResult } };
     }
     case 'processes.select': {
+      if (state.pending) return { state };
       const target = state.processes.find((process) => process.processId === message.processId);
       if (target?.status === 'unknown' || target?.status === 'acknowledged-unknown')
         return {
@@ -231,7 +263,7 @@ export function updateProcesses(
             }
           }
         };
-      return target === undefined || state.pending
+      return target === undefined
         ? { state }
         : updateProcesses(
             {
@@ -242,7 +274,7 @@ export function updateProcesses(
                 output: createTextAreaState({ value: '' })
               }
             },
-            { type: 'processes.action', action: 'inspect' },
+            { type: 'processes.action', panelId: state.id, target, action: 'inspect' },
             operations
           );
     }
@@ -266,7 +298,8 @@ export function updateProcesses(
       return { state: next };
     }
     case 'processes.observed': {
-      if (message.id !== state.id || state.selected?.target.processId !== message.result.processId)
+      if (message.id !== state.id || state.selected?.target.processId !== message.result.processId ||
+          hashJson(state.selected.target.owner ?? null) !== hashJson(message.result.owner))
         return { state };
       return {
         state: {
@@ -287,7 +320,8 @@ export function updateProcesses(
     }
     case 'processes.action': {
       const selected = state.selected;
-      if (selected === undefined || state.pending || selected.target.status === 'unknown' || selected.target.status === 'acknowledged-unknown') return { state };
+      if (message.panelId !== state.id || hashJson(message.target) !== hashJson(selected?.target ?? null)) return { state };
+      if (selected === undefined || selected.unavailable || state.pending || selected.target.status === 'unknown' || selected.target.status === 'acknowledged-unknown') return { state };
       const action: CodingProcessAction =
         message.action === 'input'
           ? { kind: 'input', text: textDocumentText(selected.input.document) }
@@ -382,16 +416,16 @@ export function processesView(
             }),
             row([
               control('process-inspect', 'Refresh', {
-                type: 'processes.action',
+                type: 'processes.action', panelId: state.id, target: selected.target,
                 action: 'inspect'
-              }, selected.target.status === 'unknown' || selected.target.status === 'acknowledged-unknown'),
+              }, selected.unavailable === true || selected.target.status === 'unknown' || selected.target.status === 'acknowledged-unknown'),
               control('process-more', 'Next output', {
-                type: 'processes.action',
+                type: 'processes.action', panelId: state.id, target: selected.target,
                 action: 'inspect',
                 more: true
-              }, selected.target.status === 'unknown' || selected.target.status === 'acknowledged-unknown')
+              }, selected.unavailable === true || selected.target.status === 'unknown' || selected.target.status === 'acknowledged-unknown')
             ]),
-            ...(selected.target.status !== 'running'
+            ...(selected.unavailable || selected.target.status !== 'running'
               ? []
               : [
                   textArea<Message>({
@@ -407,15 +441,15 @@ export function processesView(
                   }),
                   column([
                     control('process-send', 'Send input', {
-                      type: 'processes.action',
+                      type: 'processes.action', panelId: state.id, target: selected.target,
                       action: 'input'
                     }),
                     control('process-close-input', 'Close stdin', {
-                      type: 'processes.action',
+                      type: 'processes.action', panelId: state.id, target: selected.target,
                       action: 'close-input'
                     }),
                     control('process-stop', 'Terminate process', {
-                      type: 'processes.action',
+                      type: 'processes.action', panelId: state.id, target: selected.target,
                       action: 'terminate'
                     })
                   ])
@@ -427,7 +461,7 @@ export function processesView(
               { kind: 'fill' },
               { kind: 'content' },
               { kind: 'content' },
-              ...(selected.target.status !== 'running'
+              ...(selected.unavailable || selected.target.status !== 'running'
                 ? []
                 : [{ kind: 'fixed' as const, cells: 3 }, { kind: 'content' as const }])
             ]
@@ -461,13 +495,13 @@ export function processesView(
           : row([
               control('process-back', 'Back', { type: 'processes.back' }),
               control('process-reconcile', 'Retry observation', {
-                type: 'processes.reconcile',
+                type: 'processes.reconcile', panelId: state.id, target: selected.target,
                 acknowledge: false
               }),
-              ...(selected.target.status === 'unknown'
+              ...(!selected.unavailable && selected.target.status === 'unknown'
                 ? [
                     control('process-acknowledge', 'Accept unknown outcome', {
-                      type: 'processes.reconcile',
+                      type: 'processes.reconcile', panelId: state.id, target: selected.target,
                       acknowledge: true
                     })
                   ]
@@ -475,4 +509,13 @@ export function processesView(
             ])
     }
   });
+}
+
+/** Process IDs may be reused; inspection binds session and the complete causal owner. */
+function sameProcessOwner(
+  left: CodingProcessTarget,
+  right: Pick<CodingProcessTarget, 'sessionId' | 'processId' | 'owner'>
+): boolean {
+  return left.sessionId === right.sessionId && left.processId === right.processId &&
+    hashJson(left.owner ?? null) === hashJson(right.owner ?? null);
 }

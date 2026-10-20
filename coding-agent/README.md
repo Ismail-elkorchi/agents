@@ -31,7 +31,40 @@ Escape closes the top interaction. Ctrl+C copies an active selection, otherwise 
 
 `/sessions`, `/new`, `/name`, `/queue`, and `/branches` manage conversation navigation. Queue controls distinguish editing/canceling accepted pending input from composing a new request; steering is an explicit action. Branching history does not revert files. `/source` inspects messages, code, and tool results; `/export` writes the loaded history coverage locally. `/context` distinguishes available resources and the unsent draft from the latest admitted request and shows the current generated session state. `/processes` inspects session-owned commands and authority-wide recovery blockers. Input and termination require the current session owner; recovery decisions bind the current evidence revision. `/changes` shows recorded patches; `/recovery` handles pending approvals and uncertain outcomes.
 
+Use `coding-agent --accessible` for semantic terminal scrollback instead of visual screen painting. Keyboard and paste input use the same application controls; Ctrl+L repeats the current accessible context. The package runner accepts `outputMode: 'accessible'`. This is an explicit output choice, not a claim of complete screen-reader qualification. The flag is interactive-only and does not change exec or RPC output.
+
 Clipboard transport preserves selected source text, including tabs and line endings. Terminal capabilities are negotiated by terminal-ui; unsupported operations are reported explicitly.
+
+## Review and continue work
+
+`/help` is the terminal-independent fallback when the terminal intercepts F1. Help
+search covers commands and current shortcut bindings. The command menu identifies
+Compose, Review, Continue and Configure actions. Reading surfaces use the available
+terminal space; compact selection dialogs remain small. Switching sessions closes
+the previous session's inspectors and completion candidates while retaining its
+draft and history bookmark.
+
+Routine completed read and search calls can appear in a display-only group.
+Expand the group to see its calls, then a call to inspect its original details.
+Counts describe calls, not inferred files or successful effects. Active, failed
+and uncertain calls remain separate; expanding all tools disables grouping.
+Presentation never rewrites saved events or model-facing observations.
+
+`/changes` navigates recorded files and patch hunks. **Original / select** exposes
+exact text for selection and copying. **Ask about change**, **Ask about hunk** and
+**Ask about selection** attach captured evidence to the existing draft without
+submitting it. The attachment identifies the recorded run and content digest;
+later filesystem edits do not replace its content. These are recorded mutation
+patches, potentially containing multiple files, not a current working-tree diff
+or a complete inventory of shell-created changes. Missing patches remain explicit.
+
+Branch navigation leads with admitted task text when available and identifies
+unloaded prompts honestly. It creates a conversation branch in the same workspace,
+not an isolated Git worktree or a filesystem rollback. Contextual controls lead to
+recorded changes, pending decisions and settled process output. Context-pressure
+indicators describe an estimated admitted request, not live filesystem state.
+Approval and recovery controls bind to the request or suspension they display;
+old controls cannot decide a replacement request.
 
 ## Workspace authority
 

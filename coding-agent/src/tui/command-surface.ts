@@ -62,8 +62,8 @@ export const COMMAND_ENTRIES: readonly SearchEntry[] = INTERACTIVE_COMMANDS.map(
   id: command.name,
   label: command.name,
   value: command.name,
-  description: command.description,
-  keywords: [command.name.slice(1), command.description]
+  description: `${command.group} · ${command.description}`,
+  keywords: [command.name.slice(1), command.group, command.description]
 }));
 
 export const COMMAND_INDEX: SearchPickerIndex = createSearchPickerIndex(COMMAND_ENTRIES);

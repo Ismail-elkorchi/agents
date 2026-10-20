@@ -20,10 +20,13 @@ import { executeCodingCommand, submissionPresentation } from './application-comm
 import { CODING_SHORTCUTS } from './interactive-commands.js';
 import type { CodingAgentTuiMessage } from './messages.js';
 import type { CodingAgentTuiState } from './state.js';
+import { recoveryIdentity } from './recovery.js';
 
 export interface CodingAgentTuiAppRunOptions {
   readonly host?: TerminalHost;
   readonly initialTask?: string;
+  /** Semantic terminal scrollback; does not change execution or input policy. */
+  readonly outputMode?: 'visual' | 'accessible';
 }
 
 export interface CodingAgentTuiAppRunResult {
@@ -157,12 +160,15 @@ export async function runCodingAgentTuiApp(
         historySearcher: (request) => controller.searchHistory(request),
         setup: { status: initial.status, requirements: initial.requirements },
         recoveryHandler: async (suspension, action) => {
+          const current = controller.state().session?.suspension;
+          if (current === undefined || recoveryIdentity(current) !== recoveryIdentity(suspension))
+            throw new Error('The paused request changed. Inspect its current recovery decision.');
           if (action === 'stop') {
             if (!(await controller.abort('Stopped by the user.', suspension.runId)))
               throw new Error('This run is no longer paused. Refresh the session.');
             return 'Stopping this run…';
           }
-          const result = await controller.resumeSuspension(suspension.runId);
+          const result = await controller.resumeSuspension(suspension.runId, suspension);
           return result.state === 'suspended'
             ? `${suspensionMessage(result)}\n${suspensionPresentation(result).waitingMessage}`
             : 'The run has finished.';
@@ -192,6 +198,7 @@ export async function runCodingAgentTuiApp(
       });
       const exit = runTui(app, {
         host,
+        ...(options.outputMode === undefined ? {} : { outputMode: options.outputMode }),
         theme: (state) =>
           preferencesTheme(
             state.overlay.kind === 'preferences' ? state.overlay.preferences : state.preferences
@@ -230,11 +237,7 @@ async function presentControllerEvent(
       message = { type: 'session.hydrated', hydration: event.view };
       break;
     case 'command.settled':
-      message = {
-        type: 'interactive.notice',
-        message: `Command ${event.result.status}${event.result.exitCode === undefined ? '' : ` · exit ${String(event.result.exitCode)}`} · ${event.result.processId}. Open Processes to inspect output.`,
-        tone: event.result.status === 'exited' && event.result.exitCode === 0 ? 'info' : 'warning'
-      };
+      message = { type: 'processes.settled', result: event.result };
       break;
     case 'verification.updated':
       message = { type: 'verification.updated', verification: event.verification };

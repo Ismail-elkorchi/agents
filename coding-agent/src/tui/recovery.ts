@@ -1,12 +1,18 @@
+import { hashJson } from '@agent-core/persistence';
 import type { AgentSessionSuspensionDescriptor } from '@agent-core/runtime';
 import { diagnosticMessage, suspensionMessage, suspensionPresentation } from '@agent-core/tui';
 import { button, dialog, richText, type Element } from '@ismail-elkorchi/terminal-ui/components';
-import { column, viewport } from '@ismail-elkorchi/terminal-ui/layout';
+import { column, measuredViewport } from '@ismail-elkorchi/terminal-ui/layout';
 import type { TuiContext, TuiEffect } from '@ismail-elkorchi/terminal-ui/tui';
 import type { CodingAgentTuiMessage } from './messages.js';
-import type { CodingAgentTuiRunState } from './state.js';
+import type { CodingAgentTuiRunState, CodingAgentTuiState } from './state.js';
 
 export type RecoveryAction = 'stop' | 'resume';
+
+/** Capture the entire paused request, not merely a reusable run identity. */
+export function recoveryIdentity(suspension: AgentSessionSuspensionDescriptor): string {
+  return hashJson(suspension);
+}
 export type RecoveryHandler = (
   suspension: AgentSessionSuspensionDescriptor,
   action: RecoveryAction
@@ -28,6 +34,7 @@ export function recoveryEffect(
         message: {
           type: 'recovery.finished',
           runId: suspension.runId,
+          identity: recoveryIdentity(suspension),
           message: await handler(suspension, action)
         }
       };
@@ -37,6 +44,7 @@ export function recoveryEffect(
       message: {
         type: 'recovery.finished',
         runId: suspension.runId,
+        identity: recoveryIdentity(suspension),
         message: diagnosticMessage(diagnostic)
       }
     })
@@ -46,7 +54,8 @@ export function recoveryEffect(
 export function recoveryDialog(
   run: Extract<CodingAgentTuiRunState, { readonly kind: 'waiting_for_recovery' }>,
   context: TuiContext,
-  offsetRow: number
+  offsetRow: number,
+  inspection: CodingAgentTuiState['inspection']
 ): Element<CodingAgentTuiMessage> {
   const { suspension } = run;
   const presentation = suspensionPresentation(suspension);
@@ -57,7 +66,7 @@ export function recoveryDialog(
       label: 'Stop this run',
       tone: 'destructive',
       disabled: run.operation !== undefined,
-      onPress: (): CodingAgentTuiMessage => ({ type: 'recovery.act', action: 'stop' })
+      onPress: (): CodingAgentTuiMessage => ({ type: 'recovery.act', identity: recoveryIdentity(suspension), action: 'stop' })
     })
   ];
   if (presentation.resumeLabel !== undefined)
@@ -66,7 +75,7 @@ export function recoveryDialog(
         id: 'recovery-resume',
         label: presentation.resumeLabel,
         disabled: run.operation !== undefined,
-        onPress: (): CodingAgentTuiMessage => ({ type: 'recovery.act', action: 'resume' })
+        onPress: (): CodingAgentTuiMessage => ({ type: 'recovery.act', identity: recoveryIdentity(suspension), action: 'resume' })
       })
     );
   if (suspension.reason === 'context_admission')
@@ -92,18 +101,21 @@ export function recoveryDialog(
       returnFocus: 'restore'
     },
     slots: {
-      content: viewport(
-        paragraph(
+      content: measuredViewport(
+        [paragraph(
           [
             message,
             suspensionMessage(suspension),
-            presentation.explanation
+            presentation.explanation,
+            'Scope: this paused run only. Stopping preserves recorded work and does not undo file changes or external effects.',
+            `Run: ${suspension.runId} · request: ${suspension.submissionId}${suspension.effectId === undefined ? '' : ` · effect: ${suspension.effectId}`}`
           ]
             .filter((value, index, values) => Boolean(value) && values.indexOf(value) === index)
             .join('\n\n')
-        ),
+        )],
         {
           id: 'recovery-content',
+          onLayout: (layout) => { inspection.layout = layout; },
           offset: { row: offsetRow },
           scrollbar: { axis: 'vertical', visible: 'auto' },
           onScroll: (event): CodingAgentTuiMessage => ({
@@ -114,8 +126,8 @@ export function recoveryDialog(
       ),
       actions: column(actions)
     },
-    width: Math.max(5, Math.min(88, context.terminalSize.columns - 4)),
-    height: Math.max(4, Math.min(16, context.terminalSize.rows - 4)),
+    width: Math.max(5, context.terminalSize.columns - 4),
+    height: Math.max(4, context.terminalSize.rows - 4),
     padding: 1
   });
 }

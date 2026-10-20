@@ -1,5 +1,5 @@
-import { diagnosticMessage, patchSegments, panel as dismissiblePanel } from '@agent-core/tui';
-import type { TextAreaState, TextAreaTransition } from '@ismail-elkorchi/terminal-ui/behavior';
+import { diagnosticMessage, patchSegments, selectedSource, panel as dismissiblePanel } from '@agent-core/tui';
+import type { SearchPickerControlTransition, TextAreaState, TextAreaTransition } from '@ismail-elkorchi/terminal-ui/behavior';
 import {
   createSearchPickerIndex,
   createSearchPickerState,
@@ -19,7 +19,7 @@ import {
   textArea,
   richText
 } from '@ismail-elkorchi/terminal-ui/components';
-import { column, viewport } from '@ismail-elkorchi/terminal-ui/layout';
+import { column, flow, measuredViewport } from '@ismail-elkorchi/terminal-ui/layout';
 import {
   createTuiPreparedQuery,
   liftTuiResult,
@@ -30,6 +30,8 @@ import {
 import type { CodingApplication } from '../application/service.js';
 import type { WorkspaceChange } from '../changes/run-change-report.js';
 import { appendNotice } from './conversation.js';
+import { branchPointPresentation } from './branch-presentation.js';
+import { recordedChangeEvidence, reviewAttachment, type ReviewEvidence } from './change-review.js';
 import type { CodingAgentTuiMessage } from './messages.js';
 import type { CodingAgentTuiPickerState, CodingAgentTuiState } from './state.js';
 
@@ -46,20 +48,34 @@ export type CodingNavigationOperations = Pick<
 export type PanelKind = 'sessions' | 'branches' | 'changes';
 export type PanelItem = { readonly id: string; readonly label: string } & (
   | { readonly kind: 'session'; readonly sessionId: string }
-  | { readonly kind: 'branch'; readonly entryId: string }
+  | { readonly kind: 'branch'; readonly entryId: string; readonly title: string; readonly detail: string }
   | { readonly kind: 'change'; readonly change: WorkspaceChange; readonly runId: string }
 );
+type ChangeItem = Extract<PanelItem, { kind: 'change' }>;
+export interface NavigationPanel {
+  readonly kind: 'panel';
+  readonly id: string;
+  readonly sessionId: string | undefined;
+  readonly searchPickerIndex: SearchPickerIndex<PanelItem>;
+  readonly query: TuiPreparedQueryState<SearchPickerQueryResult<PanelItem>>;
+  readonly panel: PanelKind;
+  readonly items: readonly PanelItem[];
+  readonly picker: CodingAgentTuiPickerState;
+}
+export interface ChangeReview {
+  readonly requestId: string;
+  readonly sessionId: string | undefined;
+  readonly listing: NavigationPanel;
+  readonly items: readonly ChangeItem[];
+  readonly index: number;
+  readonly loading: boolean;
+  readonly evidence?: ReviewEvidence;
+  readonly hunk?: number;
+  readonly error?: string;
+}
 export type CodingPanel =
-  | { readonly kind: 'panel_loading'; readonly id: string; readonly panel: PanelKind }
-  | {
-      readonly kind: 'panel';
-      readonly id: string;
-      readonly searchPickerIndex: SearchPickerIndex<PanelItem>;
-      readonly query: TuiPreparedQueryState<SearchPickerQueryResult<PanelItem>>;
-      readonly panel: PanelKind;
-      readonly items: readonly PanelItem[];
-      readonly picker: CodingAgentTuiPickerState;
-    }
+  | { readonly kind: 'panel_loading'; readonly id: string; readonly panel: PanelKind; readonly sessionId: string | undefined }
+  | NavigationPanel
   | {
       readonly kind: 'source';
       readonly patch?: string;
@@ -68,8 +84,28 @@ export type CodingPanel =
       readonly title: string;
       readonly input: TextAreaState;
       readonly notice?: string;
+      readonly review?: ChangeReview;
     }
-  | { readonly kind: 'branch_review'; readonly entryId: string };
+  | { readonly kind: 'branch_review'; readonly entryId: string; readonly title: string; readonly detail: string; readonly sessionId: string | undefined };
+export type PanelMessage =
+  | PanelQueryMessage
+  | { readonly type: 'panel.open'; readonly panel: PanelKind }
+  | { readonly type: 'panel.loaded'; readonly requestId: string; readonly panel: PanelKind; readonly sessionId: string | undefined; readonly items: readonly PanelItem[] }
+  | { readonly type: 'panel.failed'; readonly requestId: string; readonly message: string }
+  | { readonly type: 'panel.transition'; readonly transition: SearchPickerControlTransition }
+  | { readonly type: 'panel.accept'; readonly id: string }
+  | { readonly type: 'panel.change-loaded'; readonly requestId: string; readonly sessionId: string | undefined; readonly evidence: ReviewEvidence }
+  | { readonly type: 'panel.change-failed'; readonly requestId: string; readonly sessionId: string | undefined; readonly message: string }
+  | { readonly type: 'panel.source-loaded'; readonly title: string; readonly content: string }
+  | { readonly type: 'panel.source-mode' }
+  | { readonly type: 'panel.source-scroll'; readonly offset: number }
+  | { readonly type: 'panel.text'; readonly transition: TextAreaTransition }
+  | { readonly type: 'panel.branch'; readonly entryId: string }
+  | { readonly type: 'panel.done' | 'panel.operation-failed'; readonly message: string; readonly sessionId?: string }
+  | { readonly type: 'panel.review-file'; readonly requestId: string; readonly delta: -1 | 1 }
+  | { readonly type: 'panel.review-hunk'; readonly requestId: string; readonly direction: 'previous' | 'next' | 'all' }
+  | { readonly type: 'panel.review-list'; readonly requestId: string }
+  | { readonly type: 'panel.review-attach'; readonly requestId: string; readonly hunk: number | undefined; readonly selection: boolean };
 type Update = TuiUpdateResult<CodingAgentTuiState, CodingAgentTuiMessage>;
 
 const panelTitles: Record<PanelKind, string> = {
@@ -122,7 +158,7 @@ export function openPanel(
     state: {
       ...state,
       nextLocalId: state.nextLocalId + 1,
-      overlay: { kind: 'panel_loading', id, panel }
+      overlay: { kind: 'panel_loading', id, panel, sessionId: state.debug.sessionId }
     },
     effects: [
       {
@@ -131,12 +167,11 @@ export function openPanel(
         async run() {
           let items: readonly PanelItem[];
           if (panel === 'branches')
-            items = state.debug.branchPoints.map((point) => ({
-              kind: 'branch',
-              id: point.entryId,
-              entryId: point.entryId,
-              label: `${point.timestamp} · ${point.kind.replaceAll('_', ' ')} · ${point.runId ?? point.entryId}`
-            }));
+            items = state.debug.branchPoints.map((point, index) => {
+              const presentation = branchPointPresentation(state, point);
+              return { kind: 'branch', id: point.entryId, entryId: point.entryId,
+                ...presentation, label: `${presentation.title} · ${point.timestamp} · checkpoint ${String(index + 1)}` };
+            });
           else if (panel === 'changes')
             items = state.debug.changes.flatMap((report) =>
               report.changes.map((change) => ({
@@ -169,7 +204,7 @@ export function openPanel(
           }
           return {
             kind: 'message',
-            message: { type: 'panel.loaded', requestId: id, panel, items }
+            message: { type: 'panel.loaded', requestId: id, panel, sessionId: state.debug.sessionId, items }
           };
         },
         onError: ({ diagnostic }) => ({
@@ -191,7 +226,7 @@ export function updatePanel(
 ): Update {
   switch (message.type) {
     case 'panel.loaded': {
-      if (state.overlay.kind !== 'panel_loading' || state.overlay.id !== message.requestId)
+      if (state.overlay.kind !== 'panel_loading' || state.overlay.id !== message.requestId || state.debug.sessionId !== state.overlay.sessionId || message.sessionId !== state.overlay.sessionId)
         return { state };
       const searchPickerIndex = createSearchPickerIndex(
         message.items.map((item) => ({ id: item.id, label: item.label, value: item }))
@@ -200,6 +235,7 @@ export function updatePanel(
         ...requestPanelQuery(state, {
           kind: 'panel',
           id: message.requestId,
+          sessionId: message.sessionId,
           panel: message.panel,
           items: message.items,
           searchPickerIndex,
@@ -257,26 +293,80 @@ export function updatePanel(
       };
     }
     case 'panel.accept': {
-      if (state.overlay.kind !== 'panel') return { state };
+      if (state.overlay.kind !== 'panel' || state.overlay.sessionId !== state.debug.sessionId) return { state };
       const item = state.overlay.items.find((item) => item.id === message.id);
       if (item === undefined) return { state };
       return acceptPanelItem(state, item, operations);
     }
     case 'panel.change-loaded':
-      if (
-        state.overlay.kind !== 'panel' ||
-        state.overlay.id !== message.panelId ||
-        state.debug.sessionId !== message.sessionId
-      )
+    case 'panel.change-failed': {
+      if (state.overlay.kind !== 'source' || state.overlay.review?.requestId !== message.requestId ||
+          state.overlay.review.sessionId !== message.sessionId || state.debug.sessionId !== message.sessionId)
         return { state };
-      return sourcePanel(state, message.title, message.content, message.patch);
+      const review = state.overlay.review;
+      if (message.type === 'panel.change-failed') return { state: { ...state, overlay: { ...state.overlay,
+        input: createTextAreaState({ value: `Recorded change unavailable: ${message.message}` }),
+        review: { ...review, loading: false, error: message.message } } } };
+      return { state: { ...state, overlay: {
+        kind: 'source', title: message.evidence.title, rendered: message.evidence.patch !== undefined,
+        ...(message.evidence.patch === undefined ? {} : { patch: message.evidence.patch }), offset: 0,
+        input: createTextAreaState({ value: message.evidence.content }),
+        review: { ...review, loading: false, evidence: message.evidence }
+      } }, focus: { kind: 'element', elementId: message.evidence.patch === undefined ? 'source-text' : 'change-source-mode' } };
+    }
+    case 'panel.review-file': {
+      if (state.overlay.kind !== 'source' || state.overlay.review === undefined) return { state };
+      const review = state.overlay.review;
+      if (review.requestId !== message.requestId || review.sessionId !== state.debug.sessionId || review.loading) return { state };
+      const index = review.index + message.delta;
+      return index < 0 || index >= review.items.length ? { state }
+        : readReviewFile(state, review.listing, review.items, index, operations);
+    }
+    case 'panel.review-list':
+      return state.overlay.kind !== 'source' || state.overlay.review?.requestId !== message.requestId || state.overlay.review.sessionId !== state.debug.sessionId ? { state }
+        : { state: { ...state, overlay: state.overlay.review.listing }, focus: { kind: 'element', elementId: 'navigation-picker' } };
+    case 'panel.review-hunk': {
+      if (state.overlay.kind !== 'source' || state.overlay.review?.requestId !== message.requestId || state.overlay.review.sessionId !== state.debug.sessionId) return { state };
+      const source = state.overlay;
+      const review = source.review;
+      if (review === undefined || review.loading || review.evidence === undefined) return { state };
+      const hunks = review.evidence.hunks;
+      const index = message.direction === 'all' ? undefined : message.direction === 'next'
+        ? Math.min(hunks.length - 1, (review.hunk ?? -1) + 1)
+        : Math.max(0, (review.hunk ?? hunks.length) - 1);
+      if (index !== undefined && hunks[index] === undefined) return { state };
+      const base = { ...review };
+      delete base.hunk;
+      return { state: { ...state, overlay: { ...source, offset: 0,
+        title: index === undefined ? review.evidence.title : hunks[index]?.label ?? review.evidence.title,
+        input: createTextAreaState({ value: index === undefined ? review.evidence.content : hunks[index]?.content ?? '' }),
+        review: { ...base, ...(index === undefined ? {} : { hunk: index }) }
+      } } };
+    }
+    case 'panel.review-attach': {
+      if (state.overlay.kind !== 'source' || state.overlay.review?.requestId !== message.requestId || state.overlay.review.sessionId !== state.debug.sessionId) return { state };
+      const source = state.overlay;
+      const review = source.review;
+      if (review === undefined || review.loading || review.evidence === undefined) return { state };
+      if (review.hunk !== message.hunk) return { state };
+      const selection = message.selection ? selectedSource(source.input) : undefined;
+      if (message.selection && (selection === undefined || source.rendered))
+        return { state: { ...state, overlay: { ...source, notice: 'Switch to Original / select and select the exact text to attach.' } } };
+      const attachment = reviewAttachment(review.evidence, selection,
+        review.hunk === undefined ? undefined : review.evidence.hunks[review.hunk]);
+      return { state: appendNotice({ ...state, overlay: { kind: 'none' }, composer: { ...state.composer,
+        attachments: [...state.composer.attachments, attachment] } },
+        `Attached ${attachment.label}. Inspect or remove it before sending your question.`),
+        focus: { kind: 'element', elementId: 'composer' } };
+    }
     case 'panel.source-loaded':
       return sourcePanel(state, message.title, message.content);
     case 'panel.source-mode':
       return state.overlay.kind !== 'source'
         ? { state }
         : {
-            state: { ...state, overlay: { ...state.overlay, rendered: !state.overlay.rendered } }
+            state: { ...state, overlay: { ...state.overlay, rendered: !state.overlay.rendered } },
+            focus: { kind: 'element', elementId: state.overlay.rendered ? 'source-text' : 'change-source-mode' }
           };
     case 'panel.source-scroll':
       return state.overlay.kind !== 'source'
@@ -297,21 +387,23 @@ export function updatePanel(
       };
     }
     case 'panel.branch':
-      return state.overlay.kind !== 'branch_review'
+      return state.overlay.kind !== 'branch_review' || state.overlay.entryId !== message.entryId || state.overlay.sessionId !== state.debug.sessionId
         ? { state }
         : operation(
             state,
             operations,
-            (service) => service.branchFrom(message.entryId),
+            (service) => service.branchFrom(message.entryId, undefined, state.debug.sessionId),
             'Branch selected.'
           );
     case 'panel.done':
+      if (message.sessionId !== undefined && state.debug.sessionId !== message.sessionId) return { state };
       return {
         state: appendNotice({ ...state, overlay: { kind: 'none' } }, message.message),
         focus: { kind: 'element', elementId: 'composer' }
       };
     case 'panel.operation-failed':
-      return { state: appendNotice(state, message.message, 'error') };
+      return message.sessionId !== undefined && message.sessionId !== state.debug.sessionId
+        ? { state } : { state: appendNotice(state, message.message, 'error') };
   }
 }
 
@@ -359,11 +451,11 @@ function operation(
             if (error instanceof Error && error.name === 'AbortError') return { kind: 'none' };
             throw error;
           }
-          return { kind: 'message', message: { type: 'panel.done', message } };
+          return { kind: 'message', message: { type: 'panel.done', message, ...(state.debug.sessionId === undefined ? {} : { sessionId: state.debug.sessionId }) } };
         },
         onError: ({ diagnostic }) => ({
           kind: 'message',
-          message: { type: 'panel.operation-failed', message: diagnosticMessage(diagnostic) }
+          message: { type: 'panel.operation-failed', message: diagnosticMessage(diagnostic), ...(state.debug.sessionId === undefined ? {} : { sessionId: state.debug.sessionId }) }
         })
       }
     ]
@@ -373,7 +465,8 @@ function operation(
 export function panelView(
   panel: CodingPanel,
   width: number,
-  height: number
+  height: number,
+  inspection: CodingAgentTuiState['inspection']
 ): Element<CodingAgentTuiMessage> {
   const content = (): Element<CodingAgentTuiMessage> => {
     switch (panel.kind) {
@@ -401,53 +494,11 @@ export function panelView(
               ])
         ]);
       case 'source':
-        return column(
-          [
-            panel.rendered && panel.patch !== undefined
-              ? viewport(richText({ segments: patchSegments(panel.patch), wrap: true }), {
-                  id: 'change-preview',
-                  offset: { row: panel.offset },
-                  scrollbar: { axis: 'vertical', visible: 'auto' },
-                  onScroll: (request): CodingAgentTuiMessage => ({
-                    type: 'panel.source-scroll',
-                    offset: request.nextState.offsetRow
-                  })
-                })
-              : textArea<CodingAgentTuiMessage>({
-                  id: 'source-text',
-                  meta: { accessibleName: panel.title },
-                  state: panel.input,
-                  readOnly: true,
-                  wrap: true,
-                  scrollbar: { axis: 'vertical', visible: 'auto' },
-                  onTransition: (transition: TextAreaTransition): CodingAgentTuiMessage => ({
-                    type: 'panel.text',
-                    transition
-                  })
-                }),
-            ...(panel.patch === undefined
-              ? []
-              : [
-                  button<CodingAgentTuiMessage>({
-                    id: 'change-source-mode',
-                    label: panel.rendered ? 'Original / select' : 'Highlighted patch',
-                    onPress: () => ({ type: 'panel.source-mode' })
-                  })
-                ]),
-            text({ content: panel.notice ?? 'Ctrl+C copies selected source' })
-          ],
-          {
-            sizes: [
-              { kind: 'fill', weight: 1 },
-              ...(panel.patch === undefined ? [] : [{ kind: 'fixed' as const, cells: 1 }]),
-              { kind: 'fixed', cells: 1 }
-            ]
-          }
-        );
+        return sourceView(panel, width, height, inspection);
       case 'branch_review':
         return column([
           text({
-            content: `Continue from ${panel.entryId}\nRequires an idle session. Existing history remains stored.`
+            content: `${panel.title}\n\n${panel.detail}\nRequires an idle session.`
           }),
           button({
             id: 'branch-continue',
@@ -484,11 +535,6 @@ export function panelView(
   });
 }
 
-function describeChange(item: Extract<PanelItem, { kind: 'change' }>): string {
-  const change = item.change;
-  return `${change.path}${change.destinationPath ? ` → ${change.destinationPath}` : ''}\nSource: ${change.absolutePath}${change.destinationAbsolutePath ? ` → ${change.destinationAbsolutePath}` : ''}\n${change.kind} · ${change.state}\nRun: ${item.runId}\nBefore: ${change.before.kind === 'present' ? change.before.sha256 : change.before.kind}\nAfter: ${change.after.kind === 'present' ? change.after.sha256 : change.after.kind}\nBytes: ${change.before.kind === 'present' ? String(change.before.bytes) : change.before.kind === 'absent' ? '0' : 'unknown'} → ${change.after.kind === 'present' ? String(change.after.bytes) : change.after.kind === 'absent' ? '0' : 'unknown'}`;
-}
-
 function acceptPanelItem(
   state: CodingAgentTuiState,
   item: PanelItem,
@@ -504,50 +550,79 @@ function acceptPanelItem(
       );
     case 'branch':
       return {
-        state: { ...state, overlay: { kind: 'branch_review', entryId: item.entryId } },
+        state: { ...state, overlay: { kind: 'branch_review', entryId: item.entryId, title: item.title, detail: item.detail, sessionId: state.debug.sessionId } },
         focus: { kind: 'element', elementId: 'branch-continue' }
       };
     case 'change': {
       if (state.overlay.kind !== 'panel') return { state };
-      const panelId = state.overlay.id;
-      return {
-        state,
-        effects: [
-          {
-            id: 'change-source',
-            concurrency: 'replace',
-            async run() {
-              if (operations === undefined) throw new Error('Change inspection is unavailable.');
-              const inspection = await operations.readChange(item.runId, item.change.path);
-              const patches = inspection.patches
-                .map(
-                  ({ receipt, patch }) =>
-                    `Workspace patch · ${receipt.applicationStatus} · ${receipt.patchSha256}\n${patch}`
-                )
-                .join('\n\n');
-              return {
-                kind: 'message',
-                message: {
-                  type: 'panel.change-loaded',
-                  patch: `${item.change.kind} · ${item.change.state}\n${patches || 'No structured patch is recorded for this change.'}`,
-                  panelId,
-                  sessionId: state.debug.sessionId,
-                  title: item.change.path,
-                  content: `${describeChange(item)}\n\n${patches || 'No structured patch is recorded for this change.'}`
-                }
-              };
-            },
-            onError: ({ diagnostic }) => ({
-              kind: 'message',
-              message: {
-                type: 'interactive.notice',
-                tone: 'error',
-                message: diagnosticMessage(diagnostic)
-              }
-            })
-          }
-        ]
-      };
+      const items = state.overlay.items.filter((item): item is ChangeItem => item.kind === 'change');
+      return readReviewFile(state, state.overlay, items, items.findIndex((entry) => entry.id === item.id), operations);
     }
   }
+}
+
+function readReviewFile(state: CodingAgentTuiState, listing: NavigationPanel, items: readonly ChangeItem[], index: number,
+  operations: CodingNavigationOperations | undefined): Update {
+  const item = items[index];
+  if (item === undefined || listing.sessionId !== state.debug.sessionId) return { state };
+  const requestId = `review:${String(state.nextLocalId)}`;
+  const sessionId = state.debug.sessionId;
+  return {
+    state: { ...state, nextLocalId: state.nextLocalId + 1, overlay: {
+      kind: 'source', title: item.change.path, rendered: false, offset: 0,
+      input: createTextAreaState({ value: 'Loading recorded change…' }),
+      review: { requestId, sessionId, listing, items, index, loading: true }
+    } },
+    effects: [{ id: 'change-source', concurrency: 'replace', async run() {
+      if (operations === undefined) throw new Error('Change inspection is unavailable.');
+      const inspection = await operations.readChange(item.runId, item.change.path, sessionId);
+      const evidence = recordedChangeEvidence(sessionId, item.runId, inspection);
+      return { kind: 'message', message: { type: 'panel.change-loaded', requestId, sessionId, evidence } };
+    }, onError: ({ diagnostic }) => ({ kind: 'message', message: {
+      type: 'panel.change-failed', requestId, sessionId, message: diagnosticMessage(diagnostic)
+    } }) }]
+  };
+}
+
+function sourceView(panel: Extract<CodingPanel, { kind: 'source' }>, width: number, height: number, inspection: CodingAgentTuiState['inspection']): Element<CodingAgentTuiMessage> {
+  const compact = width < 70 || height < 18;
+  const review = panel.review;
+  const hunk = review?.hunk === undefined ? undefined : review.evidence?.hunks[review.hunk];
+  const patch = hunk?.content ?? panel.patch;
+  const control = (id: string, label: string, message: CodingAgentTuiMessage, disabled = false) => button<CodingAgentTuiMessage>({
+    id, label, ...(disabled ? { disabled: true } : { onPress: () => message })
+  });
+  const content: Element<CodingAgentTuiMessage>[] = [];
+  if (review !== undefined) {
+    content.push(text({ content: compact ? `Recorded ${String(review.index + 1)}/${String(review.items.length)} · live not compared` : `File ${String(review.index + 1)}/${String(review.items.length)} · Recorded run evidence${hunk === undefined ? '' : ` · Hunk ${String((review.hunk ?? 0) + 1)}/${String(review.evidence?.hunks.length ?? 0)}`}` }));
+    if (!compact || review.error !== undefined || review.loading) content.push(text({ content: review.error ?? (review.loading ? 'Loading…' : hunk === undefined ? 'Current working tree not compared. Patches may include other files in the same mutation.' : hunk.label), textRole: 'caption' }));
+    content.push(flow([
+      control('review-files', compact ? 'List' : 'Files', { type: 'panel.review-list', requestId: review.requestId }),
+      control('review-file-previous', compact ? 'F‹' : 'Prev file', { type: 'panel.review-file', requestId: review.requestId, delta: -1 }, review.loading || review.index === 0),
+      control('review-file-next', compact ? 'F›' : 'Next file', { type: 'panel.review-file', requestId: review.requestId, delta: 1 }, review.loading || review.index === review.items.length - 1),
+      control('review-hunk-previous', compact ? 'H‹' : 'Prev hunk', { type: 'panel.review-hunk', requestId: review.requestId, direction: 'previous' }, review.loading || !review.evidence?.hunks.length || review.hunk === 0),
+      control('review-hunk-next', compact ? 'H›' : 'Next hunk', { type: 'panel.review-hunk', requestId: review.requestId, direction: 'next' }, review.loading || !review.evidence?.hunks.length || review.hunk === review.evidence.hunks.length - 1),
+      control('review-hunk-all', compact ? 'All' : 'Whole patch', { type: 'panel.review-hunk', requestId: review.requestId, direction: 'all' }, review.hunk === undefined)
+    ], { direction: 'horizontal', gap: compact ? 0 : 1 }));
+  }
+  const top = content.length;
+  content.push(panel.rendered && patch !== undefined
+    ? measuredViewport([richText({ segments: patchSegments(patch), wrap: true })], {
+        onLayout: (layout) => { inspection.layout = layout; },
+        id: 'change-preview', offset: { row: panel.offset }, scrollbar: { axis: 'vertical', visible: 'auto' },
+        onScroll: (request): CodingAgentTuiMessage => ({ type: 'panel.source-scroll', offset: request.nextState.offsetRow })
+      })
+    : textArea<CodingAgentTuiMessage>({ id: 'source-text', meta: { accessibleName: panel.title }, state: panel.input,
+        readOnly: true, wrap: true, scrollbar: { axis: 'vertical', visible: 'auto' },
+        onTransition: (transition: TextAreaTransition): CodingAgentTuiMessage => ({ type: 'panel.text', transition })
+      }));
+  const actions: Element<CodingAgentTuiMessage>[] = [];
+  if (panel.patch !== undefined) actions.push(control('change-source-mode', compact ? (panel.rendered ? 'Select' : 'Color') : panel.rendered ? 'Original / select' : 'Highlighted patch', { type: 'panel.source-mode' }));
+  if (review !== undefined) actions.push(
+    control('review-ask', compact ? 'Ask' : hunk === undefined ? 'Ask about change' : 'Ask about hunk', { type: 'panel.review-attach', requestId: review.requestId, hunk: review.hunk, selection: false }, review.loading || review.evidence === undefined),
+    control('review-ask-selection', compact ? 'Ask selection' : 'Ask about selection', { type: 'panel.review-attach', requestId: review.requestId, hunk: review.hunk, selection: true }, review.loading || review.evidence === undefined || panel.rendered || selectedSource(panel.input) === undefined)
+  );
+  if (actions.length) content.push(flow(actions, { direction: 'horizontal', gap: compact ? 0 : 1 }));
+  if (!compact || panel.notice !== undefined) content.push(text({ content: panel.notice ?? 'Ctrl+C copies selected source · Tab moves between review controls', textRole: 'caption' }));
+  return column(content, { sizes: content.map((_, index) => index === top ? { kind: 'fill', weight: 1 } : { kind: 'content' }) });
 }

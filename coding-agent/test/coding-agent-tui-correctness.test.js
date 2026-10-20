@@ -1,3 +1,4 @@
+import { hashJson } from '@agent-core/persistence';
 import { renderFramePlain } from '@ismail-elkorchi/terminal-ui/renderer';
 import { createTestEventSource } from './helpers/event-source.js';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -832,7 +833,7 @@ test('a dispatch failure before the first turn restores usable recovery controls
   assert.match(frame, /Driver attachment failed/);
   assert.match(frame, /Resume recorded work/);
   assert.match(frame, /Stop this run/);
-  await runtime.dispatch({ type: 'recovery.act', action: 'resume' });
+  await runtime.dispatch({ type: 'recovery.act', identity: hashJson(runtime.state().run.suspension), action: 'resume' });
   await waitFor(() => actions.length === 1);
   assert.deepEqual(actions[0], { descriptor: suspension, action: 'resume' });
 });
@@ -854,10 +855,11 @@ test('a dismissed change inspection cannot reopen after its read settles', { tim
   const panel = runtime.state().overlay;
   assert.ok(panel.items.length > 0);
   await runtime.dispatch({ type: 'panel.accept', id: panel.items[0].id });
+  const requestId = runtime.state().overlay.review.requestId;
   await runtime.dispatch({ type: 'overlay.close' });
-  finish({ patches: [] });
-  await runtime.dispatch({ type: 'panel.change-loaded', panelId: panel.id,
-    sessionId: runtime.state().debug.sessionId, title: 'obsolete', content: 'obsolete', patch: 'obsolete' });
+  finish({ change: panel.items[0].change, patches: [] });
+  await runtime.dispatch({ type: 'panel.change-loaded', requestId,
+    sessionId: runtime.state().debug.sessionId, evidence: { title: 'obsolete', content: 'obsolete', patch: 'obsolete', sourceUri: 'review://obsolete', hunks: [] } });
   assert.equal(runtime.state().overlay.kind, 'none');
   assert.doesNotMatch(renderFramePlain(runtime.frame()), /obsolete/);
 });

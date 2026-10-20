@@ -113,7 +113,10 @@ export function presentHistoryPages(
       pages,
       items: [...reconcileConversationEntries(recorded, live), ...notices],
       expandedIds: state.conversation.expandedIds.filter(
-        (id) => ids.has(id) || live.some((entry) => entry.id === id)
+        (id) => {
+          const sourceId = id.replace(/^activity-(?:group|member):/u, '');
+          return ids.has(sourceId) || live.some((entry) => entry.id === sourceId);
+        }
       )
     },
     nextLocalId: presented.nextLocalId

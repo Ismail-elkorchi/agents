@@ -289,8 +289,17 @@ test(
       ids
     );
     assert.equal(runtime.state().conversation.unread, true);
+    await runtime.dispatch({ type: 'overlay.open', overlay: 'help' });
+    const panelGeneration = runtime.state().panelGeneration;
+    await runtime.dispatch({ type: 'session.hydrated', hydration: await view() });
+    assert.equal(runtime.state().overlay.kind, 'help', 'same-session refresh preserves inspection');
     selected = second;
     await runtime.dispatch({ type: 'session.hydrated', hydration: await view() });
+    assert.equal(runtime.state().overlay.kind, 'none', 'a different session cannot inherit old controls');
+    assert.equal(runtime.state().modalOffsetRow, 0);
+    assert.equal(runtime.state().panelGeneration, panelGeneration + 1);
+    assert.equal(runtime.state().completion, undefined);
+    assert.equal(runtime.state().resourceCompletion, undefined);
     assert.equal(textDocumentText(runtime.state().composer.input.document), '');
     await runtime.dispatch({ type: 'composer.restore', text: 'Second draft' });
     selected = first;

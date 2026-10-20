@@ -18,6 +18,7 @@ type ApplicationCommandName =
   | '/debug';
 export type InteractiveCommandName =
   | ApplicationCommandName
+  | '/help'
   | '/collaboration'
   | '/model'
   | '/provider'
@@ -43,7 +44,10 @@ export type InteractiveCommandName =
   | '/editor'
   | '/recovery'
   | '/exit';
+export type InteractiveCommandGroup = 'Compose' | 'Review' | 'Continue' | 'Configure';
+
 export type InteractiveCommandEntry = {
+  readonly group: InteractiveCommandGroup;
   readonly description: string;
   readonly value: 'none' | 'optional' | 'required';
   readonly choices?: readonly InteractiveCommandChoice[];
@@ -65,11 +69,18 @@ export interface InteractiveCommandResult {
   };
 }
 
+function commandGroup(name: InteractiveCommandName): InteractiveCommandGroup {
+  if (['/attach', '/drafts', '/editor', '/steer', '/follow'].includes(name)) return 'Compose';
+  if (['/search', '/changes', '/export', '/source', '/tools', '/context', '/memory', '/status', '/debug'].includes(name)) return 'Review';
+  if (['/sessions', '/new', '/name', '/queue', '/branches', '/processes', '/recovery', '/stop', '/collaboration', '/exit'].includes(name)) return 'Continue';
+  return 'Configure';
+}
+
 const action = (
   name: InteractiveCommandName,
   description: string,
   message: CodingAgentTuiMessage
-): InteractiveCommandEntry => ({ kind: 'interface', name, description, message, value: 'none' });
+): InteractiveCommandEntry => ({ kind: 'interface', name, group: commandGroup(name), description, message, value: 'none' });
 const command = (
   name: ApplicationCommandName,
   description: string,
@@ -78,12 +89,14 @@ const command = (
 ): InteractiveCommandEntry => ({
   kind: 'application',
   name,
+  group: commandGroup(name),
   description,
   value,
   ...(choices === undefined ? {} : { choices })
 });
 
 export const INTERACTIVE_COMMAND_REGISTRY = {
+  '/help': action('/help', 'Search commands and keyboard shortcuts.', { type: 'overlay.open', overlay: 'help' }),
   '/model': action('/model', 'Choose provider, model and reasoning.', {
     type: 'configuration.open',
     target: 'model'
@@ -217,9 +230,23 @@ export const CODING_SHORTCUTS: readonly ShortcutAction[] = [
     label: 'Search history',
     bindings: ['search']
   },
-  {
-    id: 'editor',
-    label: 'External editor',
-    bindings: ['external-editor']
-  }
+  { id: 'editor', label: 'External editor', bindings: ['external-editor'] },
+  { id: 'help', label: 'Keyboard help', bindings: ['help'] },
+  { id: 'sessions', label: 'Saved conversations', bindings: ['sessions'] },
+  { id: 'branches', label: 'Branch conversation', bindings: ['branches'] },
+  { id: 'changes', label: 'Review changes', bindings: ['changes'] },
+  { id: 'previous-message', label: 'Previous message', bindings: ['previous-message'] },
+  { id: 'next-message', label: 'Next message', bindings: ['next-message'] },
+  { id: 'previous-match', label: 'Previous search match', bindings: ['previous-match'] },
+  { id: 'next-match', label: 'Next search match', bindings: ['next-match', 'more-search-results'] },
+  { id: 'older-history', label: 'Load older history', bindings: ['older-history'] },
+  { id: 'newer-history', label: 'Load newer history', bindings: ['newer-history'] },
+  { id: 'follow-output', label: 'Follow latest output', bindings: ['follow-latest-output'] },
+  { id: 'submit', label: 'Send or queue message', bindings: ['composer-submit'] },
+  { id: 'steer', label: 'Steer active work', bindings: ['steer-active-run'] },
+  { id: 'follow-up', label: 'Queue follow-up', bindings: ['queue-follow-up'] },
+  { id: 'completion', label: 'Complete command or reference', bindings: ['complete-command-or-path'] },
+  // Ctrl+C remains a fixed cancellation fallback even when Esc is remapped.
+  { id: 'interrupt', label: 'Interrupt active work', bindings: ['interrupt'] },
+  { id: 'exit', label: 'Exit with an empty draft', bindings: ['exit'] }
 ];
